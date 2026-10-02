@@ -67,7 +67,7 @@ namespace {
         e.isAnchor = 0;
         for (gl::NameId k = 0; k < gl::ExecutionParameters::MAX_ARITY; ++k) {
             e.argId[k] = static_cast<gl::NameId>(seed + k);
-            e.argUnchangeable[k] = static_cast<gl::NameId>(k & 1);
+            e.argUnchangeable[k] = static_cast<int8_t>(k & 1);
             e.argIteration[k] = -1;
             e.argLevPlus1[k] = 0;
             e.argFullId[k] = static_cast<gl::NameId>(seed - k);
@@ -127,6 +127,53 @@ TEST(lb_deload, file_name_shape) {
               std::string("lb7_t4_1_of_1.bin"));
 }
 
+TEST(lb_deload, or_sources_pending_events_and_discharge_roundtrip) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager);
+    const gl::OrImplicationLeaf leaves[] = {{12, 13}, {4, 5}};
+    const int levels[] = {3, 8};
+    const int64_t key = gl::packInt32Pair(101, 7);
+    ASSERT_TRUE(source.orImplications.insert(key, 102, leaves, 2, levels, 2, true));
+    source.orImplications.pendingFacts.push_back(gl::packInt32Pair(13, 1));
+    source.orImplications.pendingClasses.push_back(gl::packInt32Pair(42, 7));
+    const int64_t cacheKey = gl::packInt32Pair(13, 7);
+    gl::ScratchArena cacheScratch(&manager);
+    source.orImplicationMatches.publishCache(cacheKey, gl::OrCanonicalCache{13, 51, 0}, [](auto&&) {}, cacheScratch);
+    source.orImplicationMatches.bindView(gl::OrViewIdentity::sourceLeaf(key, 7, 0), cacheKey);
+    source.orImplicationMatches.built = true;
+    source.existenceLookups.algebraSources.postings.insert(cacheKey, key);
+    source.existenceLookups.algebraSources.built = true;
+    const std::filesystem::path dir = freshDir("test_deload_or_sources");
+    const std::string chain = "or-source-storage";
+    const auto files = gl::lbdeload::dumpLbMemory(
+        source, chain, 0, dir, 1 << 18);
+    gl::LbMemory restored(&manager);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    const gl::OrImplicationSource row = *restored.orImplications.find(key);
+    ASSERT_EQ(row.canonicalId, 102);
+    ASSERT_EQ(row.leafCount, 2);
+    ASSERT_EQ(restored.orImplications.leaves[row.leafStart].literalId, 12);
+    ASSERT_EQ(restored.orImplications.leaves[row.leafStart + 1].complementId, 5);
+    ASSERT_EQ(restored.orImplications.levels[row.levelStart + 1], 8);
+    ASSERT_EQ(restored.orImplications.pendingSources[0], key);
+    ASSERT_EQ(restored.orImplications.pendingFacts[0], gl::packInt32Pair(13, 1));
+    ASSERT_EQ(restored.orImplications.pendingClasses[0], gl::packInt32Pair(42, 7));
+    ASSERT_EQ(restored.orImplicationMatches.liveBytes(), int64_t{0});
+    ASSERT_FALSE(restored.orImplicationMatches.built);
+    ASSERT_FALSE(restored.existenceLookups.algebraSources.built);
+    ASSERT_EQ(restored.existenceLookups.liveBytes(), int64_t{0});
+    restored.existenceLookups.algebraSources.postings.insert(cacheKey, key);
+    restored.existenceLookups.algebraSources.built = true;
+    restored.orImplicationMatches.publishCache(cacheKey, gl::OrCanonicalCache{13, 51, 0}, [](auto&&) {}, cacheScratch);
+    restored.orImplicationMatches.bindView(gl::OrViewIdentity::sourceLeaf(key, 7, 0), cacheKey);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.orImplications.find(key) == nullptr);
+    ASSERT_EQ(restored.orImplications.liveBytes(), int64_t{0});
+    ASSERT_EQ(restored.orImplicationMatches.liveBytes(), int64_t{0});
+    ASSERT_EQ(restored.existenceLookups.liveBytes(), int64_t{0});
+}
+
 TEST(lb_deload, file_name_carries_ordinal_not_hash) {
     // Two distinct ordinals yield distinct names — injective by
     // construction (the whole point of replacing the chain hash).
@@ -135,6 +182,71 @@ TEST(lb_deload, file_name_carries_ordinal_not_hash) {
     ASSERT_EQ(a, std::string("lb5_1_of_1.bin"));
     ASSERT_NE(a, b);
     ASSERT_TRUE(a.find("lb5_") == 0);
+}
+
+TEST(lb_deload, unary_composition_preserves_roots_pending_work_and_receipts) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{32 << 20,1 << 18});
+    gl::LbMemory source(&manager);
+    auto& state=source.unaryComposition;
+    const int32_t sourceKey[]={13,13,1,2,3,5};
+    const int32_t ruleKey[]={11,12,1,2,3,5};
+    const auto bytes=[](const int32_t* key){return gl::StrSpan(reinterpret_cast<const char*>(key),24);};
+    state.sources.mint(bytes(sourceKey));state.sourceInfo.push_back({11,12,13,1,1,2});state.sourceActive.push_back(1);
+    state.rules.mint(bytes(ruleKey));state.ruleInfo.push_back({11,12,13,1,1,2});state.pending.push_back(1);
+    state.generated.mint(gl::packInt32Pair(13,1));
+    state.heads.insertSorted(gl::packInt32Pair(21,2),1);
+    state.premises.insertSorted(gl::packInt32Pair(22,2),1);
+    char receipt[12];const int64_t demand=gl::packInt32Pair(31,1);const int32_t rule=1;
+    std::memcpy(receipt,&demand,8);std::memcpy(receipt+8,&rule,4);
+    state.admissionTransfers.mint(gl::StrSpan(receipt,12));
+    state.consumerDemands.insertSorted(rule,demand);
+    state.observedDemands.mint(demand);
+    state.rebuild.push_back(1);
+    const auto directory=freshDir("test_deload_unary_composition");
+    const auto files=gl::lbdeload::dumpLbMemory(source,"unary-composition",0,directory,1<<18);
+    gl::LbMemory restored(&manager);
+    gl::lbdeload::loadLbMemory(restored,"unary-composition",files,directory);
+    const auto& copy=restored.unaryComposition;
+    ASSERT_EQ(copy.sources.lookup(bytes(sourceKey)),1);
+    ASSERT_EQ(copy.sourceActive[0],uint8_t(1));
+    ASSERT_EQ(copy.rules.lookup(bytes(ruleKey)),1);
+    ASSERT_EQ(copy.ruleInfo[0].proof,13);
+    ASSERT_EQ(copy.ruleInfo[0].premiseCount,2);
+    ASSERT_EQ(copy.sourceInfo[0].premiseCount,2);
+    ASSERT_EQ(copy.pending[0],1);
+    ASSERT_EQ(copy.generated.count(),1);
+    ASSERT_EQ(copy.heads.valueAt(copy.heads.lookup(gl::packInt32Pair(21,2)),0),1);
+    ASSERT_EQ(copy.premises.valueAt(copy.premises.lookup(gl::packInt32Pair(22,2)),0),1);
+    ASSERT_EQ(copy.admissionTransfers.lookup(gl::StrSpan(receipt,12)),1);
+    ASSERT_EQ(copy.consumerDemands.valueAt(copy.consumerDemands.lookup(rule),0),demand);
+    ASSERT_EQ(copy.observedDemands.lookup(demand),1);
+    ASSERT_EQ(copy.rebuild[0],uint8_t(1));
+    ASSERT_TRUE(copy.liveBytes()>0);
+    restored.clearDischargeableContainers();
+    ASSERT_EQ(copy.liveBytes(),int64_t(0));
+}
+
+TEST(lb_deload, or_equality_support_retains_exact_sources_equalities_and_levels) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{32 << 20, 1 << 18});
+    gl::LbMemory source(&manager);
+    const gl::StatementKey target{11, 3};
+    const int64_t fact = gl::packStatementKey(12, 3);
+    const int64_t equality = gl::packStatementKey(13, 3);
+    source.orSupportFacts.upsert(target, fact);
+    source.orSupportEqualities.insertSorted(target, equality);
+    source.closedOrGoalLevels.insertSorted(target, 5);
+    const auto directory = freshDir("test_or_equality_support_deload");
+    const auto files = gl::lbdeload::dumpLbMemory(source, "or-equality", 0, directory, 1 << 18);
+    gl::LbMemory restored(&manager);
+    gl::lbdeload::loadLbMemory(restored, "or-equality", files, directory);
+    ASSERT_EQ(*restored.orSupportFacts.find(target), fact);
+    ASSERT_EQ(restored.orSupportEqualities.valueAt(restored.orSupportEqualities.lookup(target), 0), equality);
+    ASSERT_EQ(restored.closedOrGoalLevels.valueAt(restored.closedOrGoalLevels.lookup(target), 0), 5);
+    restored.clearDischargeableContainers();
+    ASSERT_EQ(restored.orSupportFacts.count(), 0);
+    ASSERT_EQ(restored.orSupportEqualities.count(), 0);
 }
 
 TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
@@ -184,6 +296,24 @@ TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
     ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis2.count(), 1);
     m.overallHashMemory.ordis2RevisitInProgress.mint(int64_t{ 123 });
     ASSERT_TRUE(m.overallHashMemory.ordis2RevisitInProgress.contains(123));
+    // rejectedMapSubproof + its revisit guard ride base+88..92: one parked
+    // implication record and one guard key must survive the same round-trip.
+    {
+        gl::IntegrationEntry parked;
+        gl::IntLogicalEntity implication;
+        implication.category = 11;
+        implication.signature = 12;
+        implication.definedSet = 13;
+        implication.arity = 2;
+        implication.elements = { 14, 15 };
+        parked.instruction.data.push_back(implication);
+        parked.instruction.markedGoal = 16;
+        m.overallHashMemory.rejectedMapSubproof.assignRun(
+            int64_t{ 111 }, std::vector<gl::IntegrationEntry>{ parked });
+    }
+    ASSERT_EQ(m.overallHashMemory.rejectedMapSubproof.count(), 1);
+    m.overallHashMemory.subproofRevisitInProgress.mint(int64_t{ 222 });
+    ASSERT_TRUE(m.overallHashMemory.subproofRevisitInProgress.contains(222));
 
     m.deloadStaticContainers(dir.string());
     ASSERT_FALSE(m.lbMemory.manager.resident());
@@ -223,6 +353,19 @@ TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
         ASSERT_TRUE((back.levels == std::set<int>{ 2, 5 }));
     }
     ASSERT_TRUE(m.overallHashMemory.ordis2RevisitInProgress.contains(123));
+    ASSERT_EQ(m.overallHashMemory.rejectedMapSubproof.count(), 1);
+    {
+        const int32_t sid = m.overallHashMemory.rejectedMapSubproof.lookup(111);
+        ASSERT_TRUE(sid != 0);
+        const gl::IntegrationEntry back =
+            m.overallHashMemory.rejectedMapSubproof.recordAt(sid, 0);
+        ASSERT_EQ(back.instruction.data.size(), static_cast<std::size_t>(1));
+        ASSERT_EQ(back.instruction.data[0].signature, 12);
+        ASSERT_TRUE((back.instruction.data[0].elements == std::vector<int32_t>{ 14, 15 }));
+        ASSERT_EQ(back.instruction.markedGoal, 16);
+        ASSERT_TRUE(back.valueIds.empty());
+    }
+    ASSERT_TRUE(m.overallHashMemory.subproofRevisitInProgress.contains(222));
 }
 
 TEST(lb_deload, roundtrip_single_file_all_four_containers) {
@@ -334,6 +477,36 @@ TEST(lb_deload, empty_aggregate_roundtrip_writes_header_only_file) {
     ASSERT_EQ(dst.intEncodedStatements.size(), 0);
 }
 
+TEST(lb_deload, closed_or_goal_levels_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager g;
+    g.init(kDeloadTestCfg);
+    gl::LbMemory source(&g);
+    const gl::StatementKey first{ 11, 23 };
+    const gl::StatementKey second{ 12, 24 };
+    const int levels[] = { 0, 2, 4 };
+    const int nonDerived[] = { -1 };
+    source.closedOrGoalLevels.assignSet(first, levels, 3);
+    source.closedOrGoalLevels.assignSet(second, nonDerived, 1);
+    const auto directory = freshDir("test_deload_closed_or_goal_levels");
+    const auto files = gl::lbdeload::dumpLbMemory(
+        source, "closed-or-goals", 0, directory, kDeloadTestCfg.blockBytes);
+    gl::LbMemory target(&g);
+    gl::lbdeload::loadLbMemory(target, "closed-or-goals", files, directory);
+    ASSERT_EQ(target.closedOrGoalLevels.count(), 2);
+    const int32_t row = target.closedOrGoalLevels.lookup(first);
+    ASSERT_TRUE(row != 0);
+    ASSERT_EQ(target.closedOrGoalLevels.runLen(row), 3);
+    for (int32_t i = 0; i < 3; ++i)
+        ASSERT_EQ(target.closedOrGoalLevels.valueAt(row, i), levels[i]);
+    const int32_t nonDerivedRow = target.closedOrGoalLevels.lookup(second);
+    ASSERT_TRUE(nonDerivedRow != 0);
+    ASSERT_EQ(target.closedOrGoalLevels.valueAt(nonDerivedRow, 0), -1);
+    ASSERT_FALSE(gl::LbMemory::survivesDischarge(
+        gl::LbMemory::ContainerTag::ClosedOrGoalLevelsKeys));
+    target.clearDischargeableContainers();
+    ASSERT_TRUE(target.closedOrGoalLevels.empty());
+}
+
 TEST(lb_deload, double_dump_is_byte_identical) {
     gl::GlobalMemoryManager g;
     g.init(kDeloadTestCfg);
@@ -404,13 +577,11 @@ TEST(lb_deload, multi_file_split_and_roundtrip) {
     gl::LbMemory src(&g);
     for (gl::NameId i = 0; i < 5; ++i)
         src.intEncodedStatements.push_back(makeExpr(i));
-    // 5 * 352 = 1760 payload bytes at 500 bytes per file = 4 parts
-    // (IntEncodedExpr is 352 bytes now; the byte count matches the former
-    // 10 * 176, so the split count and _of_4 labels are unchanged).
+    // 5 * 240 = 1200 payload bytes at 350 bytes per file = 4 parts.
     const std::filesystem::path dir = freshDir("test_deload_split");
     const std::string chain = "split";
     const std::vector<std::string> files =
-        gl::lbdeload::dumpLbMemory(src, chain, 0, dir, 500);
+        gl::lbdeload::dumpLbMemory(src, chain, 0, dir, 350);
     ASSERT_EQ(files.size(), static_cast<size_t>(4));
     ASSERT_TRUE(files[0].find("_1_of_4.bin") != std::string::npos);
     ASSERT_TRUE(files[3].find("_4_of_4.bin") != std::string::npos);
@@ -938,4 +1109,152 @@ TEST(lb_deload, internal_mail_coldmail_roundtrip) {
         ASSERT_TRUE(recs.size() == 1 && recs[0].tag == 7);
     }
     ASSERT_TRUE(dst.nextInternalMail.disintegrationSignalsEmpty());
+}
+
+TEST(lb_deload, retained_usage_metadata_roundtrip) {
+    gl::GlobalMemoryManager global;
+    global.init(kDeloadTestCfg);
+    gl::LbMemory source(&global);
+    source.usedAsPremiseCorePairs.mint(gl::packInt32Pair(7, 1));
+    source.appliedPremiseCorePairs.mint(gl::packInt32Pair(9, 0));
+    const auto directory = freshDir("test_canonical_unused_roundtrip");
+    const std::string chain = "canonical_unused";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0,
+        directory, kDeloadTestCfg.blockBytes);
+    gl::LbMemory target(&global);
+    gl::lbdeload::loadLbMemory(target, chain, files, directory);
+    ASSERT_TRUE(target.usedAsPremiseCorePairs.lookup(gl::packInt32Pair(7, 1)) != 0);
+    ASSERT_TRUE(target.appliedPremiseCorePairs.lookup(gl::packInt32Pair(9, 0)) != 0);
+    target.clearDischargeableContainers();
+    ASSERT_TRUE(target.usedAsPremiseCorePairs.empty());
+    ASSERT_TRUE(target.appliedPremiseCorePairs.empty());
+}
+
+TEST(lb_deload, parked_existences_and_replay_receipts_roundtrip) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    gl::RejectedMapValue record;
+    record.sourceExpression = 41;
+    record.iteration = 3;
+    record.flags = 9;
+    record.rewrites = {20,41,30};
+    record.levels = {0,5};
+    gl::RejectedMapIntegrationValue integration;
+    static_cast<gl::RejectedMapValue&>(integration) = record;
+    integration.flags = 10;
+    const int64_t key = gl::packInt32Pair(7,3);
+    const int64_t receipt = gl::packInt32Pair(41,3);
+    source.overallHashMemory.rejectedMap.assignRun(key, {record});
+    source.overallHashMemory.rejectedMapIntegration.assignRun(key, {integration});
+    source.existenceReplays.upsert(receipt, 25);
+    const auto dir = freshDir("test_deload_parked_existences");
+    const std::string chain = "parked-existence-storage";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(*restored.existenceReplays.find(receipt), 25);
+    const auto after = restored.overallHashMemory.rejectedMap.recordAt(
+        restored.overallHashMemory.rejectedMap.lookup(key),0);
+    ASSERT_TRUE(gl::Codec<gl::RejectedMapValue>::serialize(after) == gl::Codec<gl::RejectedMapValue>::serialize(record));
+    const auto afterIntegration = restored.overallHashMemory.rejectedMapIntegration.recordAt(
+        restored.overallHashMemory.rejectedMapIntegration.lookup(key),0);
+    ASSERT_TRUE(gl::Codec<gl::RejectedMapIntegrationValue>::serialize(afterIntegration)
+        == gl::Codec<gl::RejectedMapIntegrationValue>::serialize(integration));
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.existenceReplays.empty());
+    ASSERT_TRUE(restored.overallHashMemory.rejectedMap.lookup(key) != 0);
+}
+
+
+TEST(lb_deload, canonical_and_application_classes_remain_separate_after_reload) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    gl::EquivalenceClass application, canonical;
+    application.memberIds = {4,7};
+    canonical.memberIds = {2,4,7};
+    application.intEqualityLevelsMap[gl::packEqPairKey(4,7)] = {3};
+    canonical.intEqualityLevelsMap = application.intEqualityLevelsMap;
+    canonical.intEqualityLevelsMap[gl::packEqPairKey(2,7)] = {1,3};
+    source.equivalenceClassesMap.assignRun(1, {application});
+    source.canonicalEquivalenceClassesMap.assignRun(1, {canonical});
+    source.canonicalEquivalenceClassesMap.assignRun(2, {});
+    source.canonicalUses.statements.add(91,1,gl::StrSpan("a"));
+    source.canonicalUses.statementMatches.forms.upsert(91,17);
+    restored.canonicalUses.statements.add(92,1,gl::StrSpan("b"));
+    const auto dir = freshDir("test_deload_canonical_classes");
+    const std::string chain = "canonical-class-storage";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    int visits=0;
+    restored.canonicalUses.statements.forEach(1,gl::StrSpan("b"),[&](int64_t){++visits;});
+    ASSERT_EQ(visits,0);
+    ASSERT_TRUE(restored.canonicalUses.statementMatches.forms.empty());
+    ASSERT_TRUE(gl::serializeEquivalenceClass(restored.equivalenceClassesMap.recordAt(
+        restored.equivalenceClassesMap.lookup(1),0)) == gl::serializeEquivalenceClass(application));
+    ASSERT_TRUE(gl::serializeEquivalenceClass(restored.canonicalEquivalenceClassesMap.recordAt(
+        restored.canonicalEquivalenceClassesMap.lookup(1),0)) == gl::serializeEquivalenceClass(canonical));
+    ASSERT_TRUE(restored.canonicalEquivalenceClassesMap.lookup(2) != 0);
+    ASSERT_EQ(restored.equivalenceClassesMap.lookup(2),0);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.canonicalEquivalenceClassesMap.empty());
+    ASSERT_TRUE(restored.equivalenceClassesMap.empty());
+}
+
+
+TEST(lb_deload, parked_and_queued_integration_depth_roundtrip) {
+    gl::Memory memory;
+    memory.setExprKey("integration-depth");
+    const auto scope = memory.nameMap.encode("main");
+    const auto sourceId = memory.nameMap.encode("(existence96[1,int_1_lev_2_0,3,4])");
+    const auto key = gl::packOriginKey(sourceId, scope);
+    const auto parkKey = gl::mintTemplateKey(memory.templateInterner, memory.nameMap,
+        "(in3[int_1_lev_2_0,3,marker,4])", "main");
+    gl::RejectedMapIntegrationValue source;
+    source.sourceExpression = memory.valueInterner.encode("(existence96[1,int_1_lev_2_0,3,4])");
+    source.iteration = 3; source.flags = 2; source.integrationDepth = 1; source.levels = {0,2};
+    gl::insertRejectedIntegrationValue(memory.overallHashMemory.rejectedMapIntegration,
+        parkKey, source, memory.valueInterner);
+    memory.sameIterationInternalMail.setDisintegrationSignal(key, false, true, 3, false, false, 1);
+    const auto directory = freshDir("test_deload_integration_depth");
+    memory.deloadStaticContainers(directory.string());
+    ASSERT_FALSE(memory.lbMemory.manager.resident());
+    memory.ensureLoaded(directory.string());
+    const auto restored = memory.overallHashMemory.rejectedMapIntegration.recordAt(
+        memory.overallHashMemory.rejectedMapIntegration.lookup(parkKey), 0);
+    ASSERT_EQ(restored.integrationDepth, 1);
+    ASSERT_EQ(restored.levels.size(), size_t(2));
+    bool dnd, aod; int32_t generation, depth;
+    memory.sameIterationInternalMail.getDisintegrationSignal(key, dnd, aod, generation, nullptr, nullptr, &depth);
+    ASSERT_EQ(depth, 1); ASSERT_EQ(generation, 3); ASSERT_TRUE(aod);
+}
+
+
+TEST(lb_deload, shared_expression_lists_reload_and_compact) {
+    gl::GlobalMemoryManager manager; manager.init({1 << 23, 1 << 18, 2048});
+    gl::LbMemory source(&manager);
+    for (int i = 0; i < 120; ++i) {
+        const auto row = makeExpr(i);
+        source.intEncodedStatements.push_back(row);
+        source.intLocalEncodedStatements.push_back(row);
+        source.intLocalEncodedStatementsDelta.push_back(row);
+        source.intExternalStatements.push_back(row);
+    }
+    const auto directory = freshDir("test_deload_shared_expressions");
+    const auto files = gl::lbdeload::dumpLbMemory(source, "shared records", 0, directory, 262144);
+    gl::LbMemory restored(&manager);
+    gl::lbdeload::loadLbMemory(restored, "shared records", files, directory);
+    ASSERT_EQ(restored.sharedExpressions.count(), 120);
+    ASSERT_TRUE(&restored.intEncodedStatements[17] == &restored.intLocalEncodedStatements[17]);
+    gl::LbArena scratch(&manager); restored.reshuffle(scratch);
+    for (int i = 0; i < 120; ++i) ASSERT_TRUE(sameExpr(restored.intEncodedStatements[i], makeExpr(i)));
+    gl::IntStmtView sharedView(restored.intEncodedStatements);
+    ASSERT_EQ(sharedView.size(), 120); ASSERT_FALSE(sharedView.empty());
+    ASSERT_TRUE(sameExpr(sharedView[17], makeExpr(17)));
+    gl::DirtyState scratchDirty = gl::DirtyState::Clean;
+    gl::PagedVector<gl::IntEncodedExpr> flat(&scratch, &scratchDirty); flat.push_back(makeExpr(17));
+    gl::IntStmtView flatView(flat); ASSERT_TRUE(sameExpr(flatView[0], sharedView[17]));
+    restored.intEncodedStatements.clear(); ASSERT_EQ(restored.sharedExpressions.count(), 120);
+    restored.intLocalEncodedStatements.clear(); restored.intLocalEncodedStatementsDelta.clear();
+    restored.intExternalStatements.clear(); ASSERT_EQ(restored.sharedExpressions.count(), 0);
 }

@@ -51,6 +51,29 @@ def fully_resolve_markers(base_str: str, chain_subset: list[str]) -> str:
                 res = res.replace('marker' + out, rewrite_expression(el))
     return res.replace('marker', '')
 
+def rewrite_fold(expression: str) -> str:
+    """@brief Render a Fold value using its interval and accumulation operators.
+
+    @details Ordinary natural-number traversal renders addition as a sum and
+    multiplication as a product. Other traversals or operations retain every
+    structural parameter in explicit Fold notation. The result is omitted so
+    the value can be substituted into a containing arithmetic expression.
+
+    @param expression An eight-argument Fold atom.
+    @return Readable value with markers on the two interval bounds.
+    @invariant The fourth argument alone selects accumulation.
+    """
+    args = expression_utils.get_args(expression)
+    assert len(args) == 8, 'Fold requires eight arguments'
+    domain, successor, addition, operation, function, lower, upper, _ = args
+    if successor == 's' and addition == '+' and operation in ('+', '*'):
+        kind = 'sum' if operation == '+' else 'prod'
+        term = '' if function == 'id' else f' {function}(i)'
+        return f'{kind}(i=marker{lower}..marker{upper}){term}'
+    return (f'fold[{domain},{successor},{addition},{operation},{function},'
+            f'marker{lower},marker{upper}]')
+
+
 def rewrite_expression(expression: str):
     rewritten = ''
 
@@ -71,12 +94,7 @@ def rewrite_expression(expression: str):
         rewritten = '(marker' + args[-4] + ' ' + args[-1] + ' ' + 'marker' + args[-3] + ')'
 
     if expression.startswith('(fold['):
-        # fold[N,s,+,f,n,m,p]  ->  sum(i=n..m) if f is id
-        # Drop the `= p_name` assignment so the sum can dynamically embed into other operators
-        _, _, _, f_name, n_name, m_name, p_name = args
-        term = '' if f_name == 'id' else f' {f_name}(i)'
-        # Removed the outer '(' and ')' here:
-        rewritten = 'sum(i=' + 'marker' + n_name + '..' + 'marker' + m_name + ')' + term
+        rewritten = rewrite_fold(expression)
 
     return rewritten
 
@@ -105,10 +123,7 @@ def rewrite_expression2(expression: str):
         rewritten = 'marker' + args[-2] + ' = ' + 'marker' + args[-1]
 
     if expression.startswith('(fold['):
-        # fold[N,s,+,f,n,m,p]  ->  sum(i=n..m)=p if f is id
-        _, _, _, f_name, n_name, m_name, p_name = args
-        term = '' if f_name == 'id' else f' {f_name}(i)'
-        rewritten = 'sum(i=' + 'marker' + n_name + '..' + 'marker' + m_name + ')' + term + ' = ' + 'marker' + p_name
+        rewritten = rewrite_fold(expression) + ' = marker' + args[-1]
 
     return rewritten
 

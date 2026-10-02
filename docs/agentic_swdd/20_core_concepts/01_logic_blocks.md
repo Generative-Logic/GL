@@ -20,7 +20,7 @@ and a commercial license — see https://generative-logic.com/license.
 A Logic Block is a self-contained hash-inference engine. Each LB owns:
 
 - A **local hash memory** — the `HashMemory` it queries and writes to.
-- A set of **known expressions** — `intKnownStatements` (the packed-key registry carrying the former `wholeExpressions` membership as its `registered` bit), the int16 statement registries `intEncodedStatements` / `intLocalEncodedStatements{,Delta}` (string form reconstructed on demand via `decodeExpression`), and the packed-key indexes `intLocalEncodedStatementsSet` / `intStatementLevelsMap`.
+- A set of **known expressions** — `intKnownStatements` (packed-key presence is known membership; flags carry `local` and `fullyDisintegrated`), the integer statement registries `intEncodedStatements` / `intLocalEncodedStatements{,Delta}` (string form reconstructed on demand via `decodeExpression`), and the packed-key indexes `intLocalEncodedStatementsSet` / `intStatementLevelsMap`.
 - An **origin map** — `exprOriginMap`, recording provenance for every emission.
 - An **equivalence-class registry** — `equivalenceClassesMap`, one per validity.
 - A **validity stack** — `stackOfValidity`, the active scope IDs for this LB.
@@ -38,7 +38,7 @@ The class that holds all of this is `Memory`, defined at [`memory.hpp`](../../GL
 
 An `ExpressionAnalyzer` has one root LB: `body`. Child LBs are created dynamically for the following proof structures; OR branching is the scope-level exception:
 
-1. **Target proofs** — one LB per conjecture being proved. The LB's `exprKey` is the conjecture's head.
+1. **Target proofs** — `ExpressionAnalyzer::addTheoremToMemory` stores a conjecture's head as a goal in its innermost premise LB. The `exprKey` identifies that premise, not the head; conjectures with the same premise chain can share the LB. A negated-head contradiction proof uses a separate child whose key includes `__contradiction__` and the negated head.
 2. **Hypothesis LBs** — when the prover assumes a premise, a child LB opens with the premise as its `exprKey` and the assumed-premise's scope as its validity.
 3. **OR branch scopes, not LBs** — `_ordis_` and `_orint_` branches are validity scopes inside the current LB. An `_ordis_` branch is seeded only with its selected disjunct.
 4. **Integration LBs** — created during reformulation-for-integration.
@@ -73,19 +73,20 @@ Selected fields of `Memory` (not exhaustive — the struct is large):
 | Field | Type | Role |
 |---|---|---|
 | `exprKey` | accessor over `int32_t exprKeyId` | The expression this LB is proving or storing — statified: a 4-byte id into the never-deloaded `skeletonInterner`, decoded byte-identically by `exprKey` (0 = empty root sentinel; [I-97](../30_invariants.md#i-97)). |
+| `varDefSetsView` | accessor over `int32_t varDefSetsId` | The definition sets of the LB's variables: a `name:label;name:label` record, stored like the key in the never-deloaded `skeletonInterner` (0 = none: root sentinel, CE clones). Chain, recursion and contradiction LBs hold their key's arguments, typed from the key chain from the root down to them; compressor LBs hold their target theorem's variables. Written once at creation; read by the typed-equality lookups ([I-267](../30_invariants.md#i-267)). |
 | `level` | `int` | Scope depth relative to root. |
 | `isActive` | `bool` | Whether this LB participates in the cycle. |
 | `primedForContradiction` | `bool` | Keeps LB alive in `deactivateRecursively` for contradiction discharge. |
 | `intToBeProved` | `unordered_map<int32_t, …>` | Goals yet to derive — packed `(originalId, validityId)` keys ([D-130](../40_decisions.md#d-130)). |
-| `intKnownStatements` | `std::unordered_map<int32_t, StatementFlags>` | Packed `(originalId, validityId)` keys; `registered` / `known` membership bits ([I-85](../30_invariants.md#i-85)). |
+| `intKnownStatements` | Cold packed-key map | `(originalId, validityId)` key presence is membership; `StatementFlags` carries `local` and `fullyDisintegrated` ([I-85](../30_invariants.md#i-85)). |
 | `intEncodedStatements` | `std::vector<IntEncodedExpr>` | The statement registry — int16 rows, string form on demand via `decodeExpression`. |
 | `intLocalEncodedStatements{,Delta}`, `intLocalEncodedStatementsSet` | local-only variants | Written only when `addStatement(local=true)`. The `Set` variant ([`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp)) is a packed-key `std::unordered_set<int32_t>` for O(1) membership, maintained beside the vector — used by the D-29 disintegration gate ([I-7](../30_invariants.md#i-7) clause 2). |
 | `intStatementLevelsMap` | `packStatementKey(originalId, validityId) → std::set<int>` | Per-statement set of LB depths (`Memory::level` values, anchor=0, child=1, …) whose state contributed to the derivation of that statement. Levels propagate as union(rule.levels, premise.levels) at every firing. Read by `prover.hpp::dischargeToBeProved`'s registration verdict `allLevelsInvolved` (goal closure is level-free) — see [`02_glossary.md::levels`](../02_glossary.md#levels) and [I-51](../30_invariants.md#i-51). |
 | `overallHashMemory` | `HashMemory` | This LB's implication-rule index. |
 | `localHashMemory`, `localHashMemoryDelta` | scoped hash memories | Per-branch or per-hypothesis rule registries. |
-| `stackOfValidity` | `std::vector<int16_t>` | Active scope IDs. |
+| (scope chains) | `nameMap.stackOfValidity` / `ancestorsOf` | Not a `Memory` field: a scope's ancestor chain is a walk of the `NameMap`'s paged parent-pointer forest ([I-104](../30_invariants.md#i-104)). |
 | `nameMap` | `NameMap` | Scope-ID encoder. |
-| `equivalenceClassesMap` | `unordered_map<validityId, vector<EquivalenceClass>>` | Equality-class registry, keyed by scope id ([D-134](../40_decisions.md#d-134)); probe via the non-minting `classesAt`. |
+| `equivalenceClassesMap` | Cold blob map keyed by validity id | Equality-class registry, keyed by scope id ([D-134](../40_decisions.md#d-134)); probe via the non-minting `classesAt`. |
 | `mailIn` | `RoutingColdMail` | Inter-LB inbox staging on the never-deloaded mail pool; cleared after phase-1 absorb. |
 | `mailOut` | `DeloadableMailOut` | Inter-LB outbox + private ids on the LB's deloadable main-pool arena; shell pending bit selects serial commit reload. |
 | `sameIterationInternalMail` | `Mail` | Per-LB integration-revival inbox (typed `Mail` since 2026-05-07; [D-53](../40_decisions.md#d-53) unification, renumbered from main's D-46— pre-unification was a separate `struct InternalMail`). Populated during hashburst body by `applyEquivalenceClassToRejectedMapIntegration` / `revisitRejectedIntegration2`; drained at top of next hashburst with `status=1` absorb. Not routed across LBs. See [`03_mail_system.md`](03_mail_system.md#integration-revival-channel). |
@@ -98,11 +99,13 @@ Selected fields of `Memory` (not exhaustive — the struct is large):
 
 ## LB lifecycle
 
-1. **Birth.** `new Memory` — root and compressor LBs; child-creation paths inside the prover (`makeHypothesisBlock`, `makeBranchBlock`, `makeIntegrationBlock` — exact names vary per kind).
+1. **Birth.** The analyzer owns its root `body`; child and compressor logic blocks use `LbStore::create<Memory>` and retain a stable address in the logic-block pool.
 2. **Registration.** Inserted into `permanentBodies` (or `permanentBodiesCE` for CE filter) and linked under its parent in `SimpleMapStore` (`linkChild`; `ceSimpleMapStore` for the CE tree).
 3. **Active execution.** Participates in cycles while `isActive == true`.
 4. **Deactivation.** `deactivateRecursively` — the LB and its descendants are marked inactive when their target is proved or the scope discharges. This active-to-inactive transition is permanent. The only inactive-to-active path is an induction-zero LB born dormant and later woken by `activateZeroCondition` ([I-112](../30_invariants.md#i-112)); this is why any initially dormant grid retains full mail history.
-5. **Tear-down.** Main-pipeline LBs persist for the duration of the run; compressor Phase 1 LBs are explicitly `delete`d after their proof-graph extraction via the `destroyGrid` lambda at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp).
+5. **Tear-down.** `ExpressionAnalyzer::destroyGrid` in [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) releases child cold hash memory, destroys child nodes through `LbStore::destroy`, empties the root hash memory in place, and clears tree links and mail logs. The analyzer-owned root survives this operation.
+
+Closed-scope cleanup stays at the end-of-burst `pendingWipeScopes` drain. `Memory::wipeSubtree` in [`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp) filters `intEncodedStatements`, `intLocalEncodedStatements`, and `intLocalEncodedStatementsDelta` with one stable forward scan each, using the existing closed-scope bitmap. Each surviving row moves at most once through `PagedVector::setAt`; one `truncate` releases the dead tail after all source rows are read. Scope membership, survivor order, whole-record bytes, and `Restructured` dirty-state behavior are preserved; repeated interior erase shifts are avoided.
 
 ---
 
@@ -123,6 +126,7 @@ Different from main LBs in that each compressor LB:
 - Is a freshly-allocated `Memory` not connected to the main hierarchy.
 - Has *all* proved theorems loaded as implication rules (`addToHashMemory` × N).
 - Runs hash bursts to extract a per-theorem derivation graph, then is discarded.
+- Records the definition sets of its target theorem's variables, since its key (`CompressorNode_<i>`) has no arguments ([I-267](../30_invariants.md#i-267)).
 - Lifetime: milliseconds to seconds per LB; explicit `delete` at end of Phase 1.
 
 See [`10_pipeline/05_compressor.md`](../10_pipeline/05_compressor.md) for detail.

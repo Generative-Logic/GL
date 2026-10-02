@@ -21,9 +21,11 @@
 
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
+#include "project_paths.hpp"
 #include "run_modes.hpp"
 #include "prover.hpp"
 #include "infra/diagnostics_log.hpp"
+#include "infra/memory_census.hpp"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -43,10 +45,7 @@
 namespace run_modes {
 
     inline const std::filesystem::path PROJECT_ROOT =
-        std::filesystem::path(__FILE__).parent_path()
-        .parent_path()
-        .parent_path()
-        .parent_path();
+        gl::projectRoot();
 
     inline std::filesystem::path RAW_PROOF_DIR =
         PROJECT_ROOT / "files" / "raw_proof_graph";
@@ -82,10 +81,24 @@ namespace run_modes {
     }
 
 
+    /**
+     * @brief Run one configured proof batch through its complete native stages.
+     *
+     * @details The configured theorem pool provides prior results. The
+     * development shortcut uses its independent pool and raw graph directories;
+     * explicit input files are resolved after the directory selection.
+     * @param anchor_id Configuration suffix selecting the batch.
+     * @param conjecturesFileOverride Optional explicit conjecture input file.
+     * @param externalsFileOverride Optional explicit external theorem input file.
+     * @param phase2Backend Explicit processor or CUDA selection, or configured default.
+     * @param shortcutMode Select the independent FTA development output tree.
+     * @return None.
+     */
     void fullRun(const std::string& anchor_id,
                  const std::string& conjecturesFileOverride,
                  const std::string& externalsFileOverride,
-                 const std::string& phase2Backend) {
+                 const std::string& phase2Backend,
+                 bool shortcutMode) {
         using namespace std;
         namespace fs = std::filesystem;
         using FrameClock = std::chrono::steady_clock;
@@ -182,6 +195,16 @@ namespace run_modes {
             }
         }
 
+        if (shortcutMode) {
+            assert(anchor_id == "FTA" && "Shortcut runs the FTA batch only");
+            THEOREMS_FOLDER = PROJECT_ROOT / "files" / "shortcut" / "theorems";
+            RAW_PROOF_DIR = PROJECT_ROOT / "files" / "shortcut" / "raw_proof_graph";
+            THEOREMS_FILE = THEOREMS_FOLDER / "conjectures.txt";
+            PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
+            BACKGROUND_PROVED_THEOREMS_FILE = PROVED_THEOREMS_FILE;
+            COMPRESSED_EXTERNAL_THEOREMS_FILE = THEOREMS_FOLDER / "compressed_external_theorems.txt";
+        }
+
         // Command-line file overrides (shortcut mode). Applied after the
         // config sniff so an explicit path wins over the
         // theorems_folder-derived defaults. Relative paths resolve against
@@ -208,7 +231,12 @@ namespace run_modes {
 
         // ====== PHASE 1: FULL PROVE ======
         gl::ExpressionAnalyzer expressionAnalyzer(
-            anchor_id, selectedPhase2Backend);
+            anchor_id, selectedPhase2Backend,
+            PROJECT_ROOT / "files" / "GL_binaries" / ("GL_binary_" + anchor_id + ".json"));
+        // FTA replay uses the same capacity profile as its full-run source.
+        expressionAnalyzer.phase2ShortcutProfile = false;
+        if (shortcutMode)
+            expressionAnalyzer.filteredConjecturesDirectory = THEOREMS_FOLDER;
 
         std::cout << "Loading proved theorems..." << std::endl;
         std::unordered_set<std::string> proved_set = loadLinesFromFile(PROVED_THEOREMS_FILE);
@@ -219,13 +247,19 @@ namespace run_modes {
         }
 
         std::vector<std::string> proved_lst(proved_set.begin(), proved_set.end());
+        for (auto& expression : proved_lst)
+            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compilationReplacements);
         std::sort(proved_lst.begin(), proved_lst.end());
+        proved_lst.erase(std::unique(proved_lst.begin(), proved_lst.end()), proved_lst.end());
         std::cout << "Loaded " << proved_lst.size() << " proved theorems." << std::endl;
 
         std::cout << "Loading external theorems (incl. mirrors)..." << std::endl;
         std::unordered_set<std::string> external_set = loadLinesFromFile(COMPRESSED_EXTERNAL_THEOREMS_FILE);
         std::vector<std::string> external_lst(external_set.begin(), external_set.end());
+        for (auto& expression : external_lst)
+            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compilationReplacements);
         std::sort(external_lst.begin(), external_lst.end());
+        external_lst.erase(std::unique(external_lst.begin(), external_lst.end()), external_lst.end());
         std::cout << "Loaded " << external_lst.size() << " external theorems." << std::endl;
 
         if (!fs::exists(THEOREMS_FILE)) {
@@ -235,7 +269,10 @@ namespace run_modes {
 
         std::unordered_set<std::string> theorem_set = loadLinesFromFile(THEOREMS_FILE);
         std::vector<std::string> tmp_lst(theorem_set.begin(), theorem_set.end());
+        for (auto& expression : tmp_lst)
+            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compilationReplacements);
         std::sort(tmp_lst.begin(), tmp_lst.end());
+        tmp_lst.erase(std::unique(tmp_lst.begin(), tmp_lst.end()), tmp_lst.end());
 
         // Load OR pairs if present
         {
@@ -249,8 +286,10 @@ namespace run_modes {
                     auto tabPos = line.find('\t');
                     if (tabPos != std::string::npos) {
                         gl::ExpressionAnalyzer::OrCandidate oc;
-                        oc.existenceTheorem = line.substr(0, tabPos);
-                        oc.companionTheorem = line.substr(tabPos + 1);
+                        oc.existenceTheorem = gl::rewriteCompilationReferences(
+                            line.substr(0, tabPos), expressionAnalyzer.compilationReplacements);
+                        oc.companionTheorem = gl::rewriteCompilationReferences(
+                            line.substr(tabPos + 1), expressionAnalyzer.compilationReplacements);
                         expressionAnalyzer.orCandidates.push_back(oc);
                     }
                 }
@@ -409,8 +448,8 @@ namespace run_modes {
         auto saveStarted = FrameClock::now();
 
         if (skipCompression) {
-            // ====== INCUBATOR MODE: Save directly, no compression, no proof graph ======
-            std::cout << "\nSkipping compression (incubator mode)." << std::endl;
+            // Uncompressed batches retain their proved rows and proof graphs.
+            std::cout << "\nSkipping compression for this configured batch." << std::endl;
 
             // OR construction on the raw batch output — this mode has no
             // compression survivors, so the current globalTheoremList IS
@@ -428,6 +467,17 @@ namespace run_modes {
             std::size_t savedCount = 0;
             {
                 std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
+                assert(ofs.is_open());
+                // Full FTA extends the preceding batches' paired theorem pool.
+                // The compiled column identifies roots retained by graph pruning.
+                const bool appendCompiledRows = anchor_id == "FTA";
+                std::ofstream compiled;
+                if (appendCompiledRows) {
+                    const auto compiledPath = THEOREMS_FOLDER / "compiled_theorems.txt";
+                    assert(fs::is_regular_file(compiledPath));
+                    compiled.open(compiledPath, std::ios::app);
+                    assert(compiled.is_open());
+                }
                 for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
                     const std::string& thm = std::get<0>(tpl);
                     if (orConsumedParents.count(thm)) continue;
@@ -447,7 +497,14 @@ namespace run_modes {
                     } else {
                         ofs << thm << "\n";
                     }
+                    if (appendCompiledRows) compiled << thm << "\n";
                     ++savedCount;
+                }
+                ofs.flush();
+                assert(ofs.good());
+                if (appendCompiledRows) {
+                    compiled.flush();
+                    assert(compiled.good());
                 }
             }
             std::cout << "Saved " << savedCount
@@ -607,6 +664,8 @@ namespace run_modes {
             }
         }
 
+        // Persist retirement and counters even when this batch has no chapter.
+        expressionAnalyzer.exportCompiledExpressionsJSON(PROJECT_ROOT / "files" / "GL_binaries");
         const auto telemetryStarted = FrameClock::now();
 
         // `mailArena` is owned exclusively by MailLog. Its blocks are retained
@@ -782,6 +841,9 @@ namespace run_modes {
         writeMailAttributionRow("End-of-batch unattributed",
                                 mailEndUnattributedBlocks,
                                 "End pool minus MailLog and global interner arenas");
+        // Pool attribution by purpose and prover step, process / heap / device
+        // memory, and the CUDA host arenas (the memory playbook's census).
+        gl::memory_census::writeReport(gl::diagnosticsLog(), memoryLog);
         memoryLog.flush();
         assert(memoryLog.good());
         recordFrameTiming(
@@ -820,7 +882,9 @@ namespace run_modes {
             }
         }
 
-        gl::ExpressionAnalyzer expressionAnalyzer(anchor_id);
+        gl::ExpressionAnalyzer expressionAnalyzer(
+            anchor_id, std::nullopt,
+            PROJECT_ROOT / "files" / "GL_binaries" / ("GL_binary_" + anchor_id + ".json"));
 
         if (!fs::exists(THEOREMS_FILE)) {
             std::cerr << "[ceOnlyRun] Missing theorems file: " << THEOREMS_FILE << "\n";

@@ -21,9 +21,12 @@ and a commercial license — see https://generative-logic.com/license.
 The harness exists for two reasons:
 
 1. **Gate every `main.py` run on a fast pre-flight check.** Before any pipeline
- work or proof run, `main.py` runs `gl_quick.exe --unit-tests` and aborts on
- non-zero exit. Test runtime is sub-second today; the budget ceiling is 30 s.
- Regressions in the most-cited invariants surface in the first second of a
+ work or proof run, `main.py` runs `gl_quick.exe --unit-tests
+ --phase2-backend <route>` for the run's Phase 2 route and aborts on
+ non-zero exit. The processor-route gate (`cpu`, every run without `--GPU`)
+ leaves out the CUDA-route tests, so a PC without a CUDA device passes it
+ ([D-457](../40_decisions.md#d-457)). Runtime depends on the suite; the target budget is under 30 s
+ (the launcher does not enforce a timeout). Regressions surface at the start of a
  `main.py` run instead of buried in a 10–60-minute prover invocation.
 
 2. **Pin the per-function doxygen contracts.** The doxygen pass on
@@ -226,15 +229,22 @@ sibling test files.
  broken, the failure tests would trivially "pass" without the verifier
  doing anything; the positives prove the rig is intact.
 
-Total: 364 tests, runtime <5 s.
+The current verifier-suite total is reported by the harness; the E6 baseline
+on 2026-09-18 passed 423 tests. The category figures above are historical
+inventory estimates, not the current acceptance count.
 
 ---
 
 ## Entry points
 
-- `gl_quick.exe --unit-tests`
+- `gl_quick.exe --unit-tests [--phase2-backend cpu|cuda]`
  Direct invocation of the C++ harness. Returns 0 on all-pass, 1 on
- first failure.
+ first failure. Alone or with `--phase2-backend cuda` it runs every
+ compiled test. With `--phase2-backend cpu` it leaves out every
+ `CUDA_TEST` — a test of code only the CUDA Phase 2 route runs, which may
+ need a CUDA device; every test compiled only under `GL_CUDA` is one — and
+ names each as `[NOT SELECTED]` in . A new test of
+ CUDA-route code uses `CUDA_TEST(suite, name)`, never `TEST`.
 
 - `python tests/test_harness.py`
  Direct invocation of the Python verifier-side harness. Imports every
@@ -245,7 +255,9 @@ Total: 364 tests, runtime <5 s.
  that group's tests registered).
 
 - `main.py` prelude — double gate (C++ then Python)
- Runs `gl_quick.exe --unit-tests` via `subprocess.run`, then
+ Runs `gl_quick.exe --unit-tests --phase2-backend <route>` via
+ `subprocess.run` (`cuda` for `--GPU` / `--phase2-backend cuda`,
+ otherwise `cpu`), then
  `python tests/test_harness.py` via `subprocess.run`, both before
  `run_modes.full_run`. Each gate is skipped silently when its
  artefact is missing (binary not built yet, harness file absent).
@@ -268,18 +280,10 @@ for those so direct debugging runs are unaffected.
  frozen `tests/fixtures/` copies (~36 KB total); all other tests use
  synthetic in-memory data.
 
-Current measured runtime:
-- C++ harness: 577 tests in well under 1 s
- (prover/memory/compiler/filter/compressor + conjecturer).
- Conjecturer suite is the bulk; most tests are pure-helper invocations
- that complete in single-digit microseconds, plus ~80 tests that
- construct a `Conjecturer{"Peano"}` or `Conjecturer{"Gauss"}` (each
- ctor loads the per-batch JSON config in ~5-10 ms) and dominate the
- cumulative cost.
-- Python verifier harness: 351 tests in ~1–3 s (dominated by the
- one-shot `tests/fixtures/` config + trimmed-binaries load inside
- `make_state_with_binaries`'s prototype; the prototype is shared by
- reference across all tests).
+Use the completed run's harness output for current totals and timings.
+The E6 baseline on 2026-09-18 passed 1,906 native tests and 423 verifier
+tests; subsequent regression additions change those totals. A historical
+suite count or runtime is not a current performance guarantee.
 
 ---
 
@@ -297,6 +301,19 @@ Current measured runtime:
  sacred infrastructure. The harness does NOT instrument the dump,
  add parallel traps, or modify the dump format / output path /
  call sites / lambda ordering / target-LB chain match.
+- **No run output in a unit test.** A unit test reads and writes only
+ its own data — literals in the test, `tests/fixtures/`, files it
+ writes itself under `std::filesystem::temp_directory_path`. It never
+ touches a pipeline output (`files/GL_binaries/`, `files/theorems/`,
+ `files/simple_facts/`, the proof-graph folders): a full run deletes
+ those at start (`run_modes.py::full_run`, `CLEAN_RUN`), and the
+ `gl_quick.exe --unit-tests` gate runs BEFORE that deletion, so a test
+ reading them would see the previous run's state and pass or fail on
+ it. The `ExpressionAnalyzer` constructor therefore loads a
+ `GL_binary_<Tag>.json` only when the caller names one (`glBinaryFile`;
+ the batch driver in `run_modes.cpp` does, a test does not); a test that
+ needs a binary exports its own to a temporary directory and passes or
+ loads that file.
 
 ---
 

@@ -156,7 +156,7 @@ def test_pos_task_formulation_premise_of_theorem():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line("(in[v1,N])", "main", "task formulation")
     assert_pass(check_task_formulation, line, [line], state)
 
@@ -164,7 +164,7 @@ def test_pos_task_formulation_premise_of_theorem():
 @register
 def test_pos_theorem_in_global_registry():
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref")])
     line = make_proof_line(
         "(>[v1](in[v1,N])(in[v1,N]))", "main", "theorem")
     assert_pass(check_theorem_tag, line, [line], state)
@@ -260,7 +260,7 @@ def test_pos_task_formulation_reductio_seed():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line("!(in[(s[v1]),N])", "main", "task formulation")
     assert_pass(check_task_formulation, line, [line], state)
 
@@ -699,7 +699,7 @@ def test_pos_recursion_check_induction_condition_typing_anchor():
 
 
 # ===========================================================================
-#  Chapter-level: theorem goal reached (well-formed direct proof)
+#  Chapter-level: theorem goal reached (well-formed single-chapter proof)
 # ===========================================================================
 
 # Tested implicitly by other positives that pass through verify_chapter; one
@@ -712,14 +712,14 @@ def test_pos_recursion_check_induction_condition_typing_anchor():
 
 @register
 def test_pos_meta_well_formed_chapter_passes_all():
-    """Build a tiny well-formed direct-proof chapter and assert
+    """Build a tiny well-formed single-chapter proof and assert
     verify_chapter records ZERO failures on every meta-check we care about
     (theorem goal reached, origin, definition set consistency, origin chain
     termination)."""
     from tests.test_harness import assert_chapter_meta_pass
     chapter_thm = (
         "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
-        "direct", "ref",
+        "single chapter proof", "ref",
     )
     chapter = [
         make_proof_line("(in[v1,N])", "main", "task formulation"),
@@ -728,7 +728,7 @@ def test_pos_meta_well_formed_chapter_passes_all():
                  "definition set consistency", "origin chain termination"):
         assert_chapter_meta_pass(
             chapter, meta,
-            chapter_thm=chapter_thm, chapter_type="direct_proof",
+            chapter_thm=chapter_thm, chapter_type="single_chapter_proof",
         )
 
 
@@ -740,14 +740,14 @@ def test_pos_meta_no_self_reference_recorded():
     from tests.test_harness import assert_chapter_meta_pass
     chapter_thm = (
         "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
-        "direct", "ref",
+        "single chapter proof", "ref",
     )
     chapter = [
         make_proof_line("(in[v1,N])", "main", "task formulation"),
     ]
     assert_chapter_meta_pass(
         chapter, "self-reference",
-        chapter_thm=chapter_thm, chapter_type="direct_proof",
+        chapter_thm=chapter_thm, chapter_type="single_chapter_proof",
     )
 
 
@@ -757,7 +757,7 @@ def test_pos_meta_well_formed_chapter_no_cycle():
     from tests.test_harness import assert_chapter_meta_pass
     chapter_thm = (
         "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
-        "direct", "ref",
+        "single chapter proof", "ref",
     )
     a = make_proof_line(
         "(in[v1,N])", "main", "task formulation",
@@ -769,7 +769,7 @@ def test_pos_meta_well_formed_chapter_no_cycle():
     chapter = [a, b]
     assert_chapter_meta_pass(
         chapter, "origin chain termination",
-        chapter_thm=chapter_thm, chapter_type="direct_proof",
+        chapter_thm=chapter_thm, chapter_type="single_chapter_proof",
     )
 
 

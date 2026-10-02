@@ -57,16 +57,16 @@ def test_taint_closure_retires_dependents() -> None:
         _write(tdir / "vacuous_theorems.txt",
                seed + "\tpremise contradiction\n")
         _write(rdir / "global_theorem_list.txt",
-               dep + "\tdirect\t-1\n"
-               + dep2 + "\tdirect\t-1\n"
-               + clean + "\tdirect\t-1\n")
-        _write(rdir / "0_direct_proof.txt",
+               dep + "\tsingle chapter proof\t-1\n"
+               + dep2 + "\tsingle chapter proof\t-1\n"
+               + clean + "\tsingle chapter proof\t-1\n")
+        _write(rdir / "0_single_chapter_proof.txt",
                dep + "\tmain\ttask formulation\n"
                + seed + "\tmain\ttheorem\n")
-        _write(rdir / "1_direct_proof.txt",
+        _write(rdir / "1_single_chapter_proof.txt",
                dep2 + "\tmain\ttask formulation\n"
                + dep + "\tmain\ttheorem\n")
-        _write(rdir / "2_direct_proof.txt",
+        _write(rdir / "2_single_chapter_proof.txt",
                clean + "\tmain\ttask formulation\n")
         _write(tdir / "compiled_theorems.txt",
                dep + "\n" + dep2 + "\n" + clean + "\n")

@@ -549,6 +549,136 @@ def test_reformulation_for_integration_and_reconstruction_mismatch():
 
 
 # ===========================================================================
+#  typed `=` goals: integration by extensionality (I-267)
+# ===========================================================================
+
+def _state_with_subset_implications() -> object:
+    """Install the three subset implications and one look-alike that is none."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    entries = {
+        "subsetTest": ["(in[1,u_1])", "(in[1,u_2])"],
+        "subsetTest2": ["(in2[1,2,u_1])", "(in2[1,2,u_2])"],
+        "subsetTest3": ["(in3[1,2,3,u_1])", "(in3[1,2,3,u_2])"],
+        # Same shape, but the bound element changes between premise and head.
+        "notSubsetTest": ["(in[1,u_1])", "(in[2,u_2])"],
+    }
+    for name, elements in entries.items():
+        state.gl_binaries["Peano"][name] = {
+            "category": "implication",
+            "signature": f"({name}[u_1,u_2])",
+            "arity": 2,
+            "elements": elements,
+        }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
+@register
+def test_extensionality_membership_recognizes_subset_implications():
+    from verifier import _extensionality_membership
+    state = _state_with_subset_implications()
+    binary = state.gl_binaries["Peano"]
+    assert _extensionality_membership(binary["subsetTest"]) == "in"
+    assert _extensionality_membership(binary["subsetTest2"]) == "in2"
+    assert _extensionality_membership(binary["subsetTest3"]) == "in3"
+    assert _extensionality_membership(binary["notSubsetTest"]) is None
+    reversed_entry = dict(binary["subsetTest"])
+    reversed_entry["elements"] = ["(in[1,u_2])", "(in[1,u_1])"]
+    assert _extensionality_membership(reversed_entry) is None
+    and_entry = dict(binary["subsetTest"])
+    and_entry["category"] = "and"
+    assert _extensionality_membership(and_entry) is None
+
+
+@register
+def test_typed_equality_expansion_for_integration_accepts_both_subsets():
+    state = _state_with_subset_implications()
+    for compact in ("subsetTest", "subsetTest2", "subsetTest3"):
+        line = make_proof_line(
+            f"(&({compact}[A,B])({compact}[B,A]))_integration_goal",
+            "main", "expansion for integration",
+            "(=[A,B])_integration_goal", "main",
+        )
+        assert_pass(check_expansion_for_integration, line, [line], state)
+
+
+@register
+def test_typed_equality_expansion_for_integration_rejects_one_direction_twice():
+    state = _state_with_subset_implications()
+    line = make_proof_line(
+        "(&(subsetTest[A,B])(subsetTest[A,B]))_integration_goal",
+        "main", "expansion for integration",
+        "(=[A,B])_integration_goal", "main",
+    )
+    assert_failure(check_expansion_for_integration, line, [line], state)
+
+
+@register
+def test_typed_equality_expansion_for_integration_rejects_a_non_subset():
+    state = _state_with_subset_implications()
+    line = make_proof_line(
+        "(&(notSubsetTest[A,B])(notSubsetTest[B,A]))_integration_goal",
+        "main", "expansion for integration",
+        "(=[A,B])_integration_goal", "main",
+    )
+    assert_failure(check_expansion_for_integration, line, [line], state)
+
+
+@register
+def test_typed_equality_expansion_for_integration_rejects_mixed_subsets():
+    state = _state_with_subset_implications()
+    line = make_proof_line(
+        "(&(subsetTest[A,B])(subsetTest2[B,A]))_integration_goal",
+        "main", "expansion for integration",
+        "(=[A,B])_integration_goal", "main",
+    )
+    assert_failure(check_expansion_for_integration, line, [line], state)
+
+
+@register
+def test_typed_equality_reformulation_for_integration_and_rebuilds_the_rule():
+    state = _state_with_subset_implications()
+    expansion = make_proof_line(
+        "(&(subsetTest[A,B])(subsetTest[B,A]))_integration_goal",
+        "main", "expansion for integration",
+        "(=[A,B])_integration_goal", "main",
+    )
+    line = make_proof_line(
+        "(>[](subsetTest[A,B])(>[](subsetTest[B,A])(=[A,B])))", "main",
+        "reformulation for integration and",
+        "(&(subsetTest[A,B])(subsetTest[B,A]))_integration_goal", "main",
+    )
+    assert_pass(check_reformulation_for_integration_and, line,
+                [expansion, line], state)
+    swapped = make_proof_line(
+        "(>[](subsetTest[B,A])(>[](subsetTest[A,B])(=[A,B])))", "main",
+        "reformulation for integration and",
+        "(&(subsetTest[A,B])(subsetTest[B,A]))_integration_goal", "main",
+    )
+    assert_failure(check_reformulation_for_integration_and, swapped,
+                   [expansion, swapped], state)
+
+
+@register
+def test_typed_equality_reformulation_for_integration_and_needs_subsets():
+    state = _state_with_subset_implications()
+    expansion = make_proof_line(
+        "(&(notSubsetTest[A,B])(notSubsetTest[B,A]))_integration_goal",
+        "main", "expansion for integration",
+        "(=[A,B])_integration_goal", "main",
+    )
+    line = make_proof_line(
+        "(>[](notSubsetTest[A,B])(>[](notSubsetTest[B,A])(=[A,B])))", "main",
+        "reformulation for integration and",
+        "(&(notSubsetTest[A,B])(notSubsetTest[B,A]))_integration_goal", "main",
+    )
+    assert_failure(check_reformulation_for_integration_and, line,
+                   [expansion, line], state)
+
+
+# ===========================================================================
 #  tag: reformulation for integration >[bound]
 # ===========================================================================
 
@@ -825,7 +955,7 @@ def test_cross_anchor_binding_picks_premise_anchor():
     thm = (
         "(>[N,i0,s,+,*,i1](AnchorGauss[N,i0,s,+,*,i1,i2,id])"
         "(AnchorPeano[N,i0,s,+,*,i1]))",
-        "direct",
+        "single chapter proof",
         "-1",
     )
 

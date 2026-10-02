@@ -20,6 +20,23 @@ and a commercial license — see https://generative-logic.com/license.
 
 ## What this stage does
 
+The full run proves Peano, Gauss, then FTA. Existing Peano, Gauss and incubator
+batches generate conjectures and have empty external inputs. FTA disables
+generation and receives the nonempty `external_conjectures_file` configured in
+`ConfigFTA.json`. `run_modes.py` / `_prepare_batch_conjectures` writes those rows
+as proof obligations and clears preceding-batch OR and mirror metadata. Each
+supplied row is one conjecture: split an AND conclusion into separate rows
+before loading, as described in the [MPL cookbook](../03b_mpl_cookbook.md).
+The shared proved theorem pool passes Peano and Gauss results into FTA. The
+uncompressed full FTA writer appends every retained result to both the theorem
+pool and its compiled root index, preserving their line pairing so graph
+pruning retains FTA and its proof dependencies. The
+development shortcut restores the exact saved full-run FTA input into its
+output tree; it does not use the historical independent external snapshot as
+proof fuel. Changed inputs require a new full capture; connected Lean
+certification belongs to the full run. See the prover chapter's
+[full/shortcut contract](04_prover.md#full-and-shortcut-fta-input-identity).
+
 The conjecturer enumerates candidate theorems by combinatorial assembly. Given the compiled expressions + per-batch config, it:
 
 1. For each "number of simple expressions" (`nse`) in `[min_nse, max_nse]`, combines predicates into candidate bodies.
@@ -54,7 +71,7 @@ This is a negative conjecture — a claim the prover will try to refute.
 **Outer anchor binder — unified rule ([I-4](../30_invariants.md#i-4), [I-11](../30_invariants.md#i-11) inverted, [D-75](../40_decisions.md#d-75)).** The outer `>[...]` binds **every** anchor-atom argument in occurrence order, not only the slots the body references. The pre-unification line above bound `>[1,2,3,6]` (slots 4/5 omitted because the conjecture does not mention `+`/`*`); under the unified rule it binds every anchor slot. Verbatim post-unification line (first row of `files/theorems/conjectures.txt`, Gauss batch):
 
 ```text
-(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,4])(>[12,13](fold[1,3,4,8,2,12,13])(>[](in2[9,12,3])(in3[10,13,11,4])))))
+(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,4])(>[12,13](fold[1,3,4,4,8,2,12,13])(>[](in2[9,12,3])(in3[10,13,11,4])))))
 ```
 
 The outer `>[1,2,3,4,5,6,7,8]` binds all eight `AnchorGauss` slots in anchor-atom order (= occurrence order, since the anchor is the first premise); the inner `>[9,10,11]` / `>[12,13]` / `>[]` quantifiers are unaffected. The equivalent Peano shape is `(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7]…))`. Implemented in the anchor-attach binder of `connectExpressions` / `connectExpressionsInt` (both lanes, gated on `connectToAnchor`); the removable-arg / negation-variant / def-set logic is unchanged — only the emitted binder widens, and `reshuffle`'s `orderByPattern` re-derives the same occurrence order for the reshuffled artefacts.
@@ -142,7 +159,7 @@ Both lanes apply equivalent filters; the int-path is strictly faster. Historical
 
 Expression definitions split into two categories for the conjecturer:
 
-- **Operator.** `output_args` non-empty. Examples: `in2` (output index `2`), `in3` (output `3`), `fold` (output `6`). The output variable needs a companion expression to define it. In the `nse ≥ 2` path, the operator-head-validity checks (`checkInputVariablesTheoremOperatorHead`, `evaluateOperatorExprs2`) ensure the output is properly connected.
+- **Operator.** `output_args` non-empty. Examples: `in2` (output in slot `2`), `in3` (slot `3`), `fold` (slot `8`), counting slots from one. The output variable needs a companion expression to define it. In the `nse ≥ 2` path, the operator-head-validity checks (`checkInputVariablesTheoremOperatorHead`, `evaluateOperatorExprs2`) ensure the output is properly connected.
 
 - **Relation.** `output_args` empty. Examples: `=`, `in`. No output binding; any placement is valid.
 
@@ -185,7 +202,7 @@ The emitted pairs are also recorded in `files/theorems/or_pairs.txt` as an OUTPU
 
 ### `checkDefSets` / `checkDefSetsInt`
 
-Ensures every argument's `definition_sets` type-label is consistent across all occurrences within the candidate. A variable appearing in two positions must have compatible types at both.
+Counts distinct argument variables per definition-set type, separately for combinable and uncombinable arguments, and checks the corresponding configuration budgets. Type compatibility when joining arguments is checked by the connection routines.
 
 *Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) (string) and [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) (int).
 
@@ -195,9 +212,13 @@ Enforces that bound variables appear left-to-right in input-argument positions a
 
 *Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
+### `countArgumentsFilter`
+
+Checks repetitions separately within each atom, considering only slots whose configured definition set is `(1)`. This is a type test, not `findDigitArgs`: numeric anchor constants and produced outputs are included in ordinary mode. Set and operation parameters may repeat, so the same anchor addition can fill both operation slots of `fold[N,s,+,+,f,n,m,p]`. Incubator mode retains repeated digit values for ground arithmetic; equality still rejects identical operands in both modes. This filter does not implement `max_number_args_expr`, which is the worker's pre-anchor combinable-argument budget.
+
 ### `controlEquality`
 
-Among other things, implements [I-8](../30_invariants.md#i-8): rejects `(=[x,x])` as a head. Also rejects equalities among un-typed positions.
+Rejects identical equality operands through `countArgumentsFilter` in each inspected atom, including the trivial heads prohibited by [I-8](../30_invariants.md#i-8). The distinct-operand orientation check below is separate from digit-slot repetition.
 
 **Canonicalisation rule.** Rejects descending-ordered equality `(=[a, b])` with `std::stoi(a) > std::stoi(b)` — `=` is symmetric, so keeping only the ascending form eliminates redundant mirror-conjectures at every `nse`. The pair-combination enumeration in `connectExpressionsInt` produces both orderings; dropping the descending one is lossless at conjecture-set level because the ascending sibling is always reached. The cancellation theorem's head shape `=[i0, b]` (e.g. `=[2, 8]` — anchor-slot value first, bound-var second, ascending) survives as the canonical form; its symmetric duplicate `=[8, 2]` is correctly rejected.
 
@@ -313,6 +334,8 @@ Precomputes anchor-to-expression argument permutation tables. `leftMax = determi
 ## Weaknesses
 
 ### Known & tracked
+
+
 
 - **`createMapAnchor` RAM explosion.** Mentioned in the project conventions "Key conjecture generator internals". Fix path: keep `max_values_*` config fields small (≤ 3 per arg). Not protected by an assert.
 - **Operator-head check gating is `nse`-based.** `checkInputVariablesTheoremOperatorHead` and `evaluateOperatorExprs2` assume `nse ≥ 2` and are skipped on the `nse = 1` path. This is correct for the current operator set (`in2`, `in3`, `fold`, `residual`, `interval` — `preorder` is a relation, not an operator: empty `output_args`), but adding a new operator that *also* behaves well as a single-expression head would require revisiting — the skip is structural, not operator-specific.

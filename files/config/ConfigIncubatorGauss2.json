@@ -145,16 +145,50 @@
     "max_size_expression": 5
   },
   "fold": {
-    "arity": 7,
+    "arity": 8,
     "definition_sets": {
-      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false],
-      "4": ["P(x(1)(1))", false], "5": ["(1)", false], "6": ["(1)", true], "7": ["(1)", true]
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(1))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "5": [
+        "P(x(1)(1))",
+        false
+      ],
+      "6": [
+        "(1)",
+        false
+      ],
+      "7": [
+        "(1)",
+        true
+      ],
+      "8": [
+        "(1)",
+        true
+      ]
     },
     "full_mpl": "fold.mpl",
-    "short_mpl": "(fold[N,s,+,f,n,m,p])",
+    "short_mpl": "(fold[N,s,+,op,f,n,m,p])",
     "max_count_per_conjecture": 1,
-    "input_args": ["m"],
-    "output_args": ["p"],
+    "input_args": [
+      "m"
+    ],
+    "output_args": [
+      "p"
+    ],
     "max_size_expression": 2
   },
   "preorder": {
@@ -336,12 +370,13 @@
     "max_size_expression": 5
   },
   "patterns_to_exclude": [
-    "\\(fold\\[\\d+,8,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,5,\\d+,\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,\\d+,(?!8,)\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,8,\\d+,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,(?!4,)\\d+,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,(?!8,)\\d+,\\d+,\\d+,\\d+\\]\\)",
     "\\(preorder\\[\\d+,5,\\d+,\\d+\\]\\)",
-    "\\(in2\\[\\d+,\\d+,3\\]\\)"
+    "\\(in2\\[\\d+,\\d+,3\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,(?!4,)\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)"
   ],
   "only_in_head": [
     "(=["

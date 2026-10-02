@@ -38,7 +38,9 @@
 /// `runAllTests()` is invoked by `main.cpp` when `argv[1] == "--unit-tests"`.
 /// It iterates the registry in registration order, catches the
 /// dedicated `FailExc`, and aborts on the first failure. Per-test
-/// elapsed time is printed so a regression names itself.
+/// elapsed time is printed so a regression names itself. The
+/// processor-route gate leaves out the `CUDA_TEST` entries and names
+/// each of them in the log as not selected.
 
 #include "test_harness.hpp"
 
@@ -78,8 +80,8 @@ namespace tests {
 
     }  // anonymous namespace
 
-    void registerTest(const char* suite, const char* name, TestFn fn) {
-        registry().push_back({suite, name, fn});
+    void registerTest(const char* suite, const char* name, TestFn fn, bool cudaRoute) {
+        registry().push_back({suite, name, fn, cudaRoute});
     }
 
     [[noreturn]] void fail(const char* file, int line, const char* expr) {
@@ -88,9 +90,14 @@ namespace tests {
         throw FailExc{};
     }
 
-    int runAllTests() {
+    int runAllTests(bool includeCudaRoute) {
         namespace fs = std::filesystem;
         const std::vector<TestEntry>& reg = registry();
+        std::size_t selected = 0;
+        for (const TestEntry& t : reg) {
+            if (includeCudaRoute || !t.cudaRoute) ++selected;
+        }
+        const std::size_t notSelected = reg.size() - selected;
 
         // Statification: tests that grow `Memory`'s statified containers
         // need the process-wide pool. Init with the ProverParameters
@@ -142,6 +149,7 @@ namespace tests {
                 std::max(1u, std::thread::hardware_concurrency());
             initScratchArenas(logicalCores + 1);
             initGenScratchArenas(logicalCores + 1);   // same shape as the analyzer's init (reserved slot)
+            initCompactionScratchArenas(logicalCores + 1);   // same shape as the analyzer's init
         }
 
         // Per-test detail goes to `.debug/unit_tests.log` so the console
@@ -154,7 +162,10 @@ namespace tests {
         std::ofstream log(".debug/unit_tests.log",
                           std::ios::out | std::ios::trunc);
         if (log) {
-            log << "[unit-tests] " << reg.size() << " tests registered\n";
+            log << "[unit-tests] " << reg.size() << " tests registered, "
+                << selected << " selected ("
+                << (includeCudaRoute ? "CUDA-route gate" : "processor-route gate")
+                << ")\n";
             log.flush();
         }
 
@@ -174,6 +185,13 @@ namespace tests {
         const auto wallStart = std::chrono::steady_clock::now();
 
         for (const TestEntry& t : reg) {
+            if (t.cudaRoute && !includeCudaRoute) {
+                if (log) {
+                    log << "[NOT SELECTED] " << t.suite << "." << t.name
+                        << "  (CUDA route)\n";
+                }
+                continue;
+            }
             const auto testStart = std::chrono::steady_clock::now();
             bool failed = false;
             const char* failKind = nullptr;
@@ -244,7 +262,7 @@ namespace tests {
         const long long totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                       wallEnd - wallStart).count();
         if (log) {
-            log << "[unit-tests] " << passed << "/" << reg.size()
+            log << "[unit-tests] " << passed << "/" << selected
                 << " passed in " << totalMs << " ms\n";
             log.close();
         }
@@ -255,7 +273,12 @@ namespace tests {
         if (oldClogBuf) std::clog.rdbuf(oldClogBuf);
 
         // Single console summary on success.
-        std::printf("%zu/%zu Unit tests passed\n", passed, reg.size());
+        if (notSelected == 0) {
+            std::printf("%zu/%zu Unit tests passed\n", passed, selected);
+        } else {
+            std::printf("%zu/%zu Unit tests passed (processor route; %zu CUDA-route tests not selected)\n",
+                        passed, selected, notSelected);
+        }
         std::fflush(stdout);
         return 0;
     }

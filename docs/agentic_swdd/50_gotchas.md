@@ -89,7 +89,7 @@ The specific past offender was a `for (int i = 0; i <= kySize; ++i) compactLevel
 
 **Detect.** Track the per-burst arrival of `(implication<N>[…])` items in a receiver's `mailIn.statements` and the producing PK. On the contradiction LB receives `(implication46[])` at burst 4 (matching producing-PK#3); on main HEAD the equivalent implication tuple arrives at burst 3 via the deleted `mailIn.implications` channel.
 
-**Fix (open).** None applied. Reverting D-76 reintroduces the parallel race. Inline single-threading inside `updateGlobalDirect` would serialise the parallel proving phase. A second-batch compile-and-deposit *during* the parallel phase, with a private per-thread `implCounter` and a post-join coalesce, could in principle reach same-PK delivery — not attempted; deferred to FTA-scale survivability assessment.
+**Fix (open).** None applied. Reverting D-76 reintroduces the parallel race. Inline single-threading inside `updateGlobalSingleChapter` would serialise the parallel proving phase. A second-batch compile-and-deposit *during* the parallel phase, with a private per-thread `implCounter` and a post-join coalesce, could in principle reach same-PK delivery — not attempted; deferred to FTA-scale survivability assessment.
 
 **Related.** [D-76](40_decisions.md#d-76), [G-49](#g-49), [I-28](30_invariants.md#i-28).
 
@@ -315,7 +315,7 @@ Touches one declaration + two access sites in `prover.hpp` (lookup + insertion i
 <a id="g-45"></a>
 ### G-45 — implication compilation must be injective; a bug breaks it
 
-> **🔴 CONFIRMED ROOT CAUSE (2026-05-17, follow-up session) — DATA RACE FROM PARALLEL-PHASE INVOCATION, superseding the sub-key-conflation "Cause" below (kept un-deleted per the annotate-don't-erase convention).** The non-injectivity + run-to-run drift is **not** a single-threaded key flaw. `compileImplicationToCompact` is called from the parallel proof phase: `addExprToMemoryBlock(... int coreId...)` (per-worker) → `updateGlobalDirect(theorem, coreId)` (`prover.cpp`) → `compileCoreExpressionMapCore` / `excludeRepetitions`, all mutating shared `implCounter` (plain `int`) + `compiledExpressions` + `repetitionExclusionMap` (`std::map`) with no lock. Proven by torn/fused lines in the saved compile-trace (concurrent `ofstream` writes) and clobbered shared `keyNeg` values (811, 1830). Two fresh runs: `theorems.txt` identical (42), distinct `implication<N>` 1359 vs 1361, verifier 10120 vs 10122; 16 distinct-input→one-name collisions within a single run. Violates [I-28](30_invariants.md#i-28). The negation-overlooked hypothesis is disproved (`makeNormalizedEncodedKey` emits a correct per-constituent negation bit; 0 pure-negation-drop collisions). Detect: torn lines / impossible `keyNeg` in a per-call compaction trace; or run twice and diff distinct `implication<N>` on an identical `theorems.txt`. **FIX APPLIED (Option A):** the broadcast sites enqueue via `recordPendingCompaction`; a single-threaded post-`pool.join` sorted drain performs the compile + deposit (I-28-compliant) — deterministic and injective. Diagnostic trap removed; `compileimpltocompact_negation_is_injective` unit guard added. **VERIFIED:** two fresh fixed-build `main.py` runs byte-identical — `theorems.txt` (42, no proof loss), `GL_binary_shared.json`, `hashburst_trace.txt`, verifier counts (1397 / 10125 / 109704, 0 failures); distinct `implication<N>` stable at 1364 (was non-deterministic 1359 / 1361). See the FIX APPLIED note in [D-76](40_decisions.md#d-76).
+> **🔴 CONFIRMED ROOT CAUSE (2026-05-17, follow-up session) — DATA RACE FROM PARALLEL-PHASE INVOCATION, superseding the sub-key-conflation "Cause" below (kept un-deleted per the annotate-don't-erase convention).** The non-injectivity + run-to-run drift is **not** a single-threaded key flaw. `compileImplicationToCompact` is called from the parallel proof phase: `addExprToMemoryBlock(... int coreId...)` (per-worker) → `updateGlobalSingleChapter(theorem, coreId)` (`prover.cpp`) → `compileCoreExpressionMapCore` / `excludeRepetitions`, all mutating shared `implCounter` (plain `int`) + `compiledExpressions` + `repetitionExclusionMap` (`std::map`) with no lock. Proven by torn/fused lines in the saved compile-trace (concurrent `ofstream` writes) and clobbered shared `keyNeg` values (811, 1830). Two fresh runs: `theorems.txt` identical (42), distinct `implication<N>` 1359 vs 1361, verifier 10120 vs 10122; 16 distinct-input→one-name collisions within a single run. Violates [I-28](30_invariants.md#i-28). The negation-overlooked hypothesis is disproved (`makeNormalizedEncodedKey` emits a correct per-constituent negation bit; 0 pure-negation-drop collisions). Detect: torn lines / impossible `keyNeg` in a per-call compaction trace; or run twice and diff distinct `implication<N>` on an identical `theorems.txt`. **FIX APPLIED (Option A):** the broadcast sites enqueue via `recordPendingCompaction`; a single-threaded post-`pool.join` sorted drain performs the compile + deposit (I-28-compliant) — deterministic and injective. Diagnostic trap removed; `compileimpltocompact_negation_is_injective` unit guard added. **VERIFIED:** two fresh fixed-build `main.py` runs byte-identical — `theorems.txt` (42, no proof loss), `GL_binary_shared.json`, `hashburst_trace.txt`, verifier counts (1397 / 10125 / 109704, 0 failures); distinct `implication<N>` stable at 1364 (was non-deterministic 1359 / 1361). See the FIX APPLIED note in [D-76](40_decisions.md#d-76).
 
 **Manifestation.** On, feeding *every* mail implication through `compileImplicationToCompact` → `compileCoreExpressionMapCore` → `excludeRepetitions` produced (a) a non-deterministic compiled-implication registry — same proven-theorem set (incubator 1035/183/2, main 42 identical across two runs) but 1370 vs 1371 `compiledExpressions`, 7 differing `(implication<N>[])` names, divergent proof-graph chapters and verifier counts (`operator registry consistency` 1391 vs 1392) — and (b) a ~22 GB incubator OOM/freeze from combinatorial registry growth.
 
@@ -662,6 +662,19 @@ Latent since the multi-origin refactor. Usually hidden because most test theorem
 A lookup using the wrong form silently misses. `isAdmittedIntegration` at `prover.hpp` bridges admission-map ↔ Pass-B keys by u_-prefixing the bare marker form on lookup — the integration revival path must do the same transform.
 
 **Fix.** When revisiting from an admission insert at `prover.hpp`, STRIP `u_` off `keyString` via `removeUPrefixFromArguments` before looking up `rejectedMapIntegration`. When probing admission from `applyEquivalenceClassToRejectedMapIntegration`'s rewritten key, ADD `u_` to all non-marker args before looking up `admissionMapIntegration` (but look up `admissionSetIntegration` with the bare form). See the admission-probe section inside `applyEquivalenceClassToRejectedMapIntegration` and the revisit call site at `prover.hpp`.
+
+---
+
+<a id="g-74"></a>
+### G-74 — a park and its demand at different scopes: both dump sections populated, key texts byte-equal, no wake
+
+**Manifestation.** The hashburst dump shows a `rejectedMap` (or `rejectedMapIntegration`) entry and an `admissionMap` entry with the SAME marker template, and nothing ever revives — the LB derives everything except the parked product. Check the validity halves: the park sits at one scope (`v=main`), the demand at another (`v=main_boundary_ordis_…`). D1 Step 14 was this shape.
+
+**Cause.** Every rendezvous is a packed `(templateId, validityId)` key match. Since `D-341` the wake also walks the demand scope's strict ANCESTORS (a park above the demand is released into the demand's scope and kept), so the surviving mismatches are: the demand strictly BELOW the park arriving FIRST and the park committed later (the park-side D-243 probe is exact; no child index), sibling scopes (never comparable — correct), and the two or-head parks (`rejectedMapOrdis` / `rejectedMapOrdis2`, still exact by design, [I-178](30_invariants.md#i-178)).
+
+**Detection.** Grep the dump for the template text and compare the `v=` halves of every hit; note which section appeared first (the section of the earlier ENTRY/EXIT number).
+
+**Fix.** For the ancestor direction nothing — verify the release lines appear in the demand scope on the next burst (product + siblings on `sameIterationInternalMail`, then registered). For the reverse order or an or-head park, that is a Rule-8 design item, not a local patch.
 
 ---
 
@@ -1059,7 +1072,7 @@ The hashburst trace expansion in [D-74](40_decisions.md#d-74) and the `nameMap.i
 
 **Symptom.** Same-input full runs diverge in one registration observable (a theorem's method, a chapter's producer, a count total) while EVERY per-burst content observable stays byte-identical across runs — the signature that the proof engine is deterministic and only a post-join drain's processing order raced.
 
-**Cause.** A single-threaded drain sorted its records on a key that includes a scheduling artifact — here `coreId`, the worker slot that sealed the record, in `updateGlobalDirectLess`. The key was harmless for years because tied groups (same theorem, different records) had an order-insensitive outcome: the sink's string dedup dropped the loser and both records carried the same effect. The proved-not-broadcast tier changed the loser's effect (a refused record now REGISTERS something different), and the latent key became an observable coin flip. The general trap: "order-insensitive" claims about a nondeterministically-ordered tie are load-bearing assumptions that silently expire when any consumer starts distinguishing tied records.
+**Cause.** A single-threaded drain sorted its records on a key that includes a scheduling artifact — here `coreId`, the worker slot that sealed the record, in `updateGlobalSingleChapterLess`. The key was harmless for years because tied groups (same theorem, different records) had an order-insensitive outcome: the sink's string dedup dropped the loser and both records carried the same effect. The proved-not-broadcast tier changed the loser's effect (a refused record now REGISTERS something different), and the latent key became an observable coin flip. The general trap: "order-insensitive" claims about a nondeterministically-ordered tie are load-bearing assumptions that silently expire when any consumer starts distinguishing tied records.
 
 **Fix.** Sort keys in single-threaded drains must be pure functions of proof state (bytes, verdicts, producer chains via `compareProducerChains`) — never worker slots, allocation addresses, or arrival order. When auditing: for every `std::sort` in a post-join drain, ask what breaks ties and whether two records that tie on the deterministic prefix can carry DIFFERENT effects at the sink.
 
@@ -1117,6 +1130,15 @@ The hashburst trace expansion in [D-74](40_decisions.md#d-74) and the `nameMap.i
 
 **Rule.** Presence in the statement registry is the only "known" test (I-85); the origin map is process documentation (I-44). Diagnose with the Rule-14 dump: `encodedStatements` versus `exprOriginMap` for the same key.
 
+<a id="g-75"></a>
+## G-75 — an existence-integration preparation in a block with more than 65,536 rule originals trips the one-block arena assert
+
+**Symptom.** `LbArena::alloc` asserts `bytes <= blockBytes_` ("single arena allocation exceeds a block") from `prepareIntegrationCore2` — the `chainIdx` index over `overallHashMemory.originals` (`chainCount × 4` bytes, one allocation) must fit one `static_block_bytes` block (256 KiB), so any existence-category preparation in a block holding more than 65,536 rule originals aborts the run. The same one-shot index exists in `checkNecessityForEquality` (487,008 bytes at the D2 burst-17 explosion, `ledger/d2_rt_explosion_ledger.md`).
+
+**Why it is a cliff, not a size bug.** The block can be that big without crashing: on main the D1 negated-head contradiction block reaches 76,662 originals (reference trace `d2_ref_d1neghead_full_01`, frame 18) and survives because no new existence preparation runs there after it passed the limit. A change that adds one late preparation to such a block (the two-output `euclideanDivision` attempt did, `ledger/d2_quotient_uniqueness_ledger.md`) crashes it.
+
+**What to do.** Treat it as a capacity assert: identify the block (the trap pattern of that ledger: chain + signature at the allocation), then decide with the maintainer whether the preparation belongs there or the index needs a paged container. Do not raise `static_block_bytes` to get past it.
+
 <a id="g-73"></a>
 ## G-73 — the canonical door's normal-name walk is bracket-flat: a normal-name member nested inside a compound argument is NOT rewritten
 
@@ -1139,8 +1161,86 @@ The hashburst trace expansion in [D-74](40_decisions.md#d-74) and the `nameMap.i
 
 **On a firing.** Capture the stderr context lines and the run log; the named rule, scope, and LB chain are the trap-debug entry point (retarget the Rule-14 hashburst dump at that LB chain next).
 **Instrument (2026-09-02, ).** On the removal miss, `removeRuleKeyEntries` now writes the rule's KEY FAMILY to  (`dumpRuleKeyFamily`, Rule 31): the owner, the failing whole key and edge key (raw `NameId` runs), every `normalizedEncodedKeys` / `remainingArgsOwners` entry that still lists the owner, and every edge carrying the failing NormKey under another argument set — the data that tells whether the install's and the removal's key enumerations diverged. A full-memory crash dump cannot answer that (two 44 GB dumps were analysed; only the removal chain came out, via a raw-stack return-address scan). Chain of the two 2026-09-02 firings: `applyEquiClasses → applyEquivalenceClassToCompactImplications → removeCompactExpansion → removeRuleFromHashMemory → removeRuleKeyEntries → removeRemainingArgsOwner → removeOwnerFromRun`, both on existence-implication compacts `!(=[u_X,u_2]) → existence3[u_1,u_X,u_3]` in the Peano batch.
-**Trap campaign (2026-09-03,, ledger `docs/G72/g72_crash_ledger.md`).** Reading the section: the removal's key enumeration is a pure function of the rule text and the LB's own interners, so a single-threaded install / removal divergence is excluded; the defect is cross-thread or a lost entry. Six `#if CRASH_TRAPS` traps (per-slot scratch handover detector, foreign-claim detector, flush read-back, per-LB install ledger of every remaining-args edge checked at removal, owner-less erase audit) stayed silent through two shortcut and two full runs (production and RT-instrumented builds, CUDA); the only lines were the lazy `ruleStagings` construction touching every gen slot from one worker (address takes, benign). Two latent doors found on paper and closed under [D-337](40_decisions.md#d-337): the gen-scratch registry had no reserved slot (its `-1` fallback was worker `logicalCores - 1`'s arena and staging pool), and the claim handshake's `WorkerOwned` early return was not phase-gated. Neither was observed in use in the crashing configuration (resident-only steward).
+**Trap campaign (2026-09-03, ).** Reading the section: the removal's key enumeration is a pure function of the rule text and the LB's own interners, so a single-threaded install / removal divergence is excluded; the defect is cross-thread or a lost entry. Six `#if CRASH_TRAPS` traps (per-slot scratch handover detector, foreign-claim detector, flush read-back, per-LB install ledger of every remaining-args edge checked at removal, owner-less erase audit) stayed silent through two shortcut and two full runs (production and RT-instrumented builds, CUDA); the only lines were the lazy `ruleStagings` construction touching every gen slot from one worker (address takes, benign). Two latent doors found on paper and closed under [D-337](40_decisions.md#d-337): the gen-scratch registry had no reserved slot (its `-1` fallback was worker `logicalCores - 1`'s arena and staging pool), and the claim handshake's `WorkerOwned` early return was not phase-gated. Neither was observed in use in the crashing configuration (resident-only steward).
 **ROOT-CAUSED (2026-09-03, first firing after the traps were removed, Peano main, hash burst 10).** The permanent key-family dump showed the failing edge key as `[-842150451 × 10, 4, 42]` — `0xCDCDCDCD`, the arena poison. `remArgsEdgeKeyInto` built the `(argSet, NormKey)` edge key on the slot's gen-scratch arena and returned only its length; its four callers read the key back at a cursor mark captured BEFORE the allocation. `LbArena::alloc` aligns and pads to the next block when the request would straddle the current block, so whenever the edge build wrapped, the mark addressed the poisoned tail of the previous block: the install staged (or the removal looked up) garbage instead of the edge — whole key and owner present, edge absent. The wrap depends on where the slot's cursor sits inside its block, i.e. on which LBs the slot processed before (scheduling), hence the intermittency and the CUDA / RT sensitivity. Fixed under [D-336](40_decisions.md#d-336) (caller-owned stack buffer, `kMaxRemArgsEdgeKeyBytes`), general rule [I-222](30_invariants.md#i-222). The `[RULE-OWNER-*]` context prints, the key-family dump and the `G72_LEDGER` gate stay as permanent observability of the owner-list machinery.
+
+<a id="g-76"></a>
+## G-76 — a negated template among the algebra admission keys is a head marker, and a `!(` cohort signature is a De Morgan case split
+
+
+**Symptom.** A sacred-dump `overallHashMemory.admissionMap` section listing keys such as `!(in3[9,10,9,marker])` (marker in the `×` slot) or `!(in3[t,r,marker,4])`; `orDisjunctCount` rows whose `orSig` starts with `!(and`; a primed contradiction block whose `nameMap.idToSub` count grows by thousands per burst.
+
+**Cause.** The first is a premise-completion demand derived from a rule's HEAD (the head was part of the run given to `updateAdmissionMap`); the second is the negated-AND De-Morgan door's leaves reaching the case-analysis block. Both were the D1 negated-head block's state on `main` up to 2026-09-12 ([D-378](40_decisions.md#d-378), [D-379](40_decisions.md#d-379)).
+
+**Check.** The two Rule-30 trap shapes that established it (removed): one line per admission write with the element index and `isHead`, one line per cohort decision with `routeB` / `probeHit` / `demandHit` and the leaves' known state — `ledger/d2_rt_explosion_ledger.md`, phase 3.
+
+<a id="g-77"></a>
+## G-77 — `equality1` products of negated rows are a design error, not a cost
+
+**Symptom.** A contradiction block's row census is dominated by negated rows of one operator (`!(and2[…])`, `!(existence…)`) whose origin lines are mostly `equality1` (class products: `9 ~ 9_copy`, class-equal witnesses); no rule carries that negated core as a premise; the block has no goals.
+
+**Cause.** A negated statement or a goal was made "used" and the classes multiplied it. Since [D-380](40_decisions.md#d-380) only a SIGNED premise core makes a row used; negations and goals are watched through `Memory::negationLedger` / `Memory::goalLedger` and paired by one exact twin on demand.
+
+**Check.** `grep -c 'equality1' ` over the block's `!(…)` rows in the sacred dump versus their `implication` lines; `usedAsPremiseCorePairs` must not contain the negated core; the drain's twins carry one `equality1` row each and appear only where a canonical pair exists.
+
+**Fix.** Never widen `usedAsPremise`; look for a missing ledger seam or probe direction instead.
+
+<a id="g-80"></a>
+## G-80 — many workers growing their claimed logic blocks at once outrun the SSD evictions
+
+**Manifests.** Under memory pressure a phase with heavy per-block growth dies on the main-pool exhaustion assert although the death census shows many eligible victims (idle, resident, active) holding most of the pool, few emergency evictions and a few hundred blocks of in-flight dumps; the failing grant is a worker growing its own claimed block. Timing-dependent: instrumentation that slows the workers (for example `MEM_MEASUREMENT`) hides it (`fta_f3_memory_landing_full_01`, IncubatorGauss1 at 6 GiB, burst 0 after the theorem broadcast).
+
+**Cause.** The planner evicts in the background at SSD speed and the claim-time valve evicts at most one block per claim, before the work starts; growth inside a claim passes no valve. Thirty-two workers each growing by several MiB drain the reserve faster than the executors can dump victims.
+
+**Check.** A grant path that can run many times inside one claim must pass a valve at grant time, not only at claim time.
+
+**Fix.** The grant-time pressure valve ([D-422](40_decisions.md#d-422)): below the emergency floor the granting thread evicts one victim before its grant, throttling growth to the eviction rate.
+
+<a id="g-81"></a>
+## G-81 — a many-worker window with little work per logic block reloads the deloaded blocks all at once
+
+**Manifests.** Under memory pressure a steward window whose per-block work is tiny (a size census, a flag scan) dies on the main-pool exhaustion assert, and the death census shows `prefetchIssued=0`, `miss` equal to the worker count, no `WorkerOwned` claim and many `Busy` ones (`fta_f3_memory_deload_6g_full_01`, IncubatorGauss1 at 6 GiB, ).
+
+**Cause.** The workers reach the evicted blocks together, faster than the planner can prefetch. A self-loading worker holds its block `Busy` until the load finishes, and each claim's pressure valve reads the free blocks concurrently and evicts at most one victim, so the concurrent reloads overrun the free blocks.
+
+**Check.** Before adding a window, ask whether its work needs the block's content at all; if the value is a pure function of state the block already had while claimed earlier in the burst, record it then (the CUDA packing records at the end of phase 1, `ExpressionAnalyzer::recordPhase2Measurement`).
+
+**Fix.** Record the value where the block is claimed anyway and read the shell afterwards; a window only for blocks whose work is heavy enough to pace the sweep.
+
+<a id="g-79"></a>
+## G-79 — scratch released only at the processor phase-2 exit is retained for the whole batch on the CUDA route
+
+**Manifests.** The memory census's main-pool purpose table shows `scratch_gen` holding hundreds of MiB at every step, including `outside` and `barrier` when no task runs, while the per-slot byte-tier peak (`genScratchArenas (container tier, peak over slots)`) is a few MiB.
+
+**Cause.** A scratch arena returns blocks to the pool only at `releaseAll`; rewinds and pops free bytes and pages inside held blocks. When the only release sits at `performElem2`'s exit, phases 1 and 3, the phase-2 finalize and the seam slot keep their lifetime high-water, and the CUDA route, which never runs `performElem2`, never releases them at all.
+
+**Check.** Every executor that draws a slot's scratch ends with `releaseSlotScratch`; `proveKernel` releases the seam slot at entry and before the barrier reads the pool count ([I-124](30_invariants.md#i-124)).
+
+**Fix.** Add the release at the executor's single exit, never a `reset`-and-retain at its entry.
+
+<a id="g-78"></a>
+## G-78 — mimalloc 2.2.3 never releases a block above 64 MiB that it placed outside its 1 GiB arenas
+
+**Manifests.** For the rest of a batch after its first large Phase 2, mimalloc's committed bytes, the process commit charge and the working set stay 0.2-1.3 GiB above the live heap. Neither `mi_collect(true)` nor `MIMALLOC_PURGE_DELAY=0` changes that. The next projection commits fresh memory instead of reusing it. The amount grows in steps as mimalloc reserves new arenas and stops once it has eight.
+
+**Cause.** Two defects in mimalloc 2.2.3 (`src/arena.c`, `src/os.c`).
+- *Arena placement.* A default 1 GiB arena is 32 blocks of 32 MiB in a 64-bit bitmap field whose upper 32 bits are marked in use for good. A claim of more than two blocks (`_mi_bitmap_try_find_from_claim_across`, whose inside-field search is commented out) starts from the number of free bits at the top of the field (`mi_clz`), finds none and fails. `_mi_arena_alloc_aligned` then reserves another arena, which it cannot use either, and falls back to `_mi_os_alloc_aligned`.
+- *Release.* That fallback leaves `memid.mem.os.size` at zero. `_mi_os_free_ex` discards the size it recomputes for a zero entry, and `mi_os_prim_free` returns early on a zero size. The range is never released, and the committed counter never decreases.
+
+**Check.** Walk the address space with `VirtualQuery` and compare it with `mi_arena_area`. The symptom is fully committed private regions that start exactly where an arena ends, none inside an arena, while `mi_debug_show_arenas` shows those arenas empty. The regression test `heap_allocator.blocks_above_64_mib_are_reused_after_free` allocates, frees and collects IncubatorPeano1's six large projection column sizes twice and asserts that the second round commits no more than the first (32 MiB slack): a leaked block forces fresh commits. It asserted until 2026-10-02 that the commit charge drops by their total after the collect; mimalloc 3.5.1 on macOS (arm64) keeps the freed blocks of up to 112 MiB committed and resident, about 360 MiB, and reuses them in the next round without growth, which is not this defect (maintainer decision, release 14).
+
+**Fix.** Arenas that fill whole bitmap fields ([D-427](40_decisions.md#d-427)). A single request larger than one arena would still take the fallback; the largest block seen is a 516 MiB projection column (IncubatorGauss1). A mimalloc release that fixes both defects makes the configuration unnecessary, but it stays harmless.
+
+<a id="g-82"></a>
+## G-82 — a rule removal that replays another install route asserts on an absent key
+
+**Manifests.** `removeOwnerFromRun: the key is absent` while removing a rule that the instance still lists on its first multiplication copy.
+
+**Cause.** `removeRuleFromHashMemory` removes a rule by re-running `addToHashMemory` under `RuleIndexOp::Remove`, and the admission-key passes of that run (`makeNormalizedKeysForAdmission`) depend on the install's route arguments: the ordis2 demand variants need `kOrdis2DemandMinPremises` non-anchor premises for an implication but `kOrdis2DemandMinPremisesIntegration` for an integration rule, and the minimum operator count gates further keys. A replay with the install door's arguments of a rule installed by integration therefore visits keys the install never made. One- and two-premise rules build the same keys on both routes, so the mismatch shows only on longer rules (first seen on a five-premise Case B rule of the finished-task wipe, [I-284](30_invariants.md#i-284)).
+
+**Check.** Every caller passes the route the rule was installed by (`RuleJustification::implication` for the install door, `integration` for Case B and flat variants); `tests/test_integration_root.cpp` `wipe_replays_the_integration_install_of_a_rule` compares the two routes' key sets on a four-premise rule.
+
+**Fix.** Pass the install's route; never add a tolerance for an absent key.
 
 ---
 

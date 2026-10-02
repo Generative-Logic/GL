@@ -43,6 +43,9 @@
 #include "../compiler.hpp"
 
 #include <cstddef>
+#include <cstdlib>
+#include <filesystem>
+#include "../project_paths.hpp"
 #include <utility>
 
 namespace {
@@ -437,4 +440,44 @@ TEST(compiler, expressionissimple_with_conjunction) {
     ASSERT_FALSE(ce::expressionIsSimple("(&(p[a])(q[b]))"));
     // Negated conjunction also not simple.
     ASSERT_FALSE(ce::expressionIsSimple("!(&(p[a])(q[b]))"));
+}
+
+TEST(project_paths, deployed_layout_and_dot_components) {
+    const auto root = gl::projectRoot();
+    const auto native = root / "GL_Quick_VS" / "GL_Quick";
+    ASSERT_EQ(gl::projectRootFromExecutable(native / "gl_quick.exe"), root);
+    ASSERT_EQ(gl::projectRootFromExecutable(native / "gl_quick"), root);
+    ASSERT_EQ(gl::projectRootFromExecutable(native / "unused" / ".." / "gl_quick.exe"), root);
+}
+
+TEST(project_paths, runtime_root_owns_definition_paths) {
+    ASSERT_TRUE(std::filesystem::equivalent(gl::projectRoot(), std::filesystem::current_path()));
+    ASSERT_EQ(ce::DEFINITIONS_FOLDER, gl::projectRoot() / "files" / "definitions");
+    ASSERT_TRUE(std::filesystem::is_regular_file(gl::projectRoot() / "files" / "config" / "ConfigPeano.json"));
+}
+
+TEST(project_paths, invalid_layout_assertion_probe) {
+    // The external relocation test selects each assertion in a child process.
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    const errno_t result = _dupenv_s(&value, &length, "GL_TEST_INVALID_PROJECT_ROOT");
+    ASSERT_EQ(result, 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_PROJECT_ROOT")) mode = value;
+#endif
+    if (mode == "relative") {
+        gl::projectRootFromExecutable("GL_Quick_VS/GL_Quick/gl_quick");
+        ASSERT_TRUE(false);
+    } else if (mode == "layout") {
+        gl::projectRootFromExecutable(gl::projectRoot() / "wrong" / "gl_quick");
+        ASSERT_TRUE(false);
+    } else if (mode == "filename") {
+        gl::projectRootFromExecutable(gl::projectRoot() / "GL_Quick_VS" / "GL_Quick" / "renamed");
+        ASSERT_TRUE(false);
+    } else {
+        ASSERT_TRUE(mode.empty());
+    }
 }

@@ -39,9 +39,30 @@ from tests.test_harness import (  # noqa: E402
     run_all_tests,
 )
 from verifier import (  # noqa: E402
-    check_equality1, check_equality2,
+    check_equality1, check_equality2, check_zoom_in,
     check_symmetry_of_equality, check_symmetry_of_inequality,
 )
+
+
+@register
+def test_zoom_in_requires_exact_ancestor_source():
+    state = make_state_minimal()
+    expression = "(in[a,N])"
+    parent = "main_boundary_parent"
+    child = parent + "_boundary_child_boundary_grandchild"
+    source = make_proof_line(expression, parent, "task formulation")
+    row = make_proof_line(expression, child, "zoom in", expression, parent)
+    assert check_zoom_in(row, [row, source], state)
+    assert not check_zoom_in(row, [row], state)
+    for invalid_scope in (child, child + "_boundary_deeper", "main_boundary_sibling", "main_boundary_par"):
+        invalid = make_proof_line(expression, child, "zoom in", expression, invalid_scope)
+        invalid_source = make_proof_line(expression, invalid_scope, "task formulation")
+        assert_failure(check_zoom_in, invalid, [invalid, invalid_source], state)
+    changed = make_proof_line("(in[b,N])", child, "zoom in", expression, parent)
+    assert_failure(check_zoom_in, changed, [changed, source], state)
+    for rest in ((), (expression,), (expression, parent, expression, parent)):
+        malformed = make_proof_line(expression, child, "zoom in", *rest)
+        assert_failure(check_zoom_in, malformed, [malformed, source], state)
 
 
 # ===========================================================================
@@ -431,6 +452,118 @@ def test_symmetry_of_inequality_args_not_swapped():
         "symmetry of inequality",
         "!(=[a,b])", "main",   # NOT swapped
     )
+    assert_failure(check_symmetry_of_inequality, line, [line], state)
+
+
+
+# ===========================================================================
+#  Equality evidence, polarity and operator are exact (external review)
+# ===========================================================================
+
+@register
+def test_equality1_inequality_is_no_substitution_evidence():
+    """``a != b`` cited as the equality that rewrites ``(=[a,a])`` into
+    ``(=[a,b])``: an inequality is no equality evidence."""
+    state = make_state_minimal()
+    line = make_proof_line("(=[a,b])", "main", "equality1",
+                           "(=[a,a])", "main", "!(=[a,b])", "main")
+    assert_failure(check_equality1, line, [line], state)
+
+
+@register
+def test_equality1_unrelated_binary_relation_is_no_evidence():
+    """A binary relation other than ``=`` justifies no substitution."""
+    state = make_state_minimal()
+    line = make_proof_line("(in[b,N])", "main", "equality1",
+                           "(in[a,N])", "main", "(lt[a,b])", "main")
+    assert_failure(check_equality1, line, [line], state)
+
+
+@register
+def test_equality1_cannot_negate_its_source():
+    """The forged row ``!(=[a,b])`` from the proven ``(=[a,b])``: equality
+    rewriting keeps the source's polarity."""
+    state = make_state_minimal()
+    line = make_proof_line("!(=[a,b])", "main", "equality1",
+                           "(=[a,b])", "main", "(=[a,b])", "main")
+    assert_failure(check_equality1, line, [line], state)
+
+
+@register
+def test_equality1_keeps_the_operator_of_non_word_cores():
+    """An equality source cannot become a negated atom of another operator,
+    although both have the empty word core."""
+    state = make_state_minimal()
+    line = make_proof_line("!(in[b,c])", "main", "equality1",
+                           "(=[a,c])", "main", "(=[a,b])", "main")
+    assert_failure(check_equality1, line, [line], state)
+
+
+@register
+def test_equality1_rejects_compound_source():
+    """Only simple atoms are rewritten; an implication is not."""
+    state = make_state_minimal()
+    line = make_proof_line("(>[v1](in[v1,N])(in[b,N]))", "main", "equality1",
+                           "(>[v1](in[v1,N])(in[a,N]))", "main", "(=[a,b])", "main")
+    assert_failure(check_equality1, line, [line], state)
+
+
+@register
+def test_equality1_valid_rewrites_pass():
+    """Positive controls: an atom, a negated atom and an equality are
+    rewritten through a cited positive equality."""
+    state = make_state_minimal()
+    for source, result in (("(in[a,N])", "(in[b,N])"),
+                           ("!(in[a,N])", "!(in[b,N])"),
+                           ("(=[a,c])", "(=[b,c])"),
+                           ("!(=[a,c])", "!(=[b,c])")):
+        line = make_proof_line(result, "main", "equality1",
+                               source, "main", "(=[a,b])", "main")
+        assert check_equality1(line, [line], state), (source, result)
+
+
+@register
+def test_equality2_requires_equalities_throughout():
+    """Transitivity composes equalities only: neither an inequality premise
+    nor another relation as result passes."""
+    state = make_state_minimal()
+    for result, eq1, eq2 in (("(=[a,c])", "!(=[a,b])", "(=[b,c])"),
+                             ("(=[a,c])", "(=[a,b])", "(lt[b,c])"),
+                             ("(lt[a,c])", "(=[a,b])", "(=[b,c])"),
+                             ("!(=[a,c])", "(=[a,b])", "(=[b,c])")):
+        line = make_proof_line(result, "main", "equality2",
+                               eq1, "main", eq2, "main")
+        assert_failure(check_equality2, line, [line], state)
+    valid = make_proof_line("(=[a,c])", "main", "equality2",
+                            "(=[a,b])", "main", "(=[b,c])", "main")
+    assert check_equality2(valid, [valid], state)
+
+
+@register
+def test_symmetry_of_equality_rejects_an_inequality_source():
+    """``a != b`` must not yield ``b = a`` (external review reproduction)."""
+    state = make_state_minimal()
+    line = make_proof_line("(=[b,a])", "main", "symmetry of equality",
+                           "!(=[a,b])", "main")
+    assert_failure(check_symmetry_of_equality, line, [line], state)
+
+
+@register
+def test_symmetry_of_equality_rejects_other_relations():
+    """Swapping the arguments of another binary relation is no symmetry of
+    equality."""
+    state = make_state_minimal()
+    line = make_proof_line("(lt[b,a])", "main", "symmetry of equality",
+                           "(lt[a,b])", "main")
+    assert_failure(check_symmetry_of_equality, line, [line], state)
+
+
+@register
+def test_symmetry_of_inequality_rejects_a_positive_source():
+    """``a = b`` must not yield ``b != a``."""
+    state = make_state_minimal()
+    line = make_proof_line("!(=[b,a])", "main", "symmetry of inequality",
+                           "(=[a,b])", "main")
     assert_failure(check_symmetry_of_inequality, line, [line], state)
 
 

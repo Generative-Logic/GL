@@ -77,4 +77,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from assertion_guard import require_assertions
+    require_assertions("proof_export.export_lean")
     main()

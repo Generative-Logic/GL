@@ -69,9 +69,10 @@ namespace gl {
     /// split the slot-into-page AND the page-into-(L1, slot). Capacity is fixed
     /// per `reset` — the hash table rebuilds wholesale on growth, so there is no
     /// incremental promotion/demotion ladder; `reset` builds the whole shape.
-    /// Overflowing two levels (`slotsPerPage²` pages) HARD-ASSERTS, naming the
-    /// three-level directory — replacing the former unchecked write that silently
-    /// ran past the single directory page (D-144).
+    /// Beyond `slotsPerPage²` data pages, an L3 root holds L2 roots with the
+    /// same L1 shape. Smaller arrays retain their original directory depth.
+    /// Coverage beyond three directory levels asserts; the signed 32-bit slot
+    /// count remains an independent limit, with widened page-count arithmetic.
     ///
     /// @invariant Between `reset(cap)` and the next `reset` / `clear`, slot
     ///            indices `[0, cap)` are readable and writable; a freshly
@@ -164,12 +165,10 @@ namespace gl {
         /// reads all-zero. `cap` should be a power of two (the caller sizes it
         /// so); the power-of-two slots-per-page split then indexes by shift +
         /// mask. Builds the whole directory shape in one shot — inline, single
-        /// directory page, or (for a large array) the two-level directory whose
-        /// L2 root points at level-1 directory pages. Overflowing two levels
-        /// (`slotsPerPage²` data pages) HARD-ASSERTS — the bounds check the
-        /// former single-directory loop lacked, where `dir[p]` past `slotsPerPage`
-        /// silently wrote off the directory page and corrupted the neighbouring
-        /// arena page (D-144).
+        /// directory page, two-level or three-level directory. An L3 root
+        /// points at L2 roots, each covering `slotsPerPage²` data pages.
+        /// Coverage is checked before filling the directory. The page count
+        /// uses widened arithmetic even when `cap` is near its int32 limit.
         ///
         /// @param cap Slot capacity to allocate; `>= 0`.
         void reset(int32_t cap) {
@@ -178,7 +177,7 @@ namespace gl {
             if (cap == 0) return;
             ensureGeometry();
             capacity_ = cap;
-            numPages_ = (cap + slotsPerPage_ - 1) >> shift_;   // ceil
+            numPages_ = static_cast<int32_t>((static_cast<int64_t>(cap) + slotsPerPage_ - 1) >> shift_);
             const std::size_t pageBytes =
                 static_cast<std::size_t>(arena_->pageBytes());
             const int32_t dirCap = slotsPerPage_;   // int32 directory entry == int32 slot
@@ -194,34 +193,39 @@ namespace gl {
                     dir[p] = vid;
                     std::memset(arena_->pageAt(vid), 0, pageBytes);
                 }
-            } else {                                // two-level directory
-                assert(static_cast<int64_t>(numPages_)
-                           <= static_cast<int64_t>(dirCap) * dirCap
-                    && "PagedHashIndex exceeded the two-level directory — add "
-                       "the three-level directory for a larger hash index");
-                rootVid_ = arena_->allocPage();     // the L2 root page
-                int32_t* l2 =
-                    reinterpret_cast<int32_t*>(arena_->pageAt(rootVid_));
-                const int32_t l1Count = (numPages_ + dirCap - 1) >> shift_;  // ceil
-                int32_t made = 0;
-                for (int32_t li = 0; li < l1Count; ++li) {
-                    const int32_t l1vid = arena_->allocPage();
-                    l2[li] = l1vid;
-                    int32_t* l1 =
-                        reinterpret_cast<int32_t*>(arena_->pageAt(l1vid));
-                    const int32_t inThis = std::min(dirCap, numPages_ - made);
-                    for (int32_t s = 0; s < inThis; ++s) {
-                        const int32_t vid = arena_->allocPage();
-                        l1[s] = vid;
-                        std::memset(arena_->pageAt(vid), 0, pageBytes);
-                        ++made;
+            } else {
+                const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+                assert(static_cast<int64_t>(numPages_) <= span * dirCap
+                    && "PagedHashIndex exceeded the three-level directory");
+                const auto fillL2 = [&](int32_t root, int32_t pages) {
+                    int32_t* l2 = reinterpret_cast<int32_t*>(arena_->pageAt(root));
+                    for (int64_t first = 0; first < pages; first += dirCap) {
+                        const int32_t l1vid = arena_->allocPage();
+                        l2[first >> shift_] = l1vid;
+                        int32_t* l1 = reinterpret_cast<int32_t*>(arena_->pageAt(l1vid));
+                        for (int32_t slot = 0; slot < std::min<int64_t>(dirCap, pages - first); ++slot) {
+                            const int32_t vid = arena_->allocPage();
+                            l1[slot] = vid;
+                            std::memset(arena_->pageAt(vid), 0, pageBytes);
+                        }
+                    }
+                };
+                rootVid_ = arena_->allocPage();
+                if (numPages_ <= span) {
+                    fillL2(rootVid_, numPages_);
+                } else {
+                    int32_t* l3 = reinterpret_cast<int32_t*>(arena_->pageAt(rootVid_));
+                    for (int64_t first = 0; first < numPages_; first += span) {
+                        const int32_t l2vid = arena_->allocPage();
+                        l3[first / span] = l2vid;
+                        fillL2(l2vid, static_cast<int32_t>(std::min<int64_t>(span, numPages_ - first)));
                     }
                 }
                 arena_->recordTwoLevelPromotion(numPages_);   // telemetry only
             }
         }
 
-        /// @brief Free every held page (data, level-1 directory, and L2 root,
+        /// @brief Free every held page (data and all occupied directory levels,
         ///        per the directory shape) and reset to empty.
         ///
         /// @details
@@ -243,20 +247,27 @@ namespace gl {
                 for (int32_t p = 0; p < numPages_; ++p)
                     arena_->freePage(dir[p]);
                 arena_->freePage(rootVid_);   // the directory page itself
-            } else {                              // two-level directory
-                const int32_t* l2 =
-                    reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
-                const int32_t l1Count = (numPages_ + dirCap - 1) >> shift_;
-                for (int32_t li = 0; li < l1Count; ++li) {
-                    const int32_t* l1 = reinterpret_cast<const int32_t*>(
-                        arena_->pageAt(l2[li]));
-                    const int32_t base = li << shift_;
-                    const int32_t inThis = std::min(dirCap, numPages_ - base);
-                    for (int32_t s = 0; s < inThis; ++s)
-                        arena_->freePage(l1[s]);
-                    arena_->freePage(l2[li]);     // the level-1 directory page
+            } else {
+                const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+                const auto freeL2 = [&](int32_t root, int32_t pages) {
+                    const int32_t* l2 = reinterpret_cast<const int32_t*>(arena_->pageAt(root));
+                    for (int64_t first = 0; first < pages; first += dirCap) {
+                        const int32_t l1vid = l2[first >> shift_];
+                        const int32_t* l1 = reinterpret_cast<const int32_t*>(arena_->pageAt(l1vid));
+                        for (int32_t slot = 0; slot < std::min<int64_t>(dirCap, pages - first); ++slot)
+                            arena_->freePage(l1[slot]);
+                        arena_->freePage(l1vid);
+                    }
+                    arena_->freePage(root);
+                };
+                if (numPages_ <= span) {
+                    freeL2(rootVid_, numPages_);
+                } else {
+                    const int32_t* l3 = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
+                    for (int64_t first = 0; first < numPages_; first += span)
+                        freeL2(l3[first / span], static_cast<int32_t>(std::min<int64_t>(span, numPages_ - first)));
+                    arena_->freePage(rootVid_);
                 }
-                arena_->freePage(rootVid_);       // the L2 root
             }
             rootVid_ = kNoVid;
             capacity_ = 0;
@@ -276,7 +287,10 @@ namespace gl {
             } else if (numPages_ > dirCap) {
                 const int64_t l1Count =
                     (static_cast<int64_t>(numPages_) + dirCap - 1) >> shift_;
-                held += l1Count + 1;                        // L1 pages + L2 root
+                held += l1Count + 1;                        // L1 pages + root
+                const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+                if (numPages_ > span)
+                    held += (static_cast<int64_t>(numPages_) + span - 1) / span; // L2 pages
             }
             return held * static_cast<int64_t>(arena_->pageBytes());
         }
@@ -297,9 +311,12 @@ namespace gl {
             } else if (numPages_ <= mask_ + 1) {        // single directory page
                 vid = reinterpret_cast<const int32_t*>(
                           arena_->pageAt(rootVid_))[pageIdx];
-            } else {                                     // two-level directory
-                const int32_t l1vid = reinterpret_cast<const int32_t*>(
-                    arena_->pageAt(rootVid_))[pageIdx >> shift_];
+            } else {
+                const int32_t* root = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
+                if (numPages_ > static_cast<int64_t>(slotsPerPage_) * slotsPerPage_)
+                    root = reinterpret_cast<const int32_t*>(arena_->pageAt(
+                        root[static_cast<int64_t>(pageIdx) >> (2 * shift_)]));
+                const int32_t l1vid = root[(pageIdx >> shift_) & mask_];
                 vid = reinterpret_cast<const int32_t*>(
                     arena_->pageAt(l1vid))[pageIdx & mask_];
             }
@@ -311,7 +328,7 @@ namespace gl {
         ///
         /// @param i Slot index in `[0, capacity())`.
         /// @return Read-only byte pointer to the 4-byte slot.
-        const char* slotPtr(int32_t i) const {
+        GL_FORCEINLINE const char* slotPtr(int32_t i) const {
             const int32_t pageIdx = i >> shift_;
             int32_t vid;
             if (numPages_ == 1) {
@@ -319,9 +336,12 @@ namespace gl {
             } else if (numPages_ <= mask_ + 1) {        // single directory page
                 vid = reinterpret_cast<const int32_t*>(
                           arena_->pageAt(rootVid_))[pageIdx];
-            } else {                                     // two-level directory
-                const int32_t l1vid = reinterpret_cast<const int32_t*>(
-                    arena_->pageAt(rootVid_))[pageIdx >> shift_];
+            } else {
+                const int32_t* root = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
+                if (numPages_ > static_cast<int64_t>(slotsPerPage_) * slotsPerPage_)
+                    root = reinterpret_cast<const int32_t*>(arena_->pageAt(
+                        root[static_cast<int64_t>(pageIdx) >> (2 * shift_)]));
+                const int32_t l1vid = root[(pageIdx >> shift_) & mask_];
                 vid = reinterpret_cast<const int32_t*>(
                     arena_->pageAt(l1vid))[pageIdx & mask_];
             }

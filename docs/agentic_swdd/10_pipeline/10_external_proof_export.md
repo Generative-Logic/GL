@@ -19,31 +19,34 @@ certificate for Lean 4. It is downstream of processed-proof-graph generation
 and independent of [`verifier.py`](../../../verifier.py): neither imports the
 other, and the export command never runs GL.
 
-**What a run exports (2026-09-04 graphs).** The full run's Peano corpus covers
-every Peano source index of its proof graph with an empty exclusion list (64
-theorems), and its Gauss corpus every Gauss main source (30 theorems); the
-Gauss certificate pins the Peano certificate hash and the Peano theorems Gauss
-cites. The shortcut's FTA corpus covers the 79 shortlist theorems (109
-chapters, 2,782 rows: 55 direct, 15 induction, seven OR theorems, one OR
-elimination, one `proved not broadcast` row) with no internal support
-theorems. Empty Peano exclusions became possible when the inter-chapter
-theorem-usage cycle was eliminated ([D-276](../40_decisions.md#d-276),
-[I-190](../30_invariants.md#i-190)). Counts follow the run; nothing is pinned
-ahead of it, and no corpus is tracked — two frozen fixture certificates under
-`tests/fixtures/lean_certificates/` serve the renderer tests.
+The one-chapter theorem method is `single chapter proof`; its processed source
+file and certificate role are `single_chapter_proof`. Lean manifests preserve
+that role and the `<N>_single_chapter_proof.txt` source filename. The final
+HTML's **Direct Proof** versus **Contradiction Proof** depiction is deliberately
+downstream-only and does not split the certificate role.
 
-The FTA shortlist is a separate schema-3 export over the shortcut graph. It
-imports its externals snapshot as two theorem lists (Peano-anchored,
-Gauss-anchored) — 25 Peano and two Gauss theorems on the 2026-09-04 graph — as
-certificate-shaped documents. In Lean these are complete universally quantified
-theorem propositions, not calls into the full run's generated Peano or Gauss
-modules; each FTA theorem receives exactly the propositions required by its
-transitive FTA dependency closure, each row specializes them at its current
-anchor, and internal FTA calls forward them. Cited externals are resolved by
-content: alpha-equivalence first, then a checked adaptation — alias plus
-universal-premise permutation, or the registry-independent base form for
-compact citations (five Peano uses on the current graph). The certificate
-validates the target interface structurally before Lean rendering.
+The full run exports all selected Peano, Gauss, and FTA source rows from its
+single processed theorem list, with no silently excluded source. FTA is the
+third main batch and consumes the nonempty external conjecture file as goals.
+Its certificate depends on the actual same-run Peano and Gauss certificates,
+and its Lean module calls their proved theorems. Counts follow the run.
+
+Every public context requires induction for its fixed structure. A fully bound
+anchor implication explicitly carries its own induction premise inside that
+binder. This convention also applies to its compiled definition and expansion;
+it does not assert that a bare anchor implies induction. `proof_export/nat.py`
+/ `write_nat_model` proves all three anchors on Lean's Nat, supplies induction
+from Nat.rec, and creates a concrete instance of every public theorem. The
+single default Lake target includes all those instances.
+
+The shortcut remains for development. It replays the captured full-run FTA
+input, including preceding proof chapters, into its own output tree. It produces
+no Lean export;
+`proof_export/live.py` / `skip_export` removes stale generated certification
+before its HTML pages are rendered. Historical external-snapshot certificates
+remain renderer fixtures only. Their explicit theorem parameters now include
+the induction requirement for the quantified structure and cannot be accepted
+by the connected natural-number writer.
 
 ## Data flow
 
@@ -60,8 +63,8 @@ processed proof graph + config + tracked GL binary + selection
               ordinary definitions + named row facts
                               │
                               ▼
-       certificate/renderer tests + Peano/Gauss `lake build`
-                    + separate FTA kernel compile
+       certificate/renderer tests + one connected `lake build`
+                    including all concrete Nat instances
 ```
 
 [`proof_export/certificate.py`](../../../proof_export/certificate.py) owns
@@ -98,8 +101,11 @@ rows are the identity proof of their recorded scope premise and return that
 premise directly. Every `equality2` row applies `Eq.trans` to its two cited
 equalities in certificate order. A contradiction row either applies its cited
 negation to the cited positive fact and eliminates `False`, or introduces the
-recorded contradiction-scope premise and applies the scoped negation to that
-premise and its main-scope complement. Every `premise element` row asserts that
+recorded child-scope premise and applies the cited complementary facts there.
+Non-main evidence may come from that child and its ancestors: the renderer
+checks namespace ancestry and identical ordered binder/premise prefixes, then
+applies each fact only to its own prefix. The child must add exactly the one
+unbound assumption whose negation is concluded; sibling evidence is rejected. Every `premise element` row asserts that
 its cited main-scope implication is the recorded scope template, introduces
 that template, and returns the uniquely matching `scope_premise_N`. Every
 `implication` row applies its cited rule and supplies the cited premises in the
@@ -121,14 +127,56 @@ disjunction, performs an explicit case split on each disjunct except the last,
 and applies its first cited parent to the accumulated negations to construct the
 last disjunct. The second parent, when recorded, is an alternate licensed
 direction rather than a premise needed by that proof. OR convergence unfolds
-only the cited compact OR, splits its two branches, and applies the matching
-cited branch result. When a branch is a compact existence proposition, the proof
+only the cited compact OR, splits every branch using the definition's
+left-associated grouping, and applies the matching cited branch result.
+The convergence parent can be `main` or an established scope. The certificate
+metadata in `certificate.py`, `_schema3_action_metadata`, requires the cited OR
+at that exact parent and every child result under that same compact OR and
+parent. Lean replay retains the parent's quantified variables, premises and
+witness guards before supplying each branch assumption. A parent-bound variable
+appearing in the child compact is not quantified a second time. A refuted case
+may instead cite its negation from the parent or an established ancestor.
+Exactly one dependency is required per definition case; missing, extra,
+duplicated or mismatched case evidence is rejected. When a branch is a compact existence proposition, the proof
 keeps that compact assumption, decodes its witness through the shared
 negated-universal proof-support theorem, and passes the exact recorded
 witness-bundle component to the scoped result.
+The `or branch assumption` and `or branch proven` rows describe OR integration.
+Their certificate actions, `or_integration_assume` and `or_introduce`, retain
+the selected disjunct, exact parent and branch namespace, and the complements
+of every other disjunct. The OR integration goal is a template, never an
+assumed fact. The child context carries the parent layers followed by those
+peer complements; an assumption row returns its matching peer premise. Lean
+introduction supposes the compact OR false, extracts the negation of each
+disjunct, applies the recorded child proof to the peer complements, and
+contradicts the selected disjunct's negation. A negative peer is complemented
+using classical double-negation elimination. Branch-local witnesses cannot
+escape the discharge: the exporter obtains each such witness from its exact
+recorded projector under the branch assumptions, then supplies its bundle to
+the guarded branch result. This handles both main and nested parents without
+adding any proof search.
 Theorem reformulation constructs the checked set or binary-relation output,
-proves its defining totality condition, and then applies the single cited source
-theorem in certificate order to that output and the recorded input premise.
+proves its actual defining membership clauses, and then applies the single cited
+source theorem in its premise order to that output and the recorded remaining
+premises. The anchor is taken from the theorem, so Gauss and FTA use the same
+constructive replay, including an existence with no remaining premise.
+Two membership directions can name distinct compiled connective aliases.
+`certificate.py`, `_membership_body_key`, compares their instantiated `and`/`or`
+bodies while preserving connective grouping, argument positions, order and
+polarity. `_defined_output_totality` and `lean.py`, `_defined_output_proof_term`,
+both check that structure. Exact aliases use definition unfolding. When the
+reverse body differs by positive binary conjunction swaps,
+`membership_transport.py`, `membership_transport_plan`, records a transport
+tree in `reverse_membership_transport`. Ordered OR cases retain their positions;
+each conjunction projects both source children once and rebuilds them in target
+order. Grouping, signs, fixed/repeated arguments and opaque binder expressions
+remain exact. Negation and implication are not traversed for transport.
+`lean.py`, `_membership_transport_term`, renders explicit projections,
+constructors and OR elimination after the renderer recomputes and compares the
+plan. The witness still uses the forward body. This covers exact aliases in
+`addToSet` and the endpoint-conjunction swap in `appendToSequence`; it changes
+neither the native prover nor Lean's kernel rules. See
+[D-398](../40_decisions.md#d-398).
 The theorem-level FTA OR elimination obtains the domain membership needed by its
 OR parent from the recorded multiplicative preorder witness and AnchorFTA's
 multiplication output closure, splits the resulting compact OR, and applies the
@@ -137,20 +185,36 @@ Equality1 rows name the cited source and each cited equality, eliminate those
 equalities in certificate order with Lean's equality recursor, and return the
 rewritten source. The exporter first asserts that source and target normalize to
 the same MPL expression under exactly those equality classes.
+When a cited row projects a scoped witness, equality replay selects that exact
+conjunct from the shared witness guard. It never treats the existential statement
+as the cited atomic fact or chooses a second witness. At `validity name`, a
+guarded scoped result is discharged by obtaining its witnesses from the recorded
+projectors in prerequisite order and applying the result to those same bundles.
+An already bound witness cannot be replaced with a newly chosen one. The compact
+implication therefore retains no unproved witness premises.
 Disintegration follows one of three visible certificate shapes: a named
 conjunction projection, a witness decoded once from GL's negated-universal
 existence encoding and shared by its component rows, or a direct implication
 constructed from the cited negated conjunction. Scoped forms first instantiate
 the cited compound under the recorded scope prefix and use the same operations.
+For a compact implication, the projection reconstructs every premise of its
+instantiated chain without simplifying them: a reflexive equality must remain
+that equality when constructing the cited conjunction, rather than become `True`.
+`proof_export/lean.py` / `_negated_conjunction_projection` also replays the
+flat exclusion chains of named conjunctions with more than two members. It
+introduces every recorded premise and reconstructs the exact binary source
+tree with one counterexample in the excluded position. Each premise must match
+one source component literally, with its original polarity; missing or extra
+premises and local binders assert. It does not search for a different proof.
 
-For FTA, the shortcut export is a self-contained Lake project.
-`Definitions.lean` carries the complete definition closure the shortlist needs
-(its own `AnchorFTA`, the shortcut-local compacts and `strictOrder`, and the
-Peano and Gauss heads it shares); `FTA.lean` imports it, derives the Peano and
-Gauss anchors from `AnchorFTA`, and emits one fact for every one of the corpus's
-rows (2,782 on the 2026-09-04 shortcut graph). Externals-snapshot Peano and
-Gauss theorem content enters through explicit target-fact parameters; generated
-FTA source contains no calls to `peano_source_*` or `gauss_source_*`.
+One-witness negated implication expansions use the same shared-witness projection mechanism. `proof_export/lean.py` / `_counterexample_witness_data` collects the full implication chain, including a binder introduced after an earlier premise, and forms one conjunction of its premises and negated head. The renderer explicitly proves the witness exists by denying that conjunction, reconstructing the cited universal and contradicting its negation. All projections reuse that one witness; multiple quantified witnesses assert rather than being translated independently.
+
+Negative OR expansions unfold the cited compact and explicitly rewrite `not_or` and `Classical.not_not` to obtain the conjunction of complemented disjuncts. The following disintegration rows use ordinary literal conjunction projections. The renderer uses only the cited fact, including when its proposition carries a scope prefix.
+
+FTA shares the full run's definition registry with Peano and Gauss. Its module
+imports Gauss, which imports Peano. Every same-list dependency is resolved by
+its exact source index and certificate hash. Supplied conjectures do not become
+Lean parameters; only their proved graph rows enter the exported theorem corpus.
 
 ## Ordinary-type boundary
 
@@ -163,6 +227,17 @@ a Lean type family.
 Lean's kernel is itself based on dependent type theory; using Lean cannot change
 that foundation. The architectural constraint here concerns the encoded GL
 theory, which stays in an ordinary many-sorted predicate fragment.
+
+`=` is typed per occurrence (`load_type_environment`, `infer_expression_variables`,
+`_definition_variable_types`): it joins its two arguments, and a class only `=`
+joins is an element (I-267). Lean's `Eq` works at every
+type, so a set equality renders as `A = B` over `GLSet α`. A set- or
+relation-typed `=` integration goal expands to its two subset implications by
+extensionality, not by definition: the expansion row closes with
+`GLExport.setEqIffSubsets` (or the binary / ternary relation lemma), the
+`reformulation for integration and` row concludes with its `.mpr`, and the
+certificate never turns an `=` expansion into a compiled override of `=`.
+The three lemmas in `ProofSupport.lean` use `funext` and `propext`.
 
 ## Row replay and induction
 
@@ -212,12 +287,16 @@ FTA OR namespaces are ordinary implications from the selected disjunct to the
 branch result. OR convergence unfolds the checked compiled OR definition and
 eliminates those branch implications. Contradiction namespaces likewise become
 ordinary assumption implications; their main-scope contradiction row derives
-the recorded negation. Compilation compaction unfolds the checked compact
-definition around the already selected expanded theorem. A zero-argument FTA
-compact introduces an arbitrary carrier, operations, and `AnchorFTA`, then
-replays the earlier FTA theorem at that context with the same explicit global
-induction and external-theorem parameters. No direction is reversed and no
-scoped premise escapes as a global fact.
+the recorded negation. Compilation compaction unfolds the checked compact definition around its cited
+theorem, or around the expansion row it cites when that expansion was proved earlier in the same
+chapter (a `local_step` dependency, no theorem reference; first met in F3's proof, where an
+implication grouping is folded into `implication110`): `simpa only [<compact definition>] using
+row_<n>`. A fully quantified anchor introduces both its structure and that
+structure's `RelationalInduction` premise, then applies the cited theorem using
+those inputs. The caller's induction proof is never generalized to unrelated
+operations or domains. This applies to nullary selected-theorem carriers in
+Peano, Gauss and FTA alike; they cannot use a reference already specialized to
+the caller's structure.
 
 The eight Gauss `reformulated statement` rows use GL's well-defined-output
 contract constructively rather than adding an existence axiom. For `limitSet`,
@@ -228,14 +307,66 @@ definition, proves the defining predicate, applies the cited source theorem to
 that concrete output, and folds the two facts into the recorded GL existence
 compact. These witnesses are ordinary predicate values, never dependent types.
 
+FTA singleton reformulation follows the same contract. `EnumerationSet1`
+supplies `fun x => x = zero`; the existing binary-relation route supports
+characterizations such as `fun x y => x = zero ∧ y = a`. The renderer's
+`_defined_output_proof_term` rechecks the certified forward and reverse
+membership clauses, emits exact projections and conjunction constructors, and
+preserves the compiled definition's first-use binder order and left-associated
+outer conjunction. `_render_reformulated_theorem` matches each remaining
+premise and the constructed definition to exactly one source premise, then
+applies that cited theorem. Zero, one or several remaining premises use the
+same checked route; source and result anchors must agree. No corpus-specific
+existence axiom or theorem-specific proof search is introduced.
+
 Each induction theorem's typing, zero, and induction-condition chapters become
 three private helper theorems. The public theorem states its induction predicate
 explicitly and composes those helpers through the ordinary proposition premise
-`relationalInduction`. For FTA this premise is a complete `AnchorFTA`-indexed
-schema, so it can be specialized both at the current theorem context and at an
-arbitrary context introduced by a globally quantified compiled proposition.
-The induction principle is therefore visible at every public theorem boundary;
-it is not an axiom and is not hidden inside an anchor.
+`relationalInduction`. All three corpora use the same fixed-structure premise. The complete
+project discharges it on Nat; abstract replay alone is insufficient acceptance.
+
+A zero or successor helper may record the exact opposite of its terminal
+property conclusion as a main-scope contradiction assumption. The induction
+wrapper introduces that assumption only for the helper that requires it,
+passes it explicitly, and discharges the contradiction. Positive conclusions
+use `Classical.byContradiction`; negative conclusions introduce their positive
+counterpart directly. An existing property premise takes precedence, and any
+other unstated assumption still asserts. `proof_export/lean.py` /
+`_render_induction_theorem` implements this composition; the regression cases
+in `tests/test_lean_induction_reductio.py` cover both polarities, independent
+base/successor requirements, existing premises, and rejected extra assumptions.
+
+### Nested cases and shared witnesses
+
+A case split may be inside a contradiction scope. Its template retains every
+ancestor implication layer before its own branch premise. Facts from an
+ancestor are applied only to that ancestor's prefix. Witness bundles are shared
+across the child scope; a witness already bound by the context is not bound or
+passed a second time. Contradiction discharge removes only the immediate child
+assumption and obtains child-local witnesses inside that assumption. It never
+exports a child witness or drops an ancestor premise.
+
+Binary disjunction expansions use their actual compiled definitions and the
+explicit equivalence with a negated conjunction. Both projection directions
+and both conclusion polarities are supported. OR elimination validates the
+disjunct structure instead of relying on a registry number such as `or3`.
+
+Statement-only imports that match several equivalent proved copies pin the
+lowest prior source index. Certificate validation then resolves the citation
+against exactly the declared imports and selected local proofs; unselected
+sources and multiple authorized matches still assert. Both original public
+proof declarations remain in the preceding corpus.
+
+Live selections also record `citation_source_indices`: one selected source per
+alpha-equivalent proposition, chosen by lowest source index within the block.
+`certificate.py` / `_citation_source_indices` validates uniqueness, membership
+and complete proposition coverage. Every selected proof is still exported;
+only citation resolution uses this explicit subset. Without the field, all
+selected sources remain authorized and duplicate matches still assert.
+`_ordered_selected_theorems` includes selected-theorem dependencies of
+`compilation` rows before chapter emission, including schemas 1 and 2. Local
+compilations without a selected theorem match retain local producer resolution.
+Dependency cycles and ambiguous authorized imports remain errors.
 
 ## Trust and verification gates
 
@@ -249,125 +380,58 @@ it is not an axiom and is not hidden inside an anchor.
 - The Gauss writer asserts the Peano dependency hash, a combined acyclic
  theorem graph, and its recorded theorem and row totals (fixture
  `lean_gauss_main_29.json`: 29 theorems, 1,511 rows).
-- The FTA writer asserts its corpus theorem and row totals, its externals
- references (25 Peano and two Gauss on the 2026-09-04 shortcut graph), and
- the isolated definition heads. Its writer test runs on the live shortcut
- export and proves the self-contained layout: `Definitions.lean`, `FTA.lean`,
- the root, and the manifest, nothing else.
-- `ExplicitRowReplayTests` scans the generated theory files of both run
- exports (skipped when no export is on disk) and rejects
+- The FTA writer asserts its actual full-run theorem and row totals, complete
+ same-list dependency closure, and isolated definition heads. Its live tests
+ check the Peano/Gauss certificate hashes and actual cited proof declarations,
+ and reject assumed external theorem parameters in the connected module.
+- `ExplicitRowReplayTests` scans all three generated theories of the single full
+ export (skipped when no export is on disk) and rejects
  any remaining `grind`. Its per-action tests require the explicit proof shape;
- the inequality-symmetry test, for example, requires all 26 such rows to use
+ the inequality-symmetry test, for example, requires every such row to use
  `Eq.symm` directly. The corpus render tests also require explicit induction
  typing, zero, successor, hypothesis, and final-composition applications.
  `ScopeEntryTests` covers scope entry, per-dependency prefixes,
  and witness sharing directly, including the negative case where a cited
  guarded fact names a witness no cited projection establishes.
 - `tests.test_proof_export_lean` checks the ordinary-type encoding,
- deterministic definition and theorem rendering, both corpus counts, schema-3
+ deterministic definition and theorem rendering, all corpus counts, schema-3
  scope metadata, constructive output totality, FTA external-theorem adaptations,
  OR and contradiction scopes, row-total manifests, explicit cycle exclusions,
  and trust-shortcut rejection.
-- `lake build` in each run export checks its modules with the pinned Lean
- toolchain. The shortcut export is self-contained, so its `lake build` checks
- FTA through the complete universally quantified propositions of its externals
- references. The certificate/renderer suite validates those
- propositions and their adaptations and rejects any coupling to live
- `peano_source_*` or `gauss_source_*` proof terms.
+- One `lake build` checks the connected Peano, Gauss, and FTA modules and every
+ generated Nat instance. The Nat writer rejects external theorem-list
+ dependencies. A regression proves that double successor does not satisfy the
+ induction principle, and the model uses only Lean's ordinary trusted axioms.
 - Adding a proof action requires a neutral certificate contract, renderer path,
  direct negative and positive test coverage, manifest coverage, and a successful
  kernel build when the module belongs to the default Lean target.
 
-The tracked FTA artifacts pass both the Python certificate/renderer tests and
-their separate Lean kernel compile through the pinned external-theorem
-interface. Across the three tracked exports the renderer emits and
-kernel-checks 172 public theorems, 280 chapters, and 7,453 named row facts; the
-default import target contains the 93 Peano/Gauss theorems and their 4,618 named
-row facts, while FTA remains a separately compiled interface module.
-
 ## Live export inside the run
 
-[`proof_export/live.py`](../../../proof_export/live.py) runs the export as a
-pipeline stage ([D-339](../40_decisions.md#d-339)):
-`run_modes.full_run` calls `export_main_graph` after the main processed graph
-and before the HTML pages, `run_modes.shortcut_run` calls
-`export_shortcut_graph` at the same point of the shortcut. The incubator graph
-has no export: its `incubator back reformulation` rows are unsound by design.
+`run_modes.py` / `_finish_full_graphs` invokes `export_main_graph` after all
+three batches' processed graph is ready and before main HTML rendering.
+`theorem_list_blocks` identifies the Peano, Gauss, and FTA ranges.
+`same_list_imports` finds the precise cross-range citations and pins a canonical
+prior proof for repeated equivalent statements; each later certificate hashes
+its earlier dependencies. `canonical_citation_sources` records the corresponding
+explicit choices within each block without excluding any public proof.
+`write_lean` renders the modules,
+then `write_nat_model` emits `NatModel.lean` and `NatResults.lean` and includes
+the latter in the Lake root. `kernel_check` runs the one full build with an
+explicit child ELAN_HOME and records its exit status; a non-zero status raises
+`RuntimeError` explicitly, so `python -O` cannot remove the gate.
 
-Nothing is pinned ahead of a run, so the selection is derived from the run:
-
-- `theorem_list_blocks` partitions `global_theorem_list.txt` into its
- contiguous anchor blocks (`AnchorPeano`, then `AnchorGauss`; the shortcut is
- `AnchorFTA` only) — each block is a corpus' `source_range`, the theorem-list
- hash is computed, exclusions are empty, and the selection carries no
- `expected_coverage` (the builder then records coverage instead of asserting
- it; a tracked release selection still pins it).
-- Corpus ids are `peano_live_N` / `gauss_live_N` / `fta_live_N`;
- `lean.corpus_kind` classifies every id by its prefix, so the renderer's
- anchor context, imports and manifest shape follow the kind, and the exact
- theorem and row counts are asserted only for the tracked release ids
- (`lean.TRACKED_CORPUS_COUNTS`).
-- Gauss depends on the Peano certificate just written (hash computed); its
- `required_source_indices` are the Peano theorems Gauss actually cites,
- found by `same_list_imports` through the shared `certificate.theorem_citations`.
-- FTA is independent of the main path (maintainer ruling, 2026-09-04): its
- only dependency is the tracked externals snapshot the shortcut proved
- against, `files/shortcut/theorems/externally_provided_theorems.txt`, which
- need not match the latest main run. `external_theorem_lists` splits the
- snapshot's base-form rows by anchor into a Peano-anchored and a
- Gauss-anchored list, each written as a certificate-shaped document
- (`certificates/<kind>_externals/certificate.json`: id `<kind>_externals_N`,
- the rows as theorem records, the snapshot's hash, no compiled definitions,
- no dependency edges), which the builder loads like any dependency
- certificate. `external_references` resolves every citation that is no FTA
- theorem: first alpha-equivalently, else by the structural search the
- validator accepts —
- `infer_head_aliases` finds the source names of renamed compiled heads
- (identical arity, category and elements under the aliases found so far,
- closed by iteration), and `certificate.theorem_adaptation_solutions` (the
- non-asserting twin of `_validate_theorem_adaptation`) matches one bijective
- renaming and one premise permitting permutation. Exactly one dependency
- theorem may match; the result is written in the selection's
- `theorem_adaptations` format, so the builder validates it on its declared path.
- When no alias-and-permutation match exists the search compares
- registry-independent **base forms** (`certificate.base_form_equivalent`):
- exactly the compiler's spontaneous compacts (`existence<N>`, `or<N>`,
- `implication<N>`) are unfolded, as the prover's own `expandToBaseForm`
- does — `and` to a conjunction and `or` to the negated conjunction of
- negated parts, both with parts in name-free shape order; implication
- compacts to their bound implication chains; existence compacts to
- `¬ ∀ x, e_1 → … → ¬ e_k`; a double negation cancels — while every
- config-defined operator (anchors, `NaturalNumbers`, `preorder`, `fold`, …)
- stays an atom. The two Horn spines are then compared alpha-equivalently
- with all binders merged into one group and under a premise permutation.
- This is how a compact citation (`∀ w1 ∈ N, or2[w1,i0,N,s]`) meets its
- base-form externals row (`…!(&!(=[7,2])(>[8](in[8,1])!(in2[8,7,3])))`).
- Such an adaptation is recorded with `base_form: true`, carries no head
- aliases and no renaming, and enters Lean like every external theorem of
- the FTA corpus: as the validated target proposition parameter of the
- citing theorem, never a proof-term import. A statement the dependency
- list proves more than once resolves to its lowest source index.
-- The shortcut's Lean project is self-contained: `Definitions.lean` holds
- every definition the FTA corpus uses, `FTA.lean` imports only that, the
- root makes FTA the default target, and `lake build` is the whole check
- (`lean.write_lean` selects this layout when the certificate carries no
- `definition_isolation`; the tracked release corpus keeps the isolated
- layout over the reviewed Gauss module).
-- Outputs land in the mode's own proof-graph folder,
- `files/full_proof_graph/lean_export/` and
- `files/shortcut/full_proof_graph/lean_export/`: the selections, the
- certificates under `certificates/<kind>/`, a complete Lake project (skeleton
- copied from the tracked `lean_export/`: lakefile, toolchain pin, manifest,
- `ProofSupport.lean`), the generated modules and manifests, and
- `kernel_check.log`.
-- Toolchain policy (maintainer, 2026-09-04): `find_lake` looks for `lake` on
- the PATH and in `~/.elan/bin`. Absent → one notice line, no export, no Lean
- pages, no crash. Present → export, `lake build`, and for the shortcut the
- the self-contained FTA project's `lake build`; a kernel failure fails the
- run.
-
-The live builder is also the re-pin tool: a tracked release selection is the
-live selection with `expected_coverage` and the dependency hashes filled in.
+The output is `files/full_proof_graph/lean_export/`: three selections,
+certificates under `certificates/<kind>/`, generated modules and manifests,
+concrete model and result modules, and `kernel_check.log`. The declaration
+counts are derived from this run; all public results must receive concrete
+instances. The development shortcut calls `skip_export` instead. The exporter tests read
+this one full project; they do not require a shortcut export. Tests that
+kernel-check generated Lean files take `lean` from `tests/lean_toolchain.py`
+(beside the Lake that `find_lake` returns, run inside the tracked `lean_export/`
+project for its toolchain pin) and skip without a toolchain; their scratch
+files go to the system temporary directory. A test-only
+`GL_TEST_LEAN_EXPORT` override supports captured complete graphs during repair.
 
 **Writer case added by the live export (2026-09-04).** The current Peano
 generation records an `expansion` row whose source is a negated existence
@@ -383,8 +447,7 @@ and apply it to the hypotheses in the decided order (a scoped row enters its
 scope first and instantiates the cited fact there). Regression:
 `tests/test_lean_existence_compacts.py`.
 
-**Further writer cases added by the live shortcut export (2026-09-04).** The
-current shortlist generation exercises row shapes the tracked corpus did not:
+**Additional explicit replay shapes.** The FTA corpus exercises:
 a `compound_project` whose source row is guarded by a witness the projected
 conjunct never mentions (the projection now inherits every guard of its
 source, in dependency order); a contradiction row with both contradictory
@@ -405,25 +468,40 @@ Nothing about the Lean export is tracked beyond the exporter, the renderer
 tests, two frozen fixture certificates under `tests/fixtures/lean_certificates/`,
 and the Lake skeleton in `lean_export/` (`lakefile.lean`, `lean-toolchain`,
 `lake-manifest.json`, `GLExport/ProofSupport.lean`) that `proof_export/live.py`
-copies into every export. The release package is the two exports the pipeline
-writes: `files/full_proof_graph/lean_export/` and
-`files/shortcut/full_proof_graph/lean_export/`.
+copies into the connected export. The release package is
+`files/full_proof_graph/lean_export/`, including its Nat model and instances.
 
-[`release_public.py`](../../../.scripts/release_public.py) never invokes the
-exporter. `check_live_lean_exports` requires both folders with a green
-`kernel_check.log`, re-runs `lake build` in each, runs
-`tests.test_proof_export_lean`, then copies both folders through the ordinary
-source walk and compares every result byte against the source
-(`lean_export_copy_issues`) before the release can pass.
+`release_public.py` / `check_live_lean_exports` requires the connected modules,
+a green `kernel_check.log`, and a root that imports NatResults. It reruns the
+single build and the contract tests; the release then publishes the package in
+its proof archive (`build_proofs_zip`) and checks that the archive carries every
+result file byte for byte (`lean_export_zip_issues`,
+[D-456](../40_decisions.md#d-456)). Old
+shortcut Lean artifacts are excluded even if present on disk. The private
+snapshot overlays the same connected result package. Neither package includes
+the host-local `.lake/` cache.
 
-[`snapshot_project.py`](../../../.scripts/snapshot_project.py) overlays the same
-two folders into the private recovery copy and compares every result byte before
-building the ZIP. Both protocols exclude `.lake/`: it is a host-local build
-cache, not an export result.
+### Flat integration construction
+
+`reformulation for integration flattened` maps to `definition_construct`. The certificate validates the one same-scope integration-goal template, recursively enumerates permitted definition unfoldings, and records an exact match to the row's premises with distinct bound witnesses. `proof_export/flat_integration.py` and `render_flat_integration_term` supply explicit conjunction/existence constructors using only those recorded premises. `proof_export/lean.py` enters the recorded scope and introduces the row's binders and premises before applying that term. No proof search, additional theorem premise or admission shortcut is used.
+
+
+### Binary OR expansion polarity
+
+Binary OR definition expansion uses only the named definition, `GLExport.orIffNotAndNot`, and `Classical.not_not`. The last equivalence cancels the doubled negation introduced when a disjunct is already negative, matching the recorded MPL De Morgan expansion in all four polarity combinations. It is an explicit logical equivalence, not proof search or an extra theorem premise. The generated-row kernel regression covers positive/positive, positive/negative, negative/positive and negative/negative leaves.
 
 ## Weaknesses
 
+- **Constructive reformulation coverage.** The checked definition must have one set or binary-relation output, an acyclic definition closure, matching forward membership clauses and exactly one reverse clause. Remaining source premises must match the recorded facts uniquely; malformed, missing or ambiguous matches assert. Ternary-relation outputs are outside the current totality contract.
+
+
 ### Known & tracked
+
+- **Binary-only OR convergence — corrected.** `lean.py` /
+ `_render_chapter_steps` replays every definition case with a left-associated
+ case pattern and exactly one matching dependency per case. Direct renderer
+ and kernel tests cover two through five cases, and malformed coverage is
+ rejected. 
 
 - **Every export input is a gitignored run artifact.** Both
  `files/processed_proof_graph/` and `files/shortcut/processed_proof_graph/`
@@ -431,17 +509,13 @@ cache, not an export result.
  themselves. A certificate is reproducible only on a host whose matching
  pipeline run is still on disk; the recorded `theorem_list_sha256` makes that
  dependence loud instead of silent. Nothing tracked pins a graph generation
- any more: each run derives its own selection and the release ships the run's
- folders.
-- **The FTA export follows the externals snapshot, not the latest main run (by
- design, maintainer ruling 2026-09-04).** The shortcut's Peano and Gauss
- theorem lists are the rows of its tracked externals snapshot. A Peano theorem
- the current main batch no longer proves still enters FTA as an explicit
- premise, because the shortcut graph was produced against the snapshot.
-- **The shortcut export is its own Lake project.** `Definitions.lean` carries
- the definition closure, `FTA.lean` imports it, and the root imports FTA, so
- `lake build` there checks FTA directly; there is no shared project with the
- full run's Peano and Gauss modules.
+ any more: each run derives its own selection and the release publishes the
+ run's export in its proof archive.
+- **Abstract induction requires a model witness.** Passing row replay alone
+ does not establish consistency of the hypotheses. Every connected public
+ result must compile at Nat, with all anchor and induction inputs supplied.
+- **Historical external snapshots are conditional fixtures.** They cannot
+ replace same-run proved dependencies or enter the connected Nat export.
 - **No corpus refresh step exists.** Source indices move with every prover
  generation; the live selection is derived per run, so nothing is remapped by
  hand and no re-pin follows a verified full run.
@@ -455,6 +529,46 @@ See
 [D-275](../40_decisions.md#d-275),
 and
 [I-189](../30_invariants.md#i-189).
+
+### Explicit scope inheritance
+
+The `zoom in` tag becomes a `scope_inherit` action. `_chapter_certificate` requires one exact local parent step with identical expression and a strict ancestor scope. `_scope_inheritance_proof` introduces the child context and applies the cited parent fact to its own parameters, assumptions, and witness guards; existential bundles are retained. There is no source-origin copying, new axiom, or proof search. Both endpoint scopes remain explicit in the processed graph and typed certificate.
+
+`lean.py`, `_render_chapter_steps`, retains free parameters from the complete
+recorded ancestor chain even when a child goal no longer mentions a parameter
+of the parent goal. Parent-scoped facts still consume those binders. Local
+variable-copy reflexivity introduces the row's ordinary binders, scope premises
+and witness guards before `rfl`; variable-copy certification is unchanged.
+
+## Immutable expression caches
+
+`proof_export/mpl.py` and `parse_mpl` share immutable parsed trees through a
+bounded cache keyed by exact source text. `alpha_key` memoizes the canonical
+bound-variable spelling of immutable expression values. Misses and evictions
+recompute the same strict functions; parsing errors still fail. Source spellings,
+free-variable identities, certificate bytes, and emitted Lean declarations are
+unchanged.
+
+## Implication-chain composition
+
+Structural OR introductions retain the `expansion` tag and use the certificate action `structural_or_introduce`. `proof_export/or_introduction.py`, `match_or_introduction`, checks the cited compact implication's actual OR premise, complete ordered conjuncts, fixed arguments and scoped binders. `_render_chapter_steps` constructs the checked conjunction tree and follows the exact OR injection path. Ordinary expansion remains a separate action; an introduction must not override the compact implication's definition.
+
+An `implication composition` row becomes the certificate action `implication_compose`. Its two dependencies retain exact source expressions and scopes. `build_implication_composition_plan` verifies a bijection of both complete source binder sets through the intermediate expression onto the result binder, rejects bound-to-fixed specialization and collapsed binders, and returns ordered source argument lists and the binder group at each premise. The producer and result have the same complete ordered premise list under the checked renaming, and the consumer has exactly one premise. `_render_chapter_steps` enters the recorded scope, specializes each cited proof at its own visible context, introduces every composed binder group and premise in order, then applies every producer premise followed by the unary consumer. No proof search or additional assumption is used; admission demand controls construction eligibility rather than supplying a logical proof premise.
+
+## Grouping and contraposition certificates
+
+`proof_export/contraposition.py`, `build_grouping_plan` and `build_contraposition_plan`, validate the exact cited unary sources, complete binder substitutions, fixed parameters, signs and scope joins. The `implication_group` certificate action carries a checked conjunction-construction tree; `implication_contrapose` carries the original source's argument substitution. The Lean renderer revalidates these plans and emits explicit source application, conjunction construction and contradiction. Both tags retain ordinary dependency closure and origin checking.
+
+### Equality-supported OR convergence
+
+The `or_eliminate` action optionally carries `or_equality_plan`, produced by `match_equality_convergence`. Each case identifies its actual source and equality dependencies, or its retired-case refutation. The renderer recomputes the plan, introduces the parent binders and case assumption in order, specializes each cited fact at its true scope, and eliminates the equalities inside that case. It never assumes a noncanonical target fact or promotes a branch equality to the parent. The default exact-expression action is unchanged.
+
+
+## Contradiction evidence from nested scopes
+
+`proof_export/lean.py`, `_render_chapter_steps`, selects the deepest cited non-main context and requires every other cited context to be either that context or an ancestor with an identical binder/premise prefix. Namespace ancestry and structural prefix equality are both required; identical templates in sibling scopes do not license combining their facts. The deepest context must extend the conclusion's context by exactly one binder-free assumption, equal to the expression being negated. Each dependency and shared-witness projector still receives its own original context arguments. Only the child assumption is discharged; parent assumptions and witness guards remain in scope.
+
+`tests/test_lean_nested_contradiction.py` covers both source polarities, dependency orders, direct and deeper ancestors, same-scope evidence, and Lean kernel replay. Negative cases retain rejection of siblings, incompatible prefixes, the wrong discharge premise, skipped layers and bound child assumptions. Native inference, provenance and certificate scope records are unchanged.
 
 ---
 

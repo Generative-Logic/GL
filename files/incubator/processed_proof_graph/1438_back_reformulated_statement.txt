@@ -1,1 +1,0 @@
-(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(fold[N,s,+,id,i0,i1,i1]))	main	incubator back reformulation	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[w1](fold[N,s,+,id,i0,i1,w1])(=[w1,i1])))	main

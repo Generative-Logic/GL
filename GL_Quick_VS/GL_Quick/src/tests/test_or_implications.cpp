@@ -259,7 +259,7 @@ namespace {
 
 } // namespace
 
-TEST(or_implications, cohort_consumes_compacts_with_repeated_arguments) {
+TEST(or_implications, cohort_registers_source_with_repeated_arguments) {
     gl::ExpressionAnalyzer ea(std::string("Peano"));
     // Three tokens, two leaves; the instance below repeats one argument.
     const std::vector<std::string> leaves = { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])" };
@@ -277,8 +277,7 @@ TEST(or_implications, cohort_consumes_compacts_with_repeated_arguments) {
     ea.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
         -1, -1, gl::StrSpan("main", 4), false);
 
-    // Both compacts are registered statements at main (u_-stripped), with
-    // the repeated argument in the positions the template projects.
+    // No compact family instance enters the known registry.
     const std::map<std::string, std::string> subst = {
         { "u_1", "9" }, { "u_2", "10" }, { "u_3", "9" } };
     for (const std::string& tmpl : le->implications) {
@@ -287,11 +286,10 @@ TEST(or_implications, cohort_consumes_compacts_with_repeated_arguments) {
         const gl::StatementFlags* row = gl::lookupStatementFlags(
             ea.body.intKnownStatements, ea.body.nameMap,
             gl::StrSpan(compact), gl::StrSpan("main", 4));
-        ASSERT_TRUE(row != nullptr);
+        ASSERT_TRUE(row == nullptr);
     }
 
-    // Hash memory holds exactly the rules the on-the-spot construction
-    // produced: !in2(9,9,10) -> in(9,10) and !in(9,10) -> in2(9,9,10).
+    // Exclusion rules stay absent from hash memory; the source preserves arguments.
     bool k1 = false, k2 = false;
     const int32_t n = ea.body.overallHashMemory.originals.count();
     for (int32_t oi = 1; oi <= n; ++oi) {
@@ -304,6 +302,7 @@ TEST(or_implications, cohort_consumes_compacts_with_repeated_arguments) {
         if (prem == "!(in2[9,9,10])" && head == "(in[9,10])") k1 = true;
         if (prem == "!(in[9,10])" && head == "(in2[9,9,10])") k2 = true;
     }
-    ASSERT_TRUE(k1);
-    ASSERT_TRUE(k2);
+    ASSERT_TRUE(!k1);
+    ASSERT_TRUE(!k2);
+    ASSERT_EQ(ea.body.orImplications.sources.count(), 1);
 }

@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #include "global_memory_manager.hpp"
+#include "address_space.hpp"
 #include "../infra/diagnostics_log.hpp"
 
 #include "../parameters.hpp"
@@ -39,22 +40,118 @@
 
 namespace gl {
 
-    /// @brief Frees the reservation (test instances only — the process-wide
-    ///        instance lives until process exit).
+    /// @brief Intrusive free-slice directory stored in its own physical block.
+    /// @details Only blocks with free slices enter the manager's available list.
+    /// @invariant The sealed mutex protects these links and the live count.
+    struct SharedSealedBlock {
+        GlobalMemoryManager* manager;
+        SharedSealedBlock* previous;
+        SharedSealedBlock* next;
+        SealedSlice* free;
+        int32_t live;
+    };
+
+    /// @brief Compute shared sealed payload capacity from immutable pool geometry.
+    /// @details Headers and slice starts are sixteen-byte aligned. Sixteen slices
+    /// fit after the block header; larger allocations use ordinary arena blocks.
+    /// @return Positive contiguous capacity of each slice.
+    int32_t GlobalMemoryManager::sealedSliceCapacity() const {
+        assert(initialized());
+        const int32_t header = (sizeof(SharedSealedBlock) + 15) & ~15;
+        const int32_t stride = ((blockBytes() - header) / 16) & ~15;
+        const int32_t payload = stride - static_cast<int32_t>(sizeof(SealedSlice));
+        assert(payload > 0 && sizeof(SealedSlice) % 16 == 0);
+        return payload;
+    }
+
+    /// @brief Lease one slice without exposing peer output bytes.
+    /// @details Allocation links are protected by the sealed mutex. The ordinary
+    /// pool mutex is acquired only beneath it, never in the reverse order.
+    /// @return Empty exclusive slice with stable payload until release.
+    /// @invariant Every backing block is charged once as Sealed storage.
+    SealedSlice* GlobalMemoryManager::acquireSealedSlice() {
+        std::lock_guard<std::mutex> lock(sealedMutex_);
+        const int32_t capacity = sealedSliceCapacity();
+        if (sealedAvailable_ == nullptr) {
+            char* bytes = acquireBlock(PoolPurpose::Sealed);
+            auto* block = new (bytes) SharedSealedBlock{this, nullptr, nullptr, nullptr, 0};
+            const int32_t header = (sizeof(SharedSealedBlock) + 15) & ~15;
+            const int32_t stride = capacity + static_cast<int32_t>(sizeof(SealedSlice));
+            for (int32_t i = 15; i >= 0; --i) {
+                auto* slice = new (bytes + header + i * stride) SealedSlice{};
+                slice->block = block;
+                slice->capacity = capacity;
+                slice->next = block->free;
+                block->free = slice;
+            }
+            sealedAvailable_ = block;
+        }
+        SharedSealedBlock* block = sealedAvailable_;
+        SealedSlice* slice = block->free;
+        assert(slice != nullptr && !slice->leased && block->manager == this);
+        block->free = slice->next;
+        ++block->live;
+        if (block->free == nullptr) {
+            sealedAvailable_ = block->next;
+            if (sealedAvailable_ != nullptr) sealedAvailable_->previous = nullptr;
+            block->next = nullptr;
+        }
+        slice->next = nullptr;
+        slice->used = 0;
+        slice->leased = true;
+        return slice;
+    }
+
+    /// @brief Return a consumed slice and recycle an empty backing block.
+    /// @details The free list is independent of record order. Only the final
+    /// slice return releases the ordinary pool block; live peers are untouched.
+    /// @param slice Live exclusive slice from this manager.
+    /// @return Nothing.
+    /// @invariant No address enters proof identity or ordering.
+    void GlobalMemoryManager::releaseSealedSlice(SealedSlice* slice) {
+        std::lock_guard<std::mutex> lock(sealedMutex_);
+        assert(slice != nullptr && slice->leased);
+        SharedSealedBlock* block = slice->block;
+        assert(block != nullptr && block->manager == this && block->live > 0);
+        if (block->free == nullptr) {
+            block->previous = nullptr;
+            block->next = sealedAvailable_;
+            if (sealedAvailable_ != nullptr) sealedAvailable_->previous = block;
+            sealedAvailable_ = block;
+        }
+        slice->leased = false;
+        slice->next = block->free;
+        block->free = slice;
+        --block->live;
+        if (block->live == 0) {
+            if (block->previous != nullptr) block->previous->next = block->next;
+            else { assert(sealedAvailable_ == block); sealedAvailable_ = block->next; }
+            if (block->next != nullptr) block->next->previous = block->previous;
+            releaseBlock(reinterpret_cast<char*>(block), PoolPurpose::Sealed);
+        }
+    }
+
+    /// @brief Returns the reservation (test instances only — the
+    ///        process-wide instance lives until process exit).
     ///
     /// @details
     /// Deliberately does NOT assert `blocksInUse() == 0`: at process exit
     /// LBs are reclaimed by the OS rather than walked, so the process-wide
-    /// instance legitimately dies with blocks outstanding.
+    /// instance legitimately dies with blocks outstanding. A manager that was
+    /// never initialized holds no reservation.
     GlobalMemoryManager::~GlobalMemoryManager() {
-        ::operator delete(pool_);
+        if (pool_ != nullptr) releaseAddressSpace(pool_, cfg_.poolBytes);
     }
 
     /// @brief Make the one reservation and carve it into blocks.
     ///
     /// @details
     /// Asserts `isValidStaticMemoryConfig` and `isValidStaticPageConfig` on
-    /// the sizing triple. Idempotent when
+    /// the sizing triple. The reservation is aligned to 4096 bytes so full
+    /// operating-system-page-sized blocks can be registered for CUDA transfers.
+    /// It is address space only: `grantLocked` commits each block when it is
+    /// first carved (D-418), so the pool's commit charge
+    /// is its carve high-water, not `poolBytes`. Idempotent when
     /// called again with a byte-identical config (run modes may construct
     /// more than one `ExpressionAnalyzer` per process); asserts on a
     /// mismatching re-init — two different sizings in one process is a
@@ -78,8 +175,7 @@ namespace gl {
         }
         cfg_ = cfg;
         totalBlocks_ = cfg.poolBytes / cfg.blockBytes;
-        pool_ = static_cast<char*>(
-            ::operator new(static_cast<std::size_t>(cfg.poolBytes)));
+        pool_ = reserveAddressSpace(cfg.poolBytes);
         granted_.assign(static_cast<std::size_t>(totalBlocks_), false);
     }
 
@@ -99,10 +195,13 @@ namespace gl {
     /// demand. Exhaustion — every block carved and none recycled — is an
     /// assert naming `static_pool_bytes`; there is no fallback path.
     ///
+    /// @param purpose The consumer class the block serves (attribution
+    ///                only; the return must pass the same purpose).
     /// @return Pointer to the granted block of `blockBytes()` bytes.
     ///         Physical identity must not influence any observable
     ///         (I-107).
-    char* GlobalMemoryManager::acquireBlock() {
+    char* GlobalMemoryManager::acquireBlock(PoolPurpose purpose) {
+        relievePressureBeforeGrant(1);
         char* block = nullptr;
         std::function<void()> fire;
         {
@@ -110,8 +209,10 @@ namespace gl {
             assert(pool_ != nullptr);
             block = grantLocked();
             ++blocksInUse_;
+            blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
             if (blocksInUse_ > peakBlocksInUse_)
                 peakBlocksInUse_ = blocksInUse_;
+            noteGrantLocked(purpose, 1);
             ++grantsSinceBarrier_;
             if (grantTriggerThreshold_ >= 0
                 && grantsSinceBarrier_ >= grantTriggerThreshold_) {
@@ -353,11 +454,19 @@ namespace gl {
     /// block-aligned, and is currently granted (double release and foreign
     /// pointers are bugs we want at their origin).
     ///
-    /// @param block A pointer previously returned by `acquireBlock`.
-    void GlobalMemoryManager::releaseBlock(char* block) {
+    /// @param block   A pointer previously returned by `acquireBlock`.
+    /// @param purpose The purpose the block was granted under.
+    void GlobalMemoryManager::releaseBlock(char* block, PoolPurpose purpose) {
         std::lock_guard<std::mutex> lock(mutex_);
         returnLocked(block);
         --blocksInUse_;
+        blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
+        const int p = static_cast<int>(purpose);
+        assert(p >= 0 && p < kPoolPurposeCount);
+        --attribution_.inUse[p];
+        assert(attribution_.inUse[p] >= 0
+            && "pool purpose accounting: a block returned under a purpose it "
+               "was not granted under");
     }
 
     /// @brief Grant `count` blocks under ONE mutex acquisition — the bulk
@@ -369,10 +478,13 @@ namespace gl {
     /// calls, but the mutex is taken once. The trigger fires once outside the
     /// mutex when the batch crosses the armed threshold.
     ///
-    /// @param count Blocks to grant; >= 1.
-    /// @param out   Caller array of at least `count` `char*`; filled.
-    void GlobalMemoryManager::acquireBlocks(int32_t count, char** out) {
+    /// @param count   Blocks to grant; >= 1.
+    /// @param out     Caller array of at least `count` `char*`; filled.
+    /// @param purpose The consumer class the blocks serve (attribution only).
+    void GlobalMemoryManager::acquireBlocks(int32_t count, char** out,
+                                            PoolPurpose purpose) {
         assert(count >= 1);
+        relievePressureBeforeGrant(count);
         std::function<void()> fire;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -380,8 +492,10 @@ namespace gl {
             for (int32_t i = 0; i < count; ++i)
                 out[i] = grantLocked();
             blocksInUse_ += count;
+            blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
             if (blocksInUse_ > peakBlocksInUse_)
                 peakBlocksInUse_ = blocksInUse_;
+            noteGrantLocked(purpose, count);
             grantsSinceBarrier_ += count;
             if (grantTriggerThreshold_ >= 0
                 && grantsSinceBarrier_ >= grantTriggerThreshold_) {
@@ -401,15 +515,170 @@ namespace gl {
     /// block-aligned / granted), one accounting decrement — release-identical
     /// to `count` separate `releaseBlock` calls with the mutex taken once.
     ///
-    /// @param blocks Array of `count` previously granted pointers.
-    /// @param count  Blocks to return; >= 1.
+    /// @param blocks  Array of `count` previously granted pointers.
+    /// @param count   Blocks to return; >= 1.
+    /// @param purpose The purpose the blocks were granted under.
     void GlobalMemoryManager::releaseBlocks(char* const* blocks,
-                                            int32_t count) {
+                                            int32_t count,
+                                            PoolPurpose purpose) {
         assert(count >= 1);
         std::lock_guard<std::mutex> lock(mutex_);
         for (int32_t i = 0; i < count; ++i)
             returnLocked(blocks[i]);
         blocksInUse_ -= count;
+        blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
+        const int p = static_cast<int>(purpose);
+        assert(p >= 0 && p < kPoolPurposeCount);
+        attribution_.inUse[p] -= count;
+        assert(attribution_.inUse[p] >= 0
+            && "pool purpose accounting: blocks returned under a purpose they "
+               "were not granted under");
+    }
+
+    /// @brief Book `count` fresh grants under `purpose` and raise every
+    ///        high-water they cross.
+    ///
+    /// @details
+    /// Runs inside the grant's mutex section, after `blocksInUse_` and
+    /// `peakBlocksInUse_` were advanced. Raises the purpose's own high-water,
+    /// then — when the pool just reached a new lifetime high — copies the whole
+    /// current purpose split into `atPeak`, so the peak row describes one real
+    /// instant. The same snapshot is taken for the current step's high-water.
+    /// A handful of integer compares and, only on a new high, a copy of seven
+    /// counters: negligible next to the mutex the grant already pays.
+    ///
+    /// @param purpose The purpose of the granted blocks; not `Count`.
+    /// @param count   Blocks just granted; >= 1.
+    void GlobalMemoryManager::noteGrantLocked(PoolPurpose purpose,
+                                              int64_t count) {
+        const int p = static_cast<int>(purpose);
+        assert(p >= 0 && p < kPoolPurposeCount && count >= 1);
+        PoolAttribution& a = attribution_;
+        a.inUse[p] += count;
+        if (a.inUse[p] > a.purposePeak[p]) a.purposePeak[p] = a.inUse[p];
+        if (blocksInUse_ > a.peakBlocks) {
+            a.peakBlocks = blocksInUse_;
+            for (int k = 0; k < kPoolPurposeCount; ++k) a.atPeak[k] = a.inUse[k];
+        }
+        const int s = static_cast<int>(currentPhase_);
+        if (blocksInUse_ > a.phasePeak[s]) {
+            a.phasePeak[s] = blocksInUse_;
+            for (int k = 0; k < kPoolPurposeCount; ++k)
+                a.phaseAtPeak[s][k] = a.inUse[k];
+        }
+    }
+
+    /// @brief Set the prover step that subsequent grants are attributed to.
+    ///
+    /// @details
+    /// Takes the pool mutex, switches the current step, and lifts the new
+    /// step's high-water to the current block count when that is higher, with
+    /// the matching purpose split — a step that grants nothing still reports
+    /// the level it ran at.
+    ///
+    /// @param phase The step now current; not `Count`.
+    void GlobalMemoryManager::setAttributionPhase(PoolPhase phase) {
+        const int s = static_cast<int>(phase);
+        assert(s >= 0 && s < kPoolPhaseCount);
+        std::lock_guard<std::mutex> lock(mutex_);
+        currentPhase_ = phase;
+        PoolAttribution& a = attribution_;
+        if (blocksInUse_ > a.phasePeak[s]) {
+            a.phasePeak[s] = blocksInUse_;
+            for (int k = 0; k < kPoolPurposeCount; ++k)
+                a.phaseAtPeak[s][k] = a.inUse[k];
+        }
+    }
+
+    /// @brief Snapshot the pool's purpose and step attribution.
+    ///
+    /// @return A copy taken under the pool mutex.
+    PoolAttribution GlobalMemoryManager::attribution() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return attribution_;
+    }
+
+    /// @brief Printable name of a pool purpose.
+    ///
+    /// @param purpose A real purpose; asserts on `Count`.
+    /// @return A static string literal.
+    const char* poolPurposeName(PoolPurpose purpose) {
+        switch (purpose) {
+        case PoolPurpose::Unattributed:  return "unattributed";
+        case PoolPurpose::LbState:       return "lb_state";
+        case PoolPurpose::ScratchString: return "scratch_string";
+        case PoolPurpose::ScratchGen:    return "scratch_gen";
+        case PoolPurpose::Sealed:        return "sealed";
+        case PoolPurpose::GpuHost:       return "gpu_host";
+        case PoolPurpose::LbShell:       return "lb_shell";
+        case PoolPurpose::Count:         break;
+        }
+        assert(false && "poolPurposeName: not a real purpose");
+        return nullptr;
+    }
+
+    /// @brief Printable name of a prover step.
+    ///
+    /// @param phase A real step; asserts on `Count`.
+    /// @return A static string literal.
+    const char* poolPhaseName(PoolPhase phase) {
+        switch (phase) {
+        case PoolPhase::Outside:          return "outside";
+        case PoolPhase::Phase1:           return "phase1";
+        case PoolPhase::Phase2Execute:    return "phase2_execute";
+        case PoolPhase::Phase2Projection: return "phase2_projection";
+        case PoolPhase::Phase2Device:     return "phase2_device";
+        case PoolPhase::Phase2Finalize:   return "phase2_finalize";
+        case PoolPhase::Phase3:           return "phase3";
+        case PoolPhase::Barrier:          return "barrier";
+        case PoolPhase::Count:            break;
+        }
+        assert(false && "poolPhaseName: not a real step");
+        return nullptr;
+    }
+
+    /// @brief Install the grant-time pressure valve (see the header).
+    ///
+    /// @param valve Pressure relief to run before a grant below the floor;
+    ///              empty clears.
+    /// @param floorBlocks Free blocks a grant must leave; ignored when
+    ///                    `valve` is empty.
+    /// @return Nothing.
+    void GlobalMemoryManager::setPressureValve(std::function<void()> valve,
+                                               int64_t floorBlocks) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(!valve || floorBlocks >= 1);
+        pressureFloorBlocks_.store(valve ? floorBlocks : -1, std::memory_order_relaxed);
+        pressureValve_ = std::move(valve);
+    }
+
+    /// @brief Run the pressure valve when a grant of `count` blocks would
+    ///        leave fewer free blocks than the valve's floor.
+    ///
+    /// @details
+    /// Lock-free check on `blocksInUseHint_`; below the floor, copies the
+    /// valve under `mutex_` and calls it outside the mutex, unless this thread
+    /// is already inside a valve call (the re-entry is the outer call's own
+    /// relief). No valve installed is a defined no-op.
+    ///
+    /// @param count Blocks the caller is about to grant.
+    /// @return Nothing.
+    void GlobalMemoryManager::relievePressureBeforeGrant(int64_t count) {
+        thread_local bool inValve = false;
+        const int64_t floor = pressureFloorBlocks_.load(std::memory_order_relaxed);
+        if (floor < 0 || inValve) return;
+        const int64_t freeAfter = totalBlocks_
+            - blocksInUseHint_.load(std::memory_order_relaxed) - count;
+        if (freeAfter >= floor) return;
+        std::function<void()> valve;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            valve = pressureValve_;
+        }
+        if (!valve) return;
+        inValve = true;
+        valve();
+        inValve = false;
     }
 
     /// @brief Dequeue-or-carve one block and flag it granted; the
@@ -419,7 +688,9 @@ namespace gl {
     /// @details
     /// Recycled blocks are re-granted before fresh ones so the carve cursor
     /// is a high-water mark of simultaneous demand across BOTH grant paths.
-    /// Exhaustion — every block carved and none recycled — is an assert
+    /// A fresh carve commits the block (`commitAddressSpace`); a recycled
+    /// block is already committed. Exhaustion — every block carved and none
+    /// recycled — is an assert
     /// naming the instance's pool sizing constant (`static_pool_bytes`,
     /// `static_persistent_pool_bytes`, or `static_mail_pool_bytes`, per
     /// `cfg_.kind`); there is no fallback path.
@@ -481,6 +752,9 @@ namespace gl {
                 break;
             }
             block = pool_ + carveCursor_ * cfg_.blockBytes;
+            // Committed on first carve and never decommitted, so the pool's
+            // commit charge is its carve high-water (D-418).
+            commitAddressSpace(block, cfg_.blockBytes);
             ++carveCursor_;
         }
         const int64_t idx = (block - pool_) / cfg_.blockBytes;

@@ -225,8 +225,11 @@ namespace gl {
         ///                  absent).
         /// @param iteration Out: the carried witness-generation stamp (-1 when
         ///                  absent or none carried).
+        /// @param integrated Optional out: the sender's integrated mark
+        ///                  (`false` when absent; D-444).
         void getStatementFlag(int64_t key, int32_t& flagCode,
-            int32_t& iteration) const {
+            int32_t& iteration, bool* integrated = nullptr) const {
+            if (integrated != nullptr) *integrated = false;
             if (!arenaInited_) {
                 flagCode = kMailStatementFlagNone;
                 iteration = -1;
@@ -241,6 +244,8 @@ namespace gl {
             const int32_t packed = statementFlags_.valueAt(id);
             flagCode = unpackMailStatementFlagCode(packed);
             iteration = unpackMailStatementFlagIteration(packed);
+            if (integrated != nullptr)
+                *integrated = unpackMailStatementFlagIntegrated(packed);
         }
 
         /// @brief Whether the statements column is empty.

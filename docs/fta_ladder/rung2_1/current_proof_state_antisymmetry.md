@@ -526,7 +526,7 @@ commit ): a normal LB reaching a full E / !E pair at exact
 (`Memory::mainContradiction`), deactivates, its subtree deactivates at
 the post-join drain, and every theorem emission whose producer has a
 flagged self-or-ancestor is suppressed at the single-threaded seams
-(`drainUpdateGlobalDirect` via the producer now carried in the record;
+(`drainUpdateGlobalSingleChapter` via the producer now carried in the record;
 the induction promotion likewise). Genuine reductio parents never flag
 (the seed lives only in the child). Anchor-level pairs assert. 1327/1327
 unit tests (4 new).

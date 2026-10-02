@@ -9,25 +9,25 @@ and a commercial license — see https://generative-logic.com/license.
 > **Agent-oriented documentation.** This document is written for AI agents working with the GL codebase. Human readers: see the [paper](https://arxiv.org/abs/2508.00017) and the [README](../../../README.md). The document is intentionally dense, cross-linked, and weakness-explicit — agents thrive on that, humans usually don't.
 
 
-# Runtime measurement infrastructure for `performElementaryLogicalStep` `[DRAFT]`
+# Runtime measurement infrastructure for prover phases `[DRAFT]`
 
-> Status: Living. Permanent, off-by-default instrumentation layer for
+> Status: Living. Permanent, compile-time-gated instrumentation layer for
 > diagnosing pathological logical blocks (LBs) whose single hash burst
 > never finishes. Source-of-truth design document — every claim here
 > should match the code in `src/infra/rt_tracker.hpp` / `src/infra/rt_tracker.cpp` and the
-> `RT_SCOPE` call sites inside `performElementaryLogicalStep`.
+> `RT_SCOPE` call sites inside `performElemPhase1`, `performElem2` and `performElemPhase3`.
 
 ---
 
 ## Purpose
 
 Some LBs spend effectively forever inside a single hash burst — one call of
-`prover.cpp::ExpressionAnalyzer::performElementaryLogicalStep`. We cannot
+`prover.cpp` / `ExpressionAnalyzer::performElemPhase3` (or a call in either earlier phase). We cannot
 wait for the call to return to find out which LB is the offender and where
 inside it the time goes. The infrastructure here lets a human, while the
 run is still in progress, `ls .rt/` and immediately see (a) the list of
 pathological LBs, and (b) for each of them a per-section timing table that
-attributes the elapsed time to phases of `performElementaryLogicalStep`.
+attributes the elapsed time to phases of `performElemPhase1`, `performElem2` and `performElemPhase3`.
 
 Two design choices come from that purpose:
 
@@ -36,34 +36,48 @@ Two design choices come from that purpose:
  reflects the current state of the still-running call. The rewrite uses
  write-to-tmp + `std::filesystem::rename` so no reader ever sees a
  partially-written file.
-- **Per-call scope.** All measurements belong to **one** call of
- `performElementaryLogicalStep`. Nothing is accumulated across calls,
- across outer iterations, or across worker threads. A new call of the
- same LB in a later burst overwrites the file from scratch.
+- **Per-call snapshots.** Each logical-block snapshot describes **one** call of
+`performElemPhase1`, `performElem2` or `performElemPhase3`. A later call of the
+same LB overwrites that snapshot. Separately, the cross-burst aggregate retains
+exclusive section times across calls and workers, including calls too short to
+produce a snapshot; its worker-seconds are distinct from phase-barrier wall time.
 
-The non-goal is production telemetry. The infrastructure is gated by a
-compile-time macro that defaults to **off**, and when off it compiles to
-zero instructions.
+The non-goal is production telemetry. The infrastructure is gated by a compile-time macro. Its current setting and
+threshold are recorded below; when disabled it compiles to zero instructions.
 
 ---
 
+## Measurement hygiene — the sacred dump
+
+A runtime measurement is taken with the hashburst dump targeted at nothing:
+`isTargetLB` names an impossible innermost key (e.g. `__no_dump_target__`,
+full-chain shape kept), so no LB matches and 0 GB is written. A dumped
+block's phase 1 and phase 3 carry the dump I/O (measured 2026-09-11:
+~70 s on the 9.6 GB D2 dividend-block trace, ~10 s on a 1.9 GB trace),
+which contaminates both the `[RT-LB]` rows of that block and the batch's
+`Runtime prover`. A diagnosis run that needs the trace is a separate run
+and never the RT reference (AGENTS.md Rule 14).
+
+Follow the [runtime investigation playbook](rt_investigation_playbook.md) for reference selection, crash diagnosis, slowest-block selection and the approval boundary for fixes.
+
 ## Compile-time gate and tunables
 
-All four entries live at the top of
-[`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp) so they can
-be edited as a group.
+The switch and `RTMeasurementParameters` entries live in
+[`parameters.hpp`](../../../GL_Quick_VS/GL_Quick/src/parameters.hpp) so they are
+selected at compile time. Releases ship the layer off; a runtime investigation
+switches it on (`1`) with the five-second trigger below.
 
 ```cpp
 #define RT_MEASUREMENT 0                                  // master gate
-static constexpr int RT_TIME_TRIGGER_SECONDS = 120;       // dump threshold
+static constexpr int RT_TIME_TRIGGER_SECONDS = 5;       // dump threshold
 static constexpr int RT_MIN_PERCENTAGE       = 0;         // table filter (0 = every row)
 static constexpr int RT_MAX_SECTIONS         = 4096;      // per-call row storage (heap block per tracker)
 ```
 
-| Symbol | Type | Default | What it controls |
+| Symbol | Type | Current setting | What it controls |
 |---|---|---|---|
-| `RT_MEASUREMENT` | preprocessor macro | `0` | Master gate. `0` removes every `RT_SCOPE` call site at compile time; `1` activates them. Matches the `GL_DISINT_PROFILE` convention in [`compiler.hpp`](../GL_Quick_VS/GL_Quick/src/compiler.hpp). |
-| `RT_TIME_TRIGGER_SECONDS` | `static constexpr int` | `120` | A `.rt/<chain>.log` file is written only after the current `performElem2` (hashburst) call has been running this many wall-clock seconds without returning. Calls that complete under the threshold leave no artefact. |
+| `RT_MEASUREMENT` | preprocessor macro | `1` | Master gate. `0` removes every `RT_SCOPE` call site at compile time; `1` activates them. Matches the `GL_DISINT_PROFILE` convention in [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp). |
+| `RT_TIME_TRIGGER_SECONDS` | `static constexpr int` | `5` | A `.rt/<chain>.log` file is written only after the current phase-helper call has been running this many wall-clock seconds without returning. Calls that complete under the threshold leave no artefact. |
 | `RT_MIN_PERCENTAGE` | `static constexpr int` | `0` | Sections whose self-time share is below this percentage of total elapsed are folded into a single trailing "(other sections each < N % of total)" line instead of appearing as their own row. `0` shows every row. |
 | `RT_MAX_SECTIONS` | `static constexpr int` | `4096` | Capacity of the tracker's per-call `Section[]` row storage (one heap block per tracker, allocated in the constructor — a cold per-burst allocation, never on the per-scope path). |
 
@@ -76,17 +90,15 @@ build is byte-identical to one where the class never existed.
 
 ## Lifecycle — one call, one tracker
 
-The tracker is a stack-local object built at the top of
-`performElem2` (the phase-2 hashburst executor; the original single-LB
-orchestrator `performElementaryLogicalStep` was removed by the LB split).
-Its destructor fires when the call returns. Nothing leaks across calls and
-nothing crosses the thread boundary into the worker pool's join site. It
-records meaningfully only with `disable_lb_split` set (one part per LB), so
-the call is the LB's whole hashburst on one thread. Specifically:
+Each phase helper (`performElemPhase1`, `performElem2`, `performElemPhase3`)
+constructs its own per-call tracker. A split processor Phase 2 measures one part
+per call; phases 1 and 3 measure one logical block. CUDA work has separate device
+and barrier timing. The destructor contributes to the cross-burst aggregate;
+individual scope times remain local to the call. Specifically:
 
 - **Construction** records `t_start = steady_clock::now`, walks
  `body.parentMemory` to the root sentinel (empty `exprKey` + `nullptr`
- `parentMemory`, per the project conventions), and stores both the
+ `parentMemory`, per [Rule 12](../../../AGENTS.md)), and stores both the
  human-readable LB chain and a filesystem-safe sanitized form used as
  the eventual filename. No file is opened yet.
 - **Section storage** is a `Section[RT_MAX_SECTIONS]` block owned by the
@@ -108,11 +120,9 @@ the call is the LB's whole hashburst on one thread. Specifically:
  table is written to `.rt/<chain>.log.tmp` and renamed over the live
  filename. Subsequent crossings overwrite the file with the latest
  snapshot.
-- **Destruction** closes any still-open scope and attributes its
- remaining self-time. The destructor does not perform a final dump:
- the most recent `refreshIfTriggered` already wrote the latest
- state, and a call that finishes under the threshold leaves no
- artefact by design.
+- **Destruction** closes outstanding measurement state, contributes to the
+ cross-burst aggregate and, if a live dump was emitted, writes a final snapshot
+ marked finished. Calls that never reached the trigger leave no per-call file.
 
 A new call to the same LB in a later burst starts a fresh tracker; the
 older `.rt/<chain>.log` is overwritten the first time the new call
@@ -137,14 +147,29 @@ the `-Isrc` include root), and callers in `src/` do the same.
 ## Relationship to the hashburst dump (Rule 14)
 
 The hashburst dump in
-[`hashburst_dump.cpp`](../GL_Quick_VS/GL_Quick/src/infra/hashburst_dump.cpp)
+[`hashburst_dump.cpp`](../../../GL_Quick_VS/GL_Quick/src/infra/hashburst_dump.cpp)
 remains untouched. It is a separate diagnostic tool, with separate
 output (), separate targeting (a hard-coded
 LB chain match), and separate semantics (state snapshot, not timing).
-The RT infrastructure here adds a parallel mechanism for timing
-diagnosis; the two never share files, gates, or code paths. Edits to
-the hashburst dump still require explicit user consent per
-the project conventions; edits to the RT infrastructure do not.
+The ordinary RT aggregate is an independent timing mechanism. The optional
+`GL_FTA_BLOWUP_TRACE` per-call audit in `rt_tracker.cpp`, `RTTracker`, uses
+the sacred matcher to select blocks and writes its section records to
+; it does not change the sacred dump format. The complete-chain
+`isTargetLB` matcher is retargetable under Rule 14; all other sacred dump edits
+require explicit user consent. Runtime observation does not authorize changes
+to proof behavior.
+
+`GL_RT_AUDIT_CHAIN` selects one block for the same per-call section audit
+without the dump, a rebuild or a temporary matcher: its value is the block's
+complete chain, either as `[RT-LB]` rows print it (leaf to root, ` <- `
+separators, ending in `(root)`) or as the audit's own `chain=` field prints it
+(root to leaf, ` -> `). `RTTracker::auditChainSelects` compares every element;
+a partial chain selects nothing. The rows, in the `[FTA-RT-CALL]` / `[FTA-RT]`
+format, go to their own , which `main.py` truncates once
+per run, so no other writer holds the file. Unlike `GL_FTA_BLOWUP_TRACE` it
+starts none of the dump target's admission observers, so a dump-free run with
+it yields an uninflated section split (`.scripts/rt_audit_tree.py` renders the
+inclusive tree).
 
 ---
 
@@ -153,7 +178,7 @@ the project conventions; edits to the RT infrastructure do not.
 Two cooperating types in `namespace gl::rt_tracker`:
 
 - **`RTTracker`** — the per-call state. Owns the fixed
- `Section sections_[RT_MAX_SECTIONS]` array, the open-scope index
+ heap-allocated `Section[RT_MAX_SECTIONS]` block, the open-scope index
  stack, the wall-clock start time, and the human-readable / sanitized
  chain strings. Non-copyable, non-movable; only stack construction
  is supported. Two constructors: a production one that reads
@@ -161,7 +186,7 @@ Two cooperating types in `namespace gl::rt_tracker`:
  display-threshold defaults, and a test-only one that takes both
  values explicitly so unit tests in `src/tests/test_rt_tracker.cpp`
  can exercise the trigger logic in milliseconds rather than waiting
- the production 120 s.
+ the production five-second threshold.
 - **`RTScope`** — RAII helper. Constructor calls
  `RTTracker::openSection_(label)`, destructor calls
  `RTTracker::closeSection_(index)`. Non-copyable. Holds only a
@@ -292,11 +317,10 @@ showing how many small rows were dropped and what fraction of the
 call they collectively account for. A run with `RT_MIN_PERCENTAGE
 = 0` shows every row and never emits the fold-down line.
 
-The header is reprinted on every refresh. The `(still running)`
-annotation in the elapsed line reflects the design: a tracker that
-returned normally does not refresh again on the way out, so the
-"final" file always reads as a mid-call snapshot. The final wall
-time can be reconstructed by re-running with the trigger lowered.
+The header is reprinted on every refresh. A live snapshot says
+`(still running)`; the destructor writes a final `(finished)` snapshot
+when the call crossed the trigger. Calls below the trigger still
+contribute to the aggregate.
 
 ## Where the scopes live
 
@@ -307,27 +331,51 @@ for all active LBs → phase 2 for all → phase 3 for all,
 [D-114](../40_decisions.md#d-114)).
 The single-LB orchestrator `performElementaryLogicalStep` (which called all three
 inline and declared the per-call tracker) became dead under the barriered driver
-and has been **removed**. The per-call `RT_TRACKER_DECL(body)` is now homed in
-`performElem2` (the hashburst executor), so one tracker measures one hashburst.
+and has been **removed**. Each of `performElemPhase1`, `performElem2`, and
+`performElemPhase3` owns a per-call `RT_TRACKER_DECL(body)`.
 The phase helpers (`performElemPhase1`, `performElem2`, `performElemPhase2`,
 `performElemPhase3`) bracket their work with `RT_SCOPE_HERE` (and the fixpoint
 loop with `RT_NOTE_ITERATIONS_HERE`), which resolve the active tracker from the
 thread-local `g_currentThreadTracker`.
 
-> **RT scope (performElem2 home, [D-110]).** Because the
-> tracker lives in `performElem2`, only the rows owned by `performElem2` (the
-> `REQGEN_*` batches and `FIXPOINT_LOOP`) record. Rows owned by the other sweeps —
-> `PRE_FIXPOINT_MAIL_ABSORB` (phase 1), `MERGE_FIRING_RECORDS` (phase-2 finalize),
-> and the phase-3 rows — run with no tracker active and **do not record**. This is
-> by design: RT diagnoses the hashburst, where a runaway LB spends its time;
-> phases 1/3 are light. RT records only under `disable_lb_split` (one part per LB);
-> without it an LB split into N parts spawns N `performElem2` calls that would
-> collide on one `.rt/<chain>.log`. The labelled scopes, in execution order (with
-> the owning phase helper):
+Canonical comparison coverage includes two whole-function scopes in
+`prover.hpp`: `CANONICAL_MATCH_QUERY` surrounds `matchingCanonicalTemplates`
+from entry through every return, and `CANONICAL_MATCH_INDEX_SYNC` surrounds
+`ensureCanonicalTemplateIndex`. `CANONICAL_MATCH_REBUILD` measures only each
+projection-rebuild iteration inside the query; it does not cover its enclosing
+class scans, pending selection, sorting or result collection. The existing
+`CANONICAL_CLASS_VIEW` surrounds the whole `rebuildCanonicalScope` function.
+`CANONICAL_COMPARISON_INVALIDATION` measures the complete call to
+`CanonicalUseIndexes::invalidateComparisonMember`, including its token decoding,
+all comparison stores and queue updates, inside the class-view timer.
+Whole-function worker time is the sum of a scope's exclusive row and all its
+descendant rows. Nested function totals overlap and must not be added together.
+
+`CANONICAL_REFRESH_CLASSES` covers all of `refreshCanonicalClasses`, including
+class-view rebuilding, the one-pass write of the rebuilt runs
+(`CANONICAL_RUNS_FLUSH`, the whole of `flushCanonicalRuns`) and the
+`CANONICAL_DEPENDENT_IDENTITIES` envelope.
+The dependent consumers have whole-function scopes:
+`CANONICAL_PROCESSED_OR_LEDGER`, `CANONICAL_BRANCHED_OR_SOURCES`,
+`CANONICAL_EXISTENCE_COMPLETIONS`, `CANONICAL_SOURCE_USES`,
+`CANONICAL_WATCH_LEDGERS` and `CANONICAL_ANCESTOR_NEGATIONS`.
+`CANONICAL_SOURCE_KEY_REFRESH` covers each source-key dependency/index refresh.
+`CANONICAL_OR_CACHE_INVALIDATION` covers the inline cache-invalidation loop in
+`refreshCanonicalClasses`. Aggregate paths distinguish calls inside dependent
+maintenance from calls through other entry points. Consumer figures include
+their complete nested work; filter by the containing envelope to dissect that
+envelope without attributing other callers' work to it.
+
+Phase 1 and Phase 3 record their full call trees. Processor Phase 2 records
+each `performElem2` call; CUDA execution and phase-2 finalization have separate
+timers. The aggregate sums exclusive worker elapsed time, including any wait
+inside a scope; it is not operating-system CPU execution time. The per-call
+snapshot filename identifies the chain, so it is not a complete history of
+successive calls or split parts. The labelled scopes, in execution order:
 
 | # | Label | Owner | Brackets |
 |---|----------------------------------------|-------|----------|
-| 1 | `PRE_FIXPOINT_MAIL_ABSORB` | `performElemPhase1` | `body.changedClassesThisStep.clear`, the workingMemory / externalStatements / intExternalStatements clears, and the pre-burst `standardProcessing` call. |
+| 1 | `PRE_FIXPOINT_MAIL_ABSORB` | `performElemPhase1` | The working-memory / external-statement reset and pre-burst `standardProcessing` call. Class deltas survive to their consumers. |
 | — | `DOOR_CANONICALIZE` | `addExprToMemoryBlock` (nested) | The canonical door's `canonicalFormAtScope` call plus the raw-line / bridge / skip bookkeeping for a changed deposit — inside every absorb row's door call (both `standardProcessing` calls) and every direct deposit. |
 | 2 | `REQGEN_CE_MODE` | `performElem2` | The `if (ceFilteringActive)` branch — single call to `generateEncodedRequestsStatic` at stump length 0. |
 | 3 | `REQGEN_BATCH1_WORKING_MEMORY` | `performElem2` | Batch 1: `body.workingMemory` × local statements. Inside the `if (!body.workingMemory.encodedMap.empty)` guard, so the row only appears when the batch fires. |
@@ -340,9 +388,9 @@ thread-local `g_currentThreadTracker`.
 | — | `STATIC_REQGEN_GROW_SEARCH` | `generateEncodedRequestsStatic` (nested) | The DFS candidate enumeration: per-node request gates, key build, growth + record owner-set probes, `baseCandidates` accumulation. For an EMPTY obligatory stump (CE mode / whole-key batches) emission happens inside this scope. `iter` = the filtered statement count. |
 | — | `STATIC_REQGEN_PAIRING_MERGE` | `generateEncodedRequestsStatic` (nested) | The PAIRING merge — every base candidate × every obligatory (mandatory) stump: scope fold, duplicate scan, `base ++ stump` name sort, `preEvaluateFromEncoded` whole-key probe, emit (dedup + arena copies). `iter` = the base-candidate count. Empty for stump length 0 and for the mandatory-containment mode, which has no merge at all. |
 | — | `MERGE_FIRING_RECORDS` | `performElemPhase2` | The post-pass `applyFiringRecords` deposit merge. |
-| 9 | `POST_FIXPOINT_MAIL_FLUSH` | `performElemPhase3` | The post-burst `standardProcessing` call, `sendMail`, and the three `body.mailOut.*.clear` calls. |
+| 9 | `POST_FIXPOINT_MAIL_FLUSH` | `performElemPhase3` | The post-burst `standardProcessing` call. Outgoing mail accumulates until the single-threaded commit barrier. |
 | 10| `REACT_TO_HYPO` | `performElemPhase3` | Just the `reactToHypo(body)` call. |
-| 11| `END_OF_BURST_SANITIZE` | `performElemPhase3` | `sanitizeHashMemory`, `sanitizeToBeProved`, and the `body.pendingWipeScopes` drain. |
+| 11| `END_OF_BURST_SANITIZE` | `performElemPhase3` | Goal sanitization, goal and OR lifecycle drains, pending subtree wipes, and ancestor-known cleanup. Hash-memory sanitization is handled by the install and equivalence-class hooks. |
 
 ### Phase-1/3 atomic split (rt_investigation extension)
 
@@ -358,8 +406,11 @@ scopes, grouped by owner:
  under `END_OF_BURST_SANITIZE`: `SANITIZE_TOBEPROVED`,
  `DRAIN_DISPROVED_GOALS`, `DRAIN_DEAD_OR_BRANCHES`,
  `RETIRE_DUPLICATE_OR_COHORTS`, `FREEZE_RESOLVED_OR_BRANCHES`,
- `DRAIN_PENDING_OR_RELEASES`, `WIPE_SUBTREES`,
- `SWEEP_ANCESTOR_KNOWN_ROWS`.
+ `DRAIN_PENDING_OR_RELEASES`, `RETIRE_SETTLED_IMPLICATION_SUBPROOFS`,
+ `WIPE_SUBTREES`,
+ `SWEEP_ANCESTOR_KNOWN_ROWS` (with `SWEEP_SCAN` / `SWEEP_REMOVE` nested; the
+ state-0 statement remover reports `RMEXPR_LOCAL_ERASE`,
+ `RMEXPR_ENCODED_ERASE`, `RMEXPR_WATERLINES`).
 - **`standardProcessing`:** `SP_ABSORB_ORIGINS_EXT` / `_INT` (with the
  nested `SP_ABSORB_EQORIGIN_SYNC`), `SP_ABSORB_STMTS_EXT` / `_INT`
  (`iter` = mailed statement count; nested `SP_ABSORB_STMT_ROW`,
@@ -384,7 +435,12 @@ scopes, grouped by owner:
  `AEC_HOOK_REJECTED_INTEGRATION`, `AEC_HOOK_ADMISSION_INTEGRATION`,
  `AEC_HOOK_REJECTED_ALGEBRA`, `AEC_HOOK_REJECTED_ORDIS`,
  `AEC_HOOK_ADMISSION_ALGEBRA`, `AEC_HOOK_COMPACT_IMPLICATIONS`
- (`AEC_PASS2` wraps the non-delta class loop); the statement batch
+ (`AEC_PASS2` wraps the non-delta class loop); inside the compact hook
+ `HOOK_CANONICALIZE`, `HOOK_REMOVE_EXPANSION`, `HOOK_EXPAND_CANONICAL`,
+ `HOOK_EXPAND_UNCHANGED`, with `RCE_REMOVE_RULES` / `RCE_EXPANDED_ERASE`
+ under the removal and `FINISH_EXPANDED_ERASE` at the apply's end; inside
+ the rejected-ordis hook's un-know `RESET_LEVELS_ERASE`,
+ `RESET_KNOWN_ERASE`, `RESET_VECTOR_SCANS`; the statement batch
  `AEC_BATCH_TABLE` (once per apply), `AEC_BATCH_SCAN`,
  `AEC_BATCH_CLOSURE`, `AEC_BATCH_DRAIN` (with `AEC_BATCH_ORDIS` nested
  under it), and the per-row `AEC_NEGEQ_EXPANSION`.
@@ -394,18 +450,29 @@ scopes, grouped by owner:
 - **`dischargeToBeProved`:** `DTP_DELTA_ROW` (per delta row),
  `DTP_ANCESTOR_GOAL_SCAN`; `iter` on `SP_DISCHARGE_TOBEPROVED` = delta
  snapshot size.
-- **`disintegrateExpr2`:** `DISINT_PREPARE_CORE`, `DISINT_CORE`,
- `DISINT_PASSES_AB` (Pass A/B plus the rejection commits and the
- or/existence tail).
-- **`cleanUpExpressions`** (under `SP_CLEANUP_EXPRESSIONS`): `CUE_VALIDITY`
- (one per deferred validity sweep; `iter` = the classes at that validity,
- probed per target-validity row in class order) with children
- `CUE_LOCAL_FILTER` and `CUE_LOCAL_DELTA_FILTER` (`filterIterations` over
- the local registry / its delta; `iter` = rows walked), `CUE_LOCAL_REBUILD`
- (packed-key set re-mint + the two local lists rebuilt from the kept rows),
- `CUE_STMTS_FILTER` (the statement registry walk; `iter` = rows walked),
- `CUE_STMTS_REBUILD`, and `CUE_WATERLINE_REPAIR` (only when a row was
- dropped).
+- **`disintegrateExpr2`:** compare the complete `DOOR_DISINTEGRATE`
+ subtree across versions. Existing `CORE_EXISTENCE_PATH` /
+ `CORE_EXISTENCE_RECURSE` and history scopes remain. The former
+ `CORE_INSTRUCTION_RENAME` copy loop is replaced by instruction views. `SOURCE_DEMAND_FILTER` covers lookup maintenance and
+ matching-key collection; `SOURCE_DEMAND_ORDER_AND_WAKE` covers the
+ unchanged ordered replay path. Investigation-only discovery/publication/
+ retirement subdivisions are removed before final optimization verification.
+ Their saved profiles remain evidence; changing child scopes changes the
+ wrapper's exclusive time, so exclusive wrapper rows are not comparable.
+- **`cleanUpExpressions`** (under `SP_CLEANUP_EXPRESSIONS`; one call per
+ step sweeps every scheduled scope): `CUE_CLASS_VIEWS` (the class views of
+ all scheduled scopes; `iter` = classes), `CUE_GROUP_ROWS` (one walk of each
+ of the three registries grouping the rows of the scheduled scopes by scope;
+ `iter` = rows walked), `CUE_VALIDITY` (one per scheduled scope that holds
+ classes; `iter` = the classes at that scope, probed per row in class order)
+ with children `CUE_LOCAL_FILTER`, `CUE_LOCAL_DELTA_FILTER` and
+ `CUE_STMTS_FILTER` (`filterIterations` over that scope's own rows in the
+ local registry, its delta and the statement registry; `iter` = the scope's
+ rows), then once per call `CUE_LOCAL_REBUILD` (packed-key set re-mint + the
+ two local lists rebuilt from the kept rows), `CUE_STMTS_REBUILD`, and
+ `CUE_WATERLINE_REPAIR` (only when a row was dropped). Profiles taken before
+ the single-pass cleanup walked and rebuilt the whole registries inside every
+ `CUE_VALIDITY`, so their `CUE_*` rows are not comparable row by row.
 - **`installExpandedImplication`** (under `DOOR_INSTALL_IMPLICATION`):
  `INSTALL_CANON_GATE` (self = `canonicalizeCompact`; nested
  `INSTALL_CANON_EXPAND` when K* is expanded instead, with
@@ -462,8 +529,9 @@ scopes, grouped by owner:
  `LMV_SERIALIZE` / `LMV_LOOKUP` / `LMV_WRITE`; `addOwnerToRun` (whole-key
  owners, copy owners, the originals chain, remaining-args edges) =
  `OWNER_LOOKUP` / `OWNER_MERGE` (`iter` = existing owners peeked and
- copied) / `OWNER_WRITE`; `addShortSubkeyOwner` = `SKS_LOOKUP_PEEK` /
- `SKS_BUILD` (`iter` = existing owners) / `SKS_WRITE`;
+ copied) / `OWNER_WRITE`. Short subkeys use `ensureEmptySubkeyRecord`
+ and `stageEmptySubkeyRecord`: fixed empty records with no owner merge;
+ their install calls remain under `HM_SK_WRITE_SHORT` / `ADM_SK_WRITE_SHORT`.
  `mergeSubkeySignatures` = `SKM_SIGNATURE` / `SKM_LOOKUP_PEEK` /
  `SKM_MERGE` (`iter` = existing signatures + owner pairs walked) /
  `SKM_WRITE`; `insertRemainingArgsNormKeyBatch` = `RAB_SORT_DEDUP` /
@@ -533,7 +601,7 @@ count and the summed burst lifetimes ("burst-seconds"; bursts run in
 parallel, so the sum exceeds wall-clock); rows carry cumulative seconds,
 % of total attributed time, hits, and iteration counts.
 
-**Wall lines and the `wall~s` column.** `proveKernel` registers each iteration's barrier-to-barrier wall for all three phases (`addRtPhaseWallSeconds` — phases 1 and 3 at the post-phase-3 barrier, phase 2 at the phase-2 barrier on both routes). The header prints per phase tree `attributed / wall = N× parallel`, the sweep's effective parallelism; a CUDA batch attributes 0 s to its phase-2 tree (the device runs outside every scope), so that line reads as the device wall alone. `%ph` is a row's share of its own phase tree and `wall~s` is that share times the phase's wall — the row's estimated single-timeline contribution under uniform parallelism within the phase.
+**Wall lines and the `wall~s` column.** `proveKernel` registers each iteration's barrier-to-barrier wall for all three phases (`addRtPhaseWallSeconds` — phases 1 and 3 at the post-phase-3 barrier, phase 2 at the phase-2 barrier on both routes). The header prints per phase tree `attributed / wall = N× parallel`, the sweep's effective parallelism; a CUDA batch attributes 0 s to its phase-2 tree (the device runs outside every scope), so that line reads as the device wall alone. `%ph` is a row's share of its own phase tree and `wall~s` is that share times the phase's wall — the row's estimated single-timeline contribution under uniform parallelism within the phase. The three phase walls do not cover the iteration's single-threaded seams (the post-Phase-2 heap collection, the `[RT-LB]` report, the mail commit sweep, the post-join drains including the proved-theorem drain, and the discharge barrier); no tracker row covers them either. Their total per iteration is the run log's `dt` (the `proveKernel` wall) minus the three phase walls of the same iteration (`[PHASE2-TIMING]`, `[PHASE13-TIMING]`).
 
 The aggregate is **split-safe**: at `splitCount > 1` each of an LB's N
 parts builds its own tracker and their sections sum correctly in the
@@ -554,12 +622,13 @@ one documented exception to I-59's per-call scope.
 #define RT_MEASUREMENT 1                                  // was 0
 ```
 
-and set `disable_lb_split: true` in the batch's `prover_parameters` (RT
-records only with one part per LB — see the performElem2-home note above).
-Then rebuild (`MSBuild.exe GL_Quick.sln -p:Configuration=Release` on
-Windows; `make -j$(nproc)` on Linux). Every `RT_SCOPE_HERE` call site in
-`performElem2` becomes active; the rest of the binary is byte-identical to
-the production build apart from the tracker's constructor / destructor calls.
+Keep the production split configuration for the aggregate and phase-1/3
+measurements. Only phase-2 per-call files have the split-part filename
+collision described above; disabling splitting changes the measured workload.
+If the compile-time setting changes, rebuild using the normalized Windows
+`MSBuild -t:Rebuild` command in the repository build instructions. Reuse an
+executable whose native source and build inputs already match. The enabled
+scopes observe the existing phase paths without changing proof decisions.
 
 **Probing with a low trigger.** During investigation, lower the trigger
 to capture shorter LBs (e.g. 5 seconds):
@@ -571,15 +640,9 @@ static constexpr int RT_TIME_TRIGGER_SECONDS = 5;         // was 120
 Then rebuild and re-run. Every LB whose `performElem2` call (its hashburst)
 exceeds 5 seconds writes a snapshot to `.rt/<sanitized-chain>.log`.
 
-**Watching mid-run.** From a separate terminal:
+**Watching mid-run requires explicit authorization.** Rule 29 permits completion-driven notification by default; it does not authorize live process, timing or log inspection. Use the [completion transport protocol](agent_execution_queue.md#completion-watcher-lifetime-and-transport). If the maintainer explicitly requests live timing, inspect the exact full-chain files needed for the investigation and preserve those snapshots with the run evidence.
 
-```bash
-watch -n 1 'ls -la .rt/ ; echo ; cat .rt/*.log 2>/dev/null | head -40'
-```
-
-The `.rt/` listing grows as bad LBs cross the threshold; each file's
-header banner shows `(still running)` and the table refreshes on every
-scope boundary inside the LB's call.
+The `.rt/` listing grows as slow blocks cross the threshold. Snapshot writes are throttled and require a scope boundary or explicit refresh; a long inner operation can leave a `(still running)` file stale. Its displayed elapsed time is the last observed duration, not the operation's current or final duration. Diagnostic printing and dump I/O are excluded from the runtime reference.
 
 **Drilling deeper.** Once a phase row dominates a file (e.g.
 `REQGEN_BATCH3_LOCAL_X_MAIL` at 80 % of total), add a nested set of
@@ -589,11 +652,11 @@ new inner rows show their own work and the original outer row drops to
 just the time outside any nested scope. The first inner pass typically
 identifies the offender within one or two iterations.
 
-**Restoring production.** Revert the `parameters.hpp` edits
-(`RT_MEASUREMENT = 0` and `RT_TIME_TRIGGER_SECONDS = 120`) and set
-`disable_lb_split` back to `false`, rebuild, verify with
-`gl_quick.exe --unit-tests` that all unit tests pass, and confirm `.rt/`
-stays empty across a normal run.
+**Completion.** Preserve the requested measurement configuration and report
+any diagnostic target or temporary instrumentation that remains. Turning off
+measurement or undoing configuration edits requires the maintainer's
+authorization. A future runtime measurement must first target the sacred dump
+at nothing; its diagnostic run stays separate from the timing reference.
 
 **Clean-slate per session.** `main.py` wipes `.rt/*.log` at start so
 each pipeline run begins with no leftover files. The C++ side never
@@ -601,6 +664,18 @@ wipes the folder; sibling `gl_quick.exe` invocations within the same
 `main.py` session do not overwrite each other's empty state.
 
 ---
+
+## Detailed Phase 2 timeline observations
+
+`GL_PHASE2_RT=1` enables the separate, permanent NVTX observation layer in `infra/phase2_trace.hpp` / `Phase2TraceScope`. Absent or `0` disables it; other values assert. The process setting is immutable after first use. Stack-owned scopes maintain thread-local nesting, close at existing boundaries, and add no CUDA synchronization, proof-state mutation, interner mint or capacity change. The existing `RTTracker`, aggregate and sacred dump are untouched.
+
+The batch range uses the actual executable batch argument; unit tests return before that range. `ExpressionAnalyzer::proveKernel` assigns one observation-only call number, brackets the complete Phase 2 window, and nests pass/chunk ranges. Worker/task and `performElemPhase2` finalization ranges preserve separate thread timelines. CUDA ranges cover projection upload, filter/sort, generation, ordering, owner/value evaluation, firing bounds/materialization and output columns. Growth has nested registered-host-page, counter-read/reset, request-flush, completed-level, retained-frontier, prefix preparation/selection, frontier-page, prefix-window, candidate-window and survivor-window ranges. `Phase2SealingArena` brackets the full stream, request drains and download/sealing. CUDA builds retain line information for profiler source correlation while preserving optimization.
+
+The permanent diagnostics stream contains `[PHASE2-IDENTITY]`, `[PHASE2-LB]`, `[PHASE2-TASK]`, `[PHASE2-GPU-TASK]`, `[PHASE2-GPU-REQUEST-KIND]` and `[PHASE2-TASK-WORK]` only when enabled. Identity is process + call + pass + chunk + task; the call's LB ordinal resolves to its full chain through the root. GPU task records include native LB identity, stump ordinal/total, stump count and request-batch span. Request-kind numbers are the `DeviceRequestBatchKind` enum; memory numbers are `DeviceHashMemoryKind`. Final task and LB work use the existing deterministic subkey count, with unthresholded `[PHASE2-LB-WORK]` totals for every active block. Prefix execution windows are annotated `GL.Phase2.LBWindow` only after every resident host frontier node maps to the same GPU LB; other windows use `GL.Phase2.MixedLBWindow`. GPU growth time can then be attributed for homogeneous windows. Nested request drains and flushes are excluded because they can process requests accumulated from earlier LBs; mixed windows and global operations also remain shared cost. The analysis publishes the measured attribution fraction. Finalization ranges retain their native LB ordinal. These records do not read proof history or select execution.
+
+`.scripts/phase2_timeline_report.py` consumes an exported Nsight Systems SQLite database. It reports kernel counts/durations/resource metadata, copies/bytes, CUDA API intervals and both summed durations and interval unions. GL NVTX ranges add per-call wall intervals and inclusive/exclusive host-stage totals; CUDA API correlation assigns each kernel once to its innermost launch range, even if asynchronous execution starts after that host range closes. Missing GL ranges or unmatched launches remain explicit. Host sums across worker threads can overlap; synchronous CUDA API time includes waiting for preceding kernels. Neither API totals nor warp-stall percentages may be added to device kernel duration as exclusive elapsed time.
+
+For an FTA-only Systems capture use the existing full `main.py --GPU` path with NVTX capture `FTA`, `GL_PHASE2_RT=1`, and `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` because these scope labels use ASCII messages rather than registered-string handles. Nsight Compute uses `--nvtx --nvtx-include FTA/`, a measured kernel/launch selection and kernel replay. Counter measurements and timeline observations are separate runs; cache/clock controls and profiling overhead belong in the run record. Full block families and expression buckets remain unchanged. NVTX capture and hardware-counter semantics follow the [Systems guide](https://docs.nvidia.com/nsight-systems/UserGuide/) and [Compute guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/).
 
 ## Weaknesses
 
@@ -616,9 +691,9 @@ wipes the folder; sibling `gl_quick.exe` invocations within the same
 - **`RT_MAX_SECTIONS = 4096` is a hard cap.** Adding deeply nested scopes
  (the design anticipates two or three levels deep) can in principle
  exhaust the array. The class asserts on overflow per
- the project conventions; no silent dropping.
-- **Cross-call comparison is not supported.** Each `performElem2`
- call rewrites its file from scratch; if the same LB hangs for two
+ [Rule 19](../../../AGENTS.md); no silent dropping.
+- **Per-call files do not support cross-call totals.** Each triggered phase-helper
+ call rewrites the shared file from scratch; if the same LB hangs for two
  bursts in a row, only the second burst's table survives. This is by
  design (per-call scope is the contract) but means a longitudinal
  comparison requires `cp .rt/<chain>.log .rt/<chain>__burst1.log` by
@@ -635,6 +710,31 @@ wipes the folder; sibling `gl_quick.exe` invocations within the same
  verifying that the expected section labels appear, because the call
  boundaries are pure source-level annotations and any
  drift is caught by ordinary review.
+
+
+### Operating-system CPU accounting
+
+Selected opt-in scopes (the Phase 2 coordinator, native executor workers, projection workers and per-LB finalizers) also read current-thread user/system CPU counters and emit `GL.Phase2.ThreadCpu.*` NVTX marks before closing. Windows uses `GetThreadTimes` and `QueryThreadCycleTime`; Linux uses `getrusage(RUSAGE_THREAD)` and explicitly has no cycle count. Failed operating-system calls assert. `phase2_trace.cpp` / `readPhase2ThreadCpu` never inspects or synchronizes CUDA. Disabled observation scopes make no accounting calls.
+
+These CPU counters exclude periods when their thread is not executing, but include the observer itself. Units are nanoseconds; actual accounting resolution is supplied by the operating system and short scopes can report zero. Windows cycles are retained as cycles and never converted to seconds. `.scripts/phase2_timeline_report.py` / `thread_cpu_summary` subtracts nested measured scopes on the same thread for exclusive totals. Different threads can execute concurrently, so worker CPU seconds are not elapsed Phase 2 seconds. CPU time in CUDA driver calls can be actual host execution while a synchronous call also waits for the device; timeline overlap remains a separate measurement.
+
+
+### Reconcile calculation and waiting without double counting
+
+For a complete measured Phase 2 coordinator interval, let `W` be elapsed seconds, `C` its operating-system user plus system CPU seconds, `A` the union of coordinator CUDA API intervals, `G` the union of visible device activities and `O` the intersection of those API and device intervals. All intervals must be clipped to the same Phase 2 windows.
+
+The four elapsed-time cells are `O`, `A - O`, `G - O`, and `W - A - G + O`: inside a CUDA call with/without device activity, and outside CUDA calls with/without device activity. They partition elapsed time. Neither `A` nor `C` may be added to `G` as independent work.
+
+Operating-system CPU accounting also gives bounds without CPU instruction sampling. CPU execution inside CUDA calls lies between `max(0, C - (W - A))` and `min(C, A)`; outside those calls it lies between `max(0, C - A)` and `min(C, W - A)`. Apply these at a sufficiently coarse aggregation where accounting granularity is meaningful. `W - C` measures time not accounted as coordinator execution, not every form of waiting: active driver waits still consume CPU. GPU kernel duration includes memory dependencies and other execution stalls; per-warp stall metrics do not form an additive elapsed-time partition because other warps may run simultaneously.
+
+Detailed hardware counters are collected on selected launches through `main.py` using Nsight Compute with a named FTA NVTX filter. Keep the selected source/input/executable identity, matching launch ordinal, launch dimensions, replay settings, clock/cache controls and complete report. The standard fingerprint-gated shortcut can replay the exact full-run FTA boundary for a counter sample; full-pipeline certification remains a separate gate. A full counter set can be far more intrusive than timeline tracing and its runtime must not serve as a production regression result. Preserve raw metric values and units, imported CUDA/SASS source correlation and explicit coverage limits.
+
+Method references: [Microsoft thread CPU accounting](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes), [Microsoft scheduled cycle accounting](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime), [NVIDIA profiling and replay definitions](https://docs.nvidia.com/nsight-compute/ProfilingGuide/), and [NVIDIA NVTX and launch filters](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html).
+
+
+### Broad labels and stale active paths
+
+A parent runtime scope can include multiple sequential calls; its label does not attribute all self time to the named first call. The removed OR/contrapositive join formerly ran inside `SP_APPLY_EQUI_CLASSES` without inner timing boundaries. Current supporting implications are compiled and use ordinary disintegration. When live inspection is authorized, use native stacks and the tracker's complete block chain to locate any unobserved interval before proposing an optimization.
 
 ---
 

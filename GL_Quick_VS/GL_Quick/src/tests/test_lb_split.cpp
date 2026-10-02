@@ -90,7 +90,6 @@ namespace {
                                     const std::string& validity,
                                     const std::string& tag,
                                     const std::string& dep,
-                                    bool allGood,
                                     bool alreadyKnown) {
         gl::FiringRecord r;
         r.isMarker = false;
@@ -106,7 +105,6 @@ namespace {
                 rig.pages, depsArr, 1);
         r.doNotDisintegrate = false;
         r.allowOrDisintegration = false;
-        r.allGood = allGood;
         r.alreadyKnown = alreadyKnown;
         return r;
     }
@@ -127,7 +125,6 @@ namespace {
         admv.key = gl::SealedSpan<gl::SealedString>::copyFrom(
             rig.pages, keyArr, 1);
         r.admv = admv;
-        r.markerNotAtomic = true;
         return r;
     }
 
@@ -157,10 +154,7 @@ TEST(lb_split, apply_firing_records_symbol_signature) {
 }
 
 TEST(lb_split, apply_firing_records_head_deposit) {
-    // A head record (allGood, not alreadyKnown) deposits the statement, the
-    // origin, and the disintegrationSignals entry. The mail-eligibility memo
-    // stays empty: the head carries no `int_lev_*`, so `allowedForMail`
-    // could never probe an entry for it (insert is gated).
+    // A new head deposits its statement, origin and disintegration signals.
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
@@ -168,7 +162,7 @@ TEST(lb_split, apply_firing_records_head_deposit) {
     RecordRig rig;
     gl::Memory mb;
     rig.pages.appendRecord(
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false));
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false));
     gl::SealedPageSet* parts[1] = { &rig.pages };
     ana.applyFiringRecords(mb, parts, 1, false);
 
@@ -180,7 +174,6 @@ TEST(lb_split, apply_firing_records_head_deposit) {
         if (st.first.original == "(in[2,1])" && st.first.validityName == "main") found = true;
     }
     ASSERT_TRUE(found);
-    ASSERT_TRUE(mb.canBeSentIds.empty());
     ASSERT_TRUE(mailSnap.exprOriginMap.find(key) != mailSnap.exprOriginMap.end());
     ASSERT_TRUE(mailSnap.disintegrationSignals.find(key)
                 != mailSnap.disintegrationSignals.end());
@@ -198,10 +191,10 @@ TEST(lb_split, apply_firing_records_carries_iteration_min_merged) {
     RecordRig rig;
     gl::Memory mb;
     gl::FiringRecord r3 =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     r3.iteration = 3;
     gl::FiringRecord r1 =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impB)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impB)", false);
     r1.iteration = 1;
     rig.pages.appendRecord(r3);
     rig.pages.appendRecord(r1);
@@ -219,14 +212,25 @@ TEST(lb_split, apply_firing_records_carries_iteration_min_merged) {
 TEST(lb_split, deposit_iteration_reaches_witness_mint) {
     // The iteration parameter of addExprToMemoryBlock — what the absorb now
     // passes from the carried signal instead of -1 — names the disintegration
-    // witnesses it_<iteration>_lev_...: a status-0 preorder fact (definition:
+    // witnesses it_<iteration>_lev_...: an admitted preorder fact (definition:
     // an existence) deposited at iteration 2 mints an it_2_lev witness.
     gl::ExpressionAnalyzer ana(std::string("IncubatorGauss3"));
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{
         true, gl::OriginTag::taskFormulation, nullptr, 0 };
     const std::string fact = "(preorder[1,4,6,7])";
-    ana.addExprToMemoryBlock(gl::StrSpan(fact), ana.body, 2, 0, lv, 1,
+    ana.body.level = 1;
+    const int64_t demand = gl::mintTemplateKey(ana.body.templateInterner, ana.body.nameMap,
+        "(in3[6,marker,7,4])", "main");
+    gl::AdmissionMapValue admission;
+    admission.standardMaxAdmissionDepth = 3;
+    admission.standardMaxSecondaryNumber = 2;
+    admission.key = {ana.body.valueInterner.encode("(in3[8,9,10,11])")};
+    gl::insertAdmissionValue(ana.body.overallHashMemory.admissionMap, demand,
+        admission, ana.body.valueInterner, gl::genScratchArenas().forSlot(
+            gl::genScratchArenas().slotCount()-1));
+    ana.body.overallHashMemory.admissionStatusMap.upsert(demand, uint8_t(0));
+    ana.addExprToMemoryBlock(gl::StrSpan(fact), ana.body, 2, 1, lv, 1,
         origin, -1, -1, gl::StrSpan("main", 4), false);
 
     bool minted = false;
@@ -238,30 +242,24 @@ TEST(lb_split, deposit_iteration_reaches_witness_mint) {
 }
 
 TEST(lb_split, apply_firing_records_already_known_skips_deposit) {
-    // alreadyKnown gates the statement/origin deposit off, but the
-    // mail-eligibility memo is still populated for an `int_lev_*`-carrying
-    // allGood head (memo insert is unconditional on alreadyKnown, matching
-    // the pre-refactor inline order).
+    // An already-known head makes no statement, origin or name deposit.
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
     rig.pages.appendRecord(
-        makeHeadRecord(rig, "(in[int_lev_1_2,1])", "main", "implication", "(impA)", true, /*alreadyKnown=*/true));
+        makeHeadRecord(rig, "(in[int_0_lev_1_2,1])", "main", "implication", "(impA)", /*alreadyKnown=*/true));
     gl::SealedPageSet* parts[1] = { &rig.pages };
     ana.applyFiringRecords(mb, parts, 1, false);
     ASSERT_TRUE(mb.sameIterationInternalMail.statementsEmpty());
     ASSERT_TRUE(mb.sameIterationInternalMail.exprOriginMapEmpty());
-    const gl::NameId headId = mb.nameMap.lookup(std::string("(in[int_lev_1_2,1])"));
-    ASSERT_TRUE(headId != 0);
-    ASSERT_TRUE(mb.canBeSentIds.contains(headId));
+    const gl::NameId headId = mb.nameMap.lookup(std::string("(in[int_0_lev_1_2,1])"));
+    ASSERT_EQ(headId, 0);
 }
 
 TEST(lb_split, apply_firing_records_marker_deposit) {
-    // A marker record stages deferredIntegrationPreps + admissionKeysAlgebra and
-    // populates canBeSentMarkerIds (non-atomic; marker forms are inserted
-    // ungated — the probe key is the marker form itself).
+    // A marker stages deferred integration preparation and algebraic demand.
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     RecordRig rig;
     gl::Memory mb;
@@ -272,8 +270,45 @@ TEST(lb_split, apply_firing_records_marker_deposit) {
     ASSERT_EQ((int)mb.deferredIntegrationPreps.size(), 1);
     ASSERT_EQ((int)mb.admissionKeysAlgebra.size(), 1);
     const gl::NameId markerId = mb.nameMap.lookup(std::string("(in3[1,marker,2,3])"));
-    ASSERT_TRUE(markerId != 0);
-    ASSERT_TRUE(mb.canBeSentMarkerIds.contains(markerId));
+    ASSERT_EQ(markerId, 0);
+}
+
+TEST(lb_split, apply_firing_records_orders_equal_marker_run_by_task) {
+    // Marker records equal in content but fired by different rule copies
+    // emit their owning tasks in task-content order, an unowned copy (task 0)
+    // first, on the sorting and the canonical path alike
+    // (I-284).
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    for (const bool canonical : { false, true }) {
+        RecordRig rig;
+        gl::Memory mb;
+        const int64_t taskA = gl::mintTemplateKey(mb.templateInterner, mb.nameMap,
+            std::string("(in2[a,c,b])"), std::string("main"));
+        const int64_t taskB = gl::mintTemplateKey(mb.templateInterner, mb.nameMap,
+            std::string("(in2[a,d,b])"), std::string("main"));
+        ana.registerIntegrationTask(mb, taskB, gl::StrSpan("(in2[a,d,b])", 12), 0);
+        ana.registerIntegrationTask(mb, taskA, gl::StrSpan("(in2[a,c,b])", 12), 0);
+        mb.lbMemory.integrationCopyOwners.insert(501, taskB);
+        mb.lbMemory.integrationCopyOwners.insert(502, taskA);
+        const int64_t copies[3] = { 501, 999, 502 };
+        for (const int64_t copy : copies) {
+            gl::FiringRecord r = makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)");
+            r.ruleCopyOwner = copy;
+            rig.pages.appendRecord(r);
+        }
+        gl::SealedPageSet* parts[1] = { &rig.pages };
+        ana.applyFiringRecords(mb, parts, 1, canonical);
+
+        ASSERT_EQ(static_cast<int>(mb.deferredIntegrationPreps.size()), 3);
+        ASSERT_EQ(static_cast<int>(mb.admissionKeysAlgebra.size()), 3);
+        const int64_t expected[3] = { 0, taskA, taskB };
+        for (int i = 0; i < 3; ++i) {
+            ASSERT_EQ(mb.deferredIntegrationPreps[i].ownerTask, expected[i]);
+            ASSERT_EQ(mb.admissionKeysAlgebra[i].ownerTask, expected[i]);
+        }
+        mb.deferredIntegrationPreps.clear();
+        mb.admissionKeysAlgebra.clear();
+    }
 }
 
 TEST(lb_split, apply_firing_records_canonical_input_bypasses_sort) {
@@ -344,8 +379,8 @@ TEST(lb_split, apply_firing_records_order_independent) {
     ana.parameters.max_origin_per_expr = 1;
     RecordRig rig;
 
-    gl::FiringRecord h1 = makeHeadRecord(rig,"(in[2,1])", "main", "implication", "(impA)", true, false);
-    gl::FiringRecord h2 = makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impB)", true, false);
+    gl::FiringRecord h1 = makeHeadRecord(rig,"(in[2,1])", "main", "implication", "(impA)", false);
+    gl::FiringRecord h2 = makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impB)", false);
     gl::FiringRecord m1 = makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)");
     gl::FiringRecord m2 = makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k2)");
 
@@ -397,15 +432,15 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
     // exact record sequence of an in-place std::sort over a record vector.
     // Adversarial near-ties: same expr different validity; same head
     // different originDeps lengths; equal-content duplicates; marker vs head
-    // on one key; markers differing only in markerNotAtomic.
+    // on one key; duplicate marker records.
     RecordRig rig;
     std::vector<gl::FiringRecord> recs;
     // Same expr, different validity.
-    recs.push_back(makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false));
-    recs.push_back(makeHeadRecord(rig, "(in[2,1])", "main_boundary_(h1)", "implication", "(impA)", true, false));
+    recs.push_back(makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false));
+    recs.push_back(makeHeadRecord(rig, "(in[2,1])", "main_boundary_(h1)", "implication", "(impA)", false));
     // Same head, different originDeps lengths (2 deps vs 1 dep).
     {
-        gl::FiringRecord r = makeHeadRecord(rig, "(in[3,1])", "main", "implication", "(impA)", true, false);
+        gl::FiringRecord r = makeHeadRecord(rig, "(in[3,1])", "main", "implication", "(impA)", false);
         const gl::SealedExpressionWithValidity deps2[2] = {
             gl::SealedExpressionWithValidity{ rig.s("(impA)"), rig.s("main") },
             gl::SealedExpressionWithValidity{ rig.s("(impB)"), rig.s("main") } };
@@ -413,25 +448,23 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
             rig.pages, deps2, 2);
         recs.push_back(r);
     }
-    recs.push_back(makeHeadRecord(rig, "(in[3,1])", "main", "implication", "(impA)", true, false));
+    recs.push_back(makeHeadRecord(rig, "(in[3,1])", "main", "implication", "(impA)", false));
     // Equal-content duplicates.
-    recs.push_back(makeHeadRecord(rig, "(in[4,1])", "main", "implication", "(impC)", true, false));
-    recs.push_back(makeHeadRecord(rig, "(in[4,1])", "main", "implication", "(impC)", true, false));
+    recs.push_back(makeHeadRecord(rig, "(in[4,1])", "main", "implication", "(impC)", false));
+    recs.push_back(makeHeadRecord(rig, "(in[4,1])", "main", "implication", "(impC)", false));
     // Marker vs head on one key.
-    recs.push_back(makeHeadRecord(rig, "(in3[1,marker,2,3])", "main", "implication", "(impA)", true, false));
+    recs.push_back(makeHeadRecord(rig, "(in3[1,marker,2,3])", "main", "implication", "(impA)", false));
     recs.push_back(makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)"));
-    // Markers differing only in markerNotAtomic.
+    // Duplicate marker records.
     {
         gl::FiringRecord r = makeMarkerRecord(rig, "(in3[9,marker,2,3])", "main", "(k9)");
         recs.push_back(r);
-        r.markerNotAtomic = false;
         recs.push_back(r);
     }
     // Two more for bulk (differing bools on one head key).
     {
-        gl::FiringRecord r = makeHeadRecord(rig, "(in[5,1])", "main", "implication", "(impD)", true, false);
+        gl::FiringRecord r = makeHeadRecord(rig, "(in[5,1])", "main", "implication", "(impD)", false);
         recs.push_back(r);
-        r.allGood = false;
         recs.push_back(r);
     }
     ASSERT_EQ((int)recs.size(), 12);
@@ -475,7 +508,6 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
                 return a.doNotDisintegrate < b.doNotDisintegrate;
             if (a.allowOrDisintegration != b.allowOrDisintegration)
                 return a.allowOrDisintegration < b.allowOrDisintegration;
-            if (a.allGood != b.allGood) return a.allGood < b.allGood;
             if (a.alreadyKnown != b.alreadyKnown) return a.alreadyKnown < b.alreadyKnown;
             return false;
         }
@@ -497,8 +529,6 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
         c = lexLess3(a.admv.remainingArgsSorted,
                      b.admv.remainingArgsSorted);
         if (c != 0) return c < 0;
-        if (a.markerNotAtomic != b.markerNotAtomic)
-            return a.markerNotAtomic < b.markerNotAtomic;
         return false;
     };
 
@@ -534,7 +564,6 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
         }
         if (a.doNotDisintegrate != b.doNotDisintegrate) return false;
         if (a.allowOrDisintegration != b.allowOrDisintegration) return false;
-        if (a.allGood != b.allGood) return false;
         if (a.alreadyKnown != b.alreadyKnown) return false;
         if (a.markerArgsSorted.size() != b.markerArgsSorted.size()) return false;
         for (std::int32_t i = 0; i < a.markerArgsSorted.size(); ++i)
@@ -549,7 +578,6 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
         for (std::int32_t i = 0; i < a.admv.remainingArgsSorted.size(); ++i)
             if (a.admv.remainingArgsSorted[i].toStdString()
                 != b.admv.remainingArgsSorted[i].toStdString()) return false;
-        if (a.markerNotAtomic != b.markerNotAtomic) return false;
         return true;
     };
     ASSERT_EQ((int)oracle.size(), (int)idx.size());
@@ -717,7 +745,7 @@ TEST(lb_split, burst_deactivates_contradiction) {
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_TRUE(ana.burstDeactivates(mb, fr));
 }
 
@@ -736,7 +764,7 @@ TEST(lb_split, burst_deactivates_rejects_branch_local_contradiction) {
     gl::FiringRecord fr = makeHeadRecord(
         rig, "(in[2,1])",
         "main_boundary_ordis_(or0[2,1])_((in[2,1]))",
-        "implication", "(impA)", true, false);
+        "implication", "(impA)", false);
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
@@ -749,7 +777,7 @@ TEST(lb_split, burst_deactivates_requires_known_negation) {
     mb.primedForContradiction = true;
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
@@ -764,7 +792,7 @@ TEST(lb_split, burst_deactivates_plain_lb_never_fires) {
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
@@ -780,7 +808,7 @@ TEST(lb_split, burst_deactivates_vacuous_truth) {
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_TRUE(ana.burstDeactivates(mb, fr));
 }
 
@@ -795,7 +823,7 @@ TEST(lb_split, burst_deactivates_tobeproved_reached) {
         mb.nameMap.encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_TRUE(ana.burstDeactivates(mb, fr));
 }
 
@@ -815,24 +843,24 @@ TEST(lb_split, burst_deactivates_multigoal_keeps_burst_alive) {
         mb.nameMap.encode("(in[3,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_direct_lb_sole_goal) {
     // Direct (non-recursion) LB reaching its SOLE toBeProved goal must now
     // deactivate: the "toBeProved reached" early-exit is no longer gated on
-    // isPartOfRecursion, so direct proofs are eligible too.
+    // isPartOfRecursion, so single-chapter proofs are eligible too.
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.isPartOfRecursion = false;   // DIRECT proof, not an induction triad
+    mb.isPartOfRecursion = false;   // Single-chapter proof, not an induction triad
     mb.intToBeProved.assignSet(gl::packStatementKey(
         mb.nameMap.encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_TRUE(ana.burstDeactivates(mb, fr));
 }
 
@@ -849,7 +877,7 @@ TEST(lb_split, burst_deactivates_ce_filter) {
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_TRUE(ana.burstDeactivates(mb, fr));
 }
 
@@ -863,7 +891,7 @@ TEST(lb_split, burst_deactivates_ce_filter_requires_known_negation) {
     mb.contradictionIndex = 5;
 
     gl::FiringRecord fr =
-        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
@@ -987,9 +1015,9 @@ TEST(lb_split, phase2_finalize_merges_only_the_winner_on_a_doom_line) {
         mb.isActive = true;
         RecordRig rigA, rigB;
         rigA.pages.appendRecord(makeHeadRecord(
-            rigA, "(in[2,1])", "main", "implication", "(impA)", true, false));
+            rigA, "(in[2,1])", "main", "implication", "(impA)", false));
         rigB.pages.appendRecord(makeHeadRecord(
-            rigB, "(in[3,1])", "main", "implication", "(impB)", true, false));
+            rigB, "(in[3,1])", "main", "implication", "(impB)", false));
         gl::SealedPageSet* parts[2] = { &rigA.pages, &rigB.pages };
         ana.performElemPhase2(mb, parts, 2, gl::packDoomLine(7, 1));
         ASSERT_FALSE(deposited(mb, "(in[2,1])"));
@@ -1002,9 +1030,9 @@ TEST(lb_split, phase2_finalize_merges_only_the_winner_on_a_doom_line) {
         mb.isActive = true;
         RecordRig rigA, rigB;
         rigA.pages.appendRecord(makeHeadRecord(
-            rigA, "(in[2,1])", "main", "implication", "(impA)", true, false));
+            rigA, "(in[2,1])", "main", "implication", "(impA)", false));
         rigB.pages.appendRecord(makeHeadRecord(
-            rigB, "(in[3,1])", "main", "implication", "(impB)", true, false));
+            rigB, "(in[3,1])", "main", "implication", "(impB)", false));
         gl::SealedPageSet* parts[2] = { &rigA.pages, &rigB.pages };
         ana.performElemPhase2(mb, parts, 2, gl::kNoDoomLine);
         ASSERT_TRUE(deposited(mb, "(in[2,1])"));

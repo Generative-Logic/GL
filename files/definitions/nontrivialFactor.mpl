@@ -1,0 +1,16 @@
+!(>[b]
+	(in[b,N])
+	!(&
+		(in3[a,b,n,*])
+		(&
+			(preorder[N,+,i2,a])
+			(&
+				(strictOrder[N,+,a,n])
+				(&
+					(preorder[N,+,i2,b])
+					(strictOrder[N,+,b,n])
+				)
+			)
+		)
+	)
+)

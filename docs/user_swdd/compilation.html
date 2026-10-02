@@ -241,6 +241,39 @@ the <i>negated</i> structural forms into their compiled atomic names. The
 <i>positive</i> structural forms are left alone — they are still legitimate
 MPL bodies and remain meaningful as they stand.
 </p>
+<p>When an existence statement and an implication are equivalent ways to define
+the intended relation, prefer the existence statement. Preserve the same typing,
+polarity and quantifier scope; an existence claim cannot replace a stronger
+universal requirement.</p>
+<p><b>Supplied Peano helper.</b> The input file
+<code>files/supplied_conjectures/peano.txt</code> supplies successor cancellation:
+<code>s(b)=c; s(d)=e; a+c=e &rArr; a+b=d</code>. The batch appends this
+obligation to its ordinary generated conjectures. This bypasses discovery of
+the helper, not its proof: it is not a trusted external theorem. Later batches
+can use it only after the prover establishes and registers it.</p>
+<figure><svg viewBox="0 0 760 100" role="img" aria-label="A supplied Peano conjecture must be proved before it becomes a theorem">
+<rect x="10" y="20" width="210" height="55" rx="6" fill="#e8eef5"/>
+<text x="115" y="52" text-anchor="middle" fill="#172534">Supplied conjecture</text>
+<path d="M220 47 H270 M260 41 L270 47 L260 53" stroke="#526878" fill="none"/>
+<rect x="280" y="20" width="200" height="55" rx="6" fill="#fff0d9"/>
+<text x="380" y="52" text-anchor="middle" fill="#172534">Ordinary Peano proof</text>
+<path d="M480 47 H530 M520 41 L530 47 L520 53" stroke="#526878" fill="none"/>
+<rect x="540" y="20" width="210" height="55" rx="6" fill="#e1f1e8"/>
+<text x="645" y="52" text-anchor="middle" fill="#172534">Proved theorem pool</text>
+</svg></figure>
+<p>The FTA predicate <code>prime[N,+,*,i1,i2,p]</code> uses the classical
+definition: <code>p &ge; i2</code>, and each natural divisor of <code>p</code>
+equals <code>i1</code> or <code>p</code>. Here <code>i1</code> and
+<code>i2</code> are the anchor's one and two. Additive <code>preorder</code>
+expresses the lower bound; multiplicative <code>preorder</code> expresses
+divisibility. The E2 theorem projects the lower-bound conjunct for reuse.</p>
+<p>The E6 predicate <code>nontrivialFactor[N,+,*,i2,n,a]</code> exposes one
+factor <code>a</code> and binds its cofactor <code>b</code> existentially.
+One definition keeps <code>a*b=n</code> and both bounds
+<code>i2 &le; a &lt; n</code>, <code>i2 &le; b &lt; n</code> on the same pair.
+E6 asserts that such an <code>a</code> exists for every non-prime
+<code>n &ge; i2</code>. The operator has one output slot; the second factor
+is its witness.</p>
 
 <table>
 <tr><th>Input shape</th><th>Output shape</th><th>Why compiled</th></tr>
@@ -306,7 +339,7 @@ the analyzer-level table mapping a compact name (<code>or7</code>,
 <code>existence2</code>, …) to the structural template it stands for: head shape,
 arity, the bound-variable signature, the original MPL body, a <code>category</code>
 label (<code>or</code> / <code>existence</code> / <code>and</code> /
-<code>implication</code>). An <code>or</code> row additionally carries its <i>or implications</i>: the K mutual-exclusion rules and the subset-exclusion rules of that OR, compiled once as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens (the K rules when the OR is registered, the subset-exclusion family at the reduced-OR closure seam) and written to the GL binary under <code>implications</code> — the disintegrator instantiates them instead of rebuilding rule text per instance. An <code>existence</code> row carries its two <i>existence implications</i> the same way — <code>left → !right</code> and <code>right → !left</code>, the rules its negation disintegrates into, compiled once as compacts over the existence's own tokens when the existence is registered. Every later mechanism that needs to know “what is
+<code>implication</code>). An <code>or</code> row additionally carries its <i>or implications</i>: the K mutual-exclusion rules and the subset-exclusion rules of that OR, compiled once as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens (the K rules when the OR is registered, the subset-exclusion family at the reduced-OR closure seam) and written to the GL binary under <code>implications</code> — a selected exclusion firing instantiates the required rule for proof history; the complete family is not installed as runtime rules. An <code>existence</code> row carries its two <i>existence implications</i> the same way — <code>left → !right</code> and <code>right → !left</code>, the rules its negation disintegrates into, compiled once as compacts over the existence's own tokens when the existence is registered. Every later mechanism that needs to know “what is
 <code>or7</code>, really?” reads it from this registry — never from the string.
 </p>
 <p>
@@ -315,6 +348,8 @@ deposits its compact <code>implication&lt;N&gt;[…]</code> atoms into the same
 table. The registry is therefore the single source of truth for every synthetic
 operator the prover ever invented during a run.
 </p>
+
+<p>A numbered OR with exactly two digit-valued parameter slots also carries a derived symmetry mark when exchanging those slots preserves the signed flattened alternatives. The comparison sorts disjuncts and normalizes equality orientation while preserving free slots, binding and multiplicity. The two positions are recomputed after loading, so the binary format stays unchanged. Runtime uses them only to share OR processing; original statements and proof expressions remain intact.</p>
 
 <!-- ===================== 8.3 ===================== -->
 <h2 id="names">8.3 &nbsp;The five name families</h2>
@@ -347,12 +382,10 @@ implication's premise contains a structural hole. Subject to the algebra-side
 admission gate (<code>isAdmitted</code> against <code>admissionMap</code>,
 fallback <code>isAllowedAsOperatorInput</code>, §4.2.1).</dd>
 
-<dt>int_lev_&lt;N&gt;_&lt;M&gt;</dt>
-<dd><em>Pass&nbsp;B iteration variable, integration side.</em> Same role as
-<code>it_</code>, but consumed by the integration path; admission is by
-<code>isAdmittedIntegration</code> against
-<code>admissionMapIntegration</code>, with the bare
-<code>admissionSetIntegration</code> as a fallback.</dd>
+<dt>force_lev_&lt;level&gt;_&lt;serial&gt;</dt>
+<dd><em>Forced witness.</em> Introduced by the established assumption and forced-disintegration routes. Exempt from the ordinary integration-depth budget and eligible for fact/rule mail under the normal scope rules.</dd>
+<dt>int_&lt;depth&gt;_lev_&lt;level&gt;_&lt;serial&gt;</dt>
+<dd><em>Ordinary integration witness.</em> Its depth comes from the original outer expansion. Minting requires an eligible depth, no existing algebraic witness input in the source existence, and the applicable integration admission. Rejected constructions do not park or admit dependent descendants. Its facts and compact rules remain local; proof history can still be transported. A parked construction preserves the assigned depth for later naming.</dd>
 
 <dt>repl_lev_&lt;N&gt;_&lt;M&gt;</dt>
 <dd><em>Substitution placeholder.</em> Used during anchor handling and
@@ -374,28 +407,29 @@ keeps that copy syntactically distinct from the original. Two copies (e.g.
 </p>
 
 <figure>
-<svg viewBox="0 0 860 250" role="img" aria-label="The five name families and how they cross between forms">
+<svg viewBox="0 0 860 300" role="img" aria-label="Name families including forced witnesses and depth-bearing integration witnesses">
   <defs><marker id="nf-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#B084EB"/></marker></defs>
   <text x="430" y="22" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">family ↔ machine that consumes it</text>
   <g font-size="10.5">
     <rect x="16" y="44" width="120" height="42" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="76" y="60" fill="#5DCAA5" text-anchor="middle">u_&lt;k&gt;</text><text x="76" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">template</text>
     <rect x="16" y="94" width="120" height="42" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="76" y="110" fill="#5DCAA5" text-anchor="middle">v&lt;k&gt;</text><text x="76" y="126" fill="#8B8FA5" font-size="9" text-anchor="middle">theorem-bound</text>
     <rect x="16" y="144" width="120" height="42" rx="7" fill="#262938" stroke="#EF9F27"/><text x="76" y="160" fill="#EF9F27" text-anchor="middle">it_&lt;k&gt;</text><text x="76" y="176" fill="#8B8FA5" font-size="9" text-anchor="middle">algebra Pass B</text>
-    <rect x="16" y="194" width="120" height="42" rx="7" fill="#262938" stroke="#EF9F27"/><text x="76" y="210" fill="#EF9F27" text-anchor="middle">int_&lt;k&gt;</text><text x="76" y="226" fill="#8B8FA5" font-size="9" text-anchor="middle">integration Pass B</text>
+    <rect x="16" y="194" width="120" height="42" rx="7" fill="#262938" stroke="#EF9F27"/><text x="76" y="210" fill="#EF9F27" text-anchor="middle">int_&lt;depth&gt;…</text><text x="76" y="226" fill="#8B8FA5" font-size="9" text-anchor="middle">integration Pass B</text>
 
-    <rect x="160" y="244" width="120" height="0" rx="0" fill="none"/>
-    <rect x="16" y="244" width="0" height="0" rx="0" fill="none"/>
+    <rect x="16" y="244" width="120" height="42" rx="7" fill="#262938" stroke="#EF9F27"/><text x="76" y="260" fill="#EF9F27" text-anchor="middle">force_lev_…</text><text x="76" y="276" fill="#8B8FA5" font-size="9" text-anchor="middle">forced witness</text>
+    <rect x="200" y="244" width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="260" fill="#B084EB" text-anchor="middle">forced disintegration</text><text x="285" y="276" fill="#8B8FA5" font-size="9" text-anchor="middle">exempt from the depth limit</text>
   </g>
 
   <rect x="200" y="44"  width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="60" fill="#B084EB" font-size="10.5" text-anchor="middle">admissionMap key</text><text x="285" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">u_-prefixed template</text>
   <rect x="200" y="94"  width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="110" fill="#B084EB" font-size="10.5" text-anchor="middle">chapter row variable</text><text x="285" y="126" fill="#8B8FA5" font-size="9" text-anchor="middle">verifier &amp; HTML</text>
   <rect x="200" y="144" width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="160" fill="#B084EB" font-size="10.5" text-anchor="middle">isAdmitted gate</text><text x="285" y="176" fill="#8B8FA5" font-size="9" text-anchor="middle">algebra map probe</text>
-  <rect x="200" y="194" width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="210" fill="#B084EB" font-size="10.5" text-anchor="middle">isAdmittedIntegration</text><text x="285" y="226" fill="#8B8FA5" font-size="9" text-anchor="middle">integration map + set</text>
+  <rect x="200" y="194" width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="210" fill="#B084EB" font-size="10.5" text-anchor="middle">isAdmittedIntegration</text><text x="285" y="226" fill="#8B8FA5" font-size="9" text-anchor="middle">depth + no algebra input + admission</text>
 
   <path d="M136 64 L196 64" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
   <path d="M136 114 L196 114" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
   <path d="M136 164 L196 164" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
   <path d="M136 214 L196 214" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
+  <path d="M136 264 L196 264" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
 
   <rect x="404" y="44" width="440" height="192" rx="9" fill="#1C1F2B" stroke="#3A3D4A"/>
   <text x="624" y="66" fill="#F0E8DC" font-size="11.5" font-weight="bold" text-anchor="middle">crossings between families</text>
@@ -417,6 +451,7 @@ keeps that copy syntactically distinct from the original. Two copies (e.g.
       <tspan fill="#8B8FA5">copies are syntactically distinct, no semantic flag</tspan></text>
     <text x="418" y="216" text-anchor="start"><tspan fill="#EF9F27">A wrong family at a probe boundary = silent miss.</tspan></text>
   </g>
+  <text x="418" y="266" fill="#F0E8DC" font-size="10">force_ witnesses use the same integration construction mechanics.</text>
 </svg>
 <figcaption><b>Family is destiny.</b> The prefix decides which machine accepts
 the name. Cross a boundary without translating, and the lookup quietly returns
@@ -440,8 +475,9 @@ GL is run-deterministic: <i>the same configuration plus the same inputs always
 produces the same proof artefacts</i>. Names that look spontaneous —
 <code>or7</code>, <code>existence2</code>, <code>implication1359</code> — are
 the load-bearing test of that promise. They are not random; they are minted by
-five monotonic counters, seeded once at the start of every run and kept stable
-across batches by a single on-disk file.
+four monotonic operator counters and one batch-local variable counter. The
+shared definition registry and its compilation-state sidecar carry operator
+identity and all issued numbers across batches.
 </p>
 
 <table>
@@ -458,7 +494,7 @@ across batches by a single on-disk file.
   <defs><marker id="ct-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="228" y="14" width="304" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
   <text x="380" y="32" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">files/GL_binaries/GL_binary_shared.json</text>
-  <text x="380" y="48" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the singleton registry</text>
+  <text x="380" y="48" fill="#8B8FA5" font-size="9.5" text-anchor="middle">definitions + compilation-state sidecar</text>
 
   <path d="M340 54 L160 92" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
   <text x="190" y="80" fill="#8B8FA5" font-size="10" text-anchor="start">load at startup</text>
@@ -467,33 +503,64 @@ across batches by a single on-disk file.
 
   <rect x="40" y="94" width="220" height="120" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
   <text x="150" y="116" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">startup — seed</text>
-  <text x="150" y="138" fill="#F0E8DC" font-size="10" text-anchor="middle">implCounter   ← max+1</text>
-  <text x="150" y="154" fill="#F0E8DC" font-size="10" text-anchor="middle">existenceCounter ← max+1</text>
-  <text x="150" y="170" fill="#F0E8DC" font-size="10" text-anchor="middle">andCounter    ← max+1</text>
-  <text x="150" y="186" fill="#F0E8DC" font-size="10" text-anchor="middle">orCounter     ← max+1</text>
+  <text x="150" y="138" fill="#F0E8DC" font-size="10" text-anchor="middle">load every definition first</text>
+  <text x="150" y="154" fill="#F0E8DC" font-size="10" text-anchor="middle">restore normalized reuse entries</text>
+  <text x="150" y="170" fill="#F0E8DC" font-size="10" text-anchor="middle">restore four next-number counters</text>
+  <text x="150" y="186" fill="#F0E8DC" font-size="10" text-anchor="middle">retired numbers stay issued</text>
   <text x="150" y="202" fill="#EF9F27" font-size="10" text-anchor="middle">variableCounter ← 0  (per batch)</text>
 
   <path d="M260 154 L300 154" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
 
   <rect x="300" y="94" width="220" height="120" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
   <text x="410" y="116" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">run — mint, never collide</text>
-  <text x="410" y="138" fill="#F0E8DC" font-size="10" text-anchor="middle">orCounter.fetch_add(1)</text>
+  <text x="410" y="138" fill="#F0E8DC" font-size="10" text-anchor="middle">orCounter++</text>
   <text x="410" y="154" fill="#F0E8DC" font-size="10" text-anchor="middle">→ or&lt;N&gt;</text>
-  <text x="410" y="174" fill="#8B8FA5" font-size="9.5" text-anchor="middle">register in compiledExpressions[N]</text>
+  <text x="410" y="174" fill="#8B8FA5" font-size="9.5" text-anchor="middle">register the named expression</text>
   <text x="410" y="190" fill="#8B8FA5" font-size="9.5" text-anchor="middle">deferred for implication</text>
 
   <path d="M520 154 L560 154" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
 
   <rect x="560" y="94" width="180" height="120" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
   <text x="650" y="116" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">end — persist</text>
-  <text x="650" y="140" fill="#F0E8DC" font-size="10" text-anchor="middle">merge maxima back</text>
-  <text x="650" y="156" fill="#F0E8DC" font-size="10" text-anchor="middle">into shared.json</text>
+  <text x="650" y="140" fill="#F0E8DC" font-size="10" text-anchor="middle">rewrite retired references</text>
+  <text x="650" y="156" fill="#F0E8DC" font-size="10" text-anchor="middle">save definitions + counters</text>
   <text x="650" y="180" fill="#8B8FA5" font-size="9.5" text-anchor="middle">next batch sees</text>
-  <text x="650" y="194" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the same maxima</text>
+  <text x="650" y="194" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the same definitions</text>
 </svg>
 <figcaption><b>The cross-batch stability mechanism.</b> The shared
-registry is the only piece of state that survives between batches; the four
-spontaneous-name counters are seeded from it and saved back into it.</figcaption>
+registry preserves compiled definitions between batches. The four name counters
+are restored from compilation state, including numbers whose definitions were
+retired. Older registries without that state use the largest stored number plus
+one. Theorem pools and fact tables also cross batch boundaries.</figcaption>
+</figure>
+
+<p><b>Public names take precedence.</b> A loaded predicate such as
+<code>preorder</code> participates in body-based reuse as well as lookup by name.
+If two public predicates have the same normalized body and category, the first
+registered public name is reused; both public definitions remain available.
+Loading registers public names alphabetically.</p>
+<p>If a public name supersedes a numbered operator, its numbered definition is
+removed. All applications are rewritten with the correct argument order:
+<code>existence16[a,b,c,d]</code> becomes <code>preorder[a,d,b,c]</code>.
+The rewrite covers dependent definitions, theorem inputs, scope payloads and
+proof references. The numbered name remains only in the migration record;
+the prover does not retain it as a usable alias.</p>
+<figure>
+<svg viewBox="0 0 760 126" role="img" aria-label="Named predicate replaces a numbered definition and all its references">
+  <rect x="10" y="18" width="220" height="84" rx="8" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="120" y="46" text-anchor="middle" fill="#F0E8DC" font-size="12">Numbered body already known</text>
+  <text x="120" y="74" text-anchor="middle" fill="#EF9F27" font-size="12">existence16[a,b,c,d]</text>
+  <path d="M230 60 H270" stroke="#5DCAA5" stroke-width="2"/>
+  <rect x="270" y="18" width="220" height="84" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="380" y="46" text-anchor="middle" fill="#F0E8DC" font-size="12">Public definition arrives</text>
+  <text x="380" y="74" text-anchor="middle" fill="#5DCAA5" font-size="12">preorder[a,d,b,c]</text>
+  <path d="M490 60 H530" stroke="#5DCAA5" stroke-width="2"/>
+  <rect x="530" y="18" width="220" height="84" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="640" y="43" text-anchor="middle" fill="#F0E8DC" font-size="12">Rewrite every reference</text>
+  <text x="640" y="65" text-anchor="middle" fill="#F0E8DC" font-size="12">Remove numbered definition</text>
+  <text x="640" y="87" text-anchor="middle" fill="#8B8FA5" font-size="10">Keep the issued-number counter</text>
+</svg>
+<figcaption>The name changes together with its references and argument mapping.</figcaption>
 </figure>
 
 <h3>8.4.1 &nbsp;Why <code>variableCounter</code> is the odd one out</h3>
@@ -503,7 +570,7 @@ semantic reason for <code>v1</code> in theorem A to mean the same thing as
 <code>v1</code> in theorem B. Resetting per batch keeps the names compact;
 nothing depends on global uniqueness. The other four counters mint names that
 <i>do</i> need global uniqueness (a chapter referring to <code>or7</code> means
-exactly the <code>or7</code> registered in <code>compiledExpressions[7]</code>),
+exactly the <code>or7</code> registered in <code>compiledExpressions["or7"]</code>),
 so they monotonically grow.
 </p>
 
@@ -832,6 +899,38 @@ artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
 
+
+<section id="fold-operations">
+<h2>Fold: interval and accumulation</h2>
+<p><code>fold[N,s,+,op,f,n,m,p]</code> follows successive indices from <i>n</i> to <i>m</i>. Addition defines that interval; the separate <code>op</code> combines the values. The first accumulated value is <i>f(n)</i>, and the last is <i>p</i>.</p>
+<svg viewBox="0 0 760 210" role="img" aria-label="Addition constructs the interval; a separate operation accumulates the function values">
+<rect x="20" y="24" width="210" height="64" rx="8" fill="#eaf1fb" stroke="#678"/>
+<text x="125" y="49" text-anchor="middle" fill="#172635">Index interval [n, m]</text>
+<text x="125" y="72" text-anchor="middle" fill="#172635" style="font-size:13px">addition +; successor s</text>
+<path d="M230 56 H290" stroke="#678" stroke-width="2"/>
+<rect x="290" y="24" width="180" height="64" rx="8" fill="#eaf1fb" stroke="#678"/>
+<text x="380" y="61" text-anchor="middle" fill="#172635">f(n), …, f(m)</text>
+<path d="M470 56 H530" stroke="#678" stroke-width="2"/>
+<rect x="530" y="24" width="210" height="64" rx="8" fill="#eaf1fb" stroke="#678"/>
+<text x="635" y="49" text-anchor="middle" fill="#172635">Accumulate with op</text>
+<text x="635" y="72" text-anchor="middle" fill="#172635">result p</text>
+<text x="380" y="131" text-anchor="middle" fill="currentColor">op = + : ∑ f(i)     ·     op = * : ∏ f(i)</text>
+<text x="380" y="172" text-anchor="middle" fill="currentColor">Both use the same additive index interval.</text>
+</svg>
+<p>Anchor connection may reuse one operation in both positions. Repetition filtering checks only numeric value slots, so the same addition can define the interval and accumulate a sum. Ground arithmetic in the incubator continues to permit repeated numeric values; equality with identical operands is excluded.</p>
+<p>The proof pages show ∑ for addition and ∏ for multiplication, with bounds and the folded function. Other operations or traversals keep explicit Fold notation. Ordinary Gauss conjecture generation continues to select summation. Fold does not introduce an empty-interval identity.</p>
+</section>
+
+<section id="conjunction-refutation"><h2>Compile direct supporting rules</h2><p>For a conjunction premise <code>not (A and B)</code>, preparation keeps one complemented part and every other part as a guard. If the owning implication is <code>not (A and B) implies H</code>, the compiler prepares <code>not A and B implies H</code> and <code>A and not B implies H</code>.</p><p>The original implication remains available. The intermediate guarded rules are retained only as proof derivations and are not installed. Owners with additional premises keep their guarded helpers under the existing composition boundary. No recursive support or composition closure is generated.</p><p>Direct support for concrete conjunction alternatives of admitted ORs retains its local fixed-argument path.</p><svg viewBox="0 0 920 155" role="img" aria-label="Compile direct supporting rules"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Prepare complete guards</text><text x="150" y="77" text-anchor="middle" fill="#172635">Complement one immediate part</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Compose with unary owner</text><text x="460" y="77" text-anchor="middle" fill="#172635">Preserve fixed and bound names</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Install direct final-head rules</text><text x="770" y="77" text-anchor="middle" fill="#172635">Retain original implication</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">The intermediate negative conjunction is not produced by a composed helper.</text></svg></section>
+<section id="compiled-contraposition"><h2>Prepared contrapositives</h2>
+<p>One explicit exception preserves the existing search boundary: a negated existence may refute a candidate's membership in its domain, but contraposition does not turn domain membership into negative body facts for every candidate.</p>
+<p>Forward definitions keep their separate conclusions. During compilation, implications from the same definition family with the same complete premise can also supply a grouped conclusion. Every combination covering all bound variables is prepared, including larger covering combinations.</p>
+<svg viewBox="0 0 760 190" role="img" aria-label="Separate forward rules produce a prepared grouped rule and its contrapositive, activated only with the source family">
+<rect x="10" y="15" width="210" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="115" y="45" text-anchor="middle" fill="#172635">f(i,p) implies i in I</text><text x="115" y="78" text-anchor="middle" fill="#172635">f(i,p) implies p in N</text>
+<path d="M220 60 H270" stroke="#678" stroke-width="2"/><rect x="270" y="15" width="210" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="375" y="45" text-anchor="middle" fill="#172635">Group both conclusions</text><text x="375" y="78" text-anchor="middle" fill="#172635">Keep both source proofs</text>
+<path d="M480 60 H530" stroke="#678" stroke-width="2"/><rect x="530" y="15" width="220" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="640" y="45" text-anchor="middle" fill="#172635">Negated typing conjunction</text><text x="640" y="78" text-anchor="middle" fill="#172635">implies not f(i,p)</text>
+<text x="380" y="145" text-anchor="middle" fill="currentColor">Prepared compact → own statement → ordinary rule expansion.</text><text x="380" y="175" text-anchor="middle" fill="currentColor">Forward definitions and construction obligations stay intact.</text></svg>
+<p>At disintegration, the prover substitutes actual arguments into prepared templates in the source scope. Each result has its own compact statement and ordinary rule expansion, like an implication attached to an existence. This preserves its normal ownership through mail, equality rewriting and removal; the fixed domain and range remain parameters. Grouping cites every contributing implication; contraposition cites the exact grouped or original implication. The verifier checks the substitutions and scopes, and Lean replays the derivations. Facts from separate cases cannot be combined.</p></section>
 </main>
 </body>
 </html>

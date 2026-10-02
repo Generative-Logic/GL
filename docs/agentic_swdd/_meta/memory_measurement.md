@@ -64,6 +64,8 @@ static constexpr int MEM_MIN_PERCENTAGE = 0;           // table filter (0 = ever
 
 ## What is measured, and against which denominator
 
+Shared native key storage distinguishes resident payload from the canonical stream. A shared key-byte facet contributes zero owned payload bytes; a shared normalized-value pool contributes its four-byte private identifiers. The diagnostic-only `sharedNativeKeys.payloadAndLocations` row accounts for the immutable dictionary payload and locations once, with its derived hash index beside it. Canonical facet sizes and deload bytes remain unchanged. The `visitLiveBytes` view also reports the shared dictionary's physical pages once. Unshared facets keep their existing accounting.
+
 Three families, deliberately kept apart because they do not share a
 denominator.
 
@@ -73,7 +75,7 @@ direct `LbMemory` tags, the four `HashMemory` bands at 51 / 151 / 251 / 351,
 both `ColdMail` instances at 455 / 505, the changed-classes buffer at 655, the
 name caches at 705, the deloadable mail-out at 755. The figure is
 `sizeof(value_type) * size` — byte-for-byte what the deload directory records
-for that tag, so a row here is directly comparable to the `.deload/` image.
+for that tag, so a row here is directly comparable to the `.deload/` image. Shared key/value facets use the resident-content override described above; their canonical byte counts remain available to serialization, while the shared-pool row prevents double counting resident payload.
 
 **2. Derived hash indexes — measured per container.** The `PagedHashIndex` slot
 array inside every cold map is rebuilt on reload and never deloaded
@@ -87,12 +89,14 @@ the container. This deliberately needs **no second enumeration**:
 ([I-123](../30_invariants.md#i-123)) and there is no parallel member list to
 drift.
 
-**2b. Block and page slack — the residual.** Whatever an LB's arena physically
-holds beyond content and index is slack: the unused tail of every pinned 256 KiB
-block and of every touched 8 KiB page. It belongs to no container, so it is a
-single counter rather than a row — `blocksHeld * blockBytes` minus content
-minus index. Every LB with any content pins a whole block
-([G-52](../50_gotchas.md)), so at incubator scale this is expected to dominate.
+**2b. Unattributed arena bytes.** The top-level residual is
+`blocksHeld * blockBytes` minus enrolled content minus enrolled derived
+hash indexes. It includes page padding, free pages retained inside held blocks,
+other arena bookkeeping, and derived structures absent from `visitContainers`.
+It is not all wasted space. The physical split separately reports live pages,
+free pages and other block bytes. Its `page padding` label also includes the
+unenrolled derived structures and must be read as a residual, not a measurement
+of empty bytes. The default page size is 2 KiB; the block size is 256 KiB.
 
 **3. Process-wide singletons — physical block bytes.** The four pool footprints
 (`staticMemory` / `persistentMemory` / `mailMemory` / `lbMemory`) and the two
@@ -105,28 +109,26 @@ overstate. The pool section is context for the container table, not part of it.
 
 ## Where the samples land, and why
 
-**Per LB — the end of `performElemPhase3`.** A cold container reads as empty
-when its arena is deloaded, behind a residency assert
-([I-111](../30_invariants.md#i-111), cookbook pitfall 12), so only a resident LB
-can be polled at all. The end of phase 3 is the last point at which the burst's
+**Per LB — the end of `performElemPhase3`.** Reading a deloaded container violates the residency assertion
+([I-111](../30_invariants.md#i-111), cookbook pitfall 12), so sampling requires
+the block to be claimed and resident. The end of phase 3 is the last point at which the burst's
 LB is still claimed and loaded. The sample is placed immediately BEFORE the
 Rule-14 hashburst EXIT trap, which is untouched.
 
 Each worker writes only its own slot row (`coreId`), so concurrent samples never
-share a destination and no atomic is needed. An LB idle across the iteration
-contributes nothing — which is the intended reading, not a gap: it is deloaded,
-and its content is on SSD rather than in RAM.
+share a destination and no atomic is needed. A block not sampled in phase 3 contributes nothing. It may be resident or
+deloaded; inactivity does not establish residency. Samples of different blocks
+are taken at different times within the iteration.
 
 **Per iteration — the head and the phase-3 seam of `proveKernel`.**
 `resetIteration` runs at the single-threaded head, before workers spawn, so
-the fold counts each active LB exactly once. `commitIterationSample` runs
+the fold adds the participating blocks sampled by phase 3. `commitIterationSample` runs
 immediately after `steward->endPhaseWindow` closes the phase-3 window and
-BEFORE the steward's discharge and deload work further down, so the pool
-figures it reads are the iteration's high-water rather than the post-eviction
-remainder.
+before the steward's discharge and deload work further down. The pool figures are current block counts at that seam, not lifetime or
+iteration high-waters. Separate pool-purpose telemetry records actual pool
+high-waters.
 
-**Per batch — `main.cpp`.** Two files from one snapshot and one tree builder,
-so they cannot disagree: `dumpMemAggregate` writes `.rt/_memory_<anchor>.log`
+**Per batch — `main.cpp`.** Two files from one snapshot and one tree builder: `dumpMemAggregate` writes `.rt/_memory_<anchor>.log`
 (greppable, quotable in a commit message) and `dumpMemHtml` writes
 `.rt/_memory_<anchor>.html` — a collapsible instance → container → facet tree
 carrying content, index, total, share of peak and share of content per row. The
@@ -144,14 +146,16 @@ interchangeable and the tables label which is which.
 Because slack is *defined* as physical minus content minus index, the three add
 back up to physical, so:
 
-> **peak = the whole physical block footprint of the logic blocks that were
-> active in the peak iteration.**
+> **peak = the largest iteration sum of the block footprints observed at
+> their individual phase-3 sampling points. It is not a simultaneous RAM peak.**
 
 On the FTA shortcut that is 1 007 157 248 B = **exactly 3 842 blocks** of the
 256 KiB grant unit — a whole number, which is the arithmetic confirming the
 identity: a non-integral result would mean slack had drifted away from its
-definition. It is the honest "how much RAM did the working set pin" figure, and
-it is what the `%peak` column divides by in both output files.
+definition. It is the denominator of `%peak` in both output files. With paging, blocks
+counted early can be evicted before later blocks are sampled; this sum may
+exceed the physical pool capacity. Use process peak working set for resident
+RAM and pool-purpose high-waters for simultaneous pool ownership.
 
 **Content** is family 1 alone: `sizeof(value_type) * size` summed over every
 deload-enrolled container — the element bytes actually stored inside those
@@ -166,33 +170,34 @@ The relationship is therefore block occupancy:
 | content (elements inside them) | 296.33 | **30.85%** |
 | `<derived indexes + block/page padding>` | 664.17 | 69.15% |
 
-**The active working set's blocks are 31% full.** That is what the 69% overhead
-row means, and it is why both denominators are needed: against `peak` every real
-container looks tiny (`originStrings` is 4.69%) because it is competing with
-two-thirds of empty and index space, so `peak` answers "what does the machine
-cost" while `% of content` ranks containers against each other and answers
-"what is the data".
+**Enrolled content accounts for 31% of the sampled block bytes.** The other
+69% includes indexes and the unattributed residual; it is not all empty space.
+`%peak` describes this iteration aggregate while `% of content` ranks enrolled
+containers against each other.
 
-Neither denominator is the pool. `staticMemory` held 1 365.75 MiB = 5 463 blocks
-at that instant, so the peak iteration's active LBs owned 70% of resident
-blocks; the other 30% belonged to LBs resident but idle, which contribute
-nothing to either figure (they are unpollable — see the sampling section).
+Neither denominator is the pool. The historical resident-only example below
+reported 1,365.75 MiB in `staticMemory` at the seam and 960.50 MiB in the
+iteration aggregate. These are distinct measurements, not a guaranteed
+subset relationship. Idle resident blocks, sampling times and asynchronous
+paging can make either larger.
 
 ---
 
-## The percentage is a share of one instant
+## The percentage is a share of one iteration aggregate
 
-Each commit compares the iteration's grand total (families 1 and 2) against the
-running high-water. On a new high the WHOLE vector is copied into the peak
-snapshot. The reported percentages are therefore each structure's share of one
-real moment — the fullest the machine ever got — not a collage of per-structure
-maxima that never coexisted.
+`commitIterationSample` compares the iteration sum of enrolled content,
+indexes and residual bytes against the running maximum. On a new maximum it
+copies the complete vector, so percentages describe one iteration rather than
+a collage of each structure's maximum from different iterations. The block
+samples within that vector are not simultaneous. `commitIterationSample`
+then reads the pools at the phase seam; those counts are not synchronized with
+the earlier individual block samples.
 
-This is the deliberate difference from RT's column. RT sums seconds, and a
-cumulative sum is meaningful because time is a rate. Bytes are a level: summing
-a level over samples measures residency-duration, not size, and taking each
-structure's own maximum describes no instant at all. The peak instant is the
-figure that answers "what filled the pool".
+Time totals and memory totals have different meanings. Adding bytes across
+iterations does not measure a peak. Per-phase process columns are independent
+maxima over seam samples: subtracting their maxima does not establish retained
+heap at one instant. Heap allocation-site rows refer to the sampled live-heap
+snapshot identified by the report; sampling weights are estimates.
 
 ---
 
@@ -246,11 +251,11 @@ is now resolved):
 | derived hash indexes | 133 349 376 | 127.17 | 13.24 |
 | block + page slack | 563 084 613 | 537.00 | 55.91 |
 
-**Slack dominates and indexes are an order below it**, which settles the
-question the single row could not answer. 537 MiB of the 960.50 MiB pinned is
-empty space inside blocks and pages. But 127 MiB of derived index is not
-negligible either: it is 43% of all container content, and it never appears in
-a `.deload/` image.
+**The unattributed residual dominates, with derived indexes a separate cost.**
+The historical 537 MiB residual within 960.50 MiB of pinned blocks includes
+page padding, retained free pages, bookkeeping and unenrolled derived state;
+it does not establish 537 MiB of empty space. The 127 MiB of enrolled derived
+indexes is 43% of enrolled content and never appears in a canonical `.deload/` image.
 
 **The sharpest result is inside the index column.** The three per-burst
 `HashMemory` instances carry bucket arrays wildly out of proportion to their
@@ -326,7 +331,7 @@ Two readings worth recording:
 - **The four statement columns** (`intEncodedStatements`,
  `intLocalEncodedStatements`, `intLocalEncodedStatementsDelta`,
  `intExternalStatements`) are 86.00 MiB, 29.0% of logical content — the
- expected shape, since `IntEncodedExpr` is a flat 352-byte row (I-84).
+ expected shape, since `IntEncodedExpr` was a flat 352-byte row at this measurement (I-84; 240 bytes since the per-argument number arrays were narrowed).
 
 ### Roll-ups the per-container table does not show directly
 
@@ -374,15 +379,15 @@ registry's contracts exactly:
  facets total 2.35 MiB.
 
 For scale: 253 984 registry rows are carried by 121 768 `IntEncodedExpr` rows in
-`intEncodedStatements` (42.86 MiB at a flat 352 B each, `I-84`). The registry
+`intEncodedStatements` (42.86 MiB at the then-flat 352 B each, `I-84`). The registry
 that decides what is KNOWN costs 1.21 MiB; the columns that store what the
 statements ARE cost 35× that.
 
 **Peak attributed is 960.50 MiB against a 1365.75 MiB Main pool** at the same
-instant. The gap is not unaccounted memory: attribution covers only the LBs
-active in the peak iteration, while the pool counts every resident LB including
-those idle but not yet evicted. Reading the two as if they shared a denominator
-is the mistake this chapter's three-family split exists to prevent.
+instant. The historical gap compares an iteration sum of block samples with the pool
+count at the seam. Idle resident blocks and differing sample times contribute
+to that gap; neither denominator represents the other under asynchronous
+paging.
 
 ---
 
@@ -395,6 +400,51 @@ rather than a silent omission. The same is true of a new facet inside an
 existing band, which renders as `<instance>.offset<N>`.
 
 ---
+
+## The heap census — live bytes and allocation sites
+
+The whole-process census (`infra/memory_census.{hpp,cpp}`) sees the malloc
+heap only as mimalloc's committed bytes, which cannot tell live data from
+memory the allocator retains, nor name the owner. `infra/heap_profile.{hpp,cpp}`
+adds two instruments, both measurement-only:
+
+- **Live C++ heap.** In `MEM_MEASUREMENT` builds that link mimalloc,
+ `infra/heap_profile_hooks.cpp` replaces the global `operator new` /
+ `operator delete` family. Each block still comes from mimalloc; its usable
+ size is added to or subtracted from sixty-four thread-sharded counters.
+ `heap_profile::liveBytes` feeds a new "Heap live (C++)" column of the
+ per-step process table (`max_heap_live_bytes` in `[process-phase]`). Committed
+ heap minus live heap is the allocator's retention and fragmentation. Before
+ [D-427](../40_decisions.md#d-427)
+ it also held mimalloc's never-released blocks above 64 MiB
+ ([G-78](../50_gotchas.md#g-78));
+ the heap-site profile cannot show those, because their frees are counted.
+ `malloc` from C libraries and the CUDA runtime is outside the count.
+- **Allocation sites (opt-in).** With `GL_HEAP_PROFILE_KIB=<interval>` in the
+ batch's environment, `main` calls `heap_profile::enable` (not under
+ `--unit-tests`, whose heap-profile test enables sampling itself). Call stacks
+ are keyed on their innermost 16 frames. Every thread then
+ samples one allocation per interval bytes it allocates, plus every
+ allocation of at least the interval, recording the call stack and the
+ sample's weight (the larger of its size and the interval) in a fixed table
+ reserved once through `reserveAddressSpace`; a free removes its sample (a
+ counting filter keeps the free path lock-free for non-samples). The census
+ hook `noteCensusSample` snapshots the live weights per call stack at the
+ batch's heap-live peak and at its largest end-of-barrier sample;
+ `writeReport` prints the top 30 stacks of each snapshot as "Heap live by
+ allocation site" tables and `[heap-site]` lines, symbolized through DbgHelp
+ (Windows, the PDB beside the executable) or `dladdr` (elsewhere). A frame
+ carries a name only when its address lies inside the named function
+ (`symbolName`): without a PDB, or for a function the dynamic symbol table
+ does not list, it stays unnamed instead of borrowing the nearest listed
+ symbol's name. A label reads innermost program frame first (`a < b` = a
+ called from b) with the container operation in brackets.
+
+Sampling costs a stack capture per sample (tens of thousands per batch at
+256 KiB) and about 90 MiB of reserved tables (262 144 call stacks, about a
+million live samples); the live counter alone costs a
+`mi_usable_size` and a relaxed atomic add per allocation and free. Nothing
+reads either as a proof input (Rule 16).
 
 ## Relationship to the neighbours
 
@@ -414,21 +464,23 @@ existing band, which renders as `<instance>.offset<N>`.
 
 ### Suspected fragility
 
-- **`ReverseArgsIndex` is still invisible.** The cold-map indexes are measured
- now, but the reverse membership side-index
- ([I-154](../30_invariants.md#i-154)) is not a `HashMap` and exposes no size
- accessor, so its bytes fall into slack. It is one container on one map, so the
- error is bounded and small, but slack is therefore a slight over-count and
- index a slight under-count.
-- **Slack does not separate block padding from page padding.** Both are the
- residual. Splitting them needs a page-count accessor on `LbArena`; the
- distinction matters because the two have different fixes (block size versus
- letting small facets share a page).
-- **Idle LBs are invisible by construction.** The table describes RAM residency,
- not total proof state. An LB deloaded across the peak iteration contributes
- nothing, so the figure is smaller than the sum of all `.deload/` images. That
- is the intended reading, but a reader looking for "how big is the proof" will
- be misled unless they read this paragraph.
+- **Derived structures are only partly attributed.** `visitContainers` measures
+ enrolled payloads and their hash indexes. The separate `visitLiveBytes` walk
+ includes `canonicalUses` and the hash-memory aggregates, but some component
+ accessors use count-based estimates instead of exact held pages. The residual
+ therefore contains both useful derived state and padding; do not subtract a
+ mixed aggregate from it as though every term were disjoint and exact.
+- **Asynchronous sampling.** The container table is an iteration aggregate over
+ blocks sampled at different times. Idle and skipped blocks are absent even
+ when resident. It measures neither simultaneous RAM nor all proof state.
+- **Generated labels remain broader than their evidence.** The existing output
+ calls the residual `page padding` and describes the pool denominator as
+ strictly larger. Under paging those readings are not guaranteed. This
+ documentation correction changes no measurement or production code. The
+ text table's `%content` currently uses content plus index as its numerator;
+ the HTML's corresponding column uses content alone. Use the HTML for
+ separated content/index comparisons and do not treat the two percentages
+ as identical.
 - **`MEM_MAX_SLOTS` is a hard cap.** A run with more `logicalCores` than 64
  asserts rather than wrapping. Widen the constant; the storage is static.
 - **The dump allocates.** `dumpMemAggregate` builds `std::string` rows and an
@@ -442,6 +494,13 @@ existing band, which renders as `<instance>.offset<N>`.
  (flip the gate, run `main.py`, read `.rt/_memory_<anchor>.log`). The tracker
  itself ships positive and negative unit tests in
  `src/tests/test_mem_tracker.cpp`.
+
+
+## Streamed host projection accounting
+
+The GPU census projection byte count is the largest concurrent sum of the retained sealing image and one construction window within that logical chunk. Shards still own no separate column bytes. The value excludes their private construction scratch, as before; process and allocation-site samples include it. The staging target is 256 MiB of measured complete columns, not a guaranteed physical maximum: an indivisible larger block and per-shard minimum capacities may require more. The complete device image and reservation are unchanged. Source: prover.cpp, ExpressionAnalyzer::proveKernel captures the actual host-column maximum before destroying each window.
+
+For the streamed route, Largest chunk host total sums the projection's construction peak and the other arenas' capacities, including sealing allocated later. It is an accounting upper bound, not a simultaneous host or process high-water. Compare operating-system process peaks for resident savings; compare Largest host projection only as the concurrent window-plus-retained-column footprint defined above. GpuChunkHostBytes and noteGpuChunk document the same distinction.
 
 ---
 

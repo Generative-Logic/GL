@@ -33,6 +33,7 @@
 
 #include "typed_cold_map.hpp"
 #include "reverse_args_index.hpp"
+#include "originals_head_index.hpp"
 #include "rule_index_staging.hpp"
 
 #include <utility>
@@ -107,6 +108,7 @@ namespace gl {
         // It inverts checkLocalEncodedMemoryStatic's candidate enumeration from
         // an O(keys) forward scan to one hash probe.
         ReverseArgsIndex remainingArgsReverseIndex;
+        OriginalsHeadIndex originalsHeadIndex;
         // The two normalized-key indexes (I-49). normalizedEncodedKeys maps
         // every whole key to the run of the rules that installed it
         // (RuleOwnerRec, sorted-unique, addOwnerToRun via addWholeKeyOwner);
@@ -117,12 +119,12 @@ namespace gl {
         // Lengths+Bytes at 5/6, the owner run's RunStarts+BlobStarts+BlobPool
         // appended at 72..74 (append-only tags). normalizedEncodedSubkeys is
         // the growable-subkey record map (bytes key NormKey -> ONE OwnerSet
-        // blob per key: the loose byte + the owners' u_ signatures for the
-        // D-120 growth prune + the owner list behind them, run-length-1,
+        // blob per key: empty below three premises; otherwise the loose byte,
+        // u_ signatures for the D-120 growth prune and their owner list, run-length-1,
         // whole-value replace; read through the no-alloc byte peek
         // subkeyUSatisfied -> peekRecordBytes + OwnerSetBlob, which never
         // reaches the owner section; written by mergeSubkeySignatures /
-        // addShortSubkeyOwner; never scope-wiped; 5 deload facets: key
+        // ensureEmptySubkeyRecord; never scope-wiped; 5 deload facets: key
         // Lengths+Bytes, value RunStarts+BlobStarts+BlobPool).
         TypedColdBlobMap<NormKey, RuleOwnerRec> normalizedEncodedKeys;
         TypedColdBlobMap<NormKey, RuleOwnerRec>::LengthsView normalizedEncodedKeysLengths;
@@ -144,6 +146,16 @@ namespace gl {
         // bookkeeping, never deloaded (a removal and its erasure sit inside
         // one single-threaded seam).
         bool ownerlessPending = false;
+        // The goal-rescan floor of checkNecessityForEquality: every goal of
+        // the LB has been visited against the `originals` chains
+        // 1..goalScanChainMark, so the rescan after an implication install
+        // visits only the chains above it (a repeated (goal, chain) visit
+        // changes nothing). Raised at the end of each rescan; zeroed when a
+        // goal enters the registry without the goal door's full scan
+        // (sanitizeToBeProved's re-key), at every teardown, and remapped by
+        // the owner-less sweep, whose compaction keeps the survivors' order.
+        // Resident scalar, never deloaded: a reload keeps the chain ids.
+        int32_t goalScanChainMark = 0;
         // --- shared members (path-independent) ---
         // Implication chains (premises + head) as ruleInterner id vectors
         // (D-133). Written at install; iterated (decoded lex-sorted) by the
@@ -365,6 +377,28 @@ namespace gl {
         TypedColdSet<int64_t> ordis2RevisitInProgress;
         TypedColdSet<int64_t>::KeysView ordis2RevisitInProgressKeys;
 
+        // Parked implication subproofs (D-406): an
+        // implication element of an and whose sibling non-implication element
+        // is not yet known at the preparing scope is kept here instead of
+        // opening its boundary subproof. Key: packed (templateId, validityId)
+        // of the unknown element's clean ground text at that scope. Value:
+        // the IntegrationEntry family (canonical run under
+        // DecodedInstructionLess) — one stored instruction per parked
+        // implication: entity 0 the implication, entities 1..k its parent ands
+        // with their gating elements, markedGoal the embedded root goal.
+        // Same RMW / wipe / deload / dump discipline as rejectedMapOrdis; the
+        // revival revisitRejectedSubproof erases the consumed run. Four facets:
+        // key, run-starts, blob-starts, blob-pool.
+        TypedColdBlobMap<int64_t, IntegrationEntry> rejectedMapSubproof;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::KeysView rejectedMapSubproofKeys;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::RunStartsView rejectedMapSubproofRunStarts;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::BlobStartsView rejectedMapSubproofBlobStarts;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::BlobPoolView rejectedMapSubproofBlobPool;
+        // Re-entrant guard for revisitRejectedSubproof — DEDICATED. Empty at
+        // barriers. One facet: key.
+        TypedColdSet<int64_t> subproofRevisitInProgress;
+        TypedColdSet<int64_t>::KeysView subproofRevisitInProgressKeys;
+
         /// @brief Bind the rule store to the owning LB's arena + dirty flag.
         ///
         /// @details
@@ -393,6 +427,7 @@ namespace gl {
               remainingArgsNormalizedEncodedMapBlobStarts(&remainingArgsNormalizedEncodedMap.inner()),
               remainingArgsNormalizedEncodedMapBlobPool(&remainingArgsNormalizedEncodedMap.inner()),
               remainingArgsReverseIndex(arena),
+              originalsHeadIndex(arena),
               maxKeyLength(0),
               normalizedEncodedKeys(arena, dirty),
               normalizedEncodedKeysLengths(&normalizedEncodedKeys.inner()),
@@ -479,12 +514,44 @@ namespace gl {
               rejectedMapOrdis2BlobStarts(&rejectedMapOrdis2.inner()),
               rejectedMapOrdis2BlobPool(&rejectedMapOrdis2.inner()),
               ordis2RevisitInProgress(arena, dirty),
-              ordis2RevisitInProgressKeys(&ordis2RevisitInProgress.inner())
+              ordis2RevisitInProgressKeys(&ordis2RevisitInProgress.inner()),
+              rejectedMapSubproof(arena, dirty),
+              rejectedMapSubproofKeys(&rejectedMapSubproof.inner()),
+              rejectedMapSubproofRunStarts(&rejectedMapSubproof.inner()),
+              rejectedMapSubproofBlobStarts(&rejectedMapSubproof.inner()),
+              rejectedMapSubproofBlobPool(&rejectedMapSubproof.inner()),
+              subproofRevisitInProgress(arena, dirty),
+              subproofRevisitInProgressKeys(&subproofRevisitInProgress.inner())
         {}
 
         // Arena-bound: non-copyable (an arena pointer must not be blindly
         // duplicated). The former swap-with-empty / `= HashMemory()` resets
         // become `resetToFresh()`.
+        /// @brief Bind native key payload to the owning block shared store.
+        ///
+        /// @details Each map keeps its own key identifiers, hash index and owner
+        /// runs. Equal canonical bytes share resident payload across the family.
+        /// Binding happens once while every participating container is empty.
+        ///
+        /// @param pool Same-arena store that outlives this hash-memory instance.
+        /// @return Nothing.
+        /// @invariant Shared storage never merges map membership or scope.
+        void bindSharedBytes(SharedBytePool& pool) {
+            encodedMap.inner().keyStore().bindSharedBytes(pool);
+            normalizedEncodedKeys.inner().keyStore().bindSharedBytes(pool);
+            normalizedEncodedSubkeys.inner().keyStore().bindSharedBytes(pool);
+            remainingArgsNormalizedEncodedMap.inner().keyStore().bindSharedBytes(pool);
+            remainingArgsNormalizedEncodedMap.inner().bindSharedBlobBytes(pool);
+            remainingArgsOwners.inner().keyStore().bindSharedBytes(pool);
+            copyOwners.inner().keyStore().bindSharedBytes(pool);
+            remainingArgsReverseIndex.bindSharedBytes(pool);
+            encodedMap.inner().bindSharedBlobBytes(pool, true);
+            normalizedEncodedSubkeys.inner().bindSharedBlobBytes(pool, true);
+            normalizedEncodedKeys.inner().bindSharedBlobBytes(pool, true);
+            remainingArgsOwners.inner().bindSharedBlobBytes(pool, true);
+            copyOwners.inner().bindSharedBlobBytes(pool, true);
+        }
+
         HashMemory(const HashMemory&) = delete;
         HashMemory& operator=(const HashMemory&) = delete;
 
@@ -520,6 +587,8 @@ namespace gl {
                  + admissionMapOrdis2.liveBytes()
                  + rejectedMapOrdis2.liveBytes()
                  + ordis2RevisitInProgress.liveBytes()
+                 + rejectedMapSubproof.liveBytes()
+                 + subproofRevisitInProgress.liveBytes()
                  + admissionMapIntegration.liveBytes()
                  + rejectedMapIntegration.liveBytes()
                  + rejectedMapOrdis.liveBytes()
@@ -556,6 +625,8 @@ namespace gl {
             admissionMapOrdis2.release();
             rejectedMapOrdis2.release();
             ordis2RevisitInProgress.release();
+            rejectedMapSubproof.release();
+            subproofRevisitInProgress.release();
             admissionMapIntegration.release();
             rejectedMapIntegration.release();
             rejectedMapOrdis.release();
@@ -569,6 +640,8 @@ namespace gl {
             remainingArgsOwners.release();
             copyOwners.release();
             remainingArgsReverseIndex.clear();
+            originalsHeadIndex.clear();
+            goalScanChainMark = 0;
         }
 
         void clear() {
@@ -577,10 +650,12 @@ namespace gl {
             remainingArgsOwners.resetToFresh();
             copyOwners.resetToFresh();
             remainingArgsReverseIndex.clear();
+            originalsHeadIndex.clear();
             normalizedEncodedKeys.resetToFresh();
             normalizedEncodedSubkeys.resetToFresh();
             maxKeyLength = 0;
             ownerlessPending = false;
+            goalScanChainMark = 0;
             originals.resetToFresh();
             admissionMap.resetToFresh();
             admissionMapIntegration.resetToFresh();
@@ -599,6 +674,8 @@ namespace gl {
             admissionMapOrdis2.resetToFresh();
             rejectedMapOrdis2.resetToFresh();
             ordis2RevisitInProgress.resetToFresh();
+            rejectedMapSubproof.resetToFresh();
+            subproofRevisitInProgress.resetToFresh();
         }
 
         /// @brief Enumerate this instance's COLD (deload-visited) facets at
@@ -740,6 +817,14 @@ namespace gl {
             visit(base + 85u, self.copyOwnersRunStarts);
             visit(base + 86u, self.copyOwnersBlobStarts);
             visit(base + 87u, self.copyOwnersBlobPool);
+            // Parked implication subproofs + their revisit guard
+            // (D-406): 5 facets at base+88..92,
+            // appended per the band's append-only discipline (D-174).
+            visit(base + 88u, self.rejectedMapSubproofKeys);
+            visit(base + 89u, self.rejectedMapSubproofRunStarts);
+            visit(base + 90u, self.rejectedMapSubproofBlobStarts);
+            visit(base + 91u, self.rejectedMapSubproofBlobPool);
+            visit(base + 92u, self.subproofRevisitInProgressKeys);
         }
 
         template <typename Visitor>

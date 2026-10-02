@@ -21,12 +21,14 @@
 
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
+#include "project_paths.hpp"
 #include "compressor.hpp"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
 #include <filesystem>
 #include <unordered_map>
+#include <chrono>
 
 namespace gl {
 
@@ -38,8 +40,7 @@ namespace gl {
     /// (compact == expanded). The compressor's Phase 1 may overwrite some
     /// entries when it discovers that a theorem appears in the prover's
     /// `globalTheoremList` under an expanded form different from its
-    /// compact one (the `or0`/`existence2` rewrite at `prover.cpp:7407`
-    /// is the canonical example). The map ensures `runPhase2`'s output
+    /// compact one. The map ensures `runPhase2`'s output
     /// is in the same form the rest of the pipeline expects.
     Compressor::Compressor(ExpressionAnalyzer& analyzer,
         const std::vector<std::string>& all_theorems)
@@ -58,19 +59,30 @@ namespace gl {
     /// Prints progress banners between phases for the run-mode log; the
     /// banners are part of `run_modes`'s narrative and downstream log
     /// scrapers grep for them — do not silently change the text.
-    /// Returns the surviving theorem strings in stable order.
+    /// Returns surviving expanded theorem strings in lexicographic order.
     ///
     /// @return Surviving theorem texts.
     std::vector<std::string> Compressor::run() {
         std::cout << "\n======================================" << std::endl;
         std::cout << "Starting Compressor Phase 1 (Hash Bursts)" << std::endl;
         std::cout << "======================================" << std::endl;
+        const auto phase1Started = std::chrono::steady_clock::now();
         runPhase1();
+        std::cout << "Compressor Phase 1 seconds: "
+                  << std::chrono::duration<double>(
+                      std::chrono::steady_clock::now() - phase1Started).count()
+                  << std::endl;
 
         std::cout << "\n======================================" << std::endl;
         std::cout << "Starting Compressor Phase 2 (Greedy Elimination)" << std::endl;
         std::cout << "======================================" << std::endl;
-        return runPhase2();
+        const auto phase2Started = std::chrono::steady_clock::now();
+        auto result = runPhase2();
+        std::cout << "Compressor Phase 2 seconds: "
+                  << std::chrono::duration<double>(
+                      std::chrono::steady_clock::now() - phase2Started).count()
+                  << std::endl;
+        return result;
     }
 
     /// @brief Phase 1 — extract one `CompressorNode` per theorem by re-running
@@ -94,12 +106,6 @@ namespace gl {
     /// hypo-disintegration together; setting both flags is the
     /// belt-and-suspenders approach.
     ///
-    /// `#pragma optimize("", off)` disables MSVC's whole-function
-    /// optimizer for this body (some MSVC versions have eaten the
-    /// per-theorem loop's invariants under aggressive inlining; the
-    /// pragma is a known-good workaround). Do NOT remove without
-    /// re-verifying on the affected compiler version.
-    ///
     /// @post `extracted_graphs.size() == all_theorems.size()`. Each
     ///       node carries the LB's graph, premises, head, and original
     ///       theorem text.
@@ -107,12 +113,21 @@ namespace gl {
     ///            gated by `!ban_disintegration`; setting that flag here
     ///            disables disintegration for compressor mode.
     void Compressor::runPhase1() {
+        using PhaseClock = std::chrono::steady_clock;
+        const auto secondsSince = [](PhaseClock::time_point started) {
+            return std::chrono::duration<double>(PhaseClock::now() - started).count();
+        };
+        double creationSeconds = 0.0;
+        double ruleInstallSeconds = 0.0;
+        double ruleRegistrationSeconds = 0.0;
+        double seedingSeconds = 0.0;
+        double extractionSeconds = 0.0;
+        double originDecodeSeconds = 0.0;
+        double graphAssemblySeconds = 0.0;
+        double destructionSeconds = 0.0;
         // --- Turn on compressor-specific flags ---
         analyzer.parameters.compressor_mode            = true;
         analyzer.parameters.ban_disintegration         = true;
-        // Pass B is gated by !compressor_mode at prover.cpp:7216, so
-        // setting compressor_mode=true is sufficient to disable it during
-        // Phase 1 even when the config has allow_disintegration=true.
 
         const size_t N = all_theorems.size();
         std::cout << "Building independent Logic Blocks for "
@@ -130,23 +145,60 @@ namespace gl {
         const int lvl0Run[1] = { 0 };
         const int lvlNonDerived[1] = { -1 };
 
+        // The parser reads only theorem text. Keep its result once per theorem;
+        // every independent Logic Block still installs the same rules in order.
+        const auto parsingStarted = PhaseClock::now();
+        std::vector<std::vector<std::string>> premiseChains(N);
+        std::vector<std::string> theoremHeads(N);
         for (size_t i = 0; i < N; ++i) {
+            std::vector<std::tuple<std::string, std::vector<std::string>,
+                                   std::set<std::string>>> chain;
+            theoremHeads[i] = ce::disintegrateImplication(
+                all_theorems[i], chain, analyzer.coreExpressionMap);
+            for (const auto& entry : chain)
+                premiseChains[i].push_back(std::get<0>(entry));
+        }
+
+        const double parsingSeconds = secondsSince(parsingStarted);
+
+        for (size_t i = 0; i < N; ++i) {
+            const auto creationStarted = PhaseClock::now();
             const std::string& theorem = all_theorems[i];
 
             Memory* lb = analyzer.lbStore.create<Memory>();
             lb->level    = 0;
             lb->isActive = true;
             lb->setExprKey("CompressorNode_" + std::to_string(i));
+            // The node key holds no arguments: record the definition sets of
+            // the target theorem's variables before its premises and head are
+            // seeded at the node's main (I-267).
+            {
+                StrSpan leaves[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1];
+                int32_t leafN = 0;
+                for (const std::string& premise : premiseChains[i]) {
+                    assert(leafN < ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
+                        && "compressor node: premise chain exceeds MAX_ADMISSION_KEY_ELEMENTS");
+                    leaves[leafN++] = StrSpan(premise);
+                }
+                leaves[leafN++] = StrSpan(theoremHeads[i]);
+                analyzer.assignTheoremVarDefinitionSets(*lb, leaves, leafN);
+                // A set- or relation-typed `=` head integrates by
+                // extensionality: its entity must exist before the head is
+                // seeded as the node's goal.
+                analyzer.ensureTypedEqualityEntityForTheorem(leaves, leafN);
+            }
+            creationSeconds += secondsSince(creationStarted);
 
+            // No inference consumes the rule indexes during loading. Keep one
+            // window across the input sequence and close it before seeding.
+            assert(lb->ruleStagingArmDepth == 0);
+            ++lb->ruleStagingArmDepth;
             // Load ALL proven theorems into hash memory as implication rules
-            for (const std::string& rule : all_theorems) {
-                std::vector<std::tuple<std::string,
-                                       std::vector<std::string>,
-                                       std::set<std::string>>> tempChain;
-                std::string head = ce::disintegrateImplication(
-                    rule, tempChain, analyzer.coreExpressionMap);
-                std::vector<std::string> chain;
-                for (auto& t : tempChain) chain.push_back(std::get<0>(t));
+            for (size_t ruleIndex = 0; ruleIndex < N; ++ruleIndex) {
+                const auto ruleInstallStarted = PhaseClock::now();
+                const std::string& rule = all_theorems[ruleIndex];
+                const std::string& head = theoremHeads[ruleIndex];
+                const auto& chain = premiseChains[ruleIndex];
 
                 StrSpan chainRun[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
                 int32_t chainRunN = 0;
@@ -161,12 +213,14 @@ namespace gl {
                     analyzer.parameters.standardMaxSecondaryNumber,
                     false, analyzer.parameters.minNumOperatorsKey,
                     StrSpan("implication", 11), false, StrSpan(rule));
+                ruleInstallSeconds += secondsSince(ruleInstallStarted);
 
                 // The rule load's statement row rides the one presence
                 // convention: a row with its paired {-1} (non-derived)
                 // levels. Site F stays blind to it in compressor mode (the
                 // scan is compiled out there), so the proof engine's view is
                 // unchanged.
+                const auto registrationStarted = PhaseClock::now();
                 {
                     const int64_t pkRule = packStatementKey(
                         lb->nameMap.encode(rule), lb->nameMap.encode("main"));
@@ -175,22 +229,26 @@ namespace gl {
                     upsertStatementKey(lb->intKnownStatements, pkRule,
                         /*local=*/true);
                 }
+                ruleRegistrationSeconds += secondsSince(registrationStarted);
             }
+            const auto ruleFlushStarted = PhaseClock::now();
+            assert(lb->ruleStagingArmDepth == 1);
+            --lb->ruleStagingArmDepth;
+            analyzer.closeRuleIndexStaging(*lb);
+            ruleInstallSeconds += secondsSince(ruleFlushStarted);
 
             // Split the target theorem into premises + head
-            std::vector<std::tuple<std::string,
-                                   std::vector<std::string>,
-                                   std::set<std::string>>> targetChain;
-            std::string targetHead = ce::disintegrateImplication(
-                theorem, targetChain, analyzer.coreExpressionMap);
+            const auto seedingStarted = PhaseClock::now();
+            assert(lb->ruleStagingArmDepth == 0);
+            ++lb->ruleStagingArmDepth;
+            const std::string& targetHead = theoremHeads[i];
 
             CompressorNode pNode;
             pNode.originalTheorem = theorem;
             pNode.head = ExpressionWithValidity(targetHead, "main");
 
             // Insert premises as local fuel
-            for (auto& t : targetChain) {
-                std::string premise = std::get<0>(t);
+            for (const std::string& premise : premiseChains[i]) {
                 pNode.premises.insert(ExpressionWithValidity(premise, "main"));
 
                 const TransientOrigin origin{ true, OriginTag::premise, nullptr, 0 };
@@ -204,8 +262,12 @@ namespace gl {
                 TransientOrigin{ true, OriginTag::goal, nullptr, 0 },
                 -1, -1, StrSpan("main", 4), true);
 
-            extracted_graphs.push_back(pNode);
+            extracted_graphs.push_back(std::move(pNode));
             compressorBodies.push_back(lb);
+            assert(lb->ruleStagingArmDepth == 1);
+            --lb->ruleStagingArmDepth;
+            analyzer.closeRuleIndexStaging(*lb);
+            seedingSeconds += secondsSince(seedingStarted);
         }
 
         std::cout << "Running full Prover kernel on all Compressor nodes "
@@ -213,8 +275,10 @@ namespace gl {
 
         // ---- 2. Run hash bursts ----
 
+        const auto provingStarted = PhaseClock::now();
         analyzer.prove(analyzer.parameters.compressor_hash_bursts,
                        compressorBodies);
+        const double provingSeconds = secondsSince(provingStarted);
 
         std::cout << "Extracting proof graphs and cleaning up..." << std::endl;
 
@@ -225,12 +289,16 @@ namespace gl {
             Memory* lb = compressorBodies[i];
             CompressorNode& pNode = extracted_graphs[i];
 
+            const auto extractionStarted = PhaseClock::now();
             {
                 // Decoded lex-sorted snapshot — strings are the cross-LB
                 // common space of the graph (each compressor LB has its
                 // own interner); per-row line order is insertion order.
+                const auto decodingStarted = PhaseClock::now();
                 const auto originRows =
                     decodeOriginMapSorted(lb->exprOriginMap, lb->originInterner);
+                originDecodeSeconds += secondsSince(decodingStarted);
+                const auto assemblyStarted = PhaseClock::now();
                 for (const auto& row : originRows) {
                     const ExpressionWithValidity rowKey(row.first.first,
                                                         row.first.second);
@@ -242,8 +310,12 @@ namespace gl {
                         total_origins++;
                     }
                 }
+                graphAssemblySeconds += secondsSince(assemblyStarted);
             }
+            extractionSeconds += secondsSince(extractionStarted);
+            const auto destructionStarted = PhaseClock::now();
             analyzer.lbStore.destroy(lb);
+            destructionSeconds += secondsSince(destructionStarted);
         }
 
         // ---- 4. Restore global parameters ----
@@ -254,98 +326,106 @@ namespace gl {
         std::cout << "Extracted " << extracted_graphs.size()
                   << " proof graphs  (" << total_origins
                   << " total origin entries)." << std::endl;
+        // Serial compressor orchestration timings; no timers enter the
+        // statified inference functions. Extraction's remainder includes
+        // destroying the decoded snapshot after its rows have been copied.
+        const double extractionOtherSeconds = extractionSeconds
+            - originDecodeSeconds - graphAssemblySeconds;
+        assert(extractionOtherSeconds >= 0.0);
+        std::cout << "Compressor Phase 1 breakdown seconds:"
+                  << " parse=" << parsingSeconds
+                  << " create=" << creationSeconds
+                  << " rule_install=" << ruleInstallSeconds
+                  << " rule_registration=" << ruleRegistrationSeconds
+                  << " seeding=" << seedingSeconds
+                  << " prove=" << provingSeconds
+                  << " origin_decode=" << originDecodeSeconds
+                  << " graph_assembly=" << graphAssemblySeconds
+                  << " extraction_other=" << extractionOtherSeconds
+                  << " destroy=" << destructionSeconds << std::endl;
     }
 
-    // =================================================================
-    // isDerivable — forward reachability from premises + surviving thms
-    //
-    // Algorithm:
-    //   1. Seed the "alive" set with:
-    //      a. All premises of the node
-    //      b. All theorems NOT in dead_theorems (as EWV with "main")
-    //      c. All expressions that have at least one empty dep list
-    //         (unconditionally derivable)
-    //   2. Iterate: for each expression in the graph that is not yet
-    //      alive, check if any of its dep lists has all deps alive.
-    //      If so, mark it alive.
-    //   3. Repeat until no new expressions become alive.
-    //   4. Return whether the head is alive.
-    // =================================================================
-
-    /// @brief Forward-reachability oracle — true iff `node.head` is reachable
-    /// from `node.premises` plus the surviving theorems given a candidate
-    /// kill set.
+    /// @brief Build a reusable integer index of a compressor graph.
     ///
-    /// @details
-    /// Walks `node.graph` BFS-style: a head is reachable if any of its
-    /// alternative dependency-lists has every dep reachable. Reachability
-    /// is determined by:
-    /// - presence in `node.premises` (always alive),
-    /// - presence in the surviving theorem set (i.e. the set of all
-    ///   theorems minus `dead_theorems`),
-    /// - or transitive reachability through other graph edges.
-    ///
-    /// Used inside Phase 2's per-theorem kill-test loop; called once per
-    /// `(theorem, candidate_kill_set)` pair, so its cost dominates Phase
-    /// 2 wall-clock. Implementation is iterative (no recursion) to
-    /// avoid stack growth on the largest Gauss graphs.
-    ///
-    /// @param node           The CompressorNode whose head we are testing.
-    /// @param dead_theorems  Candidate kill set; theorems in this set are
-    ///                       treated as unavailable.
-    /// @return True iff `node.head` is reachable.
-    bool Compressor::isDerivable(const CompressorNode& node,
-                             const std::set<std::string>& dead_theorems) const
-    {
-        std::set<ExpressionWithValidity> alive;
-
-        // (a) Seed premises
-        for (const auto& p : node.premises) {
-            alive.insert(p);
-        }
-
-        // (b) Seed surviving theorems
-        for (const std::string& t : all_theorems) {
-            if (dead_theorems.count(t) == 0) {
-                alive.insert(ExpressionWithValidity(t, "main"));
-            }
-        }
-
-        // (c) Seed unconditionally derivable expressions (empty dep list)
-        for (const auto& kv : node.graph) {
-            for (const auto& deps : kv.second) {
-                if (deps.empty()) {
-                    alive.insert(kv.first);
-                    break;  // one empty dep list is enough
+    /// @details Local indices identify full expression and scope pairs. Each
+    /// dependency occurrence contributes one reverse link and one counter unit,
+    /// including duplicates. Empty alternatives become unconditional seeds.
+    /// @param node Extracted dependency graph and its premise/head contract.
+    /// @param theorems The complete main-scope theorem seed list.
+    /// @return An immutable dependency index for repeated candidate tests.
+    /// @invariant The graph's logical edges and scope identities are preserved.
+    /// @see CompressorReachability::isDerivable
+    CompressorReachability::CompressorReachability(
+        const CompressorNode& node, const std::vector<std::string>& theorems) {
+        std::map<ExpressionWithValidity, std::size_t> indices;
+        const auto indexOf = [&](const ExpressionWithValidity& expression) {
+            const auto inserted = indices.emplace(expression, indices.size());
+            if (inserted.second) consumers_.emplace_back();
+            return inserted.first->second;
+        };
+        head_ = indexOf(node.head);
+        for (const auto& premise : node.premises)
+            initialAlive_.push_back(indexOf(premise));
+        for (const auto& row : node.graph) {
+            const std::size_t head = indexOf(row.first);
+            for (const auto& dependencies : row.second) {
+                const std::size_t derivation = derivationHeads_.size();
+                derivationHeads_.push_back(head);
+                dependencyCounts_.push_back(dependencies.size());
+                if (dependencies.empty()) initialAlive_.push_back(head);
+                for (const auto& dependency : dependencies) {
+                    const std::size_t index = indexOf(dependency);
+                    consumers_[index].push_back(derivation);
                 }
             }
         }
+        for (const auto& theorem : theorems) {
+            const auto found = indices.find(ExpressionWithValidity(theorem, "main"));
+            if (found != indices.end())
+                theoremSeeds_.emplace_back(theorem, found->second);
+        }
+    }
 
-        // Forward propagation
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (const auto& kv : node.graph) {
-                if (alive.count(kv.first)) continue;  // already alive
-                for (const auto& deps : kv.second) {
-                    bool all_alive = true;
-                    for (const auto& dep : deps) {
-                        if (alive.count(dep) == 0) {
-                            all_alive = false;
-                            break;
-                        }
-                    }
-                    if (all_alive) {
-                        alive.insert(kv.first);
-                        changed = true;
-                        break;  // found one live path, enough
-                    }
+    /// @brief Evaluate the graph's reachable expressions from available seeds.
+    ///
+    /// @details Each expression is enqueued once. Each dependency occurrence
+    /// decrements its alternative's remaining count once; a zero count reaches
+    /// that alternative's head. Early success is exact because reachability is
+    /// monotone and this function produces only a Boolean result.
+    /// @param deadTheorems Theorem expressions excluded from the initial seeds.
+    /// @return Whether the target belongs to the least reachable fixed point.
+    /// @invariant No unseeded cycle can create its own first reachable member.
+    /// @see CompressorReachability::CompressorReachability
+    bool CompressorReachability::isDerivable(
+        const std::set<std::string>& deadTheorems) const {
+        std::vector<unsigned char> alive(consumers_.size(), 0);
+        std::vector<std::size_t> remaining = dependencyCounts_;
+        std::vector<std::size_t> queue;
+        queue.reserve(consumers_.size());
+        const auto reach = [&](std::size_t expression) {
+            assert(expression < alive.size());
+            if (alive[expression] == 0) {
+                alive[expression] = 1;
+                queue.push_back(expression);
+            }
+        };
+        for (const std::size_t seed : initialAlive_) reach(seed);
+        for (const auto& seed : theoremSeeds_) {
+            if (deadTheorems.count(seed.first) == 0) reach(seed.second);
+        }
+        if (alive[head_] != 0) return true;
+        for (std::size_t cursor = 0; cursor < queue.size(); ++cursor) {
+            for (const std::size_t derivation : consumers_[queue[cursor]]) {
+                assert(remaining[derivation] > 0);
+                if (--remaining[derivation] == 0) {
+                    reach(derivationHeads_[derivation]);
+                    if (alive[head_] != 0) return true;
                 }
             }
         }
-
-        return alive.count(node.head) > 0;
+        return false;
     }
+
 
     // =================================================================
     // Phase 2 — Greedy Elimination with multi-pass
@@ -354,16 +434,14 @@ namespace gl {
     /// @brief Phase 2 — greedy multi-pass redundancy elimination.
     ///
     /// @details
-    /// Iterates the theorem list in `std::stable_sort` order (per
-    /// `OPEN-13` in `docs/agentic_swdd/SwDD.md` — output determinism depends on
-    /// stable ordering). Each pass walks every theorem and tests
-    /// `isDerivable(node, dead ∪ {theorem})` on every other LB's
-    /// CompressorNode; if every head stays derivable, the theorem is
-    /// killed. Repeats until no theorem is killed in a full pass —
-    /// fixed-point convergence.
+    /// Orders candidates by ascending usage count, then theorem text. Each
+    /// candidate is tentatively unavailable as an initial theorem seed; the
+    /// indexed derivability oracle then checks every extracted graph. A
+    /// candidate is removed only if every original head remains derivable.
+    /// Passes repeat until no further candidate is removed.
     ///
-    /// Output is the surviving theorem texts in the same stable order
-    /// as the input. Compressed-out theorems are written to
+    /// Output is the surviving expanded theorem texts in lexicographic order.
+    /// Compressed-out theorems are written to
     /// `files/theorems/compressed_out_theorems.txt` (and
     /// `compressed_external_theorems.txt` for the externals path) by
     /// `run_modes::fullRun`'s post-compressor write step; this function
@@ -398,6 +476,12 @@ namespace gl {
                 return ca < cb || (ca == cb && a < b);
             });
 
+        // Compile scope-preserving graph indices once for all candidate sets.
+        std::vector<CompressorReachability> reachability;
+        reachability.reserve(extracted_graphs.size());
+        for (const auto& node : extracted_graphs)
+            reachability.emplace_back(node, all_theorems);
+
         // ---- 3. Multi-pass greedy elimination ----
         std::set<std::string> essential;
         std::set<std::string> current_dead;
@@ -421,8 +505,8 @@ namespace gl {
                 current_dead.insert(candidate);
 
                 bool all_survive = true;
-                for (const auto& node : extracted_graphs) {
-                    if (!isDerivable(node, current_dead)) {
+                for (const auto& graph : reachability) {
+                    if (!graph.isDerivable(current_dead)) {
                         all_survive = false;
                         break;
                     }
@@ -466,8 +550,7 @@ namespace gl {
         namespace fs = std::filesystem;
         std::error_code ec;
         const auto theoremsDir =
-            fs::path(__FILE__).parent_path()
-            .parent_path().parent_path().parent_path()
+            gl::projectRoot()
             / "files" / "theorems";
 
         fs::create_directories(theoremsDir, ec);

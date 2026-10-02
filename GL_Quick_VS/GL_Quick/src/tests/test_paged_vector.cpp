@@ -41,11 +41,16 @@
 
 #include "../memory_infra/arena_vector.hpp"
 #include "../memory_infra/paged_vector.hpp"
+#include "../memory_infra/paged_hash_index.hpp"
 #include "../memory_infra/lb_arena.hpp"
 #include "../parameters.hpp"
+#include "../memory_infra/shared_expression_list.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -251,7 +256,7 @@ TEST(paged_vector, back_to_front_filter_erase) {
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::PagedVector<PvPod> v(&a, &d);
     for (int i = 0; i < 100; ++i) v.push_back(pod(i));
-    // wipeSubtree-style back-to-front erase of every even index.
+    // Back-to-front erase keeps the yet-to-be-visited indices stable.
     for (int32_t j = v.size(); j-- > 0;)
         if ((v[j].a % 2) == 0) v.erase(j);
     ASSERT_EQ(v.size(), 50);
@@ -630,6 +635,55 @@ TEST(paged_vector, two_level_insert_at_matches_oracle) {
     for (int32_t i = 0; i < v.size(); ++i) ASSERT_EQ(v[i], oracle[i]);
 }
 
+// The bulk run-start adjust: ranges crossing page boundaries and directory
+// levels change exactly their own slots; an empty range changes nothing.
+TEST(paged_vector, add_to_range_matches_oracle_across_pages) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvSpillCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    std::vector<int32_t> oracle;
+    for (int32_t i = 0; i < 6000; ++i) { v.push_back(mix(i)); oracle.push_back(mix(i)); }
+    uint32_t rng = 0x13579bdfu;
+    auto nx = [&]() { rng = rng * 1664525u + 1013904223u; return rng; };
+    for (int step = 0; step < 400; ++step) {
+        const int32_t sz = static_cast<int32_t>(oracle.size());
+        const int32_t from = static_cast<int32_t>(nx() % static_cast<uint32_t>(sz + 1));
+        const int32_t count =
+            static_cast<int32_t>(nx() % static_cast<uint32_t>(sz - from + 1));
+        const int32_t delta = static_cast<int32_t>(nx() % 9u) - 4;
+        v.addToRange(from, count, delta);
+        for (int32_t k = from; k < from + count; ++k) oracle[k] += delta;
+    }
+    d = gl::DirtyState::Clean;
+    v.addToRange(17, 0, 5);
+    ASSERT_TRUE(d == gl::DirtyState::Clean);
+    ASSERT_EQ(v.size(), static_cast<int32_t>(oracle.size()));
+    for (int32_t i = 0; i < v.size(); ++i) ASSERT_EQ(v[i], oracle[i]);
+}
+
+// insertAt copies its argument before moving the tail, so inserting one of
+// the vector's own elements inserts that element's pre-move value.
+TEST(paged_vector, insert_at_own_element_inserts_pre_move_value) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvSpillCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    std::vector<int32_t> oracle;
+    for (int32_t i = 0; i < 3000; ++i) { v.push_back(mix(i)); oracle.push_back(mix(i)); }
+    for (int32_t step = 0; step < 50; ++step) {
+        const int32_t source = (step * 97) % static_cast<int32_t>(oracle.size());
+        const int32_t pos = (step * 31) % (source + 1);
+        const int32_t value = oracle[source];
+        v.insertAt(pos, v[source]);
+        oracle.insert(oracle.begin() + pos, value);
+    }
+    ASSERT_EQ(v.size(), static_cast<int32_t>(oracle.size()));
+    for (int32_t i = 0; i < v.size(); ++i) ASSERT_EQ(v[i], oracle[i]);
+}
+
 TEST(paged_vector, two_level_replace_range_matches_oracle) {
     gl::GlobalMemoryManager m;
     m.init(kPvSpillCfg);
@@ -889,4 +943,397 @@ TEST(paged_vector, two_level_promotion_records_telemetry) {
     v.push_back(mix(kSingleCap));                  // crosses dirCap -> records the promotion
     ASSERT_TRUE(m.twoLevelPromotions() >= 1);
     ASSERT_TRUE(m.peakPagesHeld() >= kDirCap + 1);
+}
+
+TEST(paged_vector, erase_if_matches_sequential_erase_across_pages) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState dBulk = gl::DirtyState::Clean;
+    gl::DirtyState dSeq = gl::DirtyState::Clean;
+    gl::PagedVector<PvPod> bulk(&a, &dBulk);
+    gl::PagedVector<PvPod> seq(&a, &dSeq);
+    for (int i = 0; i < 2100; ++i) {          // three pages
+        bulk.push_back(pod(i));
+        seq.push_back(pod(i));
+    }
+    dBulk = gl::DirtyState::Clean;
+    dSeq = gl::DirtyState::Clean;
+    // Erase every element whose first field is a multiple of 3, plus the
+    // whole tail from 2000 on (so pages empty at the end).
+    const auto victim = [](const PvPod& p) { return (p.a % 3) == 0 || p.a >= 2000; };
+    std::vector<int32_t> expectedPositions;
+    for (int i = 0; i < 2100; ++i) if (victim(pod(i))) expectedPositions.push_back(i);
+    for (int32_t i = seq.size(); i-- > 0; ) if (victim(seq[i])) seq.erase(i);
+
+    std::vector<int32_t> reported;
+    const int32_t removed = bulk.eraseIf(victim, [&](int32_t pos) { reported.push_back(pos); });
+    ASSERT_EQ(removed, static_cast<int32_t>(expectedPositions.size()));
+    ASSERT_TRUE(reported == expectedPositions);          // ascending original indices
+    ASSERT_EQ(bulk.size(), seq.size());
+    for (int32_t i = 0; i < bulk.size(); ++i) ASSERT_TRUE(bulk[i] == seq[i]);
+    ASSERT_EQ(bulk.pagesHeld(), seq.pagesHeld());       // the emptied tail pages are freed alike
+    ASSERT_NE(static_cast<int>(dBulk), static_cast<int>(gl::DirtyState::Clean));
+    ASSERT_NE(static_cast<int>(dSeq), static_cast<int>(gl::DirtyState::Clean));
+
+    // No victim: nothing moves, nothing is marked.
+    dBulk = gl::DirtyState::Clean;
+    const int32_t none = bulk.eraseIf([](const PvPod&) { return false; }, [](int32_t) {});
+    ASSERT_EQ(none, int32_t(0));
+    ASSERT_EQ(static_cast<int>(dBulk), static_cast<int>(gl::DirtyState::Clean));
+
+    // Everything: the container empties and holds no page.
+    const int32_t all = bulk.eraseIf([](const PvPod&) { return true; }, [](int32_t) {});
+    ASSERT_EQ(all, seq.size());
+    ASSERT_TRUE(bulk.empty());
+    ASSERT_EQ(bulk.pagesHeld(), 0);
+}
+
+
+TEST(paged_vector, reset_keeping_pages_reuses_the_held_pages) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<PvPod> v(&a, &d);
+    for (int i = 0; i < 3000; ++i) v.push_back(pod(i));   // three data pages
+    ASSERT_EQ(v.pagesHeld(), 3);
+    const int32_t live = a.livePages();                     // + the directory page
+    const int64_t bytes = v.liveBytes();
+    d = gl::DirtyState::Clean;
+    v.resetKeepingPages();
+    ASSERT_TRUE(v.empty());
+    ASSERT_EQ(static_cast<int>(d), static_cast<int>(gl::DirtyState::Restructured));
+    ASSERT_EQ(v.pagesHeld(), 3);
+    ASSERT_EQ(a.livePages(), live);
+    ASSERT_EQ(v.liveBytes(), bytes);
+
+    // A refill within the held capacity allocates nothing and reads back exactly,
+    // through both the bulk append and the single-element append.
+    std::vector<PvPod> run;
+    for (int i = 0; i < 2500; ++i) run.push_back(pod(10000 + i));
+    v.appendRun(run.data(), 1200);
+    for (int i = 1200; i < 2500; ++i) v.push_back(run[static_cast<std::size_t>(i)]);
+    ASSERT_EQ(v.size(), 2500);
+    ASSERT_EQ(v.pagesHeld(), 3);
+    ASSERT_EQ(a.livePages(), live);
+    for (int i = 0; i < 2500; ++i) ASSERT_TRUE(v[i] == run[static_cast<std::size_t>(i)]);
+
+    // Past the held capacity a page is acquired as for a fresh vector.
+    for (int i = 2500; i < 3073; ++i) v.push_back(pod(i));
+    ASSERT_EQ(v.pagesHeld(), 4);
+    ASSERT_TRUE(v[3072] == pod(3072));
+
+    // truncate still frees the pages it empties, clear frees every page.
+    v.truncate(10);
+    ASSERT_EQ(v.pagesHeld(), 1);
+    ASSERT_TRUE(v[9] == run[9]);
+    v.resetKeepingPages();
+    v.clear();
+    ASSERT_EQ(v.pagesHeld(), 0);
+    ASSERT_EQ(a.livePages(), 0);
+}
+
+TEST(paged_vector, copy_run_to_matches_indexing_across_pages) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<PvPod> v(&a, &d);
+    for (int i = 0; i < 2600; ++i) v.push_back(pod(i));   // three data pages
+    d = gl::DirtyState::Clean;
+    const int32_t spans[][2] = {
+        {0, 0}, {0, 1}, {1000, 48}, {1023, 2}, {5, 2590}, {2599, 1}, {0, 2600}};
+    const PvPod sentinel{-1, -1, -1};
+    for (const auto& span : spans) {
+        std::vector<PvPod> out(static_cast<std::size_t>(span[1]) + 1, sentinel);
+        v.copyRunTo(span[0], span[1], out.data());
+        for (int32_t i = 0; i < span[1]; ++i)
+            ASSERT_TRUE(out[static_cast<std::size_t>(i)] == v[span[0] + i]);
+        ASSERT_TRUE(out[static_cast<std::size_t>(span[1])] == sentinel);   // nothing past the run
+    }
+    ASSERT_EQ(static_cast<int>(d), static_cast<int>(gl::DirtyState::Clean));   // a pure read
+}
+
+
+namespace {
+    const gl::StaticMemoryConfig kPvThreeCfg{1 << 22, 1 << 18, 64};
+    constexpr int32_t kPvTwoLevelElements = 4096; // 16 entries/page, 16-way directory
+}
+
+TEST(paged_vector, three_level_promotion_demotion_and_reference_stability) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m); gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    for (int32_t i = 0; i < kPvTwoLevelElements; ++i) v.push_back(mix(i));
+    const int32_t* first = &v[0];
+    const int32_t* boundary = &v[kPvTwoLevelElements - 1];
+    ASSERT_EQ(a.livePages(), 256 + 16 + 1);
+    v.push_back(mix(kPvTwoLevelElements));
+    ASSERT_EQ(a.livePages(), 257 + 17 + 2 + 1);
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(a.livePages()) * 64);
+    for (int32_t i = v.size(); i < 2 * kPvTwoLevelElements + 19; ++i) v.push_back(mix(i));
+    ASSERT_TRUE(first == &v[0] && boundary == &v[kPvTwoLevelElements - 1]);
+    for (int32_t i = 0; i < v.size(); ++i) ASSERT_EQ(v[i], mix(i));
+    v.truncate(2 * kPvTwoLevelElements);
+    ASSERT_EQ(a.livePages(), 512 + 32 + 2 + 1);
+    v.truncate(kPvTwoLevelElements);
+    ASSERT_EQ(a.livePages(), 256 + 16 + 1);
+    v.push_back(mix(kPvTwoLevelElements)); // promote again using recycled pages
+    ASSERT_EQ(a.livePages(), 257 + 17 + 2 + 1);
+    v.erase(kPvTwoLevelElements);
+    ASSERT_EQ(a.livePages(), 256 + 16 + 1);
+    v.truncate(16 * 16); ASSERT_EQ(a.livePages(), 16 + 1);
+    v.truncate(16); ASSERT_EQ(a.livePages(), 1);
+    v.truncate(0); ASSERT_EQ(a.livePages(), 0);
+    ASSERT_EQ(v.liveBytes(), 0);
+}
+
+TEST(paged_vector, three_level_bulk_mutations_match_dense_oracle) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m); gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    std::vector<int32_t> expected(2 * kPvTwoLevelElements + 17);
+    for (int32_t i = 0; i < static_cast<int32_t>(expected.size()); ++i) expected[i] = mix(i);
+    v.appendRun(expected.data(), static_cast<int32_t>(expected.size()));
+    v.insertAt(4096, mix(90001)); expected.insert(expected.begin() + 4096, mix(90001));
+    const int32_t replacement[7] = {11, 22, 33, 44, 55, 66, 77};
+    v.replaceRange(4093, 3, replacement, 7);
+    expected.erase(expected.begin() + 4093, expected.begin() + 4096);
+    expected.insert(expected.begin() + 4093, replacement, replacement + 7);
+    v.replaceRange(8188, 20, replacement, 7);
+    expected.erase(expected.begin() + 8188, expected.begin() + 8208);
+    expected.insert(expected.begin() + 8188, replacement, replacement + 7);
+    v.erase(4097); expected.erase(expected.begin() + 4097);
+    ASSERT_EQ(v.size(), static_cast<int32_t>(expected.size()));
+    for (int32_t i = 0; i < v.size(); ++i) ASSERT_EQ(v[i], expected[i]);
+    std::vector<int32_t> copied(expected.size()); v.copyRunTo(0, v.size(), copied.data());
+    ASSERT_TRUE(copied == expected);
+    v.clear(); ASSERT_EQ(a.livePages(), 0);
+}
+
+TEST(paged_vector, three_level_grow_and_retained_pages_reuse) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m); gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    std::vector<int32_t> data(9000);
+    for (int32_t i = 0; i < 9000; ++i) data[i] = mix(i);
+    v.growTo(9000); v.writeRunAt(0, data.data(), 9000);
+    const int32_t held = a.livePages();
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(held) * 64);
+    v.resetKeepingPages(); ASSERT_EQ(v.size(), 0);
+    v.appendRun(data.data(), 4100);
+    ASSERT_EQ(a.livePages(), held);
+    v.growTo(9000); v.writeRunAt(4100, data.data() + 4100, 4900);
+    for (int32_t i = 0; i < 9000; ++i) ASSERT_EQ(v[i], data[i]);
+    v.release(); ASSERT_EQ(a.livePages(), 0);
+}
+
+TEST(paged_vector, three_level_serialization_reload_and_copy_are_identical) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m), b(&m), c(&m), aa(&m);
+    gl::DirtyState da = gl::DirtyState::Clean, db = da, dc = da, daa = da;
+    gl::PagedVector<int32_t> source(&a, &da), loaded(&b, &db), copied(&c, &dc);
+    gl::ArenaVector<int32_t> oracle(&aa, &daa);
+    for (int32_t i = 0; i < 12345; ++i) { source.push_back(mix(i)); oracle.push_back(mix(i)); }
+    std::vector<char> actual, expected;
+    source.appendSpanBytes(actual, 0); oracle.appendSpanBytes(expected, 0);
+    ASSERT_TRUE(actual == expected);
+    loaded.bulkAppendBytes(actual.data(), source.size()); copied = source;
+    for (int32_t i = 0; i < source.size(); ++i) {
+        ASSERT_EQ(loaded[i], source[i]); ASSERT_EQ(copied[i], source[i]);
+    }
+    source.clear();
+    actual.clear(); loaded.appendSpanBytes(actual, 0); ASSERT_TRUE(actual == expected);
+    copied.clear(); loaded.clear();
+    ASSERT_EQ(a.livePages(), 0); ASSERT_EQ(b.livePages(), 0); ASSERT_EQ(c.livePages(), 0);
+}
+
+TEST(paged_vector, three_level_no_straddle_and_full_directory_boundary) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m); gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<char> v(&a, &d);
+    const char bytes[17] = "0123456789abcdef";
+    std::vector<int32_t> starts;
+    for (int32_t i = 0; i < 4000; ++i) starts.push_back(v.appendRunNoStraddle(bytes, 17));
+    for (int32_t start : starts) {
+        int32_t count = 0; const char* run = v.contiguousRun(start, count);
+        ASSERT_TRUE(count >= 17); ASSERT_TRUE(std::memcmp(run, bytes, 17) == 0);
+    }
+    v.growTo(64 * 16 * 16 * 16);
+    v.setAt(v.size() - 1, 'z'); ASSERT_EQ(v[v.size() - 1], 'z');
+    ASSERT_EQ(v.pagesHeld(), 4096);
+    ASSERT_EQ(a.livePages(), 4096 + 256 + 16 + 1);
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(a.livePages()) * 64);
+    v.clear(); ASSERT_EQ(a.livePages(), 0);
+}
+
+TEST(paged_hash_index, three_level_boundaries_zeroing_and_reclamation) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m); gl::PagedHashIndex index(&a);
+    for (int32_t count : {4096, 4097, 8193, 65536, 4096, 16, 0}) {
+        index.reset(count); ASSERT_EQ(index.capacity(), count);
+        for (int32_t i = 0; i < count; ++i) { ASSERT_EQ(index.at(i), 0); index.set(i, mix(i)); }
+        const gl::PagedHashIndex& read = index;
+        for (int32_t i = 0; i < count; ++i) ASSERT_EQ(read.at(i), mix(i));
+        ASSERT_EQ(index.liveBytes(), static_cast<int64_t>(a.livePages()) * 64);
+        if (count == 4097) ASSERT_EQ(a.livePages(), 257 + 17 + 2 + 1);
+        if (count == 65536) ASSERT_EQ(a.livePages(), 4096 + 256 + 16 + 1);
+    }
+    ASSERT_EQ(a.livePages(), 0);
+}
+
+TEST(paged_hash_index, three_level_destructor_releases_all_pages) {
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m);
+    { gl::PagedHashIndex index(&a); index.reset(12345); ASSERT_TRUE(a.livePages() > 256); }
+    ASSERT_EQ(a.livePages(), 0);
+}
+
+TEST(paged_vector, directory_and_element_bound_assertion_probe) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_PAGED_DIRECTORY"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_PAGED_DIRECTORY")) mode = value;
+#endif
+    gl::GlobalMemoryManager m; m.init(kPvThreeCfg);
+    gl::LbArena a(&m); gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<char> v(&a, &d); gl::PagedHashIndex index(&a);
+    if (mode == "vector_directory") v.growTo(64 * 16 * 16 * 16 + 1);
+    else if (mode == "hash_directory") index.reset(16 * 16 * 16 * 16 + 1);
+    else if (mode == "element_count") {
+        const char c = 'x'; v.bulkAppendBytes(&c, static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1);
+    } else if (mode == "replacement_count") {
+        v.push_back('x');
+        v.replaceRangeGenerated(0, 0, std::numeric_limits<int32_t>::max(), [](const auto&) {});
+    }
+}
+
+
+TEST(shared_expressions, ownership_mutation_and_canonical_bytes) {
+    gl::GlobalMemoryManager manager; manager.init({1 << 22, 1 << 18, 2048});
+    gl::LbArena arena(&manager); gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedExpressionStore store(&arena);
+    gl::SharedExpressionList main(&arena, &dirty, &store), local(&arena, &dirty, &store);
+    gl::SharedExpressionList delta(&arena, &dirty, &store), external(&arena, &dirty, &store);
+    gl::PagedVector<gl::IntEncodedExpr> oracle(&arena, &dirty);
+    ASSERT_TRUE(main.empty()); ASSERT_EQ(store.count(), 0); ASSERT_EQ(store.liveBytes(), 0);
+    for (int32_t i = 0; i < 1200; ++i) {
+        gl::IntEncodedExpr row{}; row.originalId = i + 1; row.validityId = 1; row.argFullId[15] = i;
+        main.push_back(row); local.push_back(row); delta.push_back(row); external.push_back(row); oracle.push_back(row);
+    }
+    ASSERT_EQ(store.count(), 1200);
+    ASSERT_EQ(main.residentContentBytes(), 1200 * 4);
+    ASSERT_TRUE(store.residentContentBytes() >= 1200 * sizeof(gl::IntEncodedExpr));
+    ASSERT_TRUE(store.indexBytes() > 0);
+    ASSERT_TRUE(&main[701] == &local[701]);
+    ASSERT_TRUE(store.liveBytes() + 4 * main.liveBytes() < 2 * oracle.liveBytes());
+    ASSERT_TRUE(main.pagesHeld() > 0);
+    std::vector<char> expected, actual;
+    oracle.appendSpanBytes(expected, 5); main.appendSpanBytes(actual, 5); ASSERT_TRUE(expected == actual);
+    gl::IntEncodedExpr copied[3]; main.copyRunTo(509, 3, copied);
+    ASSERT_TRUE(std::memcmp(copied + 2, &oracle[511], sizeof(copied[0])) == 0);
+    gl::IntEncodedExpr other = main[0]; other.validityId = 2;
+    local.setAt(0, other); ASSERT_EQ(store.count(), 1201); ASSERT_EQ(main[0].validityId, 1);
+    local.setAt(0, local[0]); ASSERT_EQ(store.count(), 1201);
+    local.erase(0); ASSERT_EQ(store.count(), 1200); ASSERT_EQ(local[0].originalId, 2);
+    delta.clear(); external.release(); ASSERT_EQ(store.count(), 1200);
+    ASSERT_EQ(main.eraseIf([](const auto& row) { return row.originalId % 2 == 0; }), 600);
+    ASSERT_EQ(main[1].originalId, 3); ASSERT_EQ(main.size(), 600);
+    int32_t callbacks = 0;
+    ASSERT_EQ(external.eraseIf([](const auto&) { return true; }, [&](int32_t) { ++callbacks; }), 0);
+    ASSERT_EQ(callbacks, 0);
+    external.push_back(main[0]); external.push_back(main[1]);
+    ASSERT_EQ(external.eraseIf([](const auto& row) { return row.originalId == 3; },
+        [&](int32_t index) { ASSERT_EQ(index, 1); ++callbacks; }), 1);
+    ASSERT_EQ(callbacks, 1); external.clear();
+    local.clear(); ASSERT_EQ(store.count(), 600);
+    main.truncate(20); ASSERT_EQ(store.count(), 20);
+    for (int i = 0; i < 2000; ++i) {
+        other.originalId = 10000 + i;
+        local.push_back(other); local.erase(0);
+    }
+    ASSERT_EQ(store.count(), 20);
+    local = main; local = local; ASSERT_EQ(local.size(), 20); ASSERT_EQ(store.count(), 20);
+    main.clear(); ASSERT_EQ(store.count(), 20);
+    local.clear(); ASSERT_EQ(store.count(), 0); ASSERT_EQ(store.liveBytes(), 0);
+    ASSERT_EQ(main.liveBytes(), 0);
+    dirty = gl::DirtyState::Clean;
+    main.bulkAppendBytes(expected.data(), 1195);
+    ASSERT_EQ(dirty, gl::DirtyState::AppendedOnly);
+    ASSERT_EQ(main[0].originalId, 6); ASSERT_EQ(store.count(), 1195);
+    gl::LbArena otherArena(&manager); gl::DirtyState otherDirty = gl::DirtyState::Clean;
+    gl::SharedExpressionStore otherStore(&otherArena);
+    gl::SharedExpressionList foreign(&otherArena, &otherDirty, &otherStore);
+    foreign = main; main.clear(); ASSERT_EQ(foreign.size(), 1195); ASSERT_EQ(otherStore.count(), 1195);
+    local = oracle; ASSERT_EQ(local.size(), 1200);
+    std::vector<gl::IntEncodedExpr> heapRows{oracle[3], oracle[1], oracle[3]};
+    external = heapRows; ASSERT_EQ(external.size(), 3); ASSERT_EQ(external[1].originalId, 2);
+    external.release(); local.release(); foreign.release(); ASSERT_EQ(store.count(), 0);
+}
+
+TEST(shared_expressions, invalid_reference_assertion_probe) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_SHARED_EXPRESSION"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_SHARED_EXPRESSION")) mode = value;
+#endif
+    gl::GlobalMemoryManager manager; manager.init({1 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&manager); gl::SharedExpressionStore store(&arena);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedExpressionList list(&arena, &dirty, &store);
+    gl::IntEncodedExpr row{};
+    if (mode == "released") { const int id = store.retain(row); store.drop(id); store.at(id); }
+    else if (mode == "truncate") list.truncate(1);
+    else if (mode == "bytes") list.bulkAppendBytes(nullptr, -1);
+}
+
+
+TEST(shared_expressions, mixed_list_lifetimes_match_independent_vectors) {
+    gl::GlobalMemoryManager manager; manager.init({1 << 22, 1 << 18, 2048});
+    gl::LbArena arena(&manager); gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedExpressionStore store(&arena);
+    gl::SharedExpressionList a(&arena, &dirty, &store), b(&arena, &dirty, &store);
+    gl::SharedExpressionList c(&arena, &dirty, &store), d(&arena, &dirty, &store);
+    gl::SharedExpressionList* lists[] = {&a, &b, &c, &d};
+    std::vector<gl::IntEncodedExpr> oracle[4];
+    uint32_t state = 473u;
+    for (int step = 0; step < 1600; ++step) {
+        state = state * 1664525u + 1013904223u;
+        const unsigned which = (state >> 8) & 3u;
+        auto& list = *lists[which]; auto& expected = oracle[which];
+        gl::IntEncodedExpr value{}; value.originalId = (state >> 12) % 39 + 1;
+        value.validityId = (state >> 20) % 3 + 1;
+        const unsigned operation = (state >> 4) % 6;
+        if (operation < 2 || expected.empty()) { list.push_back(value); expected.push_back(value); }
+        else if (operation == 2) {
+            const int32_t at = state % expected.size(); list.erase(at); expected.erase(expected.begin() + at);
+        } else if (operation == 3) {
+            const int32_t at = state % expected.size(); list.setAt(at, value); expected[at] = value;
+        } else if (operation == 4) {
+            const int32_t count = state % (expected.size() + 1); list.truncate(count); expected.resize(count);
+        } else {
+            const unsigned from = (which + 1) % 4; list = *lists[from]; expected = oracle[from];
+        }
+        std::vector<gl::IntEncodedExpr> unique;
+        for (int owner = 0; owner < 4; ++owner) {
+            ASSERT_EQ(lists[owner]->size(), static_cast<int32_t>(oracle[owner].size()));
+            for (int32_t i = 0; i < lists[owner]->size(); ++i) {
+                ASSERT_TRUE(std::memcmp(&(*lists[owner])[i], &oracle[owner][i], sizeof(value)) == 0);
+                bool found = false;
+                for (const auto& retained : unique)
+                    if (std::memcmp(&retained, &oracle[owner][i], sizeof(value)) == 0) { found = true; break; }
+                if (!found) unique.push_back(oracle[owner][i]);
+            }
+        }
+        ASSERT_EQ(store.count(), static_cast<int32_t>(unique.size()));
+    }
+    for (auto* list : lists) list->clear();
+    ASSERT_EQ(store.liveBytes(), 0);
 }

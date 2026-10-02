@@ -26,10 +26,227 @@
 
 #include "phase2_projection.hpp"
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <thread>
+
+#include "phase2_streaming.hpp"
+#include "../memory_infra/paged_vector.hpp"
 
 namespace gl::gpu {
+
+    /// @brief Device payload and exact aligned arena footprint before allocation.
+    ///
+    /// @details
+    /// Library workspace is included. Arena bytes assume an initially aligned
+    /// cursor and include all padding between this owner's arrays.
+    struct Phase2DeviceAllocationSize {
+        uint64_t deviceBytes{ 0 };
+        uint64_t arenaBytes{ 0 };
+    };
+
+    /// @brief One live contiguous lease of physical GPU allocation blocks.
+    struct Phase2GpuLease {
+        uint32_t first{ 0 };
+        uint32_t count{ 0 };
+        uint64_t generation{ 0 };
+    };
+
+    /// @brief Own one automatically sized, reusable GPU block reservation.
+    ///
+    /// @details
+    /// Host metadata is allocated once for the card's block count. Leases name
+    /// physical storage only; no proof identity or ordering depends on a lease.
+    /// A scheduler checks free runs before reserving and drains when full.
+    class CudaPhase2BlockPool {
+        Phase2GpuBudget budget_{};
+        void* device_{ nullptr };
+        uint64_t deviceTotalBytes_{ 0 };        // cudaMemGetInfo total at construction
+        uint64_t deviceFreeBeforePoolBytes_{ 0 };  // cudaMemGetInfo free before the reservation
+        LbArena metadataArena_;
+        DirtyState metadataDirty_{ DirtyState::Clean };
+        PagedVector<uint64_t> owners_;
+        uint32_t usedBlocks_{ 0 };
+
+    public:
+        /// @brief Reserve the automatic GPU budget, optionally capped for tests.
+        ///
+        /// @details
+        /// Initializes CUDA before measuring free memory and allocates one
+        /// contiguous reservation with the common runtime reserve left outside.
+        ///
+        /// @param limitBytes Optional working-byte ceiling, zero for automatic.
+        /// @return An empty pool ready for block leases.
+        /// @invariant Device allocation and metadata sizes remain fixed.
+        explicit CudaPhase2BlockPool(uint64_t limitBytes = 0);
+
+        /// @brief Release the reservation after every lease has been returned.
+        ///
+        /// @details
+        /// Outstanding leases at teardown are a lifetime contract violation.
+        ///
+        /// @return Nothing.
+        /// @invariant Every lease owner is destroyed before the pool.
+        ~CudaPhase2BlockPool();
+        CudaPhase2BlockPool(const CudaPhase2BlockPool&) = delete;
+        CudaPhase2BlockPool& operator=(const CudaPhase2BlockPool&) = delete;
+
+        /// @brief Read the fixed allocation and runtime-reserve census.
+        ///
+        /// @details
+        /// This is resource metadata, independent of proof state.
+        ///
+        /// @return The pool's immutable byte and block budget.
+        const Phase2GpuBudget& budget() const { return budget_; }
+
+        /// @brief Device memory the driver reported as total when the pool
+        ///        was built — the VRAM denominator of the memory report.
+        ///
+        /// @details
+        /// Read once in the constructor through `cudaMemGetInfo` after the
+        /// runtime context exists, before the pool's own reservation.
+        /// Observability only (Rule 16).
+        ///
+        /// @return Total device bytes.
+        uint64_t deviceTotalBytes() const { return deviceTotalBytes_; }
+
+        /// @brief Device memory the driver reported as free just before the
+        ///        pool's reservation — total minus the CUDA context and any
+        ///        other resident user of the card.
+        ///
+        /// @details
+        /// Together with `deviceTotalBytes` and `budget().bytes` it splits the
+        /// card into: context and other users (`total - freeBefore`), this
+        /// process's fixed Phase 2 reservation (`budget().bytes`), and the
+        /// runtime reserve left free (`freeBefore - budget().bytes`).
+        /// Observability only (Rule 16).
+        ///
+        /// @return Free device bytes before the reservation.
+        uint64_t deviceFreeBeforePoolBytes() const { return deviceFreeBeforePoolBytes_; }
+
+        /// @brief Count blocks currently available for lending.
+        ///
+        /// @details
+        /// Zero is the defined full-pool state used by the scheduler.
+        ///
+        /// @return Free physical block count.
+        uint32_t availableBlocks() const { return budget_.blocks - usedBlocks_; }
+
+        /// @brief Find the longest free contiguous run without changing state.
+        ///
+        /// @details
+        /// The scheduler uses this count before selecting its next allocation.
+        ///
+        /// @return Largest allocatable run, zero when every block is leased.
+        uint32_t largestFreeRun() const;
+
+        /// @brief Reserve a known-fitting consecutive block run.
+        ///
+        /// @details
+        /// First-fit placement affects storage only. The generation validates
+        /// that a later release refers to this exact live allocation.
+        ///
+        /// @param count Positive run size already admitted by the scheduler.
+        /// @return A live lease owning exactly count blocks.
+        /// @invariant A run of the requested size exists before this call.
+        Phase2GpuLease reserveBlocks(uint32_t count);
+
+        /// @brief Resolve a live lease to its device byte address.
+        ///
+        /// @details
+        /// Validates ownership across the whole run; the address stays stable
+        /// until release and never participates in semantic comparison.
+        ///
+        /// @param lease Live lease from this pool.
+        /// @return Device address of the lease's first byte.
+        /// @invariant Every block in the run has the lease's generation.
+        void* address(const Phase2GpuLease& lease) const;
+
+        /// @brief Return a lease after all device work using it has completed.
+        ///
+        /// @details
+        /// Synchronizes before recycling storage so outstanding transfers or
+        /// kernels cannot write into the next owner's allocation.
+        ///
+        /// @param lease Live lease whose ownership is ending.
+        /// @return Nothing.
+        /// @invariant A released generation cannot be resolved or released twice.
+        void release(const Phase2GpuLease& lease);
+    };
+
+    /// @brief Suballocate aligned device arrays from one live block lease.
+    ///
+    /// @details
+    /// Buffer objects borrow this arena and must be destroyed before it. The
+    /// arena returns its complete lease together, allowing later batches to
+    /// redistribute blocks without individual device allocations.
+    class CudaPhase2Arena {
+        CudaPhase2BlockPool& pool_;
+        Phase2GpuLease lease_;
+        uint64_t used_{ 0 };
+
+    public:
+        /// @brief Acquire a planned block run for one allocation arena.
+        ///
+        /// @details
+        /// The scheduler has already admitted this contiguous block count.
+        ///
+        /// @param pool Owning GPU reservation, which outlives this arena.
+        /// @param blocks Positive number of admitted blocks.
+        /// @return An empty arena with a live lease.
+        /// @invariant The arena owns its lease until destruction.
+        CudaPhase2Arena(CudaPhase2BlockPool& pool, uint32_t blocks)
+            : pool_(pool), lease_(pool.reserveBlocks(blocks)) {}
+
+        /// @brief Return every arena block after all borrowers are destroyed.
+        ///
+        /// @details
+        /// Pool release synchronizes outstanding device work before reuse.
+        ///
+        /// @return Nothing.
+        /// @invariant No borrowed array outlives this arena.
+        ~CudaPhase2Arena() { pool_.release(lease_); }
+        CudaPhase2Arena(const CudaPhase2Arena&) = delete;
+        CudaPhase2Arena& operator=(const CudaPhase2Arena&) = delete;
+
+        /// @brief Reserve a 256-byte-aligned array inside the planned arena.
+        ///
+        /// @details
+        /// Array addresses remain stable until the arena is destroyed. An
+        /// underestimated layout is a planner bug, asserted before any write.
+        ///
+        /// @param destination Output device pointer for the borrowed array.
+        /// @param bytes Positive byte extent admitted by the layout plan.
+        /// @return Nothing.
+        /// @invariant The complete array and alignment padding fit this lease.
+        void allocate(void** destination, std::size_t bytes) {
+            assert(destination != nullptr && bytes > 0);
+            const uint64_t aligned = (used_ + 255) & ~uint64_t{255};
+            assert(aligned <= capacityBytes());
+            assert(bytes <= capacityBytes() - aligned);
+            *destination = static_cast<char*>(pool_.address(lease_)) + aligned;
+            used_ = aligned + bytes;
+        }
+
+        /// @brief Read the arena's allocated byte capacity.
+        ///
+        /// @details
+        /// Includes unused tail bytes that remain available to this arena.
+        ///
+        /// @return Physical byte extent of the live lease.
+        uint64_t capacityBytes() const { return lease_.count * kPhase2GpuBlockBytes; }
+
+        /// @brief Read occupied array bytes including alignment padding.
+        ///
+        /// @details
+        /// This count belongs to allocation accounting, never proof state.
+        ///
+        /// @return Bytes reserved by calls to allocate.
+        uint64_t usedBytes() const { return used_; }
+    };
 
     /// @brief Immutable CUDA device properties required by the Phase 2 backend.
     ///
@@ -291,28 +508,213 @@ namespace gl::gpu {
             kDeviceGrowthCensusDepthCount]{};
     };
 
-    /// @brief Fixed ceilings for exact event ordering and request deduplication.
+    /// @brief Complete logical growth totals independent of processing windows.
+    struct Phase2GrowthStreamResult {
+        uint64_t acceptedEventCount{ 0 };
+        uint64_t rawRequestCount{ 0 };
+        uint64_t maximumFrontierCount{ 0 };
+        uint64_t maximumHostBackingBytes{ 0 };
+        uint64_t uploadedFrontierBytes{ 0 };
+        uint64_t frontierTransferCalls{0};
+        uint32_t frontierTransferRows{0};
+        uint64_t downloadedFrontierBytes{ 0 };
+        uint64_t drainCount{ 0 };
+        uint64_t cutoffDrainCount{0}, prunedFrontierNodes{0};
+        uint64_t maximumPrefixPayloadValues{0}, maximumPrefixVariableValues{0};
+        uint64_t maximumPrefixSecondaryValues{0}, maximumCandidateWindow{0};
+        uint64_t prefixWindows{0}, candidateWindows{0};
+        uint64_t candidateNodeWindowQueries{0};
+        uint64_t unslicedGateNodes{0}, scheduledGateNodes{0};
+        uint64_t candidatePositionsBeforePrefilter{0}, candidatePositionsAfterPrefilter{0};
+        uint64_t frontierSpills{0};
+        uint64_t probeWindows{0}, exactCountReads{0};
+    };
+
+    /// @brief Bounded host rows for request-identity transfer pages.
+    inline constexpr uint32_t phase2FrontierTransferRows = 1024;
+
+    /// @brief Preferred pinned frontier-copy rows, bounded by one host-pool block.
+    inline constexpr uint32_t phase2FrontierCopyRows = 4096;
+
+    /// @brief Maximum consecutive frontier rows sharing one GPU preparation.
+    /// @details Host transfers remain paged; actual device and prefix capacities
+    ///          may split this execution window without changing the search.
+    inline constexpr uint32_t phase2FrontierExecutionRows = 65536;
+
+    /// @brief Largest planned node count of one pass-local frontier-store buffer.
+    ///
+    /// @details 4,194,304 nodes of 56 bytes (224 MiB per buffer). The planner
+    /// sizes the store from the measured level demand up to this ceiling; a
+    /// larger level spills its oldest rows to host pages.
+    inline constexpr uint32_t phase2FrontierStoreMaximumRows = uint32_t{1} << 22;
+
+    /// @brief Remove the frontier nodes of cut-off growth calls in place,
+    ///        keeping the survivors in their order.
     ///
     /// @details
-    /// Event capacity matches the persistent growth ledger, deduplication slots
-    /// use a fixed power-of-two open-address table, and request capacity matches
+    /// The host half of the level-end cutoff in `runRequestGrowthWindows`. One
+    /// stable forward compaction walks the frontier page span by page span
+    /// (`PagedVector::contiguousRun`), reads each node's decision from the
+    /// per-call keep flags, writes a survivor only when an earlier node was
+    /// removed, and releases the tail with one `truncate`. The survivors and
+    /// their order equal the node-by-node predicate walk over the same flags.
+    ///
+    /// @param frontier   The completed level's frontier, compacted in place.
+    /// @param keepByCall One flag per scheduled growth call; 0 cuts the call's
+    ///                   nodes off, any other value keeps them.
+    /// @param callCount  Number of flags; every node's `callIndex` is below it.
+    /// @return The number of removed nodes.
+    /// @invariant Surviving nodes keep their relative order.
+    /// @see CudaPhase2GrowthBuffer::runRequestGrowthWindows.
+    uint64_t pruneFrontierByCall(PagedVector<DeviceGrowthNode>& frontier,
+        const uint8_t* keepByCall, uint32_t callCount);
+
+    /// @brief Remove the device-resident frontier rows of cut-off growth calls,
+    ///        keeping the survivors in their order.
+    ///
+    /// @details
+    /// The device half of the level-end cutoff in `runRequestGrowthWindows`: the
+    /// rows of the current level that stay in the pass-local frontier store are
+    /// compacted by one stable `cub::DeviceSelect::If` into the other store
+    /// buffer, judged by the per-call keep flags already on the device. The
+    /// survivors and their order equal `pruneFrontierByCall` over the same rows
+    /// and flags. Synchronous: the survivor count is read back before return.
+    ///
+    /// @param deviceRows       The level's device rows.
+    /// @param count            Number of rows; may be 0.
+    /// @param deviceKeepByCall One device flag per scheduled growth call; 0 cuts
+    ///                         the call's rows off.
+    /// @param deviceOutput     Destination buffer (other store buffer), at least
+    ///                         @p count rows, disjoint from @p deviceRows.
+    /// @param deviceTemporary  CUB workspace.
+    /// @param temporaryBytes   Its size, at least the selection's requirement.
+    /// @param deviceSelected   One device word receiving the survivor count.
+    /// @return The number of surviving rows.
+    /// @invariant Surviving rows keep their relative order.
+    /// @see pruneFrontierByCall, CudaPhase2GrowthBuffer::runRequestGrowthWindows.
+    uint32_t pruneDeviceFrontierByCall(const DeviceGrowthNode* deviceRows,
+        uint32_t count, const uint8_t* deviceKeepByCall, DeviceGrowthNode* deviceOutput,
+        void* deviceTemporary, std::size_t temporaryBytes, uint32_t* deviceSelected);
+
+    /// @brief Copy device words into host-mapped memory on the compute engine.
+    ///
+    /// @details
+    /// Launches one 64-thread block on the default stream, behind every launch
+    /// it observes, that copies @p words 32-bit words from @p source into the
+    /// device view of @p mappedDestination and fences them system-wide. A
+    /// small read-back therefore needs no copy-engine transfer, which on the
+    /// Windows display driver model waits for an engine switch on both sides
+    /// (tens of microseconds each). Asynchronous: the words are visible to
+    /// the host once an event recorded after this call has completed.
+    ///
+    /// @param source            Device words, 4-byte aligned.
+    /// @param words             Number of words; positive.
+    /// @param mappedDestination Host memory pinned by `cudaHostAlloc` (mapped)
+    ///                          or `cudaHostRegister`, 4-byte aligned, at least
+    ///                          @p words words; may point inside the pinned range.
+    /// @return Nothing.
+    /// @invariant The destination is complete once a later event on the default
+    ///            stream has completed.
+    void publishDeviceWords(const void* source, uint32_t words, void* mappedDestination);
+
+    /// @brief Run `pruneDeviceFrontierByCall` on host rows through private
+    ///        device copies.
+    ///
+    /// @details
+    /// The unit-test seam of the device cutoff: uploads @p hostRows and
+    /// @p hostKeepByCall, runs the production selection, downloads the
+    /// survivors into @p hostOutput and frees its device copies. Zero rows is
+    /// a defined no-op returning 0.
+    ///
+    /// @param hostRows       Host frontier rows.
+    /// @param count          Number of rows.
+    /// @param hostKeepByCall One host flag per growth call.
+    /// @param callCount      Number of flags; every row's `callIndex` is below it.
+    /// @param hostOutput     Host destination for the survivors, @p count rows.
+    /// @return The number of surviving rows.
+    /// @see pruneDeviceFrontierByCall.
+    uint32_t pruneDeviceFrontierByCallOnHost(const DeviceGrowthNode* hostRows,
+        uint32_t count, const uint8_t* hostKeepByCall, uint32_t callCount,
+        DeviceGrowthNode* hostOutput);
+
+    /// @brief The three measured prefix sizes of one frontier node, as the host
+    ///        schedules prefix windows from them.
+    struct Phase2PrefixSizes {
+        uint16_t payloadLength{0};
+        uint16_t variableCount{0};
+        uint16_t secondaryCount{0};
+    };
+
+    /// @brief Unpack one node's prefix sizes from the word the device packed.
+    ///
+    /// @details
+    /// Bits 0-15 hold the payload length, 16-31 the variable count and 32-47 the
+    /// secondary count, as `packPhase2PrefixSizes` writes them; bits 48-63 are
+    /// zero. The host needs only these three fields to pack consecutive prefixes
+    /// into execution windows, so a frontier page downloads 8 bytes per node
+    /// instead of the whole `DeviceGrowthPrefix` record.
+    ///
+    /// @param word One packed word.
+    /// @return The three sizes.
+    inline Phase2PrefixSizes unpackPhase2PrefixSizes(uint64_t word) {
+        assert((word >> 48) == 0);
+        return Phase2PrefixSizes{static_cast<uint16_t>(word & 0xffffu),
+            static_cast<uint16_t>((word >> 16) & 0xffffu),
+            static_cast<uint16_t>((word >> 32) & 0xffffu)};
+    }
+
+    /// @brief Pack the measured prefix sizes of `count` device prefix records
+    ///        into one 64-bit word each, on the device.
+    ///
+    /// @details
+    /// Launches one thread per record on the default stream; the words keep the
+    /// record order. The layout is the one `unpackPhase2PrefixSizes` reads. The
+    /// call returns after the launch; stream order places a following copy
+    /// behind it.
+    ///
+    /// @param devicePrefixes Device prefix records, as the measuring
+    ///        preparation wrote them.
+    /// @param count Number of records; 0 launches nothing.
+    /// @param devicePacked Device output, one word per record.
+    /// @return Nothing.
+    void packPhase2PrefixSizes(const DeviceGrowthPrefix* devicePrefixes,
+        uint32_t count, uint64_t* devicePacked);
+
+    /// @brief Pack prefix sizes through the device for host-resident records:
+    ///        upload, `packPhase2PrefixSizes`, download.
+    ///
+    /// @details
+    /// The unit-test seam of the growth driver's prefix-size transfer: runs the
+    /// production packing kernel on a private device copy of @p hostPrefixes and
+    /// returns the packed words, synchronously. Zero records is a defined no-op.
+    ///
+    /// @param hostPrefixes Host prefix records.
+    /// @param count Number of records.
+    /// @param hostPacked Host output, one packed word per record.
+    /// @return Nothing.
+    void packPhase2PrefixSizesOnHost(const DeviceGrowthPrefix* hostPrefixes,
+        uint32_t count, uint64_t* hostPacked);
+
+    /// @brief Fixed ceilings for exact event ordering and request tokens.
+    ///
+    /// @details
+    /// Event capacity matches the persistent growth ledger and request capacity matches
     /// the retained raw-request ceiling.
     struct Phase2OrderingCapacity {
         uint32_t events{ 0 };
-        uint32_t deduplicationSlots{ 0 };
         uint32_t requests{ 0 };
     };
 
     /// @brief Audited ordering capacity for the FTA shortcut route.
     inline constexpr Phase2OrderingCapacity
         kFtaShortcutPhase2OrderingCapacity{
-            4194304, 524288, 262144 };
+            4194304, 262144 };
 
-    /// @brief Audited ordering capacity for non-FTA full-run routes.
+    /// @brief Ordering capacity for all full-run routes, matching the growth event ledger.
     inline constexpr Phase2OrderingCapacity kFullRunPhase2OrderingCapacity{
-        4194304, 1048576, 524288 };
+        6291456, 524288 };
 
-    /// @brief One exact-order unique request token for later device evaluation.
+    /// @brief One exact-order request token for later device evaluation.
     ///
     /// @details
     /// References the persistent growth event instead of copying its path.
@@ -324,10 +726,18 @@ namespace gl::gpu {
         uint32_t eventOrder{ 0 };
     };
 
-    /// @brief Host-visible result of exact ordering and semantic deduplication.
+    /// @brief Host-visible counts after exact event ordering.
     struct Phase2OrderingResult {
         uint32_t orderedEventCount{ 0 };
-        uint32_t uniqueRequestCount{ 0 };
+        uint32_t requestCount{ 0 };
+    };
+
+
+    /// @brief Wide logical expansion totals and physical evaluation occupancy.
+    struct Phase2EvaluationStreamMetrics {
+        uint64_t owners{0}, candidates{0}, hits{0}, values{0};
+        uint64_t ownerWindows{0}, valueWindows{0};
+        uint32_t maximumOwnerWindow{0}, maximumValueWindow{0};
     };
 
     /// @brief Fixed ceilings for complete device request evaluation.
@@ -371,11 +781,11 @@ namespace gl::gpu {
             2097152,
             2097152 };
 
-    /// @brief Audited evaluation capacity for non-FTA full-run routes.
+    /// @brief Common evaluation capacity for full execution and shortcut replay.
     inline constexpr Phase2EvaluationCapacity kFullRunPhase2EvaluationCapacity{
         kMaxProjectedBlocksPerChunk,
         524288,
-        2097152,
+        4194304,
         524288,
         524288,
         1048576,
@@ -437,6 +847,9 @@ namespace gl::gpu {
     /// exactly. The remaining bits are the context-derived processor verdicts
     /// filled by later evaluator stages. Keeping both halves in one word lets the
     /// final canonical handoff consume GPU output without reopening the LMV blob.
+    // Serialized RuleJustification value; the host sealing boundary checks it.
+    inline constexpr int32_t deviceIntegrationJustification = 2;
+
     enum DevicePhase2FiringFlag : uint32_t {
         deviceFiringMarker = 1u << 0,
         deviceFiringOrdis2Demand = 1u << 1,
@@ -446,9 +859,11 @@ namespace gl::gpu {
         deviceFiringSubsetExclusion = 1u << 5,
         deviceFiringDoNotDisintegrate = 1u << 6,
         deviceFiringAllowOrDisintegration = 1u << 7,
-        deviceFiringAllGood = 1u << 8,
+        // Bit 8 is retired (transitive mail permission).
         deviceFiringAlreadyKnown = 1u << 9,
-        deviceFiringMarkerNotAtomic = 1u << 10
+        // Bit 10 is retired (marker mail permission).
+        deviceFiringRecursionHead = 1u << 11,
+        deviceFiringDoomTrigger = 1u << 12
     };
 
     /// @brief Complete fixed-header representation of one device firing output.
@@ -500,7 +915,7 @@ namespace gl::gpu {
     /// @details
     /// Counts only LMVs that survive rule-scope, closed-scope, marker-purity, and
     /// ordis2 depth gates. `generatedByteCount` is the exact used prefix of the
-    /// fixed generated-byte arena; rejected rows consume no output capacity.
+    /// fixed generated-byte arena, including scratch emitted before late gates.
     struct Phase2FiringExpressionResult {
         uint32_t firingRecordCount{ 0 };
         uint32_t generatedByteCount{ 0 };
@@ -509,6 +924,33 @@ namespace gl::gpu {
         uint32_t markerKeyCount{ 0 };
         uint32_t markerRemainingArgCount{ 0 };
         uint32_t markerArgCount{ 0 };
+    };
+
+    /// @brief Next value and marker-key positions in a prepared value window.
+    struct Phase2FiringCursor {
+        uint32_t value{ 0 };
+        uint32_t markerKey{ 0 };
+    };
+
+    /// @brief Defined outcomes of a bounded firing-output scheduling step.
+    enum class Phase2FiringWindowState { complete, ready, needsCapacity };
+
+    /// @brief One bounded output download or a retained capacity request.
+    ///
+    /// @details
+    /// A ready marker fragment names its position in the complete marker-key
+    /// span. A needs-capacity result leaves its cursor unchanged and reports the
+    /// next fragment's simultaneous column requirements.
+    struct Phase2FiringWindow {
+        Phase2FiringWindowState state{ Phase2FiringWindowState::complete };
+        Phase2FiringExpressionResult used{};
+        Phase2OutputUsage required{};
+        uint32_t valueBegin{ 0 };
+        uint32_t valueCount{ 0 };
+        uint32_t markerKeyBegin{ 0 };
+        uint32_t markerKeyCount{ 0 };
+        uint32_t totalMarkerKeys{ 0 };
+        bool markerFragment{ false };
     };
 
     static_assert(std::is_trivially_copyable_v<DeviceLookupProbe>);
@@ -540,7 +982,7 @@ namespace gl::gpu {
     static_assert(sizeof(DevicePhase2GrowthParameters) == 20);
     static_assert(sizeof(Phase2GrowthGateCensus) == 96);
     static_assert(sizeof(Phase2GrowthResult) == 1096);
-    static_assert(sizeof(Phase2OrderingCapacity) == 12);
+    static_assert(sizeof(Phase2OrderingCapacity) == 8);
     static_assert(sizeof(DeviceOrderedRequestToken) == 16);
     static_assert(sizeof(Phase2OrderingResult) == 8);
     static_assert(sizeof(Phase2EvaluationCapacity) == 52);
@@ -565,6 +1007,18 @@ namespace gl::gpu {
     /// remains pointer-free and offset-based.
     class CudaPhase2ProjectionBuffer {
     public:
+        /// @brief Measure device and aligned arena bytes before creating a buffer.
+        ///
+        /// @details
+        /// Validates the capacity shape and queries current CUDA library workspace
+        /// without allocating device arrays. Includes every processing column and
+        /// the 256-byte padding required by the common arena.
+        ///
+        /// @param capacity Proposed processing and input column capacities.
+        /// @return Device payload bytes and exact aligned arena footprint.
+        /// @invariant No buffer ownership or proof state is created or changed.
+        static Phase2DeviceAllocationSize measureAllocation(Phase2ProjectionCapacity capacity);
+
         /// @brief Allocate all device projection storage once at engine startup.
         ///
         /// @details
@@ -573,10 +1027,11 @@ namespace gl::gpu {
         /// result. Every capacity is positive and every CUDA allocation asserts.
         ///
         /// @param fixedCapacity Immutable device element and byte ceilings.
+        /// @param allocation Optional shared arena; null owns standalone arrays.
         /// @return An empty device buffer owning all declared allocations.
         /// @invariant No method changes an allocation address or capacity.
         explicit CudaPhase2ProjectionBuffer(
-            Phase2ProjectionCapacity fixedCapacity);
+            Phase2ProjectionCapacity fixedCapacity, CudaPhase2Arena* allocation = nullptr);
 
         /// @brief Release every device allocation owned by this projection buffer.
         ///
@@ -624,7 +1079,28 @@ namespace gl::gpu {
         void beginPhase2Upload(
             const Phase2ProjectionArena& hostProjection);
 
-        /// @brief Join the evaluation-only projection upload stream.
+        /// @brief Start a complete device image assembled from host windows.
+        ///
+        /// @details Resets uploaded lengths without reallocating device storage.
+        /// Each window appends synchronously at its measured rebased offsets.
+        /// finishPhase2Upload seals the image before any semantic kernel.
+        /// @return Nothing.
+        /// @invariant No earlier upload is pending.
+        void beginStreamedUpload();
+
+        /// @brief Append a rebased complete host window to the device image.
+        ///
+        /// @details Copies only used ranges into preallocated device columns.
+        /// Completion releases the source window's lifetime; no device work is
+        /// executed and all complete-image capacities remain unchanged.
+        /// @param source Rebased window with stable host columns during this call.
+        /// @param bases Assigned offsets, equal to the uploaded ends.
+        /// @return Nothing.
+        /// @invariant A streamed upload is pending and every append fits.
+        void appendStreamedUpload(const Phase2ProjectionArena& source,
+            const Phase2ProjectionArena::ShardBases& bases);
+
+        /// @brief Seal a completed deferred or streamed projection upload.
         ///
         /// @details
         /// Synchronizes the process-owned nonblocking stream after independent
@@ -633,7 +1109,7 @@ namespace gl::gpu {
         /// returns, before the first semantic kernel starts.
         ///
         /// @return Nothing.
-        /// @invariant Exactly one `beginPhase2Upload` is pending on entry.
+        /// @invariant Exactly one deferred or streamed upload is pending on entry.
         void finishPhase2Upload();
 
         /// @brief Hash the uploaded projection bytes on the CUDA device.
@@ -690,7 +1166,22 @@ namespace gl::gpu {
         /// @invariant The value is constant for the object's lifetime.
         uint64_t fixedAllocationBytes() const;
 
+        /// @brief Page-locked host bytes this buffer holds for its deferred
+        ///        upload columns (`cudaHostAlloc`).
+        ///
+        /// @details
+        /// The deferred columns of `beginPhase2Upload` are staged through pinned
+        /// host memory so the upload overlaps projection work; the first deferred
+        /// upload allocates that staging and it stays until destruction. A buffer
+        /// filled only by streamed windows never stages and reports zero
+        /// (D-447). Pinned pages cannot be paged out, so they are real RAM.
+        /// Observability only (Rule 16).
+        ///
+        /// @return Pinned host bytes.
+        uint64_t pinnedHostBytes() const { return pinnedHostBytes_; }
+
     private:
+        bool ownsDeviceAllocations_{ true };
         friend class CudaPhase2FilterSortBuffer;
         friend class CudaPhase2GrowthBuffer;
         friend class CudaPhase2OrderingBuffer;
@@ -704,9 +1195,101 @@ namespace gl::gpu {
         void* deviceResultScratch_{ nullptr };
         void* deferredUploadStream_{ nullptr };
         void* deferredHostColumns_[kProjectionColumnCount]{};
+        uint64_t deferredStagingBytes_[kProjectionColumnCount]{};
         uint32_t usedCounts_[kProjectionColumnCount]{};
+        bool streamedUpload_ = false;
         uint64_t fixedAllocationBytes_{ 0 };
+        uint64_t pinnedHostBytes_{ 0 };  // cudaHostAlloc total of the deferred columns, once staged
         bool phase2UploadPending_{ false };
+    };
+
+    /// @brief Upload thread for the completed construction windows of one
+    ///        streamed projection.
+    ///
+    /// @details
+    /// The CUDA projection builds a chunk's host image in consecutive
+    /// construction windows (D-436). This thread copies each completed
+    /// window into the device image (`CudaPhase2ProjectionBuffer::appendStreamedUpload`)
+    /// and appends its retained sealing data
+    /// (`Phase2ProjectionArena::appendSealingProjection`) while the caller builds
+    /// the next window, so at most two windows are alive: one uploading and one
+    /// under construction. Windows run strictly in submission order, so device
+    /// offsets and the retained sealing image equal those of the synchronous
+    /// sequence. A finished window is released on the submitting thread, which
+    /// allocated it, at the next `submit` or at `finish`
+    /// (D-447). The uploader holds no
+    /// logical-block state beyond the one window in flight.
+    class Phase2WindowUploader {
+    public:
+        /// @brief Start the upload thread for one streamed device image.
+        ///
+        /// @details
+        /// `device` must have begun its streamed upload; both references outlive
+        /// the uploader, and the caller touches neither until `finish` returns.
+        ///
+        /// @param device Device image receiving the windows at their bases.
+        /// @param sealing Retained host image receiving each window's sealing data.
+        /// @return An idle uploader.
+        Phase2WindowUploader(CudaPhase2ProjectionBuffer& device,
+            Phase2ProjectionArena& sealing);
+
+        /// @brief Destroy a finished uploader.
+        ///
+        /// @return Nothing.
+        /// @invariant `finish` has joined the thread.
+        ~Phase2WindowUploader();
+
+        Phase2WindowUploader(const Phase2WindowUploader&) = delete;
+        Phase2WindowUploader& operator=(const Phase2WindowUploader&) = delete;
+
+        /// @brief Hand one complete window to the upload thread.
+        ///
+        /// @details
+        /// Waits until the previous window is uploaded and retained, takes
+        /// ownership of `window`, wakes the thread and releases the previous
+        /// window on the calling thread.
+        ///
+        /// @param window Adopted window whose references already address their
+        ///        complete-image offsets; non-null.
+        /// @param bases Complete-image column positions of the window's first rows,
+        ///        equal to the ends of every earlier window.
+        /// @return Nothing.
+        /// @invariant `finish` has not been called.
+        void submit(std::unique_ptr<Phase2ProjectionArena> window,
+            const Phase2ProjectionArena::ShardBases& bases);
+
+        /// @brief Wait for the last window, release it and join the thread.
+        ///
+        /// @details
+        /// After return the device image holds every submitted window and the
+        /// sealing image their retained data; the caller may seal the upload.
+        ///
+        /// @return Nothing.
+        /// @invariant Called once.
+        void finish();
+
+    private:
+        /// @brief Thread body: upload and retain each submitted window in order.
+        ///
+        /// @details
+        /// Waits for a pending window or the finish request; copies the window's
+        /// used column ranges into the device image, appends its retained data to
+        /// the sealing image, clears the pending flag and wakes the submitter.
+        /// The finish request arrives only with no window pending.
+        ///
+        /// @return Nothing.
+        void work();
+
+        CudaPhase2ProjectionBuffer& device_;
+        Phase2ProjectionArena& sealing_;
+        std::mutex mutex_;
+        std::condition_variable ready_;
+        std::condition_variable uploaded_;
+        std::unique_ptr<Phase2ProjectionArena> window_;
+        Phase2ProjectionArena::ShardBases bases_{};
+        bool pending_ = false;
+        bool finished_ = false;
+        std::thread thread_;
     };
 
     /// @brief Fixed-capacity CUDA ownership for reusable Phase 2 task inputs.
@@ -718,6 +1301,18 @@ namespace gl::gpu {
     /// and checksum validates the complete device transfer without allocation.
     class CudaPhase2TaskBuffer {
     public:
+        /// @brief Measure device and aligned arena bytes before creating a buffer.
+        ///
+        /// @details
+        /// Validates the capacity shape and queries current CUDA library workspace
+        /// without allocating device arrays. Includes every processing column and
+        /// the 256-byte padding required by the common arena.
+        ///
+        /// @param capacity Proposed processing and input column capacities.
+        /// @return Device payload bytes and exact aligned arena footprint.
+        /// @invariant No buffer ownership or proof state is created or changed.
+        static Phase2DeviceAllocationSize measureAllocation(Phase2TaskProjectionCapacity capacity);
+
         /// @brief Allocate every device task column once.
         ///
         /// @details
@@ -726,10 +1321,11 @@ namespace gl::gpu {
         /// checksum word.
         ///
         /// @param fixedCapacity Immutable task-column element ceilings.
+        /// @param allocation Optional shared arena; null owns standalone arrays.
         /// @return An empty device task buffer owning all allocations.
         /// @invariant No method changes an allocation address or capacity.
         explicit CudaPhase2TaskBuffer(
-            Phase2TaskProjectionCapacity fixedCapacity);
+            Phase2TaskProjectionCapacity fixedCapacity, CudaPhase2Arena* allocation = nullptr);
 
         /// @brief Release every fixed device task allocation.
         ///
@@ -779,6 +1375,7 @@ namespace gl::gpu {
         uint64_t fixedAllocationBytes() const;
 
     private:
+        bool ownsDeviceAllocations_{ true };
         friend class CudaPhase2GrowthBuffer;
         friend class CudaPhase2OrderingBuffer;
         friend class CudaPhase2EvaluationBuffer;
@@ -796,10 +1393,22 @@ namespace gl::gpu {
     /// Owns original and exact-class schedules, original-to-class indices,
     /// per-class and per-call counts and offsets, two compact retained-key arrays,
     /// and one reusable CUB allocation. Count and emit launches process only exact
-    /// classes; original calls map to shared compact spans before growth. A global
-    /// radix sort orders class keys by class, decoded-name rank, and statement.
+    /// classes; original calls map to shared compact spans before growth. A segmented
+    /// radix sort orders each class span by full-width name rank and statement.
     class CudaPhase2FilterSortBuffer {
     public:
+        /// @brief Measure device and aligned arena bytes before creating a buffer.
+        ///
+        /// @details
+        /// Validates the capacity shape and queries current CUDA library workspace
+        /// without allocating device arrays. Includes every processing column and
+        /// the 256-byte padding required by the common arena.
+        ///
+        /// @param capacity Proposed processing and input column capacities.
+        /// @return Device payload bytes and exact aligned arena footprint.
+        /// @invariant No buffer ownership or proof state is created or changed.
+        static Phase2DeviceAllocationSize measureAllocation(Phase2FilterScheduleCapacity capacity);
+
         /// @brief Allocate all global filter/sort device storage once.
         ///
         /// @details
@@ -810,10 +1419,11 @@ namespace gl::gpu {
         ///
         /// @param fixedCapacity Immutable call, examined-row, retained-row, and
         ///                      per-call ceilings.
+        /// @param allocation Optional shared arena; null owns standalone arrays.
         /// @return An empty device filter/sort owner.
         /// @invariant No method changes an allocation address or capacity.
         explicit CudaPhase2FilterSortBuffer(
-            Phase2FilterScheduleCapacity fixedCapacity);
+            Phase2FilterScheduleCapacity fixedCapacity, CudaPhase2Arena* allocation = nullptr);
 
         /// @brief Release every fixed filter/sort device allocation.
         ///
@@ -837,14 +1447,14 @@ namespace gl::gpu {
         /// @details
         /// Uploads original calls, exact classes, and the original-to-class map;
         /// counts each class's processor-accepted first-8,192 rows; scans and emits
-        /// one stable compact class span; radix-sorts classes together; and maps
+        /// one stable compact class span; radix-sorts each class span; and maps
         /// original calls to their class count and offset. No processor semantic
         /// gate is executed on the host.
         ///
         /// @param projection Uploaded resident semantic projection.
         /// @param schedule Host schedule in processor call order.
         /// @return Total retained statement rows across all calls.
-        /// @invariant Sorted keys encode class, decoded-name rank, and ascending
+        /// @invariant Sorted keys encode full-width decoded-name rank and ascending
         ///            original statement index; every original call names its
         ///            exact class span.
         uint32_t filterAndSort(
@@ -865,11 +1475,11 @@ namespace gl::gpu {
         uint32_t downloadCallCounts(
             uint32_t* destination, uint32_t capacity) const;
 
-        /// @brief Download the most recent globally sorted composite keys.
+        /// @brief Download the most recent class-segmented composite keys.
         ///
         /// @details
         /// Copies the compact retained prefix. Each key is ordered and encoded as
-        /// `(class, decoded-name rank, original statement index)` using the public
+        /// `(decoded-name rank, original statement index)` within each class, using the public
         /// bit constants in `phase2_projection.hpp`.
         ///
         /// @param destination Caller-owned output array.
@@ -891,6 +1501,7 @@ namespace gl::gpu {
         uint64_t fixedAllocationBytes() const;
 
     private:
+        bool ownsDeviceAllocations_{ true };
         friend class CudaPhase2GrowthBuffer;
         Phase2FilterScheduleCapacity capacity_{};
         void* deviceCalls_{ nullptr };
@@ -924,6 +1535,18 @@ namespace gl::gpu {
     /// allocation occurs in the constructor.
     class CudaPhase2GrowthBuffer {
     public:
+        /// @brief Measure device and aligned arena bytes before creating a buffer.
+        ///
+        /// @details
+        /// Validates the capacity shape and queries current CUDA library workspace
+        /// without allocating device arrays. Includes every processing column and
+        /// the 256-byte padding required by the common arena.
+        ///
+        /// @param capacity Proposed processing and input column capacities.
+        /// @return Device payload bytes and exact aligned arena footprint.
+        /// @invariant No buffer ownership or proof state is created or changed.
+        static Phase2DeviceAllocationSize measureAllocation(Phase2GrowthCapacity capacity);
+
         /// @brief Allocate every measured request-growth array once.
         ///
         /// @details
@@ -938,9 +1561,10 @@ namespace gl::gpu {
         /// or capacities.
         ///
         /// @param fixedCapacity Immutable frontier, event, and request ceilings.
+        /// @param allocation Optional shared arena; null owns standalone arrays.
         /// @return An empty device growth owner.
         /// @invariant No method changes an allocation address or capacity.
-        explicit CudaPhase2GrowthBuffer(Phase2GrowthCapacity fixedCapacity);
+        explicit CudaPhase2GrowthBuffer(Phase2GrowthCapacity fixedCapacity, CudaPhase2Arena* allocation = nullptr);
 
         /// @brief Release every fixed request-growth device allocation.
         ///
@@ -987,6 +1611,49 @@ namespace gl::gpu {
             const Phase2GrowthScheduleArena& schedule,
             DevicePhase2GrowthParameters parameters);
 
+        /// @brief Generate complete requests through bounded GPU work windows.
+        ///
+        /// @details
+        /// A pass-local device frontier store holds the logical frontier: one
+        /// buffer the level being grown, the other its children. Pages of a level
+        /// are read where they lie; only rows of a level that outgrows a buffer
+        /// spill to host static-pool pages, which later upload through two
+        /// alternating registered staging blocks into the consumed buffer. CUDA
+        /// performs seed, prefix, candidate and exact-probe work; the host keeps
+        /// upper bounds of the append counters (one node, event and request per
+        /// seed pair or survivor) and reads the exact counts only when a bound
+        /// could overflow, at prefix windows and at level ends. Full request
+        /// storage calls the synchronous drain before any event slot is reused;
+        /// the drain keeps pending store rows. The level-end cutoff prunes host
+        /// pages and device rows alike. Nothing in the store outlives the call.
+        ///
+        /// @param projection Frozen device logical-block image.
+        /// @param tasks Uploaded task image.
+        /// @param hostTasks Host twin, read only for scheduling sizes.
+        /// @param filter Completed filter spans for all scheduled calls.
+        /// @param schedule Original generator calls in this physical task image.
+        /// @param parameters Semantic request limits; census mode must be zero.
+        /// @param drain Synchronous consumer; true commits a completed logical level, even when empty.
+        /// @param context Opaque caller-owned drain context.
+        /// @param taskSubkeyCounts Output cumulative accepted-subkey totals.
+        /// @param taskCapacity Number of caller-owned task counter slots.
+        /// @param retainedCalls Optional cutoff query run after each completed
+        ///        level's drain: fills one keep flag per scheduled call (0 stops
+        ///        the call's descendants) and returns whether any flag is 0.
+        /// @return Logical totals and frontier transfer/backing measurements.
+        /// @invariant One prefix fits minimum execution scratch; request reuse
+        ///            occurs only after its synchronous drain returns.
+        Phase2GrowthStreamResult runRequestGrowthWindows(
+            const CudaPhase2ProjectionBuffer& projection,
+            const CudaPhase2TaskBuffer& tasks,
+            const Phase2TaskProjectionArena& hostTasks,
+            const CudaPhase2FilterSortBuffer& filter,
+            const Phase2GrowthScheduleArena& schedule,
+            DevicePhase2GrowthParameters parameters,
+            void (*drain)(void*, const CudaPhase2GrowthBuffer&, bool), void* context,
+            uint64_t* taskSubkeyCounts, uint32_t taskCapacity,
+            bool (*retainedCalls)(void*, uint8_t*, uint32_t) = nullptr);
+
         /// @brief Download the most recent accepted growth-event ledger.
         ///
         /// @details
@@ -1001,6 +1668,18 @@ namespace gl::gpu {
         uint32_t downloadAcceptedEvents(
             DeviceAcceptedGrowthEvent* destination,
             uint32_t capacity) const;
+
+        /// @brief Download a bounded consecutive metadata window.
+        ///
+        /// @details Copies retained GPU decisions without changing ownership
+        /// or imposing a whole-buffer contiguous host allocation.
+        ///
+        /// @param begin First retained row, including the end for an empty range.
+        /// @param count Number of consecutive rows to copy.
+        /// @param destination Caller-owned space for count rows; null only if empty.
+        /// @return Nothing.
+        /// @invariant The requested range lies in the last completed device image.
+        void downloadAcceptedEventWindow(uint32_t begin, uint32_t count, DeviceAcceptedGrowthEvent* destination) const;
 
         /// @brief Download the most recent raw whole-key request ledger.
         ///
@@ -1049,6 +1728,7 @@ namespace gl::gpu {
         uint64_t fixedAllocationBytes() const;
 
     private:
+        bool ownsDeviceAllocations_{ true };
         friend class CudaPhase2OrderingBuffer;
         friend class CudaPhase2EvaluationBuffer;
         Phase2GrowthCapacity capacity_{};
@@ -1056,6 +1736,7 @@ namespace gl::gpu {
         void* deviceViewMasks_{ nullptr };
         void* deviceSuffixMasks_{ nullptr };
         void* deviceFrontiers_[2]{};
+        void* deviceKeepByCall_{ nullptr };
         void* devicePrefixes_{ nullptr };
         void* devicePrefixPayload_{ nullptr };
         void* devicePrefixVariables_{ nullptr };
@@ -1082,32 +1763,45 @@ namespace gl::gpu {
         std::size_t selectionTemporaryBytes_{ 0 };
     };
 
-    /// @brief Fixed-capacity CUDA ownership for exact event order and deduplication.
+    /// @brief Fixed-capacity CUDA ownership for exact event and request order.
     ///
     /// @details
     /// Owns reusable radix-sort keys/indices, the preserved ordered event index,
-    /// segmented growth-position scan arrays, a collision-exact request hash
-    /// table, two request-token arrays, a count word, and one shared CUB scratch
+    /// segmented growth-position scan arrays, two request-token arrays,
+    /// a count word, and one shared CUB scratch
     /// allocation. No ordering call allocates or falls back to the processor.
     class CudaPhase2OrderingBuffer {
     public:
-        /// @brief Allocate all exact-order and deduplication scratch once.
+        /// @brief Measure device and aligned arena bytes before creating a buffer.
         ///
         /// @details
-        /// Validates positive ceilings and a power-of-two deduplication table,
+        /// Validates the capacity shape and queries current CUDA library workspace
+        /// without allocating device arrays. Includes every processing column and
+        /// the 256-byte padding required by the common arena.
+        ///
+        /// @param capacity Proposed processing and input column capacities.
+        /// @return Device payload bytes and exact aligned arena footprint.
+        /// @invariant No buffer ownership or proof state is created or changed.
+        static Phase2DeviceAllocationSize measureAllocation(Phase2OrderingCapacity capacity);
+
+        /// @brief Allocate all exact-order scratch once.
+        ///
+        /// @details
+        /// Validates positive ceilings,
         /// queries the maximum radix/scan temporary requirement, then allocates
         /// every fixed array and the shared CUB scratch region.
         ///
-        /// @param fixedCapacity Immutable event, slot, and request ceilings.
+        /// @param fixedCapacity Immutable event and request ceilings.
+        /// @param allocation Optional shared arena; null owns standalone arrays.
         /// @return An empty reusable ordering owner.
         /// @invariant No later method changes an allocation address or capacity.
         explicit CudaPhase2OrderingBuffer(
-            Phase2OrderingCapacity fixedCapacity);
+            Phase2OrderingCapacity fixedCapacity, CudaPhase2Arena* allocation = nullptr);
 
         /// @brief Release every exact-order device allocation.
         ///
         /// @details
-        /// Frees shared scratch, counters, request tokens, deduplication tables,
+        /// Frees shared scratch, counters, request tokens,
         /// scan arrays, the preserved order index, and radix arrays exactly once.
         ///
         /// @return Nothing.
@@ -1121,22 +1815,20 @@ namespace gl::gpu {
         CudaPhase2OrderingBuffer& operator=(
             CudaPhase2OrderingBuffer&&) = delete;
 
-        /// @brief Reconstruct processor event order and deduplicate requests.
+        /// @brief Reconstruct event order and retain every recordable request.
         ///
         /// @details
-        /// Stable radix passes sort unordered events by task, call, stump run,
-        /// and the exact stack-walk path token. A segmented inclusive scan assigns
-        /// each event its task-local accepted-subkey tally. Recordable events then
-        /// enter a full-key collision-checked per-call hash table that retains the
-        /// minimum event order, and unique request tokens are radix-sorted by that
-        /// order for later evaluation.
+        /// Stable radix passes order task, call, stump and statement paths. A
+        /// segmented scan assigns task-local growth positions. Every recordable
+        /// event emits its own token, including repeated semantic request keys;
+        /// tokens are sorted by event order before evaluation.
         ///
         /// @param projection Uploaded resident logical-block image.
         /// @param tasks Uploaded task and batch image used by the growth calls.
         /// @param growth Completed unordered growth content.
-        /// @return Ordered event and unique request counts.
+        /// @return Ordered event and request counts.
         /// @invariant Growth content and its uploaded call schedule are unchanged.
-        Phase2OrderingResult orderAndDeduplicate(
+        Phase2OrderingResult orderRequests(
             const CudaPhase2ProjectionBuffer& projection,
             const CudaPhase2TaskBuffer& tasks,
             const CudaPhase2GrowthBuffer& growth);
@@ -1151,15 +1843,27 @@ namespace gl::gpu {
             uint32_t* destination,
             uint32_t capacity) const;
 
-        /// @brief Download unique request tokens in exact processor stream order.
+        /// @brief Download request tokens in exact processor stream order.
         ///
         /// @param destination Caller-owned ordered-token output.
         /// @param capacity Destination element capacity.
-        /// @return Number of unique request tokens copied.
-        /// @invariant `capacity` covers the last unique request count.
+        /// @return Number of request tokens copied.
+        /// @invariant `capacity` covers the last request count.
         uint32_t downloadOrderedRequests(
             DeviceOrderedRequestToken* destination,
             uint32_t capacity) const;
+
+        /// @brief Download a bounded consecutive metadata window.
+        ///
+        /// @details Copies retained GPU decisions without changing ownership
+        /// or imposing a whole-buffer contiguous host allocation.
+        ///
+        /// @param begin First retained row, including the end for an empty range.
+        /// @param count Number of consecutive rows to copy.
+        /// @param destination Caller-owned space for count rows; null only if empty.
+        /// @return Nothing.
+        /// @invariant The requested range lies in the last completed device image.
+        void downloadOrderedRequestWindow(uint32_t begin, uint32_t count, DeviceOrderedRequestToken* destination) const;
 
         /// @brief Report every fixed ordering allocation including CUB scratch.
         ///
@@ -1168,21 +1872,21 @@ namespace gl::gpu {
         uint64_t fixedAllocationBytes() const;
 
     private:
+        bool ownsDeviceAllocations_{ true };
         friend class CudaPhase2EvaluationBuffer;
         Phase2OrderingCapacity capacity_{};
         void* deviceKeys_[2]{};
         void* deviceIndices_[2]{};
         void* deviceOrderedIndices_{ nullptr };
         void* deviceScanValues_[2]{};
-        void* deviceDeduplicationOwners_{ nullptr };
-        void* deviceDeduplicationMinimumOrders_{ nullptr };
         void* deviceRequestTokens_[2]{};
-        void* deviceUniqueRequestCount_{ nullptr };
+        void* deviceRequestCount_{ nullptr };
         void* deviceTemporary_{ nullptr };
         std::size_t temporaryBytes_{ 0 };
         uint32_t usedEvents_{ 0 };
         uint32_t usedRequests_{ 0 };
     };
+
 
     /// @brief Fixed-capacity CUDA ownership for request evaluation and output.
     ///
@@ -1196,6 +1900,18 @@ namespace gl::gpu {
     /// later stages fill the already-owned firing output columns.
     class CudaPhase2EvaluationBuffer {
     public:
+        /// @brief Measure device and aligned arena bytes before creating a buffer.
+        ///
+        /// @details
+        /// Validates the capacity shape and queries current CUDA library workspace
+        /// without allocating device arrays. Includes every processing column and
+        /// the 256-byte padding required by the common arena.
+        ///
+        /// @param capacity Proposed processing and input column capacities.
+        /// @return Device payload bytes and exact aligned arena footprint.
+        /// @invariant No buffer ownership or proof state is created or changed.
+        static Phase2DeviceAllocationSize measureAllocation(Phase2EvaluationCapacity capacity);
+
         /// @brief Allocate every retained evaluator work and output array once.
         ///
         /// @details
@@ -1205,10 +1921,11 @@ namespace gl::gpu {
         /// call allocates.
         ///
         /// @param fixedCapacity Immutable evaluator work and output ceilings.
+        /// @param allocation Optional shared arena; null owns standalone arrays.
         /// @return An empty reusable evaluator owner.
         /// @invariant No later method changes an allocation address or capacity.
         explicit CudaPhase2EvaluationBuffer(
-            Phase2EvaluationCapacity fixedCapacity);
+            Phase2EvaluationCapacity fixedCapacity, CudaPhase2Arena* allocation = nullptr);
 
         /// @brief Release every fixed evaluator allocation exactly once.
         ///
@@ -1241,7 +1958,7 @@ namespace gl::gpu {
         /// @param projection Uploaded resident logical-block image.
         /// @param tasks Uploaded executor task image.
         /// @param growth Completed request-growth content and call schedule.
-        /// @param ordering Exact ordered unique request tokens.
+        /// @param ordering Exact ordered request tokens.
         /// @return Exact used counts at every evaluation expansion boundary.
         /// @invariant Every input belongs to the same uploaded Phase 2 sweep and
         ///            no processor semantic gate is replayed.
@@ -1269,14 +1986,104 @@ namespace gl::gpu {
         /// @param projection Uploaded resident logical-block image.
         /// @param tasks Uploaded executor task image.
         /// @param growth Completed request-growth content and call schedule.
-        /// @param ordering Exact ordered unique request tokens.
+        /// @param ordering Exact ordered request tokens.
+        /// @param valueBegin First prepared value to materialize.
+        /// @param valueCount Maximum prepared values to materialize.
+        /// @param markerKeyBegin First marker key included in each value.
+        /// @param markerKeyCount Maximum marker keys included in each value.
         /// @return Exact firing-header and every variable-output used count.
-        /// @invariant `expandEvaluationWork` was called for these same inputs and
-        ///            rejected LMVs consume no output-arena capacity.
+        /// @invariant A value window was prepared for these same inputs; measured
+        ///            bounds include scratch consumed before late rejection gates.
         Phase2FiringExpressionResult materializeFiringExpressions(
             const CudaPhase2ProjectionBuffer& projection,
             const CudaPhase2TaskBuffer& tasks,
             const CudaPhase2GrowthBuffer& growth,
+            const CudaPhase2OrderingBuffer& ordering, uint32_t valueBegin = 0,
+            uint32_t valueCount = ~uint32_t{0}, uint32_t markerKeyBegin = 0,
+            uint32_t markerKeyCount = ~uint32_t{0});
+
+        /// @brief Measure a value window without allocating its output payloads.
+        ///
+        /// @details
+        /// GPU-side measurement bounds every output column. Marker-key slicing
+        /// permits one marker record to be emitted across several downloads.
+        ///
+        /// @param projection Frozen uploaded LB input.
+        /// @param tasks Live task descriptors.
+        /// @param growth Live request events and call descriptors.
+        /// @param ordering Live request tokens.
+        /// @param valueBegin First prepared value to measure.
+        /// @param valueCount Number of values, at most outputPlanningRows.
+        /// @param destination Caller-owned output bounds.
+        /// @param markerKeyBegin First marker key, zero for complete records.
+        /// @param markerKeyCount Maximum marker keys per record.
+        /// @return Nothing.
+        /// @invariant Measurement does not consume work or change proof state.
+        void measureFiringOutputBounds(const CudaPhase2ProjectionBuffer& projection,
+            const CudaPhase2TaskBuffer& tasks, const CudaPhase2GrowthBuffer& growth,
+            const CudaPhase2OrderingBuffer& ordering, uint32_t valueBegin,
+            uint32_t valueCount, Phase2OutputUsage* destination,
+            uint32_t markerKeyBegin = 0, uint32_t markerKeyCount = ~uint32_t{0});
+
+        /// @brief Maximum metadata rows in one bounded output-planning transfer.
+        static constexpr uint32_t outputPlanningRows = 1024;
+
+        /// @brief Materialize the next capacity-reserved firing window.
+        ///
+        /// @details
+        /// Packs consecutive complete values across bounded measurement pages
+        /// until an output column fills; metadata pages do not force downloads.
+        /// An oversized marker is sliced by keys. When even the next fragment
+        /// needs more room, reports its requirements without consuming work;
+        /// the allocation controller must lend capacity or segment that payload.
+        ///
+        /// @param projection Frozen uploaded LB input.
+        /// @param tasks Live task descriptors.
+        /// @param growth Live request events and call identities.
+        /// @param ordering Live request tokens.
+        /// @param cursor In/out next value/key position in this prepared window.
+        /// @return Completed-window, complete-stream or capacity-request state.
+        /// @invariant The caller retains ready output before the next call, and
+        ///            no capacity request changes the continuation position.
+        Phase2FiringWindow nextFiringWindow(const CudaPhase2ProjectionBuffer& projection,
+            const CudaPhase2TaskBuffer& tasks, const CudaPhase2GrowthBuffer& growth,
+            const CudaPhase2OrderingBuffer& ordering, Phase2FiringCursor& cursor);
+
+        /// @brief Begin evaluation of one frozen request-buffer image.
+        ///
+        /// @details
+        /// Performs request gates once and records 64-bit owner-run offsets.
+        /// The request image remains live until all value windows are consumed.
+        ///
+        /// @param projection Immutable uploaded LB input.
+        /// @param tasks Immutable task descriptors.
+        /// @param growth Live request events and call identities.
+        /// @param ordering Unique request tokens retained in VRAM.
+        /// @param metrics Optional observation-only expansion totals and occupancy.
+        /// @return Nothing.
+        /// @invariant The previous streaming evaluation is exhausted.
+        void beginEvaluationWindows(const CudaPhase2ProjectionBuffer& projection,
+            const CudaPhase2TaskBuffer& tasks, const CudaPhase2GrowthBuffer& growth,
+            const CudaPhase2OrderingBuffer& ordering,
+            Phase2EvaluationStreamMetrics* metrics = nullptr);
+
+        /// @brief Prepare the next capacity-bounded rule-value window.
+        ///
+        /// @details
+        /// Owner windows fit candidate and encoded-hit storage in the worst
+        /// case. An encoded hit's values may span any number of windows. True
+        /// exposes values for materialization; false means the complete input
+        /// is exhausted, including the defined no-hit case. Previously exposed
+        /// output must be retained before this method reuses working storage.
+        ///
+        /// @param projection Same immutable LB input used at begin.
+        /// @param tasks Same immutable task descriptors used at begin.
+        /// @param growth Same live request events used at begin.
+        /// @param ordering Same request tokens used at begin.
+        /// @return Whether a nonempty value window is ready for consumption.
+        /// @invariant Each owner and each selected value is visited exactly once.
+        bool nextEvaluationValues(const CudaPhase2ProjectionBuffer& projection,
+            const CudaPhase2TaskBuffer& tasks, const CudaPhase2GrowthBuffer& growth,
             const CudaPhase2OrderingBuffer& ordering);
 
         /// @brief Canonically order complete device firing records by content.
@@ -1295,6 +2102,16 @@ namespace gl::gpu {
         ///            projection and every record belongs to its stated block.
         uint32_t orderFiringRecords(
             const CudaPhase2ProjectionBuffer& projection);
+
+        /// @brief Attach original GPU early-exit verdicts to the current output.
+        ///
+        /// @details The deactivation predicate is unchanged. Selection is deferred
+        /// until original request positions are known across all capacity drains.
+        ///
+        /// @param projection Frozen logical-block image used for materialization.
+        /// @return Nothing.
+        /// @invariant Every retained header refers to the current generated bytes.
+        void markDoomTriggers(const CudaPhase2ProjectionBuffer& projection);
 
         /// @brief Select exact doom winners and compact their retained prefixes.
         ///
@@ -1456,7 +2273,18 @@ namespace gl::gpu {
         uint64_t fixedAllocationBytes() const;
 
     private:
+        bool ownsDeviceAllocations_{ true };
         Phase2EvaluationCapacity capacity_{};
+        void* deviceOutputBounds_{ nullptr };
+        void* deviceStreamOwnerOffsets_{ nullptr };
+        void* deviceStreamValueOffsets_{ nullptr };
+        void* deviceStreamTotal_{ nullptr };
+        uint64_t streamOwnerCount_{ 0 };
+        uint64_t streamOwnerAt_{ 0 };
+        uint64_t streamValueCount_{ 0 };
+        uint64_t streamValueAt_{ 0 };
+        uint32_t streamRequestCount_{ 0 };
+        bool streamOpen_{ false };
         void* deviceRequestStates_{ nullptr };
         void* deviceRequestCounts_{ nullptr };
         void* deviceRequestOffsets_{ nullptr };
@@ -1485,6 +2313,7 @@ namespace gl::gpu {
         uint32_t usedCandidates_{ 0 };
         uint32_t usedEncodedHits_{ 0 };
         uint32_t usedValues_{ 0 };
+        Phase2EvaluationStreamMetrics* streamMetrics_{nullptr};
         uint32_t usedFiringRecords_{ 0 };
         uint32_t usedGeneratedBytes_{ 0 };
         uint32_t usedLevelValues_{ 0 };

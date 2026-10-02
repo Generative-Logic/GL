@@ -21,7 +21,7 @@ INTEGRATION_GOAL_SUFFIX = "_integration_goal"
 ORDINARY_SCOPE = "ordinary"
 INTEGRATION_GOAL_SCOPE = "integration_goal"
 METHOD_SUFFIXES = {
-    "direct": ("direct_proof",),
+    "single chapter proof": ("single_chapter_proof",),
     "induction": ("induction_typing", "check_zero", "check_induction_condition"),
     "or theorem": ("or_theorem",),
     "or elimination": ("or_elimination",),

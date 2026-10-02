@@ -27,6 +27,7 @@ import re
 import copy
 import shutil
 from pathlib import Path
+from functools import cache
 
 from configuration_reader import configuration_reader
 import expression_utils
@@ -403,8 +404,8 @@ def _build_fname_list(theorems):
                 f"{idx + 2}_check_induction_condition.txt",
             ]
             idx += 3
-        elif method == "direct":
-            fnames = [f"{idx}_direct_proof.txt"]
+        elif method == "single chapter proof":
+            fnames = [f"{idx}_single_chapter_proof.txt"]
             idx += 1
         elif method == "debug":
             fnames = [f"{idx}_debug.txt"]
@@ -537,6 +538,13 @@ def create_processed_proof_graph(config: configuration_reader,
                                  raw_dir=None, proc_dir=None,
                                  theorems_dir=None):
     expression_utils.set_configuration(config)
+    # These results depend only on the expression and this fixed configuration.
+    # Caches die with the call; chapter-specific replacement maps remain local.
+    arguments_for = cache(get_all_args)
+    types_for = cache(lambda cell: classify_args_by_defset(cell, config))
+    is_theorem = cache(is_theorem_anchor_implication)
+    rename_local = cache(lambda raw, current: w_rename_impl_local(raw, current, config))
+    citation_form = cache(_v_to_w_in_theorem_citation)
 
     if raw_dir is None:
         raw_dir = PROJECT_ROOT / "files" / "raw_proof_graph"
@@ -640,8 +648,8 @@ def create_processed_proof_graph(config: configuration_reader,
             fname_to_raw_thm[f"{file_idx + 1}_check_zero.txt"] = thm_expr
             fname_to_raw_thm[f"{file_idx + 2}_check_induction_condition.txt"] = thm_expr
             file_idx += 3
-        elif method == "direct":
-            fname_to_raw_thm[f"{file_idx}_direct_proof.txt"] = thm_expr
+        elif method == "single chapter proof":
+            fname_to_raw_thm[f"{file_idx}_single_chapter_proof.txt"] = thm_expr
             file_idx += 1
         elif method == "debug":
             fname_to_raw_thm[f"{file_idx}_debug.txt"] = thm_expr
@@ -666,7 +674,8 @@ def create_processed_proof_graph(config: configuration_reader,
             fname_to_raw_thm[f"{file_idx}_unknown_{safe}.txt"] = thm_expr
             file_idx += 1
 
-    ram_stacks = copy.deepcopy(raw_stacks)
+    ram_stacks = {name: [row.copy() for row in stack]
+                  for name, stack in raw_stacks.items()}
 
     # -------------------------------------------------------------------------
     # ITERATION 1: Handle 'u_' variables in unanchored implications
@@ -680,12 +689,12 @@ def create_processed_proof_graph(config: configuration_reader,
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
+                is_theorem_impl = is_theorem(orig_cell)
 
                 # Rename implication-local variables for every non-theorem implication.
                 # Theorem implications are handled later via the global theorem list.
                 if is_impl and not is_theorem_impl:
-                    args = get_all_args(cell)
+                    args = arguments_for(cell)
                     has_u = any(a.startswith("u_") for a in args)
 
                     if has_u:
@@ -718,12 +727,12 @@ def create_processed_proof_graph(config: configuration_reader,
         # scan). Independent counters per the "v for digit, V for set" scheme.
         chapter_arg_type: dict[str, str] = {}
         if raw_thm_expr:
-            chapter_arg_type.update(classify_args_by_defset(raw_thm_expr, config))
+            chapter_arg_type.update(types_for(raw_thm_expr))
         for r_idx_pre, row_pre in enumerate(stack):
             for c_idx_pre, cell_pre in enumerate(row_pre):
                 if c_idx_pre == 2 or cell_pre == "main":
                     continue
-                cell_types = classify_args_by_defset(cell_pre, config)
+                cell_types = types_for(cell_pre)
                 for a_pre, t_pre in cell_types.items():
                     prior = chapter_arg_type.get(a_pre)
                     if prior is None or prior == "unknown":
@@ -735,7 +744,7 @@ def create_processed_proof_graph(config: configuration_reader,
 
         counters = {"digit": 1, "set": 1}
         if raw_thm_expr:
-            for a in get_all_args(raw_thm_expr):
+            for a in arguments_for(raw_thm_expr):
                 if a not in repl_map:
                     repl_map[a] = _mint_typed_var(a, chapter_arg_type, counters)
 
@@ -765,7 +774,7 @@ def create_processed_proof_graph(config: configuration_reader,
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
+                is_theorem_impl = is_theorem(orig_cell)
 
                 # Ignore theorem implications here. They are replaced wholesale later
                 # so they stay aligned with the globally renamed theorem list.
@@ -773,7 +782,7 @@ def create_processed_proof_graph(config: configuration_reader,
                     continue
 
                 # ALL other expressions (including Iteration 1's modified unanchored implications) are processed!
-                args = get_all_args(cell)
+                args = arguments_for(cell)
                 for a in args:
                     if a not in repl_map:
                         repl_map[a] = _mint_typed_var(a, chapter_arg_type, counters)
@@ -788,14 +797,14 @@ def create_processed_proof_graph(config: configuration_reader,
         stack_repl_maps[fname] = repl_map
 
     # Generate the processed version of the global theorem list
-    renamed_theorems = copy.deepcopy(raw_theorems)
+    renamed_theorems = [row.copy() for row in raw_theorems]
     for i, thm_row in enumerate(renamed_theorems):
         raw_thm_expr = thm_row[0]
 
         thm_repl_map = get_anchor_mapping_from_expr(raw_thm_expr, config)
-        thm_arg_type = classify_args_by_defset(raw_thm_expr, config)
+        thm_arg_type = types_for(raw_thm_expr)
         thm_counters = {"digit": 1, "set": 1}
-        for a in get_all_args(raw_thm_expr):
+        for a in arguments_for(raw_thm_expr):
             if a not in thm_repl_map:
                 thm_repl_map[a] = _mint_typed_var(a, thm_arg_type, thm_counters)
 
@@ -813,6 +822,7 @@ def create_processed_proof_graph(config: configuration_reader,
     for fname, stack in ram_stacks.items():
         repl_map = stack_repl_maps[fname]
         raw_stack = raw_stacks[fname]
+        replace_cell = cache(lambda cell: replace_keys_in_string(cell, repl_map))
 
         for r_idx, row in enumerate(stack):
             for c_idx, cell in enumerate(row):
@@ -821,14 +831,14 @@ def create_processed_proof_graph(config: configuration_reader,
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
+                is_theorem_impl = is_theorem(orig_cell)
 
                 # Do not apply the local chapter map to theorem implications.
                 if is_impl and is_theorem_impl:
                     continue
 
                 # Apply map to the current cell (Iter 1 mods are safely mapped here)
-                ram_stacks[fname][r_idx][c_idx] = replace_keys_in_string(cell, repl_map)
+                ram_stacks[fname][r_idx][c_idx] = replace_cell(cell)
 
     # -------------------------------------------------------------------------
     # ITERATION 4½: w/W rename of bound vars whose RAW form is `\d+`,
@@ -848,11 +858,11 @@ def create_processed_proof_graph(config: configuration_reader,
                 if '(>[' not in orig_cell:
                     continue
                 is_impl = orig_cell.startswith("(>[")
-                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
+                is_theorem_impl = is_theorem(orig_cell)
                 if is_impl and is_theorem_impl:
                     continue
-                ram_stacks[fname][r_idx][c_idx] = w_rename_impl_local(
-                    orig_cell, ram_stacks[fname][r_idx][c_idx], config)
+                ram_stacks[fname][r_idx][c_idx] = rename_local(
+                    orig_cell, ram_stacks[fname][r_idx][c_idx])
 
     # -------------------------------------------------------------------------
     # ITERATION 4: Deal with anchored implications across the global context
@@ -866,7 +876,7 @@ def create_processed_proof_graph(config: configuration_reader,
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
+                is_theorem_impl = is_theorem(orig_cell)
 
                 # Replace theorem implications with their global renamed version.
                 if is_impl and is_theorem_impl:
@@ -901,14 +911,18 @@ def create_processed_proof_graph(config: configuration_reader,
     # -------------------------------------------------------------------------
     for fname, stack in ram_stacks.items():
         for r_idx, row in enumerate(stack):
+            # A zoom in dependency names the exact parent row, so it keeps
+            # the same theorem spelling as the result rather than a citation alias.
+            if len(row) >= 3 and row[2] == "zoom in":
+                continue
             for c_idx, cell in enumerate(row):
                 if c_idx < 3:                       # 0=head, 1=ns, 2=tag — skip
                     continue
                 if cell == "main":                  # namespace cell — skip
                     continue
-                if not is_theorem_anchor_implication(cell):
+                if not is_theorem(cell):
                     continue
-                ram_stacks[fname][r_idx][c_idx] = _v_to_w_in_theorem_citation(cell)
+                ram_stacks[fname][r_idx][c_idx] = citation_form(cell)
 
     # -------------------------------------------------------------------------
     # Fix tags for external theorems

@@ -22,14 +22,8 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
-/// @file
-/// @brief Tests for the negated-AND De-Morgan door
-///        (`disintegrateExprCore2`) and the shared
-///        `consumeOrLeavesCohort`: a deposited `!(op[args])` whose compiled
-///        definition body is an AND emits the K mutual-exclusion rules over
-///        its true-polarity disjuncts (a negated conjunct's disjunct is its
-///        bare positive core), keeps the flat negated statement registered,
-///        and is fully suppressed by `doNotDisintegrate`.
+// Named negated conjunctions supply exclusion implications. Numbered
+// conjunctions stay flat; neither kind opens or parks case scopes.
 
 #include "test_harness.hpp"
 
@@ -89,7 +83,7 @@ namespace {
 
 } // namespace
 
-TEST(negated_and_demorgan, k_rules_and_flat_statement) {
+TEST(negated_and_demorgan, named_exclusion_rules_and_flat_statement) {
     gl::ExpressionAnalyzer ea(std::string("FTA"));
     const std::string neg = "!(strictOrder[1,4,9,10])";
     depositAtMain(ea, neg, /*doNotDisintegrate=*/false);
@@ -98,6 +92,7 @@ TEST(negated_and_demorgan, k_rules_and_flat_statement) {
     findKShapes(ea, k1, k2);
     ASSERT_TRUE(k1);
     ASSERT_TRUE(k2);
+    ASSERT_TRUE(ea.body.orImplications.sources.empty());
 
     // The flat negated statement registers exactly as before the door.
     const gl::StatementFlags* row = gl::lookupStatementFlags(
@@ -121,8 +116,86 @@ TEST(negated_and_demorgan, suppressed_by_do_not_disintegrate) {
     ASSERT_TRUE(row != nullptr);
 }
 
+TEST(negated_and_demorgan, numbered_and_stays_excluded) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    ea.compiledExpressions["and987"] = gl::LogicalEntity("and",
+        {"(in[u_1,u_2])", "!(in[u_2,u_1])"}, "(and987[u_1,u_2])", 2);
+    const int32_t rules = ea.body.overallHashMemory.originals.count();
+    depositAtMain(ea, "!(and987[a,N])", false);
+    ASSERT_EQ(ea.body.overallHashMemory.originals.count(), rules);
+    ASSERT_TRUE(ea.body.orImplications.sources.empty());
+    ASSERT_TRUE(ea.body.orDisjunctCount.empty());
+    ASSERT_TRUE(ea.body.overallHashMemory.rejectedMapOrdis.empty());
+    ASSERT_TRUE(ea.body.overallHashMemory.rejectedMapOrdis2.empty());
+    ASSERT_TRUE(gl::lookupStatementFlags(ea.body.intKnownStatements, ea.body.nameMap,
+        gl::StrSpan("!(and987[a,N])", 14), gl::StrSpan("main", 4)) != nullptr);
+}
+
+TEST(negated_and_demorgan, digit_prefix_with_named_suffix_is_not_numbered) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    ea.compiledExpressions["and987extra"] = gl::LogicalEntity("and",
+        {"(in[u_1,u_2])", "!(in[u_2,u_1])"}, "(and987extra[u_1,u_2])", 2);
+    const int32_t rules = ea.body.overallHashMemory.originals.count();
+    depositAtMain(ea, "!(and987extra[a,N])", false);
+    ASSERT_EQ(ea.body.overallHashMemory.originals.count(), rules + 2);
+    ASSERT_TRUE(ea.body.orImplications.sources.empty());
+    ASSERT_TRUE(ea.body.orDisjunctCount.empty());
+    ASSERT_TRUE(ea.body.overallHashMemory.rejectedMapOrdis.empty());
+    ASSERT_TRUE(ea.body.overallHashMemory.rejectedMapOrdis2.empty());
+}
+
+TEST(negated_and_demorgan, named_exclusion_history_stays_at_the_source_scope) {
+    gl::ExpressionAnalyzer ea(std::string("FTA"));
+    ea.body.nameMap.encode("main");
+    const gl::NameId scopeId = ea.body.nameMap.encodePush(gl::NameMap::MAIN_ID, "named_exclusion");
+    const std::string scope = ea.body.nameMap.decode(scopeId);
+    const std::string source = "!(strictOrder[1,4,9,10])";
+    const int levels[]{0};
+    const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
+    ea.addExprToMemoryBlock(gl::StrSpan(source), ea.body, 0, 0, levels, 1,
+        origin, -1, -1, gl::StrSpan(scope), false);
+
+    const std::string expanded = "!(&(preorder[1,4,9,10])!(=[9,10]))";
+    // Raw implication history keeps the unification parameters; the proof
+    // processor later gives them the chapter's ordinary variable spelling.
+    const std::string rules[]{"(>[]!(=[u_9,u_10])!(preorder[u_1,u_4,u_9,u_10]))",
+        "(>[](preorder[u_1,u_4,u_9,u_10])(=[u_9,u_10]))"};
+    bool foundExpansion = false;
+    bool foundRules[]{false, false};
+    const auto history = gl::decodeOriginMapSorted(ea.body.exprOriginMap, ea.body.originInterner);
+    for (const auto& entry : history) {
+        if (entry.first.first == expanded) {
+            ASSERT_EQ(entry.first.second, scope);
+            for (const auto& line : entry.second) {
+                if (line.first != "expansion") continue;
+                ASSERT_EQ(line.second.size(), std::size_t{1});
+                ASSERT_EQ(line.second[0].original, source);
+                ASSERT_EQ(line.second[0].validityName, scope);
+                foundExpansion = true;
+            }
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (entry.first.first != rules[i]) continue;
+            ASSERT_EQ(entry.first.second, scope);
+            for (const auto& line : entry.second) {
+                if (line.first != "disintegration") continue;
+                ASSERT_EQ(line.second.size(), std::size_t{1});
+                ASSERT_EQ(line.second[0].original, expanded);
+                ASSERT_EQ(line.second[0].validityName, scope);
+                foundRules[i] = true;
+            }
+        }
+    }
+    ASSERT_TRUE(foundExpansion);
+    ASSERT_TRUE(foundRules[0]);
+    ASSERT_TRUE(foundRules[1]);
+    ASSERT_TRUE(ea.body.orImplications.sources.empty());
+    ASSERT_TRUE(ea.body.orDisjunctCount.empty());
+}
+
 TEST(negated_and_demorgan, non_and_negations_stay_flat) {
     gl::ExpressionAnalyzer ea(std::string("FTA"));
+    ea.preMintReducedOrs();   // the seam completes every registry list first
     // preorder's body is an existence, not an AND — the door must not fire.
     const std::string neg = "!(preorder[1,4,9,10])";
     depositAtMain(ea, neg, /*doNotDisintegrate=*/false);
@@ -130,4 +203,33 @@ TEST(negated_and_demorgan, non_and_negations_stay_flat) {
     bool k1 = false, k2 = false;
     findKShapes(ea, k1, k2);
     ASSERT_TRUE(!k1 && !k2);
+}
+
+TEST(negated_and_demorgan, never_opens_or_parks_a_cohort) {
+    // Case analysis is reserved for or-category signatures: a negated
+    // named conjunction creates exclusion implications but no cases, even where a compiled
+    // or would open unconditionally — an active primed contradiction block
+    // (or proof work without a goal) receiving a route-(b) deposit (a
+    // product of disintegration).
+    gl::ExpressionAnalyzer ea(std::string("FTA"));
+    ea.body.primedForContradiction = true;
+    ea.body.isActive = true;
+    const std::string neg = "!(strictOrder[1,4,9,10])";
+    const int lv[1] = { 0 };
+    const gl::TransientOrigin origin{
+        true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    ea.addExprToMemoryBlock(gl::StrSpan(neg), ea.body, 0, 0, lv, 1,
+        origin, -1, -1, gl::StrSpan("main", 4),
+        /*doNotDisintegrate=*/false, /*allowOrDisintegration=*/true);
+
+    bool k1 = false, k2 = false;
+    findKShapes(ea, k1, k2);
+    ASSERT_TRUE(k1);
+    ASSERT_TRUE(k2);
+    ASSERT_TRUE(ea.body.orImplications.sources.empty());
+    // No cohort registered, none queued for release, none parked.
+    ASSERT_TRUE(ea.body.orDisjunctCount.empty());
+    ASSERT_TRUE(ea.body.pendingOrReleases.empty());
+    ASSERT_TRUE(ea.body.overallHashMemory.rejectedMapOrdis.empty());
+    ASSERT_TRUE(ea.body.overallHashMemory.rejectedMapOrdis2.empty());
 }

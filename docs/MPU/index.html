@@ -54,7 +54,7 @@ Concept-and-cost companion for a hardware / architecture audience.
   <b>deductive inference</b>.</p>
   <p class="stamp">Version 0.2, GPU Edition — the engine's main runtime consumer,
   phase 2 of the hashburst, now runs on GPU threads instead of 32 processor
-  threads: ten times faster so far, with the same proof output byte for byte.
+  threads: ten times faster so far, proving the same theorems.
   Sizing from the live prover; prices dated, refreshed only at release.</p>
 </div>
 
@@ -165,11 +165,11 @@ on one unmeasured claim for the runtime axis: that phase 2 of the hashburst, the
 engine itself and the main consumer of runtime, splits into independent work units
 that many small execution units can run at once. That claim is now a measurement.
 The prover has a second implementation of phase 2 that runs on the GPU: request
-filtering, growth, ordering, evaluation, provenance and the deterministic early exit
-all execute as GPU threads, the host only converts the records it gets back, and the
-processor route stays as the oracle. Going from the 32 logical processor threads to
-GPU threads makes phase 2 about <b>ten times faster</b> on the same workload, the
-proof output is byte-identical on both routes, and this is the first result of the
+filtering, growth, ordering, evaluation and provenance construction
+all execute as GPU threads, the complete result stream reaches canonical finalization and the host converts the records it gets back, and the
+processor route remains the ASIC reference. Going from the 32 logical processor threads to
+GPU threads makes phase 2 about <b>ten times faster</b> on the same workload, both
+routes prove the same theorems (each route's proof steps are reproducible on its own), and this is the first result of the
 campaign, not its end. For the silicon argument the consequence is direct: the LB
 core of §2 is not one sequential unit but a wide array of small integer units, and
 the count of those units, not the LB count, is the runtime lever.
@@ -210,14 +210,14 @@ exploring a tree. Inference is a <b>memory-access problem</b>.
 <div class="stats">
   <div class="stat"><div class="big">32-bit</div><div class="lbl">symbol &amp; scope ids (the working width). 64-bit packed statement keys; 64-bit hash digests.</div></div>
   <div class="stat"><div class="big">0</div><div class="lbl">floating-point operations on the proof path. None. (The whole prover has one FP compare, and it only picks how to split work.)</div></div>
-  <div class="stat"><div class="big">352 B</div><div class="lbl">one statement line (<code>IntEncodedExpr</code>) — a fixed, all-int32 record. The natural SRAM line / register width.</div></div>
+  <div class="stat"><div class="big">240 B</div><div class="lbl">one statement line (<code>IntEncodedExpr</code>) — a fixed, padding-free record: 32-bit ids and header fields (the negation, hypothesis and anchor flags among them), and per argument 16-bit iteration and level fields and an 8-bit flag. Eight lines fill a 2 KiB page. The natural SRAM line / register width.</div></div>
   <div class="stat"><div class="big">FNV-1a</div><div class="lbl">the hash — a per-byte XOR-then-multiply. A few gates, one pipelined multiplier.</div></div>
 </div>
 
 <p>
-A statement line is a fixed-capacity record: a name id, a handful of flags, and
+Equal statement lines within a logic block share one immutable record. Four ordered lists retain 32-bit references; scope remains part of record identity. Reference counts and a derived lookup table add storage overhead. Canonical export expands the original per-list records. A statement line is a fixed-capacity record: a name id, a handful of flags, and
 up to <b>16 arguments</b> (<code>MAX_ARITY</code>), each a 32-bit id — all int32,
-176 bytes, identical shape for every fact in the system. A hash key holds up to
+240 bytes, identical shape for every fact in the system. A hash key holds up to
 <b>8 sub-expressions</b> of those. There are no variable-length structures and no
 pointers in the hot record: the engine compares ids, tests set membership and
 subset, looks up a packed key, and folds an FNV-1a digest. That is the entire
@@ -260,8 +260,15 @@ is worth a great deal: validation, replay, and scale-out all get simpler at once
 <p>
 The unit of execution in GL is the <b>Logic Block (LB)</b>. An LB is a
 self-contained reasoning context: it owns its own hash rules, its own known
-statements, its own scope/validity stack, its own equivalence classes and
-provenance map, and its own mailboxes. LBs never reach into each other's memory;
+statements, its own scope/validity stack, its own application classes and a separate
+complete canonical-class view with representative/change records and
+name/scope dependency indexes on the same pool (one shared pair, lookup value
+and recyclable node use 44 payload bytes per live dependency, including the
+insertion revision and both ordered traversals, before hash slots and head maps;
+these revisions select new postings without revisiting older unchanged records),
+with pending comparison views stored as pooled per-scope postings that are
+queued when representatives change and drained by the next comparison,
+its provenance map, and its own mailboxes. LBs never reach into each other's memory;
 the main thing that crosses between them is mail. The remaining cross-block
 effects — induction activation, deferred ancestor admissions, global-rule
 updates — travel through analyzer-level deferred-action collectors drained
@@ -310,10 +317,10 @@ the rest.
   <text x="620" y="78" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">register file</text>
   <text x="620" y="93" fill="#8B8FA5" font-size="9.5" text-anchor="middle">known statements</text>
   <g font-size="8">
-    <rect x="536" y="104" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="114" fill="#8B8FA5" text-anchor="middle">IntEncodedExpr line · 352 B · all int32</text>
+    <rect x="536" y="104" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="114" fill="#8B8FA5" text-anchor="middle">IntEncodedExpr line · 240 B · packed</text>
     <rect x="536" y="120" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="130" fill="#8B8FA5" text-anchor="middle">name · flags · ≤16 arg ids</text>
     <rect x="536" y="136" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="146" fill="#8B8FA5" text-anchor="middle">…</text>
-    <rect x="536" y="152" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="162" fill="#8B8FA5" text-anchor="middle">fixed-width rows</text>
+    <rect x="536" y="152" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="162" fill="#8B8FA5" text-anchor="middle">shared rows + reference counts</text>
   </g>
 
   <!-- container set (in shared pools) -->
@@ -321,7 +328,7 @@ the rest.
   <text x="380" y="216" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">the LB's container set — logically private, physically in the shared pools (§3)</text>
   <g font-size="9">
     <rect x="56"  y="228" width="150" height="50" rx="5" fill="#262938" stroke="#EF9F27"/><text x="131" y="248" fill="#EF9F27" text-anchor="middle">hash engine ×4</text><text x="131" y="262" fill="#8B8FA5" text-anchor="middle">rule tables + admission</text>
-    <rect x="214" y="228" width="150" height="50" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="289" y="248" fill="#5DCAA5" text-anchor="middle">4 statement vectors</text><text x="289" y="262" fill="#8B8FA5" text-anchor="middle">known / local / delta / ext</text>
+    <rect x="214" y="228" width="150" height="50" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="289" y="248" fill="#5DCAA5" text-anchor="middle">4 reference lists</text><text x="289" y="262" fill="#8B8FA5" text-anchor="middle">known / local / delta / ext</text>
     <rect x="372" y="228" width="150" height="50" rx="5" fill="#262938" stroke="#B084EB"/><text x="447" y="248" fill="#B084EB" text-anchor="middle">scope · equi-classes</text><text x="447" y="262" fill="#8B8FA5" text-anchor="middle">validity · provenance</text>
     <rect x="530" y="228" width="174" height="50" rx="5" fill="#262938" stroke="#E879F9"/><text x="617" y="248" fill="#E879F9" text-anchor="middle">goal registry · mail</text><text x="617" y="262" fill="#8B8FA5" text-anchor="middle">to-prove · in/out · logs</text>
   </g>
@@ -354,10 +361,15 @@ match-and-emit pipeline over a hash table, not a recursive search machine.
 </p>
 
 <h3>Three phases, and why the split matters for hardware</h3>
+<figure><svg viewBox="0 0 760 122" role="img" aria-label="Shared CPU processing surrounds a GPU burst over surviving scopes">
+<g fill="#e8f0f7" stroke="#476b84"><rect x="8" y="12" width="238" height="82" rx="8"/><rect x="261" y="12" width="238" height="82" rx="8"/><rect x="514" y="12" width="238" height="82" rx="8"/></g>
+<g fill="#17212b" text-anchor="middle" font-size="13"><text x="127" y="35">CPU phase 1</text><text x="127" y="57">hypothesis → class → discharge</text><text x="127" y="78">publish → retire → wipe</text><text x="380" y="35">GPU phase 2</text><text x="380" y="57">project surviving scopes</text><text x="380" y="78">capture firing records</text><text x="633" y="35">CPU phase 3</text><text x="633" y="57">hypothesis → class → discharge</text><text x="633" y="78">publish → wipe → compact</text></g>
+<path d="M246 53 H261 M499 53 H514" stroke="#476b84" stroke-width="2"/>
+</svg><figcaption>The phase barrier makes completed CPU cleanup visible to GPU request construction.</figcaption></figure>
 <ul class="inv">
 <li><b>Phase 1 — absorb.</b> Pull mail from ancestors, fold it into local rules and
 facts so this cycle's request generation sees it. A goal that mail just closed can
-deactivate the block here.</li>
+deactivate the block here. Shared processing reacts to hypotheses before class application, publishes outgoing history, then retires cases and wipes closed scopes before GPU projection.</li>
 <li><b>Phase 2 — hashburst.</b> The compute-heavy part, and <b>strictly read-only on
 the block.</b> It captures firings as records and mutates nothing shared. This is
 the property that lets phase 2 run on many compute units at once (§5) and is the
@@ -366,7 +378,10 @@ hard contract behind the runtime lever.</li>
 merged and applied first — concatenated and sorted into a canonical order (so the
 result is independent of how phase 2 was parallelised) in a per-block finalize the
 moment the parallel units join, at the tail of phase 2; commit proper then flushes
-mail, discharges/deactivates finished goals, sanitises, and wipes closed scopes.</li>
+mail, discharges/deactivates finished goals, sanitises, and wipes closed scopes.
+An entry-time scope filter excludes OR subtrees whose current goals at the branch
+and its ancestors are empty or already known. Parent-scope work and proof-history
+delivery continue. At the end of each shared processing call in phase 1 or phase 3, one bitmap covers all queued closed subtrees and each affected collection is scanned once, preserving survivor and scope-filter order. At the phase-3 worker exit, the existing page compactor also returns whole blocks of freed pages while the block remains exclusively owned; virtual page identities and sizing constants stay unchanged.</li>
 </ul>
 <p>
 The read-only phase 2 is the linchpin. Because the heavy work touches no shared
@@ -390,18 +405,28 @@ reservations made once at start-up</b>, never grown, never freed during the run
 knob to raise, never a silent fallback. Four reservations, each a candidate for a
 physical memory bank:
 </p>
+<h3 id="native-shared-keys">Shared native keys and record payloads</h3>
+<p>Each logic block shares identical native hash-key bytes, normalized-key values, and page-contained encoded rule and owner records. Larger records retain private paged storage. Each table keeps its own identifiers, membership, ordered runs and owner lists; replacing a record changes only that table's reference. Sharing storage therefore leaves scope and inference unchanged.</p>
+<svg viewBox="0 0 760 160" role="img" aria-label="Independent native tables share immutable payload within one logic block and retain their existing canonical byte format">
+<g fill="none" stroke="#5DCAA5" stroke-width="2"><rect x="12" y="14" width="222" height="116" rx="8"/><rect x="269" y="14" width="222" height="116" rx="8"/><rect x="526" y="14" width="222" height="116" rx="8"/><path d="M234 72 H269 M491 72 H526"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="123" y="40">Independent native tables</text><text x="123" y="66">Local identifiers and owners</text><text x="123" y="92">Separate membership and runs</text><text x="380" y="40">One pool per logic block</text><text x="380" y="66">Keys and immutable records</text><text x="380" y="92">Shared immutable bytes</text><text x="637" y="40">Existing canonical streams</text><text x="637" y="66">Same bytes and row order</text><text x="637" y="92">Sharing rebuilt on reload</text></g></svg>
+<p>After a worker finishes using borrowed views, it removes unreferenced shared payload and compacts the surviving bytes. Emptying the final table releases the shared store immediately. Canonical disk streams keep their existing format and reconstruct sharing when loaded. Raw eviction preserves the shared store and its references together. Memory reports count resident payload once; serialized size may include repeated copies.</p>
+<p>On the measured full F3 workload (28 September 2026), two sequential runs kept all theorem and proof files identical while peak native RAM fell from 8,570&ndash;8,577 to 7,051&ndash;7,055 MiB, about 17.7 percent below the projection-only result. At that measurement stage, the largest main-pool peak was about 4,213 MiB of 6,144 MiB. The memory object grew by 5,120 bytes to 255,336 bytes and still fits one 256 KiB slot. FTA itself showed no material RAM saving.</p>
+
+
 
 <table>
 <tr><th>Pool</th><th>Size (provisioned)</th><th>Block</th><th>Backs</th><th>Deloads to SSD?</th></tr>
-<tr><td><b>Main</b></td><td class="num">12 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
+<tr><td><b>Main</b></td><td class="num">6 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
 <tr><td><b>Persistent</b></td><td class="num">1 GiB</td><td class="num">32 KiB</td><td>the goal registry — kept always-resident so deactivation logic can read it while a block is cold</td><td>no</td></tr>
 <tr><td><b>Mail</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the cross-block mail log (who sent what to whom)</td><td>no</td></tr>
 <tr><td><b>LB-body</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the block objects themselves (fixed slots, never moved)</td><td>no</td></tr>
 </table>
 
 <p>
-Total program-start reservation: <b>17 GiB</b>, fixed. These are <i>ceilings</i>,
-not consumption — the sizing knob you would tune for a real part is the
+Total program-start reservation: <b>11 GiB</b>, fixed. These are <i>ceilings</i>,
+not consumption (the PC build reserves them as address space and commits each
+block when it is first used) — the sizing knob you would tune for a real part is the
 <i>measured peak</i>, which §7 puts (from the booklet's own dated figures) at
 roughly 1 GB for the named theorem batches and ~4–5 GB for the heaviest exploration
 batch. The "provisioned vs. measured" gap
@@ -411,11 +436,11 @@ is the whole reason the cost story has a hot tier and a cold tier.
 <h3>The hierarchy is pool → block → page → per-LB arena</h3>
 
 <figure>
-<svg viewBox="0 0 760 430" role="img" aria-label="The static memory hierarchy: one pool reservation carved into 256 KiB blocks, each LB's arena carves blocks into 8 KiB pages, containers pack fixed records into pages and address them by a virtual offset resolved with one shift and one mask">
+<svg viewBox="0 0 760 430" role="img" aria-label="The static memory hierarchy: one pool reservation carved into 256 KiB blocks, each LB's arena carves blocks into 2 KiB pages, containers pack fixed records into pages and address them by a virtual offset resolved with one shift and one mask">
   <defs><marker id="h2-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
 
   <rect x="20" y="14" width="720" height="96" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
-  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 12 GiB = 49152 blocks)</text>
+  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 6 GiB = 24576 blocks)</text>
   <text x="380" y="52" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the software model of the SRAM-macro fabric — block == one 256 KiB SRAM · carved under one mutex · never grown</text>
   <g font-size="8.5">
     <rect x="40"  y="64" width="64" height="32" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="72"  y="84" fill="#5DCAA5" text-anchor="middle">LB A</text>
@@ -433,10 +458,10 @@ is the whole reason the cost story has a hot tier and a cold tier.
   <text x="130" y="134" fill="#8B8FA5" font-size="9.5" text-anchor="middle">acquireBlock (mutex)</text>
 
   <rect x="80" y="152" width="600" height="96" rx="10" fill="#262938" stroke="#5DCAA5" stroke-width="2"/>
-  <text x="380" y="174" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">PER-LB ARENA — this LB's blocks, carved into 8 KiB pages</text>
+  <text x="380" y="174" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">PER-LB ARENA — this LB's blocks, carved into 2 KiB pages</text>
   <g font-size="8.5">
-    <rect x="104" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="179" y="202" fill="#5DCAA5" text-anchor="middle">block 0</text><text x="179" y="216" fill="#8B8FA5" text-anchor="middle">32 pages × 8 KiB</text>
-    <rect x="262" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="337" y="202" fill="#5DCAA5" text-anchor="middle">block 1</text><text x="337" y="216" fill="#8B8FA5" text-anchor="middle">32 pages × 8 KiB</text>
+    <rect x="104" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="179" y="202" fill="#5DCAA5" text-anchor="middle">block 0</text><text x="179" y="216" fill="#8B8FA5" text-anchor="middle">128 pages × 2 KiB</text>
+    <rect x="262" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="337" y="202" fill="#5DCAA5" text-anchor="middle">block 1</text><text x="337" y="216" fill="#8B8FA5" text-anchor="middle">128 pages × 2 KiB</text>
     <rect x="420" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#EF9F27"/><text x="495" y="202" fill="#EF9F27" text-anchor="middle">block 2</text><text x="495" y="216" fill="#8B8FA5" text-anchor="middle">▸ free pages</text>
   </g>
 
@@ -456,8 +481,25 @@ is the whole reason the cost story has a hot tier and a cold tier.
   <!-- MMU resolve callout -->
   <rect x="500" y="14" width="0" height="0"/>
 </svg>
+<h3>Addressing large containers with small pages</h3>
+<p>Container directories grow only when needed: a single page has no directory, then one and two directory levels serve larger containers. Above 262,144 data pages (512 MiB with 2 KiB pages), a third level addresses more pages without enlarging the pages or the main pool. Promotion retains the old root and payload; shrinking returns empty branches. The first promotion adds 6 KiB of directory storage. Signed element and slot counts remain separately bounded, and serialized logical contents are unchanged.</p>
+<svg viewBox="0 0 760 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Adaptive container directory: optional L3 root, L2, L1, then data page">
+  <g font-family="sans-serif" font-size="12" text-anchor="middle">
+    <rect x="12" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#EF9F27"/>
+    <text x="92" y="42" fill="#F0E8DC">L3 root</text><text x="92" y="60" fill="#EF9F27">only above L2 coverage</text>
+    <rect x="204" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#5DCAA5"/>
+    <text x="284" y="50" fill="#F0E8DC">L2 directory</text>
+    <rect x="396" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#5DCAA5"/>
+    <text x="476" y="50" fill="#F0E8DC">L1 directory</text>
+    <rect x="588" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#5DCAA5"/>
+    <text x="668" y="50" fill="#F0E8DC">2 KiB data page</text>
+    <path d="M172 46h32m160 0h32m160 0h32" stroke="#8B8FA5" stroke-width="2"/>
+    <text x="380" y="103" fill="#8B8FA5">512 entries per directory page; smaller containers start lower in the tree.</text>
+  </g>
+</svg>
+
 <figcaption><b>One reservation, blocks, per-LB pages.</b> A global manager hands
-out 256 KiB blocks under a mutex; each LB carves its blocks into 8 KiB pages and
+out 256 KiB blocks under a mutex; each LB carves its blocks into 2 KiB pages and
 packs fixed-width records into them. The only cross-core touch in the whole
 hierarchy is that one mutex.</figcaption>
 </figure>
@@ -504,22 +546,24 @@ more macros for the hard ones.
 <h3>The pager is a cache controller</h3>
 <p>
 RAM is treated as a <b>cache of the working set</b> — the blocks being processed
-now plus the next few. A background <b>steward</b> thread maintains that window
-every cycle: it prefetches the blocks about to be needed and, when memory gets
-tight, evicts the rest to SSD, biggest first. A worker that reaches a block still
-on disk loads it itself and deloads the biggest out-of-window block in exchange.
-The policy is pure watermarks on pool occupancy:
+now plus the next few. A background <b>steward</b> plans prefetches and evictions
+from the current processing position; separate transfer workers execute them.
+The controller keeps a <b>reserve of free blocks</b> for upcoming loads and
+growth during computation. Each LB has an ownership claim that prevents eviction
+while a worker is using it:
 </p>
 <ul class="inv">
-<li><b>Below 50% full</b> — the steward is parked. No eviction, so no reload. A light batch
-runs at full speed with zero disk traffic.</li>
-<li><b>Cross 50%</b> — the steward wakes (asynchronously) and drains: each reload is paid for by
-evicting the biggest out-of-window block (<b>one-for-one</b>), pulling occupancy down to a
-<b>40% floor</b> before it parks again. The 50%→40% gap is a hysteresis band, so it never
-oscillates at the wake mark.</li>
-<li><b>Above ¾ (75%)</b> — the <b>synchronous hard water</b>: a worker that needs a block while the
-pool is this full does the swap itself — load its block, evict the biggest out-of-window block —
-rather than wait for the steward, which above this mark mass-evicts.</li>
+<li><b>Reserve available</b> — no active LB needs eviction. A light batch can
+run without eviction or reload traffic.</li>
+<li><b>Reserve shortfall</b> — evict eligible LBs behind the processing position,
+preferring those whose next use is furthest away. Selection first requires a
+minimum reclaimable size, then relaxes that size floor if no candidate qualifies.
+Queued and in-flight evictions count toward the planned reserve.</li>
+<li><b>Prefetch budget</b> — pending loads are bounded below the reserve so
+upcoming LBs have space to land. Under emergency pressure, transfer workers
+prioritize evictions; a compute worker can also evict one eligible LB when
+claiming its next block, and any block request that would drop below the
+emergency floor first evicts one, so growth is throttled to the eviction rate.</li>
 <li><b>Working set itself won't fit</b> — that is a genuinely too-small pool, and
 the run stops at a loud assert. A 30-second stuck-detector turns any unexpected
 wait into an assert too.</li>
@@ -531,6 +575,38 @@ construction — the <b>proof output never does</b>: what to discharge is decide
 a single-threaded barrier from deterministic block state, and the pager only moves
 bytes, never changes them.
 </p>
+
+<h3>Existence expansion and parked-source storage</h3>
+<p>Witness discovery uses reusable per-worker scratch slots. Permanent witness
+numbers and history are allocated after admission. A rejected expansion releases
+its scratch structure; the existing demand indexes retain its source existence,
+generation, processing flags, levels and deferred equality transformations.</p>
+<pre aria-label="Existence storage flow">worker scratch: temporary expansion → admission → permanent products + history
+                                      ↓ unresolved
+block cold storage: source existence → demand → internal mail → fresh expansion
+derived block lookups: marked expression → demands; source + scope → parked keys</pre>
+<p>During discovery, witness paths share one prepared instruction and carry
+local substitutions. Effective fields are instantiated as read; concrete-only
+consumers materialize their current path. These views and any materialized copy
+remain worker scratch and do not enter the source image.</p>
+<p>The canonical source record uses 20 bytes of fixed fields, plus 4 bytes per level
+and 12 bytes per deferred equality step. Source/scope receipts carry an 8-byte key
+and a 4-byte construction-state value, plus container overhead. Both source indexes
+and receipts reside on the block's ordinary deloadable arena, survive raw eviction
+and canonical reload, and participate in cloning and scope cleanup. Expanded
+instructions and temporary witness tables are absent from persistent source storage.</p>
+<p>Derived replay lookups also occupy the block arena and count toward its live
+working set. They index demand keys, receipt scopes and source-to-park edges.
+Canonical images omit these caches and reload rebuilds them; raw eviction retains
+their pages and descriptors. They preserve the existing admission and cleanup
+order and contain no expanded witness products.</p>
+<p>Measurement keeps one eight-byte peak counter in each resident block shell. The
+report sums each block's observed source-container peak, including integration key
+argument indexes and receipts. Derived replay lookups, shared string interners and
+page padding are excluded. It is not a
+simultaneous whole-grid peak. The counter has no proof role and is neither cloned
+nor included in either deload format. Permanent allocations during proving and mail
+history volume are reported separately.</p>
 
 <h3>SSD deload / reload is the cold tier</h3>
 <p>
@@ -592,7 +668,8 @@ blocks — and the compaction's transient scratch. O(blocks), not O(payload), an
 outside any one LB. (Each arena's own list of which blocks/pages it holds — once
 the last per-LB heap carve-out — is now pool-backed: a small-buffer directory that
 keeps a tiny arena's table inline at zero pool cost and spills only a large one
-onto pool blocks. So the per-LB arena bookkeeping is now static too.)</li>
+onto pool blocks; a logic block's tables sit in the spare room of its resident
+shell, so only an exceptionally large logic block spills. So the per-LB arena bookkeeping is now static too.)</li>
 <li><b>Transient mail strings</b> — each deloadable outbox stores int32 ids from
 its own private interner; commit translates them into <b>global mail-interner
 int32 ids</b> for the retained log and receiver inbox. The
@@ -625,6 +702,9 @@ heap process-wide.")
 <!-- ============================== SECTION 4 ============================== -->
 <section id="mail">
 <h2><span class="num">4 ·</span> The mail system — a pull over shared RAM (the tree is logical)</h2>
+<p>The outgoing fact/rule boundary is a witness-class check: forced witnesses may cross under the existing scope rules; ordinary integration witnesses remain local. It needs no whole-expression or marker permission tables. Internal replay carries the original assigned integration depth beside the existing processing signal, and proof-history traffic remains separate from fact eligibility.</p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 135" role="img" aria-label="Outgoing facts pass a witness class check; ordinary integration facts remain local while proof history follows its own channel"><g fill="#262938" stroke="#5DCAA5" stroke-width="1.5"><rect x="15" y="20" width="215" height="75" rx="8"/><rect x="270" y="20" width="215" height="75" rx="8"/><rect x="525" y="20" width="220" height="75" rx="8"/></g><g fill="#F0E8DC" font-family="sans-serif" font-size="13" text-anchor="middle"><text x="122" y="49">Local facts and compact rules</text><text x="122" y="74">Existing scope gate</text><text x="377" y="49">Witness-class check</text><text x="377" y="74">Any ordinary int_ stays local</text><text x="635" y="49">Ancestor mail log</text><text x="635" y="74">Eligible facts + proof history</text></g><g stroke="#5DCAA5" stroke-width="2"><path d="M230 57H267M485 57H522"/></g></svg><figcaption>Witness eligibility replaces the two persistent permission tables. Pool sizes and interconnect topology are unchanged.</figcaption></figure>
+
 
 <p>
 LBs do not share working memory; they exchange results through <b>mail</b> at cycle
@@ -640,8 +720,11 @@ reads its ancestors' logs at arbitrary addresses, and the interconnect must be a
 to reach <i>every</i> address — because the LB tree is built at <b>run time</b>
 (blocks spawn as goals split), each log lands at an <b>unpredictable address</b>
 (blocks are granted in nondeterministic order under the pool mutex, so different LBs'
-batches interleave anywhere in the pool), and the root, as everyone's ancestor, is
-read by <i>all</i>. Connectivity cannot be narrowed to a graph that does not exist
+batches interleave anywhere in the pool), and outside incubator mode the root is
+read by <i>all descendants</i>. In incubator mode only the anchor block reads the
+root log; positive anchor bridges, nested rules and external lemmas use the anchor
+block's log to reach lower consumers. This routing policy does not change the
+physical connectivity. Connectivity cannot be narrowed to a graph that does not exist
 until run time and whose logs sit at unpredictable addresses. The tree only bounds
 <i>which</i> cells a given receiver touches, not what the hardware must address — it is
 random access either way.
@@ -696,7 +779,7 @@ random access either way.
 
   <text x="380" y="272" fill="#8B8FA5" font-size="10" text-anchor="middle">The receiver reads its ancestors' logs (root + parent) at ARBITRARY addresses — the wiring must reach every cell.</text>
   <text x="380" y="290" fill="#8B8FA5" font-size="10" text-anchor="middle">The "tree" is which logs a receiver picks (software). The LB tree is built at run time and logs land at unpredictable addresses.</text>
-  <text x="380" y="308" fill="#EF9F27" font-size="10" text-anchor="middle">root log is read by EVERY core (it is everyone's ancestor) — a hotspot, not a sparse fan-in.</text>
+  <text x="380" y="308" fill="#EF9F27" font-size="10" text-anchor="middle">Outside incubator mode, every descendant reads the root log; incubators route lower readers through the anchor log.</text>
 </svg>
 <figcaption><b>Random access into shared RAM — the tree is logical, not wiring.</b>
 Mail is a pull: each receiver reads its ancestors' logs out of one shared pool, at
@@ -808,7 +891,16 @@ combinations. No valid request is discarded.</p>
 
 <p>The CUDA implementation now uses a second, measured tier inside model (a).
 A preparation lane builds each live node's normalised prefix once into fixed
-payload and variable pools and writes a small header. A stable selector walks
+payload and variable pools and writes a 40-byte header. The header also names a
+derived next-predicate run: the exact normalised prefix selects the predicates
+and signs permitted by the current whole-key and subkey tables, and the 32-bit
+word of each run also names up to two argument slots that every licensing key binds
+to the same prefix variable, so the cheap gate compares one argument identifier
+before any key is prepared. The preparation
+lane locates their ranges in the original sorted statement span, preserving
+the cursor and every retained statement position. These derived tables share
+the existing packed map storage and enter the same measured memory budget.
+A stable selector walks
 frontier addresses in order and emits complementary short and long address
 streams. Short nodes remain one-lane work items; a long node feeds one 64-lane
 group, whose lanes append only their candidate suffixes. Exact span scans place
@@ -820,8 +912,15 @@ reusable in an MPU: measured prefix SRAM banks and one header directory feed
 either a scalar lane or a lane group without copying the prefix into every lane,
 while fixed window SRAM bounds traffic without limiting the calculation.</p>
 
+<p>Statement setup stores distinct iterative argument positions after excluding
+recursion products. A 32-bit word per retained statement row combines the original
+membership byte with a 16-bit argument mask, adding three bytes per row. Cheap
+gates reuse the mask and compare only those arguments against the prefix's
+secondary-variable set. The existing setup kernel computes it without another
+transfer or kernel launch; encoded statement and projection formats are unchanged.</p>
+
 <figure>
-<svg viewBox="0 0 760 260" role="img" aria-label="MPU pooled-prefix growth: preparation fills fixed prefix SRAM, stable address selection feeds scalar and 64-lane cheap-gate engines, and fixed canonical windows compact survivors before exact probes">
+<svg viewBox="0 0 760 260" role="img" aria-label="MPU pooled-prefix growth: prefix preparation selects possible next predicates, stable address selection feeds scalar and 64-lane cheap gates, and fixed windows compact survivors before exact probes">
   <defs><marker id="gp-mpu-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="16" y="48" width="122" height="76" rx="8" fill="#262938" stroke="#EF9F27"/>
   <text x="77" y="70" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">frontier SRAM</text>
@@ -830,9 +929,9 @@ while fixed window SRAM bounds traffic without limiting the calculation.</p>
   <path d="M138 86 L190 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gp-mpu-ar)"/>
   <rect x="192" y="30" width="148" height="112" rx="8" fill="#20232F" stroke="#5DCAA5"/>
   <text x="266" y="52" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">prefix preparation</text>
-  <text x="266" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">header directory</text>
-  <text x="266" y="96" fill="#8B8FA5" font-size="9" text-anchor="middle">payload SRAM</text>
-  <text x="266" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">variable SRAMs</text>
+  <text x="266" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">40-byte headers</text>
+  <text x="266" y="96" fill="#8B8FA5" font-size="9" text-anchor="middle">payload + variable SRAM</text>
+  <text x="266" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">next-predicate index</text>
   <path d="M340 86 L392 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gp-mpu-ar)"/>
   <rect x="394" y="30" width="132" height="112" rx="8" fill="#262938" stroke="#B084EB"/>
   <text x="460" y="52" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">stable selector</text>
@@ -852,11 +951,12 @@ while fixed window SRAM bounds traffic without limiting the calculation.</p>
   <rect x="352" y="180" width="390" height="50" rx="8" fill="#262938" stroke="#B084EB"/>
   <text x="547" y="200" fill="#B084EB" font-size="10" font-weight="bold" text-anchor="middle">canonical fixed window SRAM</text>
   <text x="547" y="218" fill="#8B8FA5" font-size="8.7" text-anchor="middle">attempts + gate flags → stable survivors → exact key / owner probes → bounded results</text>
-  <text x="380" y="250" fill="#8B8FA5" font-size="9.5" text-anchor="middle">fixed measured SRAM · complete candidate coverage · canonical semantic tokens</text>
+  <text x="380" y="250" fill="#8B8FA5" font-size="9.5" text-anchor="middle">cached statement argument masks · same accepted combinations · canonical tokens</text>
 </svg>
 <figcaption><b>Node state is prepared once.</b> The same prefix SRAM slice feeds
-either cheap-gate execution shape; fixed consecutive windows cover every
-candidate before exact probes and bounded result append.</figcaption>
+either cheap-gate execution shape. Its next-predicate index excludes impossible
+extensions; fixed consecutive windows retain every potentially matching original
+position before exact probes and bounded result append.</figcaption>
 </figure>
 
 <p>The request filter now applies the same sharing rule one stage earlier. An exact
@@ -866,7 +966,9 @@ fans the resulting count and offset back out. The caller token itself is never
 shared, because it is part of the canonical request order. In silicon this is a
 small signature/control SRAM in front of the predicate lanes plus a read-only span
 directory: duplicated control words share the wide statement scan, but downstream
-lanes still receive their original issue tokens.</p>
+lanes still receive their original issue tokens. Sorting is segmented by class:
+each retained 64-bit word holds a 32-bit lexical rank and 32-bit statement index,
+with class ownership supplied by the span directory.</p>
 
 <figure>
 <svg viewBox="0 0 760 176" role="img" aria-label="MPU filter-class sharing: exact caller signatures select one predicate scan and compact span, while original caller tokens continue downstream">
@@ -884,7 +986,7 @@ lanes still receive their original issue tokens.</p>
   <rect x="440" y="38" width="145" height="78" rx="8" fill="#262938" stroke="#B084EB"/>
   <text x="512" y="59" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">predicate lanes</text>
   <text x="512" y="80" fill="#8B8FA5" font-size="9" text-anchor="middle">one scan per class</text>
-  <text x="512" y="98" fill="#8B8FA5" font-size="9" text-anchor="middle">compact span SRAM</text>
+  <text x="512" y="98" fill="#8B8FA5" font-size="9" text-anchor="middle">32-bit rank + index</text>
   <path d="M585 77 L647 77" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#fc-mpu-ar)"/>
   <rect x="649" y="38" width="89" height="78" rx="8" fill="#20232F" stroke="#EF9F27"/>
   <text x="693" y="59" fill="#EF9F27" font-size="10" font-weight="bold" text-anchor="middle">growth</text>
@@ -913,12 +1015,111 @@ task/filter/growth schedule, then joins before the first kernel; the other fifte
 columns copy immediately. In MPU terms this is a dependency-timed SRAM fill: later
 banks can be filled alongside control-word construction, but the compute phase
 opens only after every required bank is resident. It neither drops memory nor
-permits compute to observe a partially filled image. The software staging area is
-fixed at 31,219,712 host bytes. The current full-run fixed GPU ownership is
-4,512,314,508 bytes: the original projection/task/filter owners plus expanded
-growth, ordering, evaluation, marker, and candidate-window columns sized by the
-complete incubator and Gauss census. These are process-owned ceilings, not live
-usage; bounded chunks reuse them without allocation or fallback.</p>
+permits compute to observe a partially filled image. The earlier fixed profile used
+31,219,712 host staging bytes. Its full-run accepted-event ledger reserved
+6,291,456 records (384 MiB at 64 bytes each); its matching ordering columns
+reserve 216 MiB, plus library sorting and scan workspace. Its frontier has
+3,670,016 entries; prefix payload, variable and secondary pools hold
+109,051,904, 29,360,128 and 6,291,456 values respectively. Each resized pool
+has at least twenty percent headroom over the measured complete-corpus peak.
+The complete fixed allocation includes projection, task, filter, evaluation,
+and candidate-window columns. The current profile includes the induction-producer
+identifier and 4,194,304 eight-byte reverse-owner work entries, for
+7,186,563,716 measured device bytes before the streaming extension. Wide
+owner/value window offsets add 8,388,616 bytes, giving a calculated
+7,194,952,332 bytes. Bounded output-planning metadata adds 57,344 bytes,
+giving 7,195,009,676 bytes with the current fixed reservations on the
+validated CUDA build, with library workspace included. The connected FTA census reaches 5,214,814 accepted
+events, 447,250 raw requests and a 2,888,475-node frontier, within the respective
+6,291,456, 524,288 and 3,670,016 reservations. These are historical fixed-profile ceilings rather than the current automatic
+budget allocations described below.</p>
+
+<p><b>Projection key storage.</b> Per logic block, projected table entries share byte-identical immutable keys; reverse lookups reference the forward blobs. Exact distinct-prefix counts size the projection before allocation. Table membership, ownership and device execution order stay separate. The fixed device budget is unchanged; the saved input space remains available to the existing planner.</p>
+<svg viewBox="0 0 760 166" role="img" aria-label="Separate projection maps reference shared immutable key bytes and reverse lookup references forward blobs">
+<g fill="none" stroke="#6e9e8d" stroke-width="2"><rect x="14" y="18" width="212" height="116" rx="8"/><rect x="274" y="18" width="212" height="116" rx="8"/><rect x="534" y="18" width="212" height="116" rx="8"/><path d="M226 76 H274 M486 76 H534"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="120" y="44">Source maps stay separate</text><text x="120" y="70">Count unique keys / prefixes</text><text x="120" y="96">Scope and owners retained</text><text x="380" y="44">One immutable key store</text><text x="380" y="70">Entries refer to shared bytes</text><text x="380" y="96">Reverse keys use forward blobs</text><text x="640" y="44">GPU reads the same content</text><text x="640" y="70">Exact prefix capacities</text><text x="640" y="96">Same lookup and output order</text></g></svg>
+<p>In the projection-only measurement (28 September 2026), the largest host projection fell from 3,113.3 to 1,615.4 MiB, a 48.1 percent reduction, with identical proof files in two full runs. At that stage, the native main pool reached about 5,888&ndash;5,895 MiB of its 6,144 MiB capacity.</p>
+<p><b>Production flow control.</b> All input, queue, output and library scratch
+shares one automatic block budget: the free VRAM after the runtime reserve,
+capped at 4 GiB by default. Full request storage freezes generation;
+bounded evaluation windows drain complete provenance-bearing results to RAM and
+then resume the saved continuation. The unfinished frontier stays in the pass-local device frontier store, with only overflowing rows in host static-pool pages. Request deduplication
+and early-exit request history are absent. One eight-byte word per logic block
+records a CUDA discharge; all results from its current growth level survive,
+then later levels stop. Capacity drains do not commit this stop. Completed results
+enter the shared RAM content sort before final deposit. Multiple firings retain
+all proof information.
+A block input plus minimum scratch must fit; ordinary queue fullness is flow control.</p>
+<figure aria-label="Unified memory budget and bounded GPU flow control"><svg viewBox="0 0 760 104" role="img">
+<text x="20" y="28" fill="#5DCAA5" font-size="13">VRAM → reserve → ≤ 4 GiB → 2 MiB blocks → input + work + output + scratch</text>
+<text x="20" y="58" fill="#5DCAA5" font-size="13">Generate → freeze → GPU evaluation windows → RAM output → resume</text>
+<text x="20" y="88" fill="#5DCAA5" font-size="13">Level complete → stop discharged blocks; retained results → sort → deposit</text>
+</svg></figure>
+<p><b>Host transfer staging.</b> Three host-pool blocks are temporarily pinned
+for frontier nodes, prefix measurements and counters. At the default 256 KiB
+block size this is 768 KiB. Copies prefer 4,096 rows within each block. Early exit uses no request-identity pages. Registration ends before release.</p>
+<figure aria-label="Bounded pinned frontier staging"><svg viewBox="0 0 760 64" role="img">
+<text x="20" y="28" fill="#5DCAA5" font-size="13">3 host-pool blocks → pin → bounded GPU copies → unpin → release</text>
+<text x="20" y="52" fill="#5DCAA5" font-size="12">Default host reservation: 768 KiB; no additional device-array ownership.</text>
+</svg></figure>
+<p><b>Automatic block planning.</b> Measured immutable input and minimum scratch
+are reserved first. When the budget permits, retained storage reserves at least
+8,388,608 accepted events and 262,144 requests (512 MiB of event records before
+ordering workspace). Frontier arrays cover the larger of one preparation window
+and one request-capacity probe; the two frontier-store buffers follow the measured
+level demand; candidate-attempt arrays are independent. Recorded
+demand apportions remaining whole 2 MiB blocks among
+processing columns, with exact array and library costs and completed-batch feedback.
+Minimum output scratch covers the existing CPU single-span representation; larger
+collections use value/key windows. The production controller uses the planner for each completed chunk.</p>
+<figure><svg viewBox="0 0 760 65" role="img" aria-label="GPU block planning reserves input and scratch before apportioning processing storage">
+<text x="20" y="36" fill="#5DCAA5" font-size="13">VRAM blocks → input + minimum scratch → demand-weighted processing storage</text>
+</svg></figure>
+
+<p><b>Pre-allocation byte sizing.</b> Each of the six buffer classes reports payload bytes and exact arena footprint before
+construction, including CUDA library scratch and 256-byte alignment. Direct
+checks compare these figures with real arena consumption. The automatic planner
+uses these costs when dividing reusable 2 MiB blocks.</p>
+<figure><svg viewBox="0 0 760 65" role="img" aria-label="Capacity sizing includes array bytes, library workspace and alignment">
+<text x="20" y="36" fill="#5DCAA5" font-size="13">Column capacities → exact byte sizing → aligned footprint → 2 MiB leases</text>
+</svg></figure>
+
+<p><b>Frontier backing and bounded generation.</b> The streaming component
+keeps each logical frontier level in a pass-local device store: two buffers, the
+level and its children, planned from the measured level demand up to 4,194,304
+nodes (224 MiB) each within the same block budget and released with the pass.
+Only the rows of a level that outgrows a buffer spill to the host static pool. Fixed GPU windows measure
+and fill prefix payloads. Cheap rejection fills the candidate buffer independently of output slack; selected survivors reserve worst-case child/event/request space in bounded probe windows. Probe windows consume free output space; a tail below one quarter of full-window capacity drains before it causes repeated tiny launches. Every probe still reserves its worst-case writes. The
+controller reports frontier transfers and peak host backing separately. Pinned frontier transfer scratch prefers 4,096 rows within one host block; early-exit control is eight bytes per logic block. Up to 65,536 consecutive rows share a GPU execution window when its columns fit. Full-pipeline gates check logged theorem counts and deterministic GPU artifacts; identical CPU/GPU proof histories are not required.</p>
+<figure><svg viewBox="0 0 760 65" role="img" aria-label="Frontier backing supplies bounded GPU work and receives generated child rows">
+<text x="20" y="36" fill="#5DCAA5" font-size="13">Device level store → cheap rejection → bounded survivor probes → child store (host spill) → drain → resume</text>
+</svg></figure>
+
+<p><b>Output-window reservation.</b> The scheduler measures all seven result
+columns together before launch and selects complete values or a fitting marker-key
+fragment. Bounded metadata transfers accumulate until a physical output column
+fills, preserving bulk execution when many values fit. A minimum fragment that needs more storage leaves its continuation
+unchanged and reports its byte/column requirements. The production planner reserves the CPU-supported minimum fragment before
+execution; this state in a smaller component buffer is not a rejected firing.</p>
+
+<p><b>Output ownership across drains.</b> Downloaded marker-key fragments now
+fill one reserved host span while its page set remains open. Only the completed
+record is published, and the common Phase 2 boundary seals the output. Repeated
+fragments reuse invariant header data. Production uses this assembly while preserving the existing CPU individual-payload
+representation; result collections stream through bounded output storage.</p>
+<figure><svg viewBox="0 0 760 65" role="img" aria-label="Downloaded fragments assemble into one complete host record before finalization">
+<text x="20" y="36" fill="#5DCAA5" font-size="13">GPU fragments → reserved host span → complete record → Phase 2 seal</text>
+</svg></figure>
+
+<p><b>No request duplicate storage.</b> Every recordable generation event
+reaches evaluation. Neither the within-window table nor a history across windows
+is retained. This removes their key pages, hash slots and lookup traffic from the
+memory hierarchy. Repeated requests may perform repeated evaluation. Multiple
+firing results remain available for existing contribution and proof merging.</p>
+<figure><svg viewBox="0 0 760 80" role="img" aria-label="Request stream has no duplicate-key memory and preserves multiple firing results">
+<text x="20" y="27" fill="#5DCAA5" font-size="13">Recordable events → request tokens → evaluate every request</text>
+<text x="20" y="59" fill="#8B8FA5" font-size="13">No duplicate keys or hash slots; firing contributions → result merge</text>
+</svg></figure>
 
 <p>The user named two ways to realise this in silicon. Both already exist in the
 software, in two different subsystems:</p>
@@ -999,13 +1200,38 @@ immediately because no prior statistic exists. This spends parallelism where the
 completed work shows it can shorten the makespan, without a timing-dependent trigger.
 <b>MPU 0.1 mapped the current host's approximately 32 logical workers to 32 LB cores</b>;
 more independent LBs and expression buckets remain queued in the flat phase-2 pool.
+<b>Unused encoded rows.</b> Each block tracks its current signed premise cores
+(<i>used as a premise</i>): the only reason a stored row is rewritten by the
+classes and the only reason a row is uploaded to the device. Canonical admission
+remains; unused rows retain their stored form without class updates or
+downprioritized-member cleanup, and ordinary class processing revisits them
+before cleanup when their core becomes a premise. Two deloadable sets hold
+premise eligibility and prior class coverage. Goals and negated facts never make
+a core used: two small per-scope ledgers on the never-deloaded persistent pool
+hold their canonical forms under every visible class, a per-step drain pairs new
+arrivals with them, and a canonical pair yields one exact twin row with an
+equality bridge — so the contradiction and goal sweeps stay exact-text and the
+block never carries a negation in every spelling. Fact clones copy the negation
+ledger with their facts. Equality and anchor exclusions and the admission,
+rejection and rule-update paths retain their contracts.
+<b>Construction buffers.</b> Each device chunk is assembled in bounded host
+waves, each small enough to fit one construction worker's existing buffers.
+This bounds memory even under uneven worker scheduling, while retaining the
+same device chunk and capacity ceilings.
+<b>Statement transfer prefilter.</b> Before device transfer, each block retains only
+encoded statements whose core and polarity occur in a rule premise. The retained
+sequence is stable and shared by the block's split tasks. The host filter uses
+one byte per local name and one source ordinal per retained row in reserved host scratch; argument and scope filters remain
+on the device. The transfer path is: encoded statements → signed premise-core
+filter → shared device slice → split tasks.
 <b>MPU 0.2 splits below the LB.</b> Phase 2 of one block — request filtering, key
-growth, ordering, evaluation, provenance, the early exit — is now executed by GPU
-threads, thousands at a time, with the processor route kept as the oracle: the same
-firing records in the same canonical order, byte-identical proofs, about ten times
-faster than the 32 processor threads on the FTA shortcut. The split is exact (fixed
-windows in canonical order, every overflow an assertion, no fallback), so the runtime
-lever no longer stops at the number of blocks that happen to be active.
+growth, ordering, evaluation and provenance — is now executed by GPU
+threads, thousands at a time, with the processor route retained for the ASIC path.
+GPU execution may choose different valid proof histories, while preserving every
+processor theorem and deterministic GPU output. Fixed processing windows drain
+and resume at capacity; invalid states still assert, and no processor inference
+fallback is used. Parallel request work therefore extends beyond the number of
+logic blocks that happen to be active.
 </p>
 
 <div class="caveat">
@@ -1098,7 +1324,7 @@ further.</figcaption>
 <tr><th>GL concept</th><th>Silicon</th><th>Note</th></tr>
 <tr><td>logic block</td><td>a core</td><td>logically self-contained; peers exchange only via mail (shared pools underneath)</td></tr>
 <tr><td>hash-inference engine</td><td>match-and-emit datapath</td><td>FNV unit + int32 compare/subset; no FPU</td></tr>
-<tr><td>known statements</td><td>register file / SRAM lines</td><td>fixed 352-byte all-int32 records</td></tr>
+<tr><td>known statements</td><td>register file / SRAM lines</td><td>fixed 240-byte integer records</td></tr>
 <tr><td>per-LB containers</td><td>blocks in the SRAM-macro fabric (block == SRAM)</td><td>virtual-offset = (macro-select, intra-macro address)</td></tr>
 <tr><td>phase-2 split parts</td><td>compute lanes per core</td><td>read-only; merged by a sort</td></tr>
 <tr><td>mail (pull from ancestors)</td><td>any-to-any memory NoC</td><td>tree = access pattern, not wiring; the root log is a hotspot</td></tr>
@@ -1288,7 +1514,7 @@ embarrassingly parallel across (block, part), with tens to hundreds of thousands
 independent tasks available at the busy moments (§5). MPU 0.1 fielded the <b>same 32
 cores</b> GL runs on today, so its runtime win was <b>per-core</b> and an estimate.
 MPU 0.2 replaces the estimate with a measurement: phase 2 runs on GPU threads today,
-<b>about ten times faster</b> than the 32 processor threads, byte-identical output,
+<b>about ten times faster</b> than the 32 processor threads, the same theorems,
 first result of the campaign. A specialized integer/FNV datapath fed from SRAM — no FPU, no off-chip memory stalls, no
 OS/cache-miss overhead — should add to that on this random-access workload. Adding cores is the documented
 lever beyond that (up to the ~10⁴–10⁵ the workload offers), but that is a bigger MPU,
@@ -1448,17 +1674,17 @@ this is what it means: treat ±2× as normal.
 <h3>A · GL sizing constants — code/log-derived (update with the code)</h3>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Source / note</th></tr>
-<tr><td>Main pool (deloadable)</td><td class="num">12 GiB</td><td>49152 × 256 KiB blocks; 8 KiB pages; includes per-LB mailOut + private ids</td></tr>
+<tr><td>Main pool (deloadable)</td><td class="num">6 GiB</td><td>24576 × 256 KiB blocks; 2 KiB pages; includes per-LB mailOut + private ids</td></tr>
 <tr><td>Persistent pool</td><td class="num">1 GiB</td><td>goal registry; never deloaded</td></tr>
 <tr><td>Mail pool</td><td class="num">2 GiB</td><td>mailIn + cross-block log/global ids; never deloaded, rolling when safe</td></tr>
 <tr><td>LB-body pool</td><td class="num">2 GiB</td><td>block objects; never deloaded</td></tr>
 <tr><td>Per-worker scratch</td><td class="num">transient</td><td>cold-grant from the main pool, released per worker task</td></tr>
-<tr><td><b>Total reservation</b></td><td class="num"><b>17 GiB</b></td><td>fixed at start-up, never grown</td></tr>
+<tr><td><b>Total reservation</b></td><td class="num"><b>11 GiB</b></td><td>fixed at start-up, never grown</td></tr>
 <tr><td>Address resolve</td><td class="num">off&gt;&gt;18 · off&amp;0x3FFFF</td><td>1 shift + 1 mask + 1 add (per-LB MMU)</td></tr>
-<tr><td>Statement line</td><td class="num">352 B, all int32</td><td>fixed record; ≤16 args</td></tr>
+<tr><td>Statement line</td><td class="num">240 B</td><td>fixed record; ≤16 args; 32-bit ids and flags, 16-bit iteration and level, an 8-bit flag per argument</td></tr>
 <tr><td>Datapath widths</td><td class="num">32 / 64 / 64-bit</td><td>ids / packed keys / FNV digest</td></tr>
 <tr><td>Hash</td><td class="num">FNV-1a 64-bit</td><td>per-byte XOR-then-multiply</td></tr>
-<tr><td>Pager reserve</td><td class="num">2048 blocks</td><td>512-block emergency floor; two-tier farthest-next-use eviction outside the worker-scaled keep window</td></tr>
+<tr><td>Pager reserve</td><td class="num">2048 blocks</td><td>1024-block emergency floor; two-tier farthest-next-use eviction outside the worker-scaled keep window</td></tr>
 <tr><td>Floating-point on proof path</td><td class="num">0</td><td>one FP compare exists, only to pick split granularity</td></tr>
 </table>
 
@@ -1480,21 +1706,22 @@ construction, so it carries no information. These move with the workload and the
 code.</p>
 
 <h3>B · Price constants — rough, dated, refresh at release</h3>
-<p style="font-size:13px;color:var(--fg-dim)"><b>As of 2026-07-03. Order of
-magnitude only (±2× is normal).</b> Basis: mature/leading-node 300&nbsp;mm wafer
-and mask-set figures from 2026 foundry-cost analyses (Silicon Analysts, Tom's
-Hardware, SemiEngineering); SSD $/GB from 2026 price trackers reflecting the
-AI-driven NAND shortage (Tom's Hardware, TrendForce); FPGA board list prices from
-DigiKey. All order-of-magnitude and dated — refresh at the next release.</p>
+<p style="font-size:13px;color:var(--fg-dim)"><b>As of 2026-10-01. Order of
+magnitude only (±2× is normal).</b> Basis: wafer and mask-set figures from Silicon
+Analysts (Aug–Sep 2026), TSMC price trends reported by DigiTimes and Nikkei Asia,
+and the N2 wafer price reported by TechNode; SSD $/GB from the VDURA Flash
+Volatility Index, TrendForce and the Capital &amp; Compute and DataCenterDisk price
+trackers (Jul–Oct 2026); FPGA board list prices from DigiKey (Oct 2026). All
+order-of-magnitude and dated — refresh at the next release.</p>
 <table>
 <tr><th>Item</th><th>Rough figure</th><th>Note</th></tr>
-<tr><td>Mature-node wafer (≈12–16 nm, 300 mm)</td><td class="num">~$3k–$5k</td><td>28 nm ≈ $3k, 12–16 nm FinFET ≈ $4k (2026). Preferred — design is memory-bound, not logic-bound</td></tr>
-<tr><td>Leading-node wafer (≈3–5 nm, 300 mm)</td><td class="num">~$18k–$22k</td><td>N5 ≈ $18.5k, N3 ≈ $19.5k (2026, +3–5% YoY); little benefit here — logic isn't the bottleneck</td></tr>
-<tr><td>On-die SRAM, $/GB</td><td class="num">~10³× SSD or more</td><td>the hot tier; on-die SRAM no longer scales with the node, so its $/GB sits far above SSD (exact figure design-specific). Deload keeps only the resident <i>window</i> in SRAM, so it is modest (not multi-GB) and need not be wafer-scale</td></tr>
-<tr><td>NVMe SSD, $/GB</td><td class="num">~$0.10 / ~$0.35</td><td>the cold tier (streamed/prefetched, not random-accessed): ≈$0.10/GB consumer, ≈$0.30–$0.40/GB enterprise after the 2026 AI-driven NAND shortage. Small in absolute terms at GL's sub-1 GB cold footprint — not "free"</td></tr>
-<tr><td>High-end FPGA board (on-chip SRAM)</td><td class="num">~$13k–$25k</td><td>the prototype platform (Versal Premium class: VPK120 ≈ $13.6k, VPK180 ≈ $20.4k, DigiKey 2026; larger boards more). Runs reduced / windowed configs from BRAM/URAM; no mask NRE</td></tr>
-<tr><td>Mask set NRE — mature node</td><td class="num">~$1M–$3M</td><td>28 nm ≈ $1M–$1.5M, 12–16 nm higher (mask set only; full design NRE runs higher). The gate to the 100/10⁶ tiers</td></tr>
-<tr><td>Mask set NRE — leading node</td><td class="num">~$15M–$25M</td><td>5 nm ≈ $15M, 3 nm ≈ $20M (mask set only; full design NRE far higher). Avoid unless logic density truly needed</td></tr>
+<tr><td>Mature-node wafer (≈12–16 nm, 300 mm)</td><td class="num">~$3k–$6k</td><td>28 nm ≈ $3k, 12–16 nm FinFET ≈ $4.2k–$5.5k (2026), up to +10% announced for 2027. Preferred — design is memory-bound, not logic-bound</td></tr>
+<tr><td>Leading-node wafer (≈3–5 nm, 300 mm)</td><td class="num">~$18k–$25k</td><td>N5/N4 ≈ $20k, N3E ≈ $20k (2026, +5–10% a year); N2 ≈ $30k as reported, not a list price. Little benefit here — logic isn't the bottleneck</td></tr>
+<tr><td>On-die SRAM, $/GB</td><td class="num">~10²–10³× SSD</td><td>the hot tier: raw on-die SRAM ≈ $40–$100 per GB of silicon, about 10³× consumer and 10²× 2026 enterprise SSD; on-die SRAM no longer scales with the node. Deload keeps only the resident <i>window</i> in SRAM, so it is modest (not multi-GB) and need not be wafer-scale</td></tr>
+<tr><td>NVMe SSD, $/GB</td><td class="num">~$0.12 / ~$0.6</td><td>the cold tier (streamed/prefetched, not random-accessed): ≈$0.10–$0.15/GB consumer, ≈$0.40–$0.75/GB enterprise (30 TB class) after the 2026 AI-driven NAND shortage. Small in absolute terms at GL's sub-1 GB cold footprint — not "free"</td></tr>
+<tr><td>High-end FPGA board (on-chip SRAM)</td><td class="num">~$13k–$25k</td><td>the prototype platform (Versal Premium class: VPK120 ≈ $13.6k, VPK180 ≈ $20.4k, DigiKey Oct 2026; larger boards more). Runs reduced / windowed configs from BRAM/URAM; no mask NRE</td></tr>
+<tr><td>Mask set NRE — mature node</td><td class="num">~$1M–$3M</td><td>28 nm ≈ $0.8M–$1.5M, 12–16 nm ≈ $2M–$3M (mask set only; full design NRE runs higher). The gate to the 100/10⁶ tiers</td></tr>
+<tr><td>Mask set NRE — leading node</td><td class="num">~$5M–$20M</td><td>5 nm ≈ $5M–$8M, 3 nm ≈ $10M–$20M, 2 nm estimated above $15M (mask set only; full design NRE far higher). Avoid unless logic density truly needed</td></tr>
 <tr><td>BOM → sell multiplier</td><td class="num">~2–4×</td><td>package, test, yield, margin</td></tr>
 </table>
 
@@ -1510,5 +1737,12 @@ accelerates.
 </div>
 
 </main>
+<section id="bounded-host-projection"><h2>Bounded host construction for GPU projection</h2><p>The GPU work chunk and complete immutable device image stay the same. The host constructs consecutive groups of whole logic blocks, targeting 128 MiB of column storage per window; an individually larger block receives its exact measured window. One set of construction threads serves the whole chunk. While one window is being built, an upload thread copies the previous one to the GPU and keeps its source statement ordinals and name/rule lookup data for scheduling and sealing, then the window is released: at most two windows are alive, together no larger than one former 256 MiB window. Memory is returned once per chunk.</p><svg viewBox="0 0 900 180" role="img" aria-label="Bounded host windows feed a complete device image and retain host sealing lookups"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="15" y="40" width="240" height="95" rx="8"/><rect x="330" y="15" width="550" height="65" rx="8"/><rect x="330" y="100" width="550" height="60" rx="8"/><path d="M255 65 H300 V48 H330 M255 110 H300 V130 H330"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="135" y="70">Two measured windows</text><text x="135" y="95">Build one, upload the other</text><text x="135" y="120">Release after upload</text><text x="605" y="42">Complete immutable GPU image</text><text x="605" y="65">Unchanged chunks, tasks and inference</text><text x="605" y="125">Retained names, rules and source ordinals</text><text x="605" y="148">Schedule and seal after complete upload</text></g></svg></section>
+
+
+<section id="shared-canonical-dependencies"><h2>Shared canonical dependency edges</h2><p>One stored dependency connects an exact scoped member to an exact scoped record. Both traversal directions point into the same recyclable edge node; its insertion revision preserves the order in which changed dependencies are revisited. Deletion unlinks both directions before reuse. Logical proof records, scopes and equality observations stay unchanged.</p><svg viewBox="0 0 900 140" role="img" aria-label="Member and record head tables share one ordered dependency edge"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="15" y="25" width="230" height="70" rx="8"/><rect x="315" y="15" width="270" height="90" rx="8"/><rect x="655" y="25" width="230" height="70" rx="8"/><path d="M245 60 H315 M585 60 H655"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="130" y="63">Scoped member heads</text><text x="450" y="43">One exact dependency pair</text><text x="450" y="68">Revision + two linked orders</text><text x="450" y="91">44 payload bytes per live edge</text><text x="770" y="63">Scoped record heads</text></g></svg></section>
+<section id="sealed-output-slices"><h2>Exclusive sealed slices share backing blocks</h2><p>Each sealed output retains its own immutable record chain and lifetime. Small outputs lease separate slices of the same physical block; the block returns to the main pool when its last slice is released. Larger contiguous allocations keep their ordinary private blocks. No peer may read, overwrite or poison another output's slice.</p><svg viewBox="0 0 900 150" role="img" aria-label="Exclusive sealed slices share backing blocks"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="20" y="15" width="300" height="50" rx="8"/><rect x="20" y="85" width="300" height="50" rx="8"/><rect x="470" y="30" width="410" height="90" rx="8"/><path d="M320 40 H390 V65 H470 M320 110 H390 V85 H470"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="170" y="46">Output A: exclusive slice</text><text x="170" y="116">Output B: exclusive slice</text><text x="675" y="65">One physical pool block</text><text x="675" y="94">Release after the last slice</text></g></svg></section>
+
+<section id="shared-rule-value-payloads"><h2>Share immutable rule value bytes across independent maps</h2><p>Independent hash memories retain their own rule membership and owner lists. Byte-identical page-contained records share immutable payload; replacing a record changes only the writer's reference. Larger records stay in private paged storage and retain the full size contract. Collection removes only unreferenced shared data and obsolete private payload.</p><svg viewBox="0 0 900 150" role="img" aria-label="Share immutable rule value bytes across independent maps"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="20" y="15" width="300" height="50" rx="8"/><rect x="20" y="85" width="300" height="50" rx="8"/><rect x="470" y="30" width="410" height="90" rx="8"/><path d="M320 40 H390 V65 H470 M320 110 H390 V85 H470"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="170" y="46">Overall map: own membership</text><text x="170" y="116">Working map: own membership</text><text x="675" y="65">Immutable record bytes</text><text x="675" y="94">Large records: private pages</text></g></svg></section>
 </body>
 </html>

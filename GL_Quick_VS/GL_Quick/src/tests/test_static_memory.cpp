@@ -131,6 +131,30 @@ TEST(static_memory, manager_init_and_shape) {
     ASSERT_EQ(m.peakBlocksInUse(), static_cast<int64_t>(0));
 }
 
+TEST(static_memory, transfer_blocks_preserve_page_alignment) {
+    for (const int32_t blockBytes : { int32_t(4096), int32_t(8192), int32_t(1 << 18) }) {
+        gl::GlobalMemoryManager manager;
+        manager.init(gl::StaticMemoryConfig{ 4 * blockBytes, blockBytes, 256 });
+        char* blocks[4]{};
+        for (int i = 0; i < 4; ++i) {
+            blocks[i] = manager.acquireBlock();
+            ASSERT_EQ(reinterpret_cast<uintptr_t>(blocks[i]) % 4096, uintptr_t(0));
+            std::memset(blocks[i], i + 1, static_cast<std::size_t>(blockBytes));
+        }
+        for (int i = 0; i < 4; ++i) {
+            ASSERT_EQ(static_cast<unsigned char>(blocks[i][0]), i + 1);
+            ASSERT_EQ(static_cast<unsigned char>(blocks[i][blockBytes - 1]), i + 1);
+        }
+        manager.releaseBlock(blocks[1]);
+        char* recycled = manager.acquireBlock();
+        ASSERT_EQ(recycled, blocks[1]);
+        ASSERT_EQ(reinterpret_cast<uintptr_t>(recycled) % 4096, uintptr_t(0));
+        for (char* block : blocks) manager.releaseBlock(block);
+        ASSERT_EQ(manager.blocksInUse(), int64_t(0));
+        ASSERT_EQ(manager.totalBlocks(), int64_t(4));
+    }
+}
+
 TEST(static_memory, manager_reports_configured_page_bytes) {
     // pageBytes() reflects the configured page size, not the default.
     gl::GlobalMemoryManager m;
@@ -227,6 +251,46 @@ TEST(static_memory, mail_singleton_is_distinct_from_other_pools) {
     gl::mailMemory().releaseBlock(p);
 }
 
+TEST(static_memory, pressure_valve_runs_before_grants_below_the_floor) {
+    // 4 blocks, floor 2: a grant that would leave fewer than 2 free blocks
+    // first runs the valve, once per grant call; bulk grants count all their
+    // blocks; a valve that grants itself does not re-enter; clearing stops it.
+    gl::GlobalMemoryManager m;
+    m.init(kTestCfg);
+    int calls = 0;
+    m.setPressureValve([&calls] { ++calls; }, 2);
+    char* a = m.acquireBlock();          // leaves 3 free
+    char* b = m.acquireBlock();          // leaves 2 free
+    ASSERT_EQ(calls, 0);
+    char* c = m.acquireBlock();          // would leave 1: valve first
+    ASSERT_EQ(calls, 1);
+    m.releaseBlock(c);
+    m.releaseBlock(b);
+    char* pair[2]{};
+    m.acquireBlocks(2, pair);            // 3 free before, would leave 1
+    ASSERT_EQ(calls, 2);
+    m.releaseBlocks(pair, 2);
+
+    // A valve that itself grants and returns a block does not re-enter.
+    int outer = 0;
+    m.setPressureValve([&m, &outer] {
+        ++outer;
+        char* inner = m.acquireBlock();  // below the floor too: no re-entry
+        m.releaseBlock(inner);
+    }, 4);
+    char* d = m.acquireBlock();
+    ASSERT_EQ(outer, 1);
+
+    m.setPressureValve(nullptr, 0);
+    char* e = m.acquireBlock();
+    ASSERT_EQ(outer, 1);
+    ASSERT_EQ(calls, 2);
+    m.releaseBlock(a);
+    m.releaseBlock(d);
+    m.releaseBlock(e);
+    ASSERT_EQ(m.blocksInUse(), int64_t(0));
+}
+
 TEST(static_memory, manager_reinit_same_config_is_noop) {
     gl::GlobalMemoryManager m;
     m.init(kTestCfg);
@@ -304,8 +368,9 @@ TEST(static_memory, lb_memory_compaction_reclaims_holes) {
     for (int16_t i = 0; i < 4000; ++i) {
         row.nameId = i;
         mem.intEncodedStatements.push_back(row);
-        mem.intLocalEncodedStatements.push_back(row);
-        mem.intLocalEncodedStatements.push_back(row);
+        // Enough four-byte references to free several complete blocks.
+        for (int copy = 0; copy < 64; ++copy)
+            mem.intLocalEncodedStatements.push_back(row);
     }
     mem.intLocalEncodedStatements.clear();
     const int64_t heldBefore = mem.manager.blocksHeld();
@@ -634,4 +699,48 @@ TEST(ptr_directory, spilled_region_past_old_sixteen_block_cap) {
     }
     d.clear();
     ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(0));
+}
+
+// Attached direct storage replaces the inline buffer: entries up to the
+// attached capacity live in the caller's array and hold no pool block, entries
+// past it spill exactly as past the inline buffer, and clear / shrinkToFit
+// return only spilled blocks while the attachment stays.
+TEST(ptr_directory, attached_storage_extends_the_direct_region) {
+    gl::GlobalMemoryManager g;
+    g.init(kPtrDirCfg);
+    PtrDir d(&g);
+    ASSERT_EQ(d.capacity(), kPtrDirInline);          // default: the inline buffer
+    constexpr int32_t kAttached = 64;
+    char* storage[kAttached];
+    d.attachStorage(storage, kAttached);
+    ASSERT_EQ(d.capacity(), kAttached);
+    for (int32_t i = 0; i < kAttached; ++i) d.push_back(fakePtr(i));
+    d.assertInvariants();
+    ASSERT_EQ(d.blocksHeld(), 0);                    // far past the inline 4
+    ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(0));
+    for (int32_t i = 0; i < kAttached; ++i) {
+        ASSERT_EQ(d[i], fakePtr(i));
+        ASSERT_EQ(storage[i], fakePtr(i));           // lives in the caller's array
+    }
+    for (int32_t i = kAttached; i < kAttached + 10; ++i) d.push_back(fakePtr(i));
+    d.assertInvariants();
+    ASSERT_EQ(d.blocksHeld(), 1);                    // spill starts past the attachment
+    ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(1));
+    ASSERT_EQ(d[kAttached - 1], fakePtr(kAttached - 1));
+    ASSERT_EQ(d[kAttached],     fakePtr(kAttached));
+    ASSERT_EQ(d[kAttached + 9], fakePtr(kAttached + 9));
+    d.set(kAttached + 3, nullptr);
+    d.set(5, fakePtr(500));
+    ASSERT_TRUE(d[kAttached + 3] == nullptr);
+    ASSERT_EQ(storage[5], fakePtr(500));
+    d.truncate(kAttached);
+    d.shrinkToFit();                                 // the spill block goes back
+    ASSERT_EQ(d.blocksHeld(), 0);
+    ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(0));
+    d.clear();
+    ASSERT_EQ(d.size(), 0);
+    ASSERT_EQ(d.capacity(), kAttached);              // attachment kept
+    d.push_back(fakePtr(9));
+    ASSERT_EQ(storage[0], fakePtr(9));
+    d.assertInvariants();
 }

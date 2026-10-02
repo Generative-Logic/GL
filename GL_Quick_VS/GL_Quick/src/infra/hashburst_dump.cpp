@@ -783,26 +783,6 @@ namespace hashburst_dump {
                 for (const NameId v : pw) f << "  " << v << "\n";
             }
             // Section contract: decoded names in lexicographic order
-            // (Rule-14 byte format); sourced from the id sets.
-            {
-                std::vector<std::string> sent;
-                sent.reserve(body.canBeSentIds.count());
-                for (int32_t i = 1; i <= body.canBeSentIds.count(); ++i)
-                    sent.push_back(body.nameMap.decode(body.canBeSentIds.decode(i)));
-                std::sort(sent.begin(), sent.end());
-                f << "-- canBeSentSet (" << sent.size() << "):\n";
-                for (const auto& s : sent) f << "  " << s << "\n";
-
-                std::vector<std::string> marker;
-                marker.reserve(body.canBeSentMarkerIds.count());
-                for (int32_t i = 1; i <= body.canBeSentMarkerIds.count(); ++i)
-                    marker.push_back(body.nameMap.decode(
-                        body.canBeSentMarkerIds.decode(i)));
-                std::sort(marker.begin(), marker.end());
-                f << "-- canBeSentMarkerSet (" << marker.size() << "):\n";
-                for (const auto& s : marker) f << "  " << s << "\n";
-            }
-            // Section contract: decoded names in lexicographic order
             // (Rule-14 byte format); sourced from the id set, which is
             // content-identical.
             {
@@ -1156,16 +1136,15 @@ namespace hashburst_dump {
                   << " | entries=" << values.size() << "\n";
                 int vi = 0;
                 for (const auto& v : values) {
-                    f << "    [" << vi++ << "] renamed=" << valIn.decode(v.renamedExpression)
-                      << " | expr=" << valIn.decode(v.expression)
-                      << " | iter=" << v.iteration
-                      << " | concrete=" << valIn.decode(v.concreteConstituent)
-                      << " | levels={";
+                    f << "    [" << vi++ << "] source=" << valIn.decode(v.sourceExpression)
+                      << " | iter=" << v.iteration << " | flags=" << v.flags << " | levels={";
                     bool first = true;
                     for (int lv : v.levels) { if (!first) f << ","; f << lv; first = false; }
-                    f << "} | siblings=" << v.siblings.size() << "\n";
-                    for (std::size_t si = 0; si < v.siblings.size(); ++si) {
-                        f << "        sib[" << si << "] " << valIn.decode(v.siblings[si]) << "\n";
+                    f << "} | rewrites=" << v.rewrites.size() / 3 << "\n";
+                    for (std::size_t i = 0; i < v.rewrites.size(); i += 3) {
+                        f << "        " << valIn.decode(v.rewrites[i]) << " -> "
+                          << valIn.decode(v.rewrites[i+1]) << " | "
+                          << valIn.decode(v.rewrites[i+2]) << "\n";
                     }
                 }
             }
@@ -1194,11 +1173,15 @@ namespace hashburst_dump {
                   << " | entries=" << values.size() << "\n";
                 int vi = 0;
                 for (const auto& v : values) {
-                    f << "    [" << vi++ << "] concrete=" << valIn.decode(v.concreteConstituent)
-                      << " | compound=" << valIn.decode(v.compoundExpression)
-                      << " | siblings=" << v.siblings.size() << "\n";
-                    for (std::size_t si = 0; si < v.siblings.size(); ++si) {
-                        f << "        sib[" << si << "] " << valIn.decode(v.siblings[si]) << "\n";
+                    f << "    [" << vi++ << "] source=" << valIn.decode(v.sourceExpression)
+                      << " | iter=" << v.iteration << " | flags=" << v.flags << " | levels={";
+                    bool first = true;
+                    for (int lv : v.levels) { if (!first) f << ","; f << lv; first = false; }
+                    f << "} | rewrites=" << v.rewrites.size() / 3 << "\n";
+                    for (std::size_t i = 0; i < v.rewrites.size(); i += 3) {
+                        f << "        " << valIn.decode(v.rewrites[i]) << " -> "
+                          << valIn.decode(v.rewrites[i+1]) << " | "
+                          << valIn.decode(v.rewrites[i+2]) << "\n";
                     }
                 }
             }
@@ -1305,6 +1288,43 @@ namespace hashburst_dump {
                     bool first = true;
                     for (int lv : v.levels) { if (!first) f << ","; f << lv; first = false; }
                     f << "}\n";
+                }
+            }
+
+            // Parked implication subproofs (D-406;
+            // maintainer-approved appended section in the EXTENDED block, the
+            // sacred sections untouched). Derived view (Rule 14): decoded
+            // lex-sorted keys; each record printed like admissionMapIntegration's.
+            f << "-- " << tag << ".rejectedMapSubproof ("
+              << hm.rejectedMapSubproof.count() << "):\n";
+            std::vector<std::pair<std::pair<std::string, std::string>,
+                                  IntegrationEntryMap>> rmsRows;
+            rmsRows.reserve(hm.rejectedMapSubproof.count());
+            for (int32_t id = 1; id <= hm.rejectedMapSubproof.count(); ++id) {
+                const int64_t pk = hm.rejectedMapSubproof.keyAt(id);
+                rmsRows.emplace_back(decodeTemplateKey(pk, ti, nm),
+                                     admissionIntegrationRecordsAt(
+                                         hm.rejectedMapSubproof, pk, valIn));
+            }
+            std::sort(rmsRows.begin(), rmsRows.end(),
+                      [](const std::pair<std::pair<std::string, std::string>,
+                                         IntegrationEntryMap>& a,
+                         const std::pair<std::pair<std::string, std::string>,
+                                         IntegrationEntryMap>& b) {
+                          return a.first < b.first;
+                      });
+            for (const auto& [tv, instrMap] : rmsRows) {
+                f << "  key=" << tv.first << " | v=" << tv.second
+                  << " | entries=" << instrMap.size() << "\n";
+                int ii = 0;
+                for (const auto& entry : instrMap) {
+                    const IntInstruction& instr = entry.first;
+                    f << "    [" << ii++ << "] rootGoal=" << valIn.decode(instr.markedGoal)
+                      << " | data.size=" << instr.data.size() << "\n";
+                    for (std::size_t di = 0; di < instr.data.size(); ++di) {
+                        f << "      data[" << di << "]\n";
+                        writeLogicalEntity(decodeLogicalEntity(instr.data[di], valIn), "        ");
+                    }
                 }
             }
 
@@ -1444,32 +1464,24 @@ namespace hashburst_dump {
     } // anonymous namespace
 
     bool isTargetLB(const Memory& body) {
-        // The FTA shortcut theorem whose registration verdict differs between
-        // the pairwise and the batch equi-class application:
-        // (>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])
-        //   (>[](preorder[1,4,7,11])(>[](in[9,1])(>[]!(preorder[1,4,7,10])(preorder[1,4,7,9]))))))
-        // Full parent chain to the root sentinel per Rule 12:
-        // root -> (AnchorFTA[1,2,3,4,5,6,7,8])
-        //      -> (in3[9,10,11,5])
-        //      -> (preorder[1,4,7,11])
-        //      -> (in[9,1])                  [level-3 LB, the premise the verdict misses]
-        //      -> !(preorder[1,4,7,10])      [proof LB]
-        const auto isLevel3LB = [](const Memory* m) -> bool {
-            if (!m || m->exprKey() != "(in[9,1])") return false;
-            const Memory* p1 = m->parentMemory;
-            if (!p1 || p1->exprKey() != "(preorder[1,4,7,11])") return false;
-            const Memory* p2 = p1->parentMemory;
-            if (!p2 || p2->exprKey() != "(in3[9,10,11,5])") return false;
-            const Memory* p3 = p2->parentMemory;
-            if (!p3 || p3->exprKey() != "(AnchorFTA[1,2,3,4,5,6,7,8])") return false;
-            const Memory* p4 = p3->parentMemory;
-            return p4 && p4->exprKey().empty() && p4->parentMemory == nullptr;
-        };
-        if (isLevel3LB(&body)) return true;
-        if (body.exprKey() == "!(preorder[1,4,7,10])") {
-            return isLevel3LB(body.parentMemory);
-        }
-        return false;
+        // Runtime-measurement setting: no block matches (impossible innermost
+        // key); the chain below names the forward-F3 induction step block,
+        // kept for retargeting a diagnosis run.
+        const Memory* p1 = body.parentMemory;
+        const Memory* p2 = p1 ? p1->parentMemory : nullptr;
+        const Memory* p3 = p2 ? p2->parentMemory : nullptr;
+        const Memory* p4 = p3 ? p3->parentMemory : nullptr;
+        const Memory* p5 = p4 ? p4->parentMemory : nullptr;
+        const Memory* p6 = p5 ? p5->parentMemory : nullptr;
+        const Memory* p7 = p6 ? p6->parentMemory : nullptr;
+        return equalSpans(body.exprKeyView(), StrSpan("__no_dump_target__", sizeof("__no_dump_target__") - 1))
+            && p1 && equalSpans(p1->exprKeyView(), StrSpan("(in3[13,12,14,5])", sizeof("(in3[13,12,14,5])") - 1))
+            && p2 && equalSpans(p2->exprKeyView(), StrSpan("(fold[1,3,4,5,11,2,9,13])", sizeof("(fold[1,3,4,5,11,2,9,13])") - 1))
+            && p3 && equalSpans(p3->exprKeyView(), StrSpan("(in2[10,12,11])", sizeof("(in2[10,12,11])") - 1))
+            && p4 && equalSpans(p4->exprKeyView(), StrSpan("(sequence[1,4,2,10,11])", sizeof("(sequence[1,4,2,10,11])") - 1))
+            && p5 && equalSpans(p5->exprKeyView(), StrSpan("(in2[9,10,3])", sizeof("(in2[9,10,3])") - 1))
+            && p6 && equalSpans(p6->exprKeyView(), StrSpan("(AnchorFTA[1,2,3,4,5,6,7,8])", sizeof("(AnchorFTA[1,2,3,4,5,6,7,8])") - 1))
+            && p7 && p7->exprKeyView().len == 0 && p7->parentMemory == nullptr;
     }
 
     void dumpEntry(const Memory& body,

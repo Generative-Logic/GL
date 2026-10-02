@@ -39,10 +39,24 @@ namespace run_modes {
     // theorems are loaded from (default
     // `<theorems_folder>/compressed_external_theorems.txt`). Relative paths
     // resolve against the project root. Empty string = no override.
+    /**
+     * @brief Run one configured proof batch through its complete native stages.
+     *
+     * @details The configured theorem pool provides prior results. The
+     * development shortcut uses its independent pool and raw graph directories;
+     * explicit input files are resolved after the directory selection.
+     * @param anchor_id Configuration suffix selecting the batch.
+     * @param conjecturesFileOverride Optional explicit conjecture input file.
+     * @param externalsFileOverride Optional explicit external theorem input file.
+     * @param phase2Backend Explicit processor or CUDA selection, or configured default.
+     * @param shortcutMode Select the independent FTA development output tree.
+     * @return None.
+     */
     void fullRun(const std::string& anchor_id,
                  const std::string& conjecturesFileOverride = std::string(),
                  const std::string& externalsFileOverride = std::string(),
-                 const std::string& phase2Backend = std::string());
+                 const std::string& phase2Backend = std::string(),
+                 bool shortcutMode = false);
 
     // CE-filter-only entry point. Performs the same config + theorem-loading
     // setup as `fullRun` but runs only the counterexample filter and exits

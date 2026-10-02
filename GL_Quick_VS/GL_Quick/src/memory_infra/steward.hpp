@@ -97,16 +97,16 @@ namespace gl {
         /// floor — at least one whole block can be returned; below it the
         /// copies buy nothing) AND `reclaimableBytes >= spanBytes / 8` (the
         /// fraction — the holes are a meaningful share of the arena's span).
-        /// `reclaimableBytes` is `LbArena::usedBytes()` minus the containers'
-        /// live content (`LbMemory::liveBytes()`); `spanBytes` is
-        /// `usedBytes()`. Below the gate the defined result is "no reshuffle
-        /// needed" — the boundary the design demands, not a fallback. A pure
-        /// function of deterministic byte counts; the compaction it gates is
-        /// content-invisible, so the decision's timing never affects an
-        /// observable.
+        /// For a paged logic-block arena `reclaimableBytes` is the free pages
+        /// parked inside its held blocks and `spanBytes` its held block bytes
+        /// (`arenaNeedsCompaction`). Below the gate the defined result is "no
+        /// reshuffle needed" — the boundary the design demands, not a
+        /// fallback. A pure function of deterministic byte counts; the
+        /// compaction it gates is content-invisible, so the decision's timing
+        /// never affects an observable.
         ///
         /// @param reclaimableBytes The arena's reclaimable hole bytes.
-        /// @param spanBytes        The arena's used span (`usedBytes()`).
+        /// @param spanBytes        The arena's held span.
         /// @param blockBytes       Bytes per block of the hierarchy config.
         /// @return `true` when compaction is worth running on this LB.
         constexpr bool needsReshuffle(int64_t reclaimableBytes,
@@ -115,6 +115,48 @@ namespace gl {
             return reclaimableBytes >= blockBytes
                 && reclaimableBytes * kReshuffleFreeDen
                        >= spanBytes * kReshuffleFreeNum;
+        }
+
+        /// @brief The page-tier reshuffle gate for one logic block's arena.
+        ///
+        /// @details
+        /// Every deloadable container is paged, so an arena's reclaimable
+        /// room is the free pages parked on its page free-list inside blocks
+        /// it still holds (`freePageCount() * pageBytes()`), and its span is
+        /// the held blocks (`blocksHeld() * blockBytes()`). `needsReshuffle`
+        /// then asks for at least one whole block of free pages and at least
+        /// an eighth of the span. The byte-bump cursor (`usedBytes()`) is not
+        /// used: it is zero for a paged arena, which is why the former
+        /// cursor-based gate never fired. Read-only; the arena must be bound
+        /// to an initialized pool.
+        ///
+        /// @param arena A logic block's arena (`LbMemory::manager`).
+        /// @return `true` when `LbMemory::reshuffle` would return at least one
+        ///         block and the free pages are a meaningful share.
+        inline bool arenaNeedsCompaction(const LbArena& arena) {
+            const int64_t blockBytes = arena.blockBytes();
+            return needsReshuffle(
+                static_cast<int64_t>(arena.freePageCount()) * arena.pageBytes(),
+                arena.blocksHeld() * blockBytes, blockBytes);
+        }
+
+        /// @brief Compact one logic block's arena when it is fragmented enough
+        ///        to return whole blocks.
+        ///
+        /// @details
+        /// Runs `LbMemory::reshuffle` (the content-invisible page pack,
+        /// I-107) when `arenaNeedsCompaction` holds, and otherwise does
+        /// nothing — both are defined outcomes. The caller must hold the logic
+        /// block exclusively (a worker claim or a single-threaded seam) and
+        /// supply a scratch arena bound to a never-deloaded pool that is
+        /// exclusive to the calling thread (`compactionScratchArenas()`).
+        ///
+        /// @param lb      The logic block's statified aggregate; resident.
+        /// @param scratch Permutation scratch on a never-deloaded pool.
+        /// @return Blocks returned to the pool; 0 when the gate did not fire.
+        inline int64_t compactIfFragmented(LbMemory& lb, LbArena& scratch) {
+            if (!arenaNeedsCompaction(lb.manager)) return 0;
+            return lb.reshuffle(scratch);
         }
 
         /// @brief Stuck-detection deadline, in seconds: a worker that cannot
@@ -168,7 +210,7 @@ namespace gl {
         /// cursor wins the race), and in-flight loads GRANT blocks with only
         /// the emergency floor protecting them: the executor lane-priority
         /// flip that lets evictions preempt loads engages only below
-        /// `kEmergencyFloorBlocks` (reserve / 4). The window's concurrent
+        /// `kEmergencyFloorBlocks` (reserve / 2). The window's concurrent
         /// load demand must therefore stay UNDER the emergency floor, or the
         /// flip fires too late to save the pool. Measured at a 4 GiB
         /// exhaustion wall with the multiple raised to 4: the widened
@@ -483,6 +525,17 @@ namespace gl {
         ///        path for scope guards); asserts the quiesce contract
         ///        through `stop()`.
         ~MemorySteward();
+
+        /// @brief Whether this steward may write logic-block images to SSD.
+        ///
+        /// @details
+        /// The policy fixed at construction. The kernel barrier reads it to
+        /// decide whether a discharged logic block joins the pending-discharge
+        /// dump list (a resident-only steward prohibits every disk-producing
+        /// entry point).
+        ///
+        /// @return `true` for the paging steward, `false` for resident-only.
+        bool allowsSsdDeload() const { return allowSsdDeload_; }
 
         MemorySteward(const MemorySteward&) = delete;
         MemorySteward& operator=(const MemorySteward&) = delete;
@@ -814,6 +867,33 @@ namespace gl {
         /// degrade path).
         ///
         /// @param reserve The reserve target in blocks for subsequent passes.
+        /// @brief Free blocks below which the emergency valves fire.
+        ///
+        /// @return `reserve / steward::kEmergencyFloorDivisor` (1024 in
+        ///         production).
+        int64_t emergencyFloorBlocks() const {
+            return reserveBlocks_ / steward::kEmergencyFloorDivisor;
+        }
+
+        /// @brief The grant-time pressure valve: evict one idle logic block
+        ///        behind the open window's cursor.
+        ///
+        /// @details
+        /// Installed on the main pool by `ExpressionAnalyzer::prove`
+        /// (`GlobalMemoryManager::setPressureValve`) and run by any thread
+        /// whose next grant would leave fewer than `emergencyFloorBlocks()`
+        /// blocks free (D-422). One eviction through the
+        /// same two-tier Belady choice as the claim-time valve
+        /// (`evictOneForReload`), counted like it; the granting thread waits
+        /// for that dump, which throttles growth inside a claimed logic block
+        /// to the eviction rate. No open window or no eligible victim is a
+        /// defined no-op: the grant proceeds, and a genuinely full pool asserts
+        /// at the wall.
+        ///
+        /// @param directory The deload directory the eviction writes to.
+        /// @return Nothing.
+        void relieveGrantPressure(const std::string& directory);
+
         void setReserveBlocksForTest(int64_t reserve) {
             reserveBlocks_ = reserve;
         }
@@ -848,7 +928,7 @@ namespace gl {
         /// where a worker's task grants scratch / statement blocks with no
         /// reload in sight, needs the valve just as much) checks the pool's
         /// free blocks against the emergency floor
-        /// (`kEmergencyFloorBlocks` = reserve/4) and, when breached, evicts
+        /// (`kEmergencyFloorBlocks` = reserve/2) and, when breached, evicts
         /// ONE behind-cursor victim (`evictOneForReload`, two-tier Belady) and
         /// counts it (`emergencyEvictCount`, expected 0 in a healthy reserve
         /// regime — a nonzero count is the alarm the planner cannot keep up).

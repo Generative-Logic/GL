@@ -11,7 +11,7 @@
 				(in[i,M])
 				(>[j]
 					(&(in2[i,j,s])(in[j,M]))
-					(>[r](in2[i,r,g])(>[t](in2[j,t,f])(>[q](in3[r,t,q,+])(in2[j,q,g]))))
+					(>[r](in2[i,r,g])(>[t](in2[j,t,f])(>[q](in3[r,t,q,op])(in2[j,q,g]))))
 				)
 			)
 		)

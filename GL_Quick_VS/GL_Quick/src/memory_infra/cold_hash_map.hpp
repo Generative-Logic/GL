@@ -45,9 +45,11 @@
 
 namespace gl {
 
+    class SharedBytePool;
+
     /// @brief Location of one cold string in a byte-key store's paged byte
     ///        pool: the logical byte index where its bytes begin, the byte
-    ///        length, and the key's cached FNV-1a digest.
+    ///        length, and the key's cached `coldKeyHash` digest.
     ///
     /// @details
     /// Element type of a `BytesKeyStore`'s id → location index. `byteStart` is
@@ -55,7 +57,7 @@ namespace gl {
     /// string begins; a string occupies `[byteStart, byteStart + len)` and is
     /// interned WITHIN A SINGLE PAGE (no straddle — the pool carries page-tail
     /// padding the deload never emits). Trivially copyable — the index is itself
-    /// a paged container element. `hash` caches the full FNV-1a digest beside
+    /// a paged container element. `hash` caches the full `coldKeyHash` digest beside
     /// the location so lookup never re-walks stored bytes merely to place or
     /// reject a candidate. An interned empty string has `len` zero (no bytes;
     /// `byteStart` is the pool size at intern time).
@@ -95,7 +97,7 @@ namespace gl {
     ///    the pre-paging form.
     /// 2. **Location index** — `PagedVector<ColdStringLocation>`, position
     ///    `id - 1` holds key `id` (id 0 is the reserved null/absent id). Each
-    ///    record caches the key's full FNV-1a digest. The digest is runtime
+    ///    record caches the key's full `coldKeyHash` digest. The digest is runtime
     ///    derived state: canonical deload still emits only lengths + logical
     ///    bytes, and reload recomputes it from those bytes.
     ///
@@ -137,9 +139,43 @@ namespace gl {
         /// @param arena The LB's bump arena; outlives the store.
         /// @param dirty The aggregate's shared content-change state.
         BytesKeyStore(LbArena* arena, DirtyState* dirty)
-            : locations_(arena, dirty), bytePool_(arena, dirty) {
+            : arena_(arena), locations_(arena, dirty), bytePool_(arena, dirty) {
             assert(arena != nullptr && dirty != nullptr);
         }
+
+    /// @brief Detach a byte-key client before its metadata is destroyed.
+    ///
+    /// @details Shared payload belongs to the enclosing block pool, which outlives every registered key store.
+    ///
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    ~BytesKeyStore();
+
+    /// @brief Bind an empty key store to block-local immutable shared bytes.
+    ///
+    /// @details The store retains its own identifiers, hashes, lengths and canonical serialization. Only payload storage is shared.
+    ///
+    /// @param pool Shared pool on the same logic-block arena.
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    void bindSharedBytes(SharedBytePool& pool);
+
+    /// @brief Report whether key payload lives in a shared pool.
+    ///
+    /// @details The representation choice is fixed while this store is bound.
+    ///
+    /// @return True for a shared payload store; false for an independently owned pool.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    bool sharesBytes() const { return shared_ != nullptr; }
+
+    /// @brief Compact independently owned key bytes after a stable key erase.
+    ///
+    /// @details Move surviving no-straddle payloads toward the front without changing key identifiers. Call only at a quiescent seam with no outstanding spans.
+    ///
+    /// @param pageBytes Byte capacity of one page in this store arena.
+    /// @return Nothing.
+    /// @invariant Surviving key bytes, order and cached hashes are unchanged.
+    void compactStoredBytes(int32_t pageBytes);
 
         BytesKeyStore(const BytesKeyStore&) = delete;
         BytesKeyStore& operator=(const BytesKeyStore&) = delete;
@@ -189,44 +225,45 @@ namespace gl {
         /// @param s Key bytes to store.
         void appendKey(const StrSpan& s) {
             assert(s.len >= 0);
+            if (shared_ != nullptr) { appendSharedKey(s); return; }
             assert(logicalByteCount_
                 <= std::numeric_limits<int64_t>::max() - s.len);
             const int32_t start = bytePool_.appendRunNoStraddle(s.ptr, s.len);
             locations_.push_back(ColdStringLocation{
-                start, s.len, hashSpan(s) });
+                start, s.len, coldKeyHash(s) });
             logicalByteCount_ += s.len;
         }
 
-        /// @brief Cached FNV-1a 64-bit hash of stored key `id`'s bytes — the
+        /// @brief Cached `coldKeyHash` of stored key `id`'s bytes — the
         ///        hash the owning set's index places stored ids with.
         ///
         /// @details
         /// Read directly from the static paged location record. `appendKey`
         /// computes it once; `copyKeysFrom` copies it; canonical reload
         /// recomputes it from the serialized logical bytes. It uses the same
-        /// `hashSpan` digest as a contiguous probe, which is the dedup
+        /// `coldKeyHash` digest as a contiguous probe, which is the dedup
         /// correctness condition.
         ///
         /// @param id A stored id (`1 <= id <= count()`).
-        /// @return The key's FNV-1a digest.
+        /// @return The key's `coldKeyHash` digest.
         uint64_t hashStored(int32_t id) const {
             return locations_[id - 1].hash;
         }
 
-        /// @brief FNV-1a 64-bit hash of a contiguous probe — the hash the owning
+        /// @brief `coldKeyHash` of a contiguous probe — the hash the owning
         ///        set's index probes with (identical digest to `hashStored` for
         ///        equal bytes).
         ///
         /// @param s The probe bytes.
-        /// @return The probe's FNV-1a digest.
-        uint64_t hashProbe(const StrSpan& s) const { return hashSpan(s); }
+        /// @return The probe's `coldKeyHash` digest.
+        uint64_t hashProbe(const StrSpan& s) const { return coldKeyHash(s); }
 
         /// @brief Byte equality of stored key `id` against a contiguous probe,
         ///        with a cached-hash rejection before page resolution.
         ///
         /// @param id        A stored id (the stored side is page-contained).
         /// @param probe     The contiguous lookup bytes.
-        /// @param probeHash The probe's already-computed FNV-1a digest.
+        /// @param probeHash The probe's already-computed `coldKeyHash` digest.
         /// @return `true` when lengths and bytes match.
         GL_FORCEINLINE bool equalStored(int32_t id, const StrSpan& probe,
                          uint64_t probeHash) const {
@@ -234,6 +271,9 @@ namespace gl {
             if (loc.hash != probeHash) return false;
             if (loc.len != probe.len) return false;
             if (loc.len == 0) return true;
+            if (shared_ != nullptr)
+                return std::memcmp(sharedBytesAt(loc.byteStart).ptr, probe.ptr,
+                    static_cast<std::size_t>(loc.len)) == 0;
             int32_t pos = loc.byteStart;
             const int32_t end = loc.byteStart + loc.len;
             int32_t probeOff = 0;
@@ -267,6 +307,7 @@ namespace gl {
             assert(id >= 1 && id <= locations_.size()
                 && "BytesKeyStore::decodeAt on an unstored id");
             const ColdStringLocation& loc = locations_[id - 1];
+            if (shared_ != nullptr) return sharedBytesAt(loc.byteStart);
             if (loc.len == 0) return StrSpan();
             int32_t run = 0;
             const char* p = bytePool_.contiguousRun(loc.byteStart, run);
@@ -287,6 +328,10 @@ namespace gl {
                 && "BytesKeyStore::decodeStringAt on an unstored id");
             const ColdStringLocation& loc = locations_[id - 1];
             if (loc.len == 0) return std::string();
+            if (shared_ != nullptr) {
+                const StrSpan bytes = sharedBytesAt(loc.byteStart);
+                return std::string(bytes.ptr, static_cast<std::size_t>(bytes.len));
+            }
             std::string out;
             out.reserve(static_cast<size_t>(loc.len));
             int32_t pos = loc.byteStart;
@@ -312,6 +357,7 @@ namespace gl {
             locations_.clear();
             bytePool_.clear();
             logicalByteCount_ = 0;
+            if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
         /// @brief Drop everything including page capacity — the owning set's
@@ -320,6 +366,7 @@ namespace gl {
             locations_.release();
             bytePool_.release();
             logicalByteCount_ = 0;
+            if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
         /// @brief Slide stored key `srcId` down to 0-based position `destPos` —
@@ -365,6 +412,7 @@ namespace gl {
                 logicalByteCount_ -= locations_[index].len;
             assert(logicalByteCount_ >= 0);
             locations_.truncate(newCount);
+            if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
         /// @brief Cross-arena deep copy of the keys — the owning set's
@@ -383,6 +431,11 @@ namespace gl {
                 && "BytesKeyStore::copyKeysFrom into a non-empty store");
             assert(logicalByteCount_ == 0);
             const int32_t n = other.count();
+            if (shared_ != nullptr || other.shared_ != nullptr) {
+                for (int32_t id = 1; id <= n; ++id) appendKey(other.decodeAt(id));
+                assert(logicalByteCount_ == other.logicalByteCount_);
+                return;
+            }
             for (int32_t id = 1; id <= n; ++id) {
                 const ColdStringLocation& oloc = other.locations_[id - 1];
                 int32_t start;
@@ -443,6 +496,13 @@ namespace gl {
         void appendContentBytes(std::vector<char>& out, int32_t fromRow) const {
             const int32_t n = locations_.size();
             assert(fromRow >= 0 && fromRow <= n);
+            if (shared_ != nullptr) {
+                for (int32_t id = fromRow + 1; id <= n; ++id) {
+                    const StrSpan bytes = decodeAt(id);
+                    if (bytes.len != 0) out.insert(out.end(), bytes.ptr, bytes.ptr + bytes.len);
+                }
+                return;
+            }
             for (int32_t i = fromRow; i < n; ++i) {
                 const ColdStringLocation& loc = locations_[i];
                 int32_t pos = loc.byteStart;
@@ -491,6 +551,16 @@ namespace gl {
             assert(rowCount == 0 || lengths != nullptr);
             assert(byteLen == 0 || bytes != nullptr);
             int64_t off = 0;
+            if (shared_ != nullptr) {
+                for (int32_t row = 0; row < rowCount; ++row) {
+                    const int32_t length = lengths[row];
+                    assert(length >= 0 && off + length <= byteLen);
+                    appendKey(StrSpan(length == 0 ? nullptr : bytes + off, length));
+                    off += length;
+                }
+                assert(off == byteLen);
+                return;
+            }
             for (int32_t r = 0; r < rowCount; ++r) {
                 const int32_t len = lengths[r];
                 assert(len >= 0 && "BytesKeyStore::bulkLoadKeys: negative len");
@@ -502,7 +572,7 @@ namespace gl {
                     : bytePool_.size();
                 locations_.push_back(ColdStringLocation{
                     start, len,
-                    hashSpan(StrSpan(bytes + off, len)) });
+                    coldKeyHash(StrSpan(bytes + off, len)) });
                 off += len;
             }
             assert(off == byteLen
@@ -574,7 +644,39 @@ namespace gl {
         }
 
     private:
-        // id -> (byteStart, len); position id-1. Paged like every container.
+        friend class SharedBytePool;
+        LbArena* arena_;
+        SharedBytePool* shared_ = nullptr;
+        BytesKeyStore* nextShared_ = nullptr;
+    /// @brief Append a local key reference to shared immutable payload.
+    ///
+    /// @details The shared pool interns bytes before the local metadata row is appended.
+    ///
+    /// @param bytes Canonical key bytes; the caller owns the input span for this call.
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    void appendSharedKey(StrSpan bytes);
+
+    /// @brief Resolve a block-local shared payload identifier.
+    ///
+    /// @details The pool remains resident and bound for the duration of the returned view.
+    ///
+    /// @param id Positive shared-pool identifier.
+    /// @return Borrowed immutable bytes; valid until pool collection or block eviction.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    StrSpan sharedBytesAt(int32_t id) const;
+
+        /// @brief Release unused shared payload after local key references leave.
+        ///
+        /// @details Other key or value clients keep the pool alive. An empty
+        /// family releases the dictionary without waiting for worker collection.
+        ///
+        /// @return Nothing.
+        void releaseSharedIfUnused();
+
+
+        // Local id metadata. byteStart is an owned byte offset or a private
+        // shared-payload identifier according to this store's binding.
         PagedVector<ColdStringLocation> locations_;
 
         // Id-order byte pool; a key is the within-page run
@@ -1251,10 +1353,56 @@ namespace gl {
         void insertValueAt(int32_t pos, const V& v) { values_.insertAt(pos, v); }
 
         /// @brief Remove the value at column position `pos`, shifting the tail
-        ///        left — the shrink half of `assignSet`.
+        ///        left.
         ///
         /// @param pos Position in `[0, valueCount())`.
         void eraseValueAt(int32_t pos) { values_.erase(pos); }
+
+        /// @brief Splice `n` values into the value column at `pos` with ONE
+        ///        tail shift — the grow half of `assignSet`.
+        ///
+        /// @details
+        /// Equivalent to `n` successive `insertValueAt(pos + j, src[j])` calls,
+        /// but the value tail moves once, as page-span `memmove`s
+        /// (`PagedVector::replaceRange`). `src` must not point into this store.
+        ///
+        /// @param pos Insert position in `[0, valueCount()]`.
+        /// @param src The `n` values in their run order; read only when `n > 0`.
+        /// @param n   Value count; >= 0.
+        /// @return Nothing.
+        void insertValuesAt(int32_t pos, const V* src, int32_t n) {
+            values_.replaceRange(pos, 0, src, n);
+        }
+
+        /// @brief Remove `n` values starting at column position `pos` with ONE
+        ///        tail shift — the shrink half of `assignSet`.
+        ///
+        /// @details
+        /// Equivalent to `n` successive `eraseValueAt(pos)` calls, including
+        /// the tail pages freed; the value tail moves once.
+        ///
+        /// @param pos First removed position; `pos + n <= valueCount()`.
+        /// @param n   Value count; >= 0.
+        /// @return Nothing.
+        void eraseValuesAt(int32_t pos, int32_t n) {
+            values_.replaceRange(pos, n, nullptr, 0);
+        }
+
+        /// @brief Add `delta` to the run starts of keys `[from, keyCount)` —
+        ///        the run-index adjust after an interior splice of `delta`
+        ///        values.
+        ///
+        /// @details
+        /// One page-span pass (`PagedVector::addToRange`) instead of a
+        /// read-modify-write per key.
+        ///
+        /// @param from     First 0-based key position whose run moved.
+        /// @param keyCount The owning map's key count.
+        /// @param delta    Signed splice length.
+        /// @return Nothing.
+        void shiftRunStartsRaw(int32_t from, int32_t keyCount, int32_t delta) {
+            runStarts_.addToRange(from, keyCount - from, delta);
+        }
 
         /// @brief Drop the run-start column's tail to `n` keys — the compacting
         ///        erase's run-index truncate step.
@@ -1356,37 +1504,104 @@ namespace gl {
         /// @param arena The LB's arena; outlives the store.
         /// @param dirty The aggregate's shared content-change state.
         BlobCsrValueStore(LbArena* arena, DirtyState* dirty)
-            : runStarts_(arena, dirty), blobStarts_(arena, dirty),
-              blobPool_(arena, dirty) {}
+            : arena_(arena), runStarts_(arena, dirty), blobStarts_(arena, dirty),
+              blobPool_(arena, dirty), oversized_(arena, dirty) {}
 
+        /// @brief Detach this normalized-key value store from its shared pool.
+        ///
+        /// @details The enclosing block pool outlives every registered client.
+        ///
+        /// @return Nothing.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        ~BlobCsrValueStore();
+        /// @brief Bind empty positive-length key blobs to the block shared pool.
+        ///
+        /// @details Offsets remain canonical. Page-contained records use shared identifiers; opted-in record stores keep larger payloads in a private paged column.
+        ///
+        /// @param pool Shared pool on this same arena.
+        /// @param allowOversized Preserve larger record payloads in private paged storage.
+        /// @return Nothing.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        void bindSharedBlobs(SharedBytePool& pool, bool allowOversized = false);
+        /// @brief Report physically stored value-pool content.
+        ///
+        /// @details Shared key values store four-byte identifiers; ordinary values store their canonical bytes.
+        ///
+        /// @return Resident pool element bytes, excluding shared payload counted at the pool owner.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        int64_t residentPoolByteCount() const { return static_cast<int64_t>(blobPool_.size()) + oversized_.size(); }
         BlobCsrValueStore(const BlobCsrValueStore&) = delete;
         BlobCsrValueStore& operator=(const BlobCsrValueStore&) = delete;
 
-        /// @brief Uniform contract: clear all three columns.
+        /// @brief Uniform contract: clear all value columns.
         void clearValues() {
-            runStarts_.clear(); blobStarts_.clear(); blobPool_.clear();
+            runStarts_.clear(); blobStarts_.clear(); blobPool_.clear(); oversized_.clear();
+            sharedLogicalBytes_ = 0;
+            if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
-        /// @brief Uniform contract: release all three columns.
+        /// @brief Uniform contract: release all value columns.
         void releaseValues() {
-            runStarts_.release(); blobStarts_.release(); blobPool_.release();
+            runStarts_.release(); blobStarts_.release(); blobPool_.release(); oversized_.release();
+            sharedLogicalBytes_ = 0;
+            if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
-        /// @brief Uniform contract: deep-copy all three columns (cross-arena).
+        /// @brief Uniform contract: deep-copy all canonical value columns (cross-arena).
         ///
         /// @param other Source store; resident.
         void copyValuesFrom(const BlobCsrValueStore& other) {
+            if (shared_ == nullptr && other.shared_ == nullptr) {
+                runStarts_ = other.runStarts_;
+                blobStarts_ = other.blobStarts_;
+                blobPool_ = other.blobPool_;
+                return;
+            }
+            assert(runStarts_.empty() && blobStarts_.empty() && blobPool_.empty());
             runStarts_ = other.runStarts_;
-            blobStarts_ = other.blobStarts_;
-            blobPool_ = other.blobPool_;
+            DirtyState scratchDirty = DirtyState::Clean;
+            PagedVector<char> scratch(arena_, &scratchDirty);
+            for (int32_t blob = 0; blob < other.blobCount(); ++blob) {
+                const int32_t length = other.blobEnd(blob) - other.blobStarts_[blob];
+                if (shared_ != nullptr && length <= arena_->pageBytes()) {
+                    scratch.resetKeepingPages();
+                    for (int32_t offset = 0; offset < length;) {
+                        int32_t count = 0;
+                        const char* bytes = other.blobChunk(blob, offset, count);
+                        scratch.appendRun(bytes, count); offset += count;
+                    }
+                    int32_t count = 0;
+                    const char* bytes = length ? scratch.contiguousRun(0, count) : nullptr;
+                    assert(count >= length);
+                    appendBlob(bytes, length);
+                } else {
+                    assert(shared_ == nullptr || allowOversized_);
+                    PagedVector<char>& destination = shared_ ? oversized_ : blobPool_;
+                    const int32_t start = destination.size();
+                    assert(length <= INT32_MAX - start);
+                    blobStarts_.push_back(poolByteCount());
+                    for (int32_t offset = 0; offset < length;) {
+                        int32_t count = 0;
+                        const char* bytes = other.blobChunk(blob, offset, count);
+                        destination.appendRun(bytes, count); offset += count;
+                    }
+                    if (shared_ != nullptr) {
+                        const int32_t handle = -start - 1;
+                        blobPool_.appendRun(reinterpret_cast<const char*>(&handle), 4);
+                        assert(sharedLogicalBytes_ <= INT32_MAX - length);
+                        sharedLogicalBytes_ += length;
+                    }
+                }
+            }
+            assert(poolByteCount() == other.poolByteCount());
         }
 
         /// @brief Uniform contract: value-side live bytes (all three columns).
         ///
-        /// @return Live bytes the three columns occupy.
+        /// @return Live bytes the value columns occupy.
         int64_t valuesLiveBytes() const {
             return runStarts_.liveBytes() + blobStarts_.liveBytes()
-                 + blobPool_.liveBytes();
+                 + blobPool_.liveBytes() + oversized_.liveBytes();
         }
 
         /// @brief Total blobs across every run.
@@ -1397,7 +1612,7 @@ namespace gl {
         /// @brief Total blob-pool bytes — the blob-pool tag's element count.
         ///
         /// @return Pool byte count.
-        int32_t poolByteCount() const { return blobPool_.size(); }
+        int32_t poolByteCount() const { return shared_ ? sharedLogicalBytes_ : blobPool_.size(); }
 
         /// @brief Number of blobs in key `id`'s run — DERIVED from the run-start
         ///        offsets (next key's start, or the blob total for the last key).
@@ -1418,7 +1633,7 @@ namespace gl {
         /// @param b Blob index in `[0, blobCount())`.
         /// @return The pool byte offset one past the blob.
         int32_t blobEnd(int32_t b) const {
-            return (b + 1 < blobStarts_.size()) ? blobStarts_[b + 1] : blobPool_.size();
+            return (b + 1 < blobStarts_.size()) ? blobStarts_[b + 1] : poolByteCount();
         }
 
         /// @brief Run-start (first blob index) of the key at 0-based position
@@ -1441,7 +1656,7 @@ namespace gl {
         /// @param b Blob index in `[0, blobCount()]`.
         /// @return The pool byte offset.
         int32_t runByteStart(int32_t b) const {
-            return (b < blobStarts_.size()) ? blobStarts_[b] : blobPool_.size();
+            return (b < blobStarts_.size()) ? blobStarts_[b] : poolByteCount();
         }
 
         /// @brief In-place overwrite of blob-start position `b` — the
@@ -1461,6 +1676,10 @@ namespace gl {
             const int32_t end = blobEnd(b);
             const int32_t len = end - start;
             out.resize(static_cast<size_t>(len));
+            if (shared_ != nullptr) {
+                readBlob(b, out.data());
+                return;
+            }
             int32_t pos = start, off = 0;
             while (pos < end) {
                 int32_t run = 0;
@@ -1487,6 +1706,16 @@ namespace gl {
         /// @param b   Blob index in `[0, blobCount())`.
         /// @param out Destination buffer, at least the blob's byte length.
         void readBlob(int32_t b, char* out) const {
+            if (shared_ != nullptr) {
+                const int32_t length = blobEnd(b) - blobStarts_[b];
+                for (int32_t offset = 0; offset < length;) {
+                    int32_t count = 0;
+                    const char* bytes = blobChunk(b, offset, count);
+                    std::memcpy(out + offset, bytes, static_cast<std::size_t>(count));
+                    offset += count;
+                }
+                return;
+            }
             const int32_t start = blobStarts_[b];
             const int32_t end = blobEnd(b);
             int32_t pos = start, off = 0;
@@ -1523,6 +1752,12 @@ namespace gl {
         /// @return `true` when `p` spans all `len` bytes contiguously; `false` on a
         ///         page straddle.
         bool peekBlob(int32_t b, const char*& p, int32_t& len) const {
+            if (shared_ != nullptr) {
+                len = blobEnd(b) - blobStarts_[b];
+                int32_t count = 0;
+                p = blobChunk(b, 0, count);
+                return count >= len;
+            }
             const int32_t start = blobStarts_[b];
             const int32_t end = blobEnd(b);
             len = end - start;
@@ -1563,6 +1798,17 @@ namespace gl {
             assert(b0 >= 0 && count >= 0
                 && b0 + count <= blobStarts_.size());
             const int32_t endBlob = b0 + count;
+            if (shared_ != nullptr) {
+                for (int32_t blob = b0; blob < endBlob; ++blob) {
+                    const char* bytes = nullptr; int32_t length = 0;
+                    if (!peekBlob(blob, bytes, length)) {
+                        char* copy = scratch.resolve(scratch.alloc(length, 1));
+                        readBlob(blob, copy); bytes = copy;
+                    }
+                    fn(bytes, length);
+                }
+                return;
+            }
             const int32_t* startsPage = nullptr;
             int32_t startsBase = 0, startsCount = 0;
             const char* bytesPage = nullptr;
@@ -1623,6 +1869,14 @@ namespace gl {
         /// @param p Blob bytes; read only when `n > 0`.
         /// @param n Blob length; >= 0.
         void appendBlob(const char* p, int32_t n) {
+            if (shared_ != nullptr) {
+                assert(n > 0 && sharedLogicalBytes_ <= INT32_MAX - n);
+                const int32_t id = internSharedBlob(StrSpan(p, n));
+                blobStarts_.push_back(sharedLogicalBytes_);
+                blobPool_.appendRun(reinterpret_cast<const char*>(&id), sizeof(id));
+                sharedLogicalBytes_ += n;
+                return;
+            }
             blobStarts_.push_back(blobPool_.size());
             if (n > 0) blobPool_.appendRun(p, n);
         }
@@ -1696,9 +1950,28 @@ namespace gl {
             const int32_t oldBytes = runByteStart(b0 + oldCount) - y0;
             {
             RT_SCOPE_HERE("CSR_POOL_SHIFT_WRITE");
-            if (newBytes != oldBytes)   // iter = pool bytes memmoved behind the run
-                RT_NOTE_ITERATIONS_HERE(blobPool_.size() - (y0 + oldBytes));
-            blobPool_.replaceRangeGenerated(y0, oldBytes, newBytes,
+            if (newBytes != oldBytes) { // physical bytes shifted behind the run
+                const int32_t tail = shared_ ? blobPool_.size() - (b0 + oldCount) * 4
+                                             : blobPool_.size() - (y0 + oldBytes);
+                assert(tail >= 0);
+                RT_NOTE_ITERATIONS_HERE(tail);
+            }
+            if (shared_ != nullptr) {
+                assert(M <= INT32_MAX / 4 && oldCount <= INT32_MAX / 4);
+                blobPool_.replaceRangeGenerated(b0 * 4, oldCount * 4, M * 4,
+                    [&](const auto& sink) {
+                        int32_t emitted = 0, length = 0;
+                        emit([&](const char* bytes, int32_t n) {
+                            assert(n > 0);
+                            const int32_t id = internSharedBlob(StrSpan(bytes, n));
+                            sink(reinterpret_cast<const char*>(&id), sizeof(id));
+                            ++emitted; length += n;
+                        });
+                        assert(emitted == M && length == newBytes);
+                    });
+                assert(static_cast<int64_t>(sharedLogicalBytes_) + newBytes - oldBytes <= INT32_MAX);
+                sharedLogicalBytes_ += newBytes - oldBytes;
+            } else blobPool_.replaceRangeGenerated(y0, oldBytes, newBytes,
                 [&](const auto& byteSink) {
                     int32_t emitted = 0, bytesEmitted = 0;
                     emit([&](const char* bytes, int32_t len) {
@@ -1776,8 +2049,13 @@ namespace gl {
                     newRunStarts_.push_back(newBlobStarts_.size());
                     curStarted_ = true;
                 }
-                newBlobStarts_.push_back(newPool_.size());
-                if (len > 0) newPool_.appendRun(bytes, len);
+                newBlobStarts_.push_back(logicalSize());
+                if (store_.shared_ != nullptr) {
+                    assert(len > 0 && sharedBytes_ <= INT32_MAX - len);
+                    const int32_t id = store_.internSharedBlob(StrSpan(bytes, len));
+                    newPool_.appendRun(reinterpret_cast<const char*>(&id), sizeof(id));
+                    sharedBytes_ += len;
+                } else if (len > 0) newPool_.appendRun(bytes, len);
             }
 
             /// @brief Carry the stored run of key @p id over verbatim as the
@@ -1820,6 +2098,14 @@ namespace gl {
             /// @brief The driver's final call: materialize a trailing range.
             void finish() { materializePending(); }
 
+        /// @brief Report canonical bytes emitted by this rebuild.
+        ///
+        /// @details Shared identifiers occupy different physical bytes while offsets still describe the canonical stream.
+        ///
+        /// @return Canonical payload-byte count.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+            int32_t logicalSize() const { return store_.shared_ ? sharedBytes_ : newPool_.size(); }
+
             /// @brief This sink writes (the scratch rebuild has one pass).
             bool isWritePass() const { return true; }
 
@@ -1838,14 +2124,17 @@ namespace gl {
                 appendShifted(newRunStarts_, store_.runStarts_, f - 1, l,
                               newBlobStarts_.size() - b0);
                 appendShifted(newBlobStarts_, store_.blobStarts_, b0, bEnd,
-                              newPool_.size() - y0);
-                for (int32_t y = y0; y < yEnd;) {
+                              logicalSize() - y0);
+                const int32_t physicalStart = store_.shared_ ? b0 * 4 : y0;
+                const int32_t physicalEnd = store_.shared_ ? bEnd * 4 : yEnd;
+                for (int32_t y = physicalStart; y < physicalEnd;) {
                     int32_t run = 0;
                     const char* p = store_.blobPool_.contiguousRun(y, run);
-                    if (run > yEnd - y) run = yEnd - y;
+                    if (run > physicalEnd - y) run = physicalEnd - y;
                     newPool_.appendRun(p, run);
                     y += run;
                 }
+                if (store_.shared_ != nullptr) sharedBytes_ += yEnd - y0;
                 pendingN_ = 0;
             }
 
@@ -1879,6 +2168,7 @@ namespace gl {
             bool curUnchanged_ = false;
             int32_t pendingFirst_ = 0;
             int32_t pendingN_ = 0;
+            int32_t sharedBytes_ = 0;
         };
 
         /// @brief Rebuild EVERY run from a per-key record emitter in one pass —
@@ -1948,6 +2238,7 @@ namespace gl {
                 refillFrom(runStarts_, newRunStarts);
                 refillFrom(blobStarts_, newBlobStarts);
                 refillFrom(blobPool_, newPool);
+                if (shared_ != nullptr) sharedLogicalBytes_ = sink.logicalSize();
             }
             assert(runStarts_.size() == keyCount
                 && blobStarts_.size() == newBlobStarts.size()
@@ -2074,6 +2365,10 @@ namespace gl {
         /// @see rebuildRunsGenerated, ProduceSink, HashMap::assignAllRunsGenerated.
         template <typename EmitAll>
         void rebuildRunsInPlace(int32_t keyCount, EmitAll emitAll, LbArena& scratch) {
+            if (shared_ != nullptr) {
+                rebuildRunsGenerated(keyCount, emitAll, scratch);
+                return;
+            }
             const int32_t storedKeys = runStarts_.size();
             assert(keyCount >= storedKeys
                 && "BlobCsrValueStore::rebuildRunsInPlace: fewer keys than runs");
@@ -2120,6 +2415,7 @@ namespace gl {
             assert(totalBlobs <= INT32_MAX && totalBytes <= INT32_MAX
                 && "rebuildRunsInPlace: the rebuilt columns exceed the index range");
             if (firstProduced != 0) {
+                const int32_t oldBlobs = blobStarts_.size();
                 const int32_t oldBytes = blobPool_.size();
                 // Where the untouched prefix ends - the cursors must land exactly here.
                 const int32_t prefixBlobs = (firstProduced <= storedKeys)
@@ -2138,7 +2434,10 @@ namespace gl {
                 const auto movePending = [&]() {
                     if (pendingHi == 0) return;
                     const int32_t b0 = runStarts_[pendingLo - 1];
-                    const int32_t y0 = blobStarts_[b0];
+                    assert(b0 >= 0 && b0 <= oldBlobs);
+                    // An empty trailing run names the old end, which is not a
+                    // blob slot. Growing the columns does not change that end.
+                    const int32_t y0 = b0 == oldBlobs ? oldBytes : blobStarts_[b0];
                     const int32_t destBlob = blobCursor - pendingBlobs;
                     const int32_t destByte = byteCursor - pendingBytes;
                     assert(destBlob >= b0 && destByte >= y0
@@ -2279,6 +2578,31 @@ namespace gl {
         /// @param destByte Destination pool offset.
         /// @param srcByte  Source pool offset; `>= destByte`.
         /// @param n        Byte count; >= 0.
+        /// @brief Move a surviving blob run during stable map erasure.
+        ///
+        /// @details Shared values copy private identifiers; ordinary values move canonical bytes.
+        ///
+        /// @param destBlob First destination blob.
+        /// @param sourceBlob First source blob.
+        /// @param count Number of blobs.
+        /// @param destByte Canonical destination byte offset.
+        /// @param sourceByte Canonical source byte offset.
+        /// @param bytes Canonical byte length of the run.
+        /// @return Nothing.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        void moveBlobRange(int32_t destBlob, int32_t sourceBlob, int32_t count,
+                           int32_t destByte, int32_t sourceByte, int32_t bytes) {
+            if (shared_ == nullptr) { moveBytes(destByte, sourceByte, bytes); return; }
+            assert(destBlob <= sourceBlob);
+            for (int32_t blob = 0; blob < count; ++blob) {
+                int32_t id = 0;
+                blobPool_.copyRunTo((sourceBlob + blob) * 4, 4, reinterpret_cast<char*>(&id));
+                const char* value = reinterpret_cast<const char*>(&id);
+                for (int32_t byte = 0; byte < 4; ++byte)
+                    blobPool_.setAt((destBlob + blob) * 4 + byte, value[byte]);
+            }
+        }
+
         void moveBytes(int32_t destByte, int32_t srcByte, int32_t n) {
             assert(destByte <= srcByte);
             int32_t done = 0;
@@ -2308,7 +2632,14 @@ namespace gl {
         ///        truncate.
         ///
         /// @param n Retained byte count, in `[0, poolByteCount()]`.
-        void truncatePool(int32_t n) { blobPool_.truncate(n); }
+        void truncatePool(int32_t n) {
+            if (shared_ != nullptr) {
+                assert(n >= 0 && n <= sharedLogicalBytes_);
+                sharedLogicalBytes_ = n;
+                blobPool_.truncate(blobStarts_.size() * 4);
+                releaseSharedIfUnused();
+            } else blobPool_.truncate(n);
+        }
 
         /// @brief Dump the dense run-start column from `fromRow` — the runs tag.
         ///
@@ -2349,6 +2680,19 @@ namespace gl {
         /// @param out      Byte sink.
         /// @param fromByte First pool byte offset.
         void appendBlobPoolBytes(std::vector<char>& out, int32_t fromByte) const {
+            if (shared_ != nullptr) {
+                assert(fromByte >= 0 && fromByte <= sharedLogicalBytes_);
+                for (int32_t blob = 0; blob < blobCount(); ++blob) {
+                    if (blobStarts_[blob] < fromByte) { assert(blobEnd(blob) <= fromByte); continue; }
+                    const int32_t length = blobEnd(blob) - blobStarts_[blob];
+                    for (int32_t offset = 0; offset < length;) {
+                        int32_t count = 0;
+                        const char* bytes = blobChunk(blob, offset, count);
+                        out.insert(out.end(), bytes, bytes + count); offset += count;
+                    }
+                }
+                return;
+            }
             blobPool_.appendSpanBytes(out, fromByte);
         }
 
@@ -2357,13 +2701,72 @@ namespace gl {
         /// @param bytes    Source stream of `rowCount` bytes.
         /// @param rowCount Bytes to append; >= 0.
         void bulkLoadBlobPoolBytes(const char* bytes, int64_t rowCount) {
+            if (shared_ != nullptr) {
+                assert(rowCount >= 0 && rowCount <= INT32_MAX - sharedLogicalBytes_);
+                const int32_t finalBytes = sharedLogicalBytes_ + static_cast<int32_t>(rowCount);
+                const int32_t firstBlob = blobPool_.size() / 4;
+                int32_t consumed = 0;
+                for (int32_t blob = firstBlob; blob < blobCount(); ++blob) {
+                    const int32_t end = blob + 1 < blobCount() ? blobStarts_[blob + 1] : finalBytes;
+                    assert(blobStarts_[blob] == sharedLogicalBytes_ + consumed);
+                    const int32_t length = end - blobStarts_[blob];
+                    assert(length > 0 && consumed + length <= rowCount);
+                    const int32_t id = internSharedBlob(StrSpan(bytes + consumed, length));
+                    blobPool_.appendRun(reinterpret_cast<const char*>(&id), sizeof(id));
+                    consumed += length;
+                }
+                assert(consumed == rowCount);
+                sharedLogicalBytes_ = finalBytes;
+                return;
+            }
             blobPool_.bulkAppendBytes(bytes, rowCount);
         }
 
     private:
+        friend class SharedBytePool;
+        LbArena* arena_;
+        SharedBytePool* shared_ = nullptr;
+        bool allowOversized_ = false;
+        BlobCsrValueStore* nextShared_ = nullptr;
+        int32_t sharedLogicalBytes_ = 0;
+        /// @brief Store a positive-length immutable value payload.
+        ///
+        /// @details The pool stores canonical bytes once across key and value clients.
+        ///
+        /// @param bytes Canonical record bytes.
+        /// @return Shared identifier or private large-record handle.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        int32_t internSharedBlob(StrSpan bytes);
+        /// @brief Read one contiguous fragment of an ordinary or shared record.
+        /// @details Positive shared handles name dictionary bytes; negative handles
+        /// name private paged records whose length exceeds one dictionary page.
+        /// @param blob Existing zero-based record ordinal.
+        /// @param offset Byte offset strictly inside that record.
+        /// @param count Receives the number of contiguous bytes available.
+        /// @return Resident bytes valid until mutation, collection or eviction.
+        /// @invariant Fragment concatenation equals the canonical record bytes.
+        const char* blobChunk(int32_t blob, int32_t offset, int32_t& count) const;
+
+        /// @brief Reclaim obsolete private large records at a quiescent seam.
+        /// @details A scratch copy preserves every live record while its private
+        /// offsets are repacked. The canonical offsets and stream never change.
+        /// @param scratch Separate arena for the bounded-lifetime copying pass.
+        /// @return Nothing.
+        /// @invariant No borrowed record span may cross this collection seam.
+        void compactOversized(ScratchArena& scratch);
+
+        /// @brief Release shared payload when this reset empties the last client.
+        ///
+        /// @details Live key or value clients retain the shared dictionary.
+        /// This check never changes their membership or payload views.
+        ///
+        /// @return Nothing.
+        void releaseSharedIfUnused();
+
         PagedVector<int32_t> runStarts_;   // id-1 -> first blob index (CSR/blobs)
         PagedVector<int32_t> blobStarts_;  // blob -> byte offset    (CSR/bytes)
-        PagedVector<char> blobPool_;       // all blob bytes, dense, key-id order
+        PagedVector<char> blobPool_;
+        PagedVector<char> oversized_;      // private records larger than one shared page
 
     };
 
@@ -2399,7 +2802,8 @@ namespace gl {
     /// under the project's C++17/MSVC — empty-base optimization is the portable
     /// zero-cost form), keeping `ColdStringTable`'s layout byte-identical.
     ///
-    /// key → id is the heap index (FNV content hash, linear probing, ids in
+    /// key → id is the heap index (content hash — `coldKeyHash` for byte
+    /// keys, FNV-1a `hashSpan` for fixed-size keys — linear probing, ids in
     /// int32 slots); id → key is the key store's positional `decodeAt`. The key
     /// columns and the value columns are cold paged streams; the index is
     /// DERIVED — rebuilt on reload, never deloaded (I-117).
@@ -2501,14 +2905,34 @@ namespace gl {
         /// @return Const reference to the owned key store.
         const KeyStore& keyStore() const { return ks_; }
 
+        /// @brief Where a probe for an absent key ended — the bucket a following
+        ///        insert of that key takes, valid while the key set is unchanged.
+        ///
+        /// @details
+        /// Filled by `lookupForInsert`; consumed by `mintAt` / `insertAt`, which
+        /// assert that the key count, the key-set epoch and the index capacity
+        /// still match (no mint, erase or rebuild in between).
+        struct InsertHint {
+            /// First empty bucket of the probe path; -1 for an empty index.
+            int32_t slot = -1;
+            /// Bucket capacity at the probe.
+            int32_t capacity = 0;
+            /// Key count at the probe.
+            int32_t count = 0;
+            /// Key-set epoch at the probe.
+            uint32_t epoch = 0;
+        };
+
         /// @brief Find-or-mint: the interner encode primitive.
         ///
         /// @details
         /// Single-threaded write side only (I-83). A hit returns the existing id
         /// without touching anything; a miss appends the key (cold) at the next
-        /// id and inserts that id into the throw-away paged hash index (growing
-        /// it via a rebuild at 1/2 load). The cold key append escalates the
-        /// aggregate dirty flag; the throw-away index never touches a dirty flag.
+        /// id and inserts that id into the throw-away paged hash index at the
+        /// empty bucket the miss probe ended on (the bucket a fresh placement
+        /// would choose), growing the index via a rebuild at 1/2 load. The cold
+        /// key append escalates the aggregate dirty flag; the throw-away index
+        /// never touches a dirty flag.
         ///
         /// @param k Key to intern.
         /// @return The key's id; >= 1.
@@ -2516,23 +2940,59 @@ namespace gl {
             assert(arena_->resident()
                 && "mint on a deloaded LB - reload at a sanctioned touch "
                    "point first (I-111)");
-            const int32_t existing = lookup(k);
+            int32_t emptySlot = -1;
+            const int32_t existing = probe(k, emptySlot);
             if (existing != 0) return existing;
-            ks_.appendKey(k);
-            const int32_t id = ks_.count();
-            indexInsert(id);
-            ++insertEpoch_;
-            // Consistency: the just-minted key must resolve to its own id
-            // through the index (a cheap per-mint round-trip tripwire).
-            assert(lookup(k) == id
-                && "cold-index desync: minted key not findable at its id");
+            return mintAbsent(k, emptySlot);
+        }
+
+        /// @brief Probe `k` and remember where a following insert of it goes —
+        ///        the first half of a find-then-insert that probes once.
+        ///
+        /// @details
+        /// Same result as `lookup`. On a miss, @p hint records the empty bucket
+        /// that ended the probe with the key count, epoch and capacity, so
+        /// `mintAt` / `insertAt` can place the key without probing again.
+        ///
+        /// @param k Key to look up.
+        /// @param hint [out] The insert position for an absent key.
+        /// @return The id, or 0 when `k` was never minted.
+        int32_t lookupForInsert(const KeyView& k, InsertHint& hint) const {
+            assert(arena_->resident()
+                && "lookup on a deloaded LB - reload at a sanctioned touch "
+                   "point first (I-111)");
+            const int32_t id = probe(k, hint.slot);
+            hint.capacity = buckets_.capacity();
+            hint.count = ks_.count();
+            hint.epoch = insertEpoch_;
             return id;
+        }
+
+        /// @brief Mint `k`, which `lookupForInsert` just reported absent, at the
+        ///        bucket its probe ended on.
+        ///
+        /// @details
+        /// Identical to `mint` on a miss (same id, same bucket, same growth rule,
+        /// same tripwire) without the second probe. Asserts that the key set and
+        /// the index are unchanged since @p hint was taken.
+        ///
+        /// @param k The absent key.
+        /// @param hint The position from `lookupForInsert(k, hint)`.
+        /// @return The new id.
+        int32_t mintAt(const KeyView& k, const InsertHint& hint) {
+            assert(arena_->resident()
+                && "mint on a deloaded LB - reload at a sanctioned touch "
+                   "point first (I-111)");
+            assert(hint.count == ks_.count() && hint.epoch == insertEpoch_
+                && hint.capacity == buckets_.capacity()
+                && "HashMap::mintAt: the key set changed since lookupForInsert");
+            return mintAbsent(k, hint.slot);
         }
 
         /// @brief Non-minting probe: the interner lookup primitive.
         ///
         /// @details
-        /// Safe from the parallel burst (pure read): an FNV content hash, then
+        /// Safe from the parallel burst (pure read): a content hash, then
         /// linear probing of the throw-away paged hash buckets with a key
         /// comparison against the cold keys. Residency is asserted FIRST — a
         /// deloaded set reads empty, and answering "not found" there is a silent
@@ -2545,16 +3005,8 @@ namespace gl {
             assert(arena_->resident()
                 && "lookup on a deloaded LB - reload at a sanctioned touch "
                    "point first (I-111)");
-            if (buckets_.empty()) return 0;
-            const uint64_t mask = buckets_.capacity() - 1;
-            const uint64_t probeHash = ks_.hashProbe(k);
-            uint64_t i = probeHash & mask;
-            while (true) {
-                const int32_t id = buckets_.at(static_cast<int32_t>(i));
-                if (id == 0) return 0;
-                if (ks_.equalStored(id, k, probeHash)) return id;
-                i = (i + 1) & mask;
-            }
+            int32_t emptySlot = -1;
+            return probe(k, emptySlot);
         }
 
         /// @brief Decode an id back to its key (the cold, positional direction).
@@ -2671,6 +3123,28 @@ namespace gl {
             assert(id == before + 1
                 && "HashMap::insert on an existing key (set-once — an in-place "
                    "value replace needs a reviewed PagedVector change)");
+            ValueStore::appendValue(v);
+            return id;
+        }
+
+        /// @brief Insert `k`, which `lookupForInsert` just reported absent, with
+        ///        its value — `insert` without the second probe.
+        ///
+        /// @details
+        /// Mints through `mintAt` (same id and bucket as `insert`) and appends the
+        /// value at the matching id. Single-threaded write side only (I-83).
+        ///
+        /// @tparam VV The value type (deduced).
+        /// @param k The absent key.
+        /// @param v The value to store.
+        /// @param hint The position from `lookupForInsert(k, hint)`.
+        /// @return The key's id; >= 1.
+        template <typename VV>
+        int32_t insertAt(const KeyView& k, const VV& v, const InsertHint& hint) {
+            const int32_t before = ks_.count();
+            const int32_t id = mintAt(k, hint);
+            assert(id == before + 1
+                && "HashMap::insertAt on an existing key");
             ValueStore::appendValue(v);
             return id;
         }
@@ -2861,9 +3335,7 @@ namespace gl {
             if (lo < rl && !cmp(v, ValueStore::valueRaw(rs + lo)))
                 return id;                   // cmp-equal -> already present
             ValueStore::insertValueAt(rs + lo, v);
-            const int32_t n = ks_.count();
-            for (int32_t idx = id; idx < n; ++idx)   // shift later run starts +1
-                ValueStore::setRunStartRaw(idx, ValueStore::runStartRaw(idx) + 1);
+            ValueStore::shiftRunStartsRaw(id, ks_.count(), 1);   // later runs move +1
             return id;
         }
 
@@ -2876,8 +3348,9 @@ namespace gl {
         /// verbatim (the caller supplies them in the run's order — a
         /// `std::set` iteration is ascending, matching the default order). An
         /// existing key overwrites the common prefix in place (no shift when the
-        /// size is unchanged — the dominant case) then grows (`insertValueAt`)
-        /// or shrinks (`eraseValueAt`) the tail and adjusts every later key's
+        /// size is unchanged — the dominant case) then grows (`insertValuesAt`)
+        /// or shrinks (`eraseValuesAt`) the tail with one value-tail shift, and
+        /// adjusts every later key's
         /// run start by the size delta. Single-threaded write side only (I-83).
         ///
         /// @tparam VS  The value store (defaulted; do not pass explicitly — it
@@ -2911,19 +3384,11 @@ namespace gl {
                 ValueStore::setValueRaw(rs + j, vals[j]);
             const int32_t n = ks_.count();
             if (m > rl) {
-                for (int32_t j = rl; j < m; ++j)
-                    ValueStore::insertValueAt(rs + j, vals[j]);
-                const int32_t delta = m - rl;
-                for (int32_t idx = id; idx < n; ++idx)
-                    ValueStore::setRunStartRaw(
-                        idx, ValueStore::runStartRaw(idx) + delta);
+                ValueStore::insertValuesAt(rs + rl, vals + rl, m - rl);
+                ValueStore::shiftRunStartsRaw(id, n, m - rl);
             } else if (m < rl) {
-                for (int32_t j = m; j < rl; ++j)
-                    ValueStore::eraseValueAt(rs + m);   // remove at rs+m each time
-                const int32_t delta = rl - m;
-                for (int32_t idx = id; idx < n; ++idx)
-                    ValueStore::setRunStartRaw(
-                        idx, ValueStore::runStartRaw(idx) - delta);
+                ValueStore::eraseValuesAt(rs + m, rl - m);
+                ValueStore::shiftRunStartsRaw(id, n, m - rl);
             }
             return id;
         }
@@ -3051,6 +3516,24 @@ namespace gl {
         ///
         /// @return Pool byte count.
         int32_t poolByteCount() const { return ValueStore::poolByteCount(); }
+
+        /// @brief Bind normalized-key value payload to a shared block store.
+        ///
+        /// @details This door instantiates only for blob value stores and must be called before the first value.
+        ///
+        /// @param pool Same-arena immutable payload pool.
+        /// @param allowOversized Preserve larger records in private paged storage.
+        /// @return Nothing.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        void bindSharedBlobBytes(SharedBytePool& pool, bool allowOversized = false) { ValueStore::bindSharedBlobs(pool, allowOversized); }
+
+        /// @brief Report resident value-pool element bytes.
+        ///
+        /// @details Used by memory accounting while canonical serialization keeps its ordinary size.
+        ///
+        /// @return Physical value-pool bytes, excluding shared dictionary payload.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+        int64_t residentPoolByteCount() const { return ValueStore::residentPoolByteCount(); }
 
         /// @brief Replace key `k`'s run with `M` blobs — the whole-run replace
         ///        (the `equivalenceClassesMap` bucket-rebuild write door).
@@ -3271,6 +3754,60 @@ namespace gl {
                 RT_SCOPE_HERE("CSR_RUNSTARTS_SHIFT");
                 RT_NOTE_ITERATIONS_HERE(kc - id);   // later keys renumbered
                 ValueStore::addToRunStartsSuffix(id, 1);
+            }
+        }
+
+        /// @brief Remove the `j`-th blob of an existing key `id`'s run WITHOUT
+        ///        touching the other blobs — the removal twin of
+        ///        @ref appendBlobToRun.
+        ///
+        /// @details
+        /// A one-record removal that reads the whole run and re-assigns the
+        /// survivors moves every surviving record through the value store
+        /// again; in a store bound to a shared byte pool (D-440) that re-interns
+        /// every survivor, although the pool returns the identifier each
+        /// survivor already holds, and copies every private oversized survivor
+        /// under a fresh handle. This door splices out the one blob instead:
+        /// `replaceRun` with no replacement record (nothing is emitted, so
+        /// nothing is interned or copied) moves the byte or identifier tail and
+        /// the blob-start tail once, then every later key's run start is
+        /// rebased by minus one. The surviving blobs keep their stored bytes,
+        /// shared identifiers or oversized handles, so the logical value
+        /// columns (run starts, blob starts, pool bytes) are byte-identical to
+        /// re-assigning the run without blob `j`. The key keeps its id when its
+        /// run becomes empty; erasing empty keys stays with the caller.
+        /// Single-threaded write side only (I-83). A member template,
+        /// instantiated only when called.
+        ///
+        /// @tparam VS Value-store selector; instantiated only for
+        ///            `BlobCsrValueStore`.
+        /// @param id An existing key's id; `1 <= id <= count()`.
+        /// @param j  The blob's position inside the key's run;
+        ///           `0 <= j < runLen(id)`.
+        /// @return Nothing.
+        /// @invariant The logical value columns equal `assignRunAtId(id, <run
+        ///            without blob j>)`, byte for byte; no shared payload is
+        ///            minted and no oversized record is copied.
+        /// @see appendBlobToRun, assignRunAtId,
+        ///      BlobCsrValueStore::replaceRunGenerated.
+        template <typename VS = ValueStore>
+        void eraseBlobFromRun(int32_t id, int32_t j) {
+            const int32_t kc = ks_.count();
+            assert(id >= 1 && id <= kc
+                && "HashMap::eraseBlobFromRun on a non-existent key");
+            const int32_t b0 = ValueStore::runStartRaw(id - 1);
+            const int32_t oldCount = ValueStore::runLen(id, kc);
+            assert(j >= 0 && j < oldCount
+                && "HashMap::eraseBlobFromRun outside the key's run");
+            {
+                RT_SCOPE_HERE("CSR_REPLACE_RUN");
+                ValueStore::replaceRun(b0 + j, 1, nullptr, nullptr, 0);
+            }
+            // One blob left before every later key's run -> -1 each.
+            {
+                RT_SCOPE_HERE("CSR_RUNSTARTS_SHIFT");
+                RT_NOTE_ITERATIONS_HERE(kc - id);   // later keys renumbered
+                ValueStore::addToRunStartsSuffix(id, -1);
             }
         }
 
@@ -3586,7 +4123,7 @@ namespace gl {
                     ++writeBlob;
                 }
                 if (writeByte != yStart && runBytes > 0)
-                    ValueStore::moveBytes(writeByte, yStart, runBytes);
+                    ValueStore::moveBlobRange(writeBlob - rl, rs, rl, writeByte, yStart, runBytes);
                 writeByte += runBytes;
                 ++writeKey;
             }
@@ -3826,11 +4363,13 @@ namespace gl {
         /// @details
         /// Erasures and value writes leave it unchanged. A consumer that
         /// derives a transient index over the key set (the equi-class hooks'
-        /// `RejectedValidityBuckets`) records the epoch at build time and asserts
-        /// it unchanged at every later use: a key the index has never seen cannot
-        /// exist while the epoch stands, so a stale-entry filter (`lookup == 0`)
-        /// is the only tolerance the index needs. Process-lifetime monotonic,
-        /// never dumped, never a proof input.
+        /// `RejectedValidityBuckets`) reads it as a freshness signal: while the
+        /// epoch stands, a key the index has never seen cannot exist, so a
+        /// stale-entry filter (`lookup == 0`) is the only tolerance the index
+        /// needs; the parked-or hooks rebuild their index when the epoch moved
+        /// (`RejectedValidityBuckets::ensureCurrent`), the rejected-map hooks
+        /// keep a per-apply snapshot. Process-lifetime monotonic, never dumped,
+        /// never a proof input.
         ///
         /// @return The current key-set epoch.
         uint32_t insertEpoch() const { return insertEpoch_; }
@@ -3951,6 +4490,16 @@ namespace gl {
                 assert(total <= INT32_MAX
                     && "cold key content exceeds the int32 deload count range");
                 return static_cast<int32_t>(total);
+            }
+
+            /// @brief Report resident payload attributed to this byte column.
+            ///
+            /// @details Shared payload is attributed once to the block pool.
+            /// Canonical serialization still emits this map's ordinary bytes.
+            ///
+            /// @return Owned payload bytes, or zero for a shared byte column.
+            int64_t residentContentBytes() const {
+                return owner_->keyStore().sharesBytes() ? 0 : size();
             }
 
             /// @brief Dump the content from a BYTE offset (tail windows index
@@ -4301,6 +4850,15 @@ namespace gl {
             /// @return `poolByteCount()` of the container.
             int32_t size() const { return owner_->poolByteCount(); }
 
+            /// @brief Report resident bytes of this value-pool representation.
+            ///
+            /// @details Shared normalized keys occupy private identifiers here;
+            /// their immutable payload is attributed to the block shared pool.
+            ///
+            /// @return Resident value-pool element bytes, excluding page padding.
+            int64_t residentContentBytes() const { return owner_->residentPoolByteCount(); }
+
+
             /// @brief Dump the pool bytes from byte offset `fromRow`.
             ///
             /// @param out     Byte sink.
@@ -4338,6 +4896,69 @@ namespace gl {
             for (int32_t b = 0; b < cap; ++b)
                 if (buckets_.at(b) != 0) ++occ;
             return occ;
+        }
+
+        /// @brief The one probe loop: `k`'s id on a hit, else 0 with the first
+        ///        empty bucket of `k`'s probe path.
+        ///
+        /// @details
+        /// Linear probing from `k`'s content hash with a key comparison against
+        /// the cold keys. The empty bucket that ends a miss is the bucket
+        /// `indexPlace` chooses for a key with `k`'s hash while the index is
+        /// unchanged (same start, same step, first empty slot), so a following
+        /// insert can take it without probing again.
+        ///
+        /// @param k Key to find.
+        /// @param emptySlot [out] On a miss, the ending empty bucket, or -1 when
+        ///        the index is empty; unchanged meaning on a hit.
+        /// @return The id, or 0 on a miss.
+        GL_FORCEINLINE int32_t probe(const KeyView& k, int32_t& emptySlot) const {
+            emptySlot = -1;
+            if (buckets_.empty()) return 0;
+            const uint64_t mask = buckets_.capacity() - 1;
+            const uint64_t probeHash = ks_.hashProbe(k);
+            uint64_t i = probeHash & mask;
+            while (true) {
+                const int32_t id = buckets_.at(static_cast<int32_t>(i));
+                if (id == 0) {
+                    emptySlot = static_cast<int32_t>(i);
+                    return 0;
+                }
+                if (ks_.equalStored(id, k, probeHash)) return id;
+                i = (i + 1) & mask;
+            }
+        }
+
+        /// @brief Append absent key `k` and index it at @p emptySlot — the miss
+        ///        half of `mint`.
+        ///
+        /// @details
+        /// Appends the key at the next id; below 1/2 load the id takes the empty
+        /// bucket the miss probe ended on, otherwise (or with no index yet) the
+        /// index is rebuilt, exactly as `indexInsert` decides. Bumps the key-set
+        /// epoch and keeps the per-mint round-trip tripwire.
+        ///
+        /// @param k The key, absent from the set.
+        /// @param emptySlot The empty bucket that ended `k`'s miss probe, or -1.
+        /// @return The new id.
+        int32_t mintAbsent(const KeyView& k, int32_t emptySlot) {
+            ks_.appendKey(k);
+            const int32_t id = ks_.count();
+            const int64_t n = id;
+            if (buckets_.empty()
+                || n * 2 >= static_cast<int64_t>(buckets_.capacity())) {
+                rebuildIndex();     // sizes for n and places every id
+            } else {
+                assert(emptySlot >= 0 && buckets_.at(emptySlot) == 0
+                    && "cold-index desync: the probed empty bucket is taken");
+                buckets_.set(emptySlot, id);
+            }
+            ++insertEpoch_;
+            // Consistency: the just-minted key must resolve to its own id
+            // through the index (a cheap per-mint round-trip tripwire).
+            assert(lookup(k) == id
+                && "cold-index desync: minted key not findable at its id");
+            return id;
         }
 
         /// @brief Insert `id` into the hash index, growing (via a rebuild) when
@@ -4432,5 +5053,387 @@ namespace gl {
     ///        (D-169, I-98).
     template <typename KeyStore>
     using ColdBlobMap = HashMap<KeyStore, BlobCsrValueStore>;
+
+    /// @brief Block-local immutable payload store for independent native maps.
+    ///
+    /// @details The derived dictionary shares bytes only. Client identifiers and membership remain local. Canonical reload rebuilds the dictionary; raw eviction preserves its arena pages and metadata.
+    ///
+    /// @return A noncopyable arena-owned shared store.
+    /// @invariant No key identifier or physical address from this pool is an observable proof identity.
+    class SharedBytePool {
+    public:
+    /// @brief Bind the lazy shared store to one logic-block arena.
+    ///
+    /// @details Construction allocates no pages. Clients must be destroyed before this store.
+    ///
+    /// @param arena Resident arena that outlives this pool.
+    /// @param dirty Owning block dirty state, including raw-image freshness.
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    explicit SharedBytePool(LbArena* arena, DirtyState* dirty) : arena_(arena), contents_(arena, dirty) { assert(arena != nullptr && dirty != nullptr); }
+    /// @brief Check that every shared client detached before destruction.
+    ///
+    /// @details Member-owned dictionary pages are released by their ordinary container destructors.
+    ///
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    ~SharedBytePool() { assert(keyHead_ == nullptr && blobHead_ == nullptr); }
+    SharedBytePool(const SharedBytePool&) = delete;
+    SharedBytePool& operator=(const SharedBytePool&) = delete;
+    /// @brief Intern immutable bytes in this block.
+    ///
+    /// @details A repeated byte string reuses its existing payload identifier.
+    ///
+    /// @param bytes Canonical bytes to retain.
+    /// @return Positive shared-pool identifier.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    int32_t intern(StrSpan bytes) { return contents_.mint(bytes); }
+    /// @brief Resolve a shared payload.
+    ///
+    /// @details The caller must keep the block resident and avoid collection while holding the view.
+    ///
+    /// @param id Existing positive shared identifier.
+    /// @return Borrowed immutable bytes.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    StrSpan view(int32_t id) const { return contents_.keyAt(id); }
+    /// @brief Report number of retained distinct payloads.
+    ///
+    /// @details Read-only accounting includes retained payload until the next quiescent collection.
+    ///
+    /// @return Number of retained distinct payloads.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    int32_t count() const { return contents_.count(); }
+    /// @brief Report canonical bytes retained once by the shared dictionary.
+    ///
+    /// @details Read-only accounting includes retained payload until the next quiescent collection.
+    ///
+    /// @return Canonical bytes retained once by the shared dictionary.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    int64_t logicalByteCount() const { return contents_.keyStore().logicalByteCount(); }
+    /// @brief Report derived shared-dictionary hash-index bytes.
+    ///
+    /// @details Read-only accounting includes retained payload until the next quiescent collection.
+    ///
+    /// @return Derived shared-dictionary hash-index bytes.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    int64_t indexBytes() const { return contents_.indexBytes(); }
+    /// @brief Report physical pages retained by the shared dictionary.
+    ///
+    /// @details Read-only accounting includes retained payload until the next quiescent collection.
+    ///
+    /// @return Physical pages retained by the shared dictionary.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    int64_t liveBytes() const { return contents_.liveBytes(); }
+    /// @brief Release derived shared bytes after every client has released its rows.
+    ///
+    /// @details Canonical deload calls this after its container and derived-index walks. Raw eviction keeps the store intact.
+    ///
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    void release() {
+        for (const BytesKeyStore* client = keyHead_; client; client = client->nextShared_)
+            assert(client->empty());
+        for (const BlobCsrValueStore* client = blobHead_; client; client = client->nextShared_)
+            assert(client->blobCount() == 0);
+        contents_.release();
+    }
+    /// @brief Release the dictionary when no client retains a payload reference.
+    ///
+    /// @details A populated client keeps its immutable payload alive. When all
+    /// clients are empty, immediate release handles grid teardown as well as
+    /// ordinary resets without waiting for another worker maintenance seam.
+    ///
+    /// @return Nothing.
+    /// @invariant This operation never invalidates a live client reference.
+    void releaseIfUnused() {
+        if (contents_.empty()) return;
+        for (const BytesKeyStore* client = keyHead_; client; client = client->nextShared_)
+            if (!client->empty()) return;
+        for (const BlobCsrValueStore* client = blobHead_; client; client = client->nextShared_)
+            if (client->blobCount() != 0) return;
+        contents_.release();
+    }
+
+    /// @brief Collect unreferenced payload and compact retained bytes in place.
+    ///
+    /// @details Walk client references, preserve shared-key order, remap only private payload identifiers, then reclaim empty payload pages. No live span may cross this maintenance seam.
+    ///
+    /// @param scratch Separate page-tier scratch arena, empty of escaping views.
+    /// @return Nothing.
+    /// @invariant Every client keeps the same local identifiers, hashes, key order and canonical bytes.
+    void collect(ScratchArena& scratch) {
+        assert(&scratch != arena_);
+        for (BlobCsrValueStore* client = blobHead_; client; client = client->nextShared_)
+            client->compactOversized(scratch);
+        const int32_t oldCount = contents_.count();
+        if (oldCount == 0) return;
+        DirtyState remapDirty = DirtyState::Clean;
+        PagedVector<int32_t> remap(&scratch, &remapDirty);
+        for (int32_t id = 0; id <= oldCount; ++id) remap.push_back(0);
+        for (const BytesKeyStore* client = keyHead_; client; client = client->nextShared_)
+            for (int32_t row = 0; row < client->locations_.size(); ++row) {
+                const int32_t id = client->locations_[row].byteStart;
+                assert(id > 0 && id <= oldCount);
+                remap.setAt(id, 1);
+            }
+        for (const BlobCsrValueStore* client = blobHead_; client; client = client->nextShared_)
+            for (int32_t blob = 0; blob < client->blobCount(); ++blob) {
+                int32_t id = 0;
+                client->blobPool_.copyRunTo(blob * 4, 4, reinterpret_cast<char*>(&id));
+                if (id < 0) { assert(client->allowOversized_); continue; }
+                assert(id > 0 && id <= oldCount);
+                remap.setAt(id, 1);
+            }
+        int32_t survivors = 0;
+        for (int32_t id = 1; id <= oldCount; ++id)
+            if (remap[id] != 0) remap.setAt(id, ++survivors);
+        if (survivors == oldCount) return;
+        int32_t oldId = 0;
+        const int32_t removed = contents_.eraseIf([&](StrSpan) { return remap[++oldId] == 0; });
+        assert(oldId == oldCount && removed == oldCount - survivors);
+        for (BytesKeyStore* client = keyHead_; client; client = client->nextShared_)
+            for (int32_t row = 0; row < client->locations_.size(); ++row) {
+                ColdStringLocation location = client->locations_[row];
+                const int32_t id = remap[location.byteStart];
+                assert(id > 0);
+                if (id != location.byteStart) {
+                    location.byteStart = id;
+                    client->locations_.setAt(row, location);
+                }
+            }
+        for (BlobCsrValueStore* client = blobHead_; client; client = client->nextShared_)
+            for (int32_t blob = 0; blob < client->blobCount(); ++blob) {
+                int32_t old = 0;
+                client->blobPool_.copyRunTo(blob * 4, 4, reinterpret_cast<char*>(&old));
+                if (old < 0) { assert(client->allowOversized_); continue; }
+                const int32_t id = remap[old];
+                assert(id > 0);
+                if (id != old) {
+                    const char* bytes = reinterpret_cast<const char*>(&id);
+                    for (int32_t byte = 0; byte < 4; ++byte) client->blobPool_.setAt(blob * 4 + byte, bytes[byte]);
+                }
+            }
+        contents_.keyStore().compactStoredBytes(arena_->pageBytes());
+    }
+    private:
+        friend class BytesKeyStore;
+        friend class BlobCsrValueStore;
+        LbArena* arena_;
+        ColdHashSet<BytesKeyStore> contents_;
+        BytesKeyStore* keyHead_ = nullptr;
+        BlobCsrValueStore* blobHead_ = nullptr;
+    };
+    /// @brief Detach a byte-key client before its metadata is destroyed.
+    ///
+    /// @details Only the registration link is removed; payload lifetime belongs to the enclosing pool.
+    ///
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    inline BytesKeyStore::~BytesKeyStore() {
+        if (shared_ != nullptr) {
+            BytesKeyStore** link = &shared_->keyHead_;
+            while (*link != this) { assert(*link != nullptr); link = &(*link)->nextShared_; }
+            *link = nextShared_;
+        }
+    }
+    /// @brief Bind an empty key store to block-local immutable shared bytes.
+    ///
+    /// @details The existing canonical byte columns remain the serialization interface.
+    ///
+    /// @param pool Shared pool on the same logic-block arena.
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    inline void BytesKeyStore::bindSharedBytes(SharedBytePool& pool) {
+        assert(shared_ == nullptr && locations_.empty() && bytePool_.empty());
+        assert(arena_ == pool.arena_);
+        shared_ = &pool;
+        nextShared_ = pool.keyHead_;
+        pool.keyHead_ = this;
+    }
+    /// @brief Append a local key reference to shared immutable payload.
+    ///
+    /// @details Keep the local cached hash and logical byte count for ordinary lookup and serialization.
+    ///
+    /// @param bytes Canonical key bytes.
+    /// @return Nothing.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    inline void BytesKeyStore::appendSharedKey(StrSpan bytes) {
+        assert(shared_ != nullptr);
+        assert(logicalByteCount_ <= std::numeric_limits<int64_t>::max() - bytes.len);
+        const int32_t id = shared_->intern(bytes);
+        locations_.push_back(ColdStringLocation{id, bytes.len, coldKeyHash(bytes)});
+        logicalByteCount_ += bytes.len;
+    }
+    /// @brief Resolve a block-local shared payload identifier.
+    ///
+    /// @details The pool owns the immutable bytes and must remain resident.
+    ///
+    /// @param id Existing positive shared identifier.
+    /// @return Borrowed payload view.
+    /// @invariant Map membership and canonical key bytes remain unchanged.
+    inline StrSpan BytesKeyStore::sharedBytesAt(int32_t id) const {
+        assert(shared_ != nullptr);
+        return shared_->view(id);
+    }
+    /// @brief Compact independently owned key bytes after a stable key erase.
+    ///
+    /// @details No-straddle placement is retained. Forward memmove is safe because stable key erasure preserves increasing source offsets.
+    ///
+    /// @param pageBytes Byte capacity of one arena page.
+    /// @return Nothing.
+    /// @invariant Key bytes, key identifiers and hashes do not change.
+    inline void BytesKeyStore::compactStoredBytes(int32_t pageBytes) {
+        assert(shared_ == nullptr && pageBytes > 0);
+        int32_t write = 0;
+        for (int32_t row = 0; row < locations_.size(); ++row) {
+            ColdStringLocation location = locations_[row];
+            assert(location.len >= 0 && location.len <= pageBytes);
+            const int32_t within = write % pageBytes;
+            if (within + location.len > pageBytes) write += pageBytes - within;
+            assert(write <= location.byteStart);
+            if (location.len > 0 && write != location.byteStart) {
+                int32_t sourceRun = 0, targetRun = 0;
+                const char* source = bytePool_.contiguousRun(location.byteStart, sourceRun);
+                char* target = const_cast<char*>(bytePool_.contiguousRun(write, targetRun));
+                assert(sourceRun >= location.len && targetRun >= location.len);
+                std::memmove(target, source, static_cast<std::size_t>(location.len));
+            }
+            if (write != location.byteStart) { location.byteStart = write; locations_.setAt(row, location); }
+            write += location.len;
+        }
+        bytePool_.truncate(write);
+    }
+
+        /// @brief Detach the shared blob client before member destruction.
+        ///
+        /// @details The enclosing pool remains alive until all clients are destroyed.
+        ///
+        /// @return Nothing.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+    inline BlobCsrValueStore::~BlobCsrValueStore() {
+        if (shared_ != nullptr) {
+            BlobCsrValueStore** link = &shared_->blobHead_;
+            while (*link != this) { assert(*link != nullptr); link = &(*link)->nextShared_; }
+            *link = nextShared_;
+        }
+    }
+        /// @brief Bind an empty value store to immutable shared storage.
+        ///
+        /// @details Positive-length page-contained records share bytes. The record mode also retains larger payloads privately, preserving their full size contract.
+        ///
+        /// @param pool Same-arena block-local pool.
+        /// @param allowOversized Preserve larger records in private paged storage.
+        /// @return Nothing.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+    inline void BlobCsrValueStore::bindSharedBlobs(SharedBytePool& pool, bool allowOversized) {
+        assert(shared_ == nullptr && runStarts_.empty() && blobStarts_.empty() && blobPool_.empty());
+        assert(arena_ == pool.arena_);
+        shared_ = &pool;
+        allowOversized_ = allowOversized; nextShared_ = pool.blobHead_; pool.blobHead_ = this;
+    }
+        /// @brief Store one canonical record in its size-appropriate representation.
+        ///
+        /// @details Sharing affects storage only, never run membership or ordering.
+        ///
+        /// @param bytes Positive-length canonical record.
+        /// @return Positive shared identifier or negative private large-record handle.
+        /// @invariant Canonical bytes, local identifiers and map membership remain unchanged.
+    inline int32_t BlobCsrValueStore::internSharedBlob(StrSpan bytes) {
+        assert(shared_ != nullptr && bytes.len > 0);
+        assert(bytes.len > 0);
+        if (bytes.len <= arena_->pageBytes()) return shared_->intern(bytes);
+        assert(allowOversized_ && "normalized key value exceeds its page contract");
+        const int32_t start = oversized_.size();
+        assert(bytes.len <= INT32_MAX - start);
+        oversized_.appendRun(bytes.ptr, bytes.len);
+        return -start - 1;
+    }
+    /// @brief Resolve one contiguous fragment of a stored record.
+    /// @details Ordinary and private large payloads are page-walked; a shared
+    /// dictionary entry supplies the complete page-contained record directly.
+    /// @param blob Existing zero-based record ordinal.
+    /// @param offset Byte offset strictly inside the record.
+    /// @param count Receives the available contiguous byte count.
+    /// @return Resident bytes, borrowed until mutation, collection or eviction.
+    /// @invariant Fragment concatenation equals canonical serialized bytes.
+    inline const char* BlobCsrValueStore::blobChunk(int32_t blob, int32_t offset, int32_t& count) const {
+        assert(blob >= 0 && blob < blobCount());
+        const int32_t length = blobEnd(blob) - blobStarts_[blob];
+        assert(offset >= 0 && offset < length);
+        if (shared_ == nullptr) {
+            const char* bytes = blobPool_.contiguousRun(blobStarts_[blob] + offset, count);
+            count = std::min(count, length - offset); return bytes;
+        }
+        int32_t handle = 0; blobPool_.copyRunTo(blob * 4, 4, reinterpret_cast<char*>(&handle));
+        assert(handle != 0);
+        if (handle > 0) {
+            const StrSpan bytes = shared_->view(handle);
+            assert(bytes.len == length);
+            count = length - offset; return bytes.ptr + offset;
+        }
+        assert(allowOversized_);
+        const int32_t start = static_cast<int32_t>(-static_cast<int64_t>(handle) - 1);
+        assert(start <= oversized_.size() && length <= oversized_.size() - start);
+        const char* bytes = oversized_.contiguousRun(start + offset, count);
+        count = std::min(count, length - offset); return bytes;
+    }
+
+    /// @brief Compact private large values without changing logical records.
+    /// @details Copy live records before changing their storage, then publish
+    /// remapped private handles and refill the paged column at the same seam.
+    /// @param scratch Separate arena; no returned span outlives this call.
+    /// @return Nothing.
+    /// @invariant Record order, bytes and canonical offsets are unchanged.
+    inline void BlobCsrValueStore::compactOversized(ScratchArena& scratch) {
+        if (oversized_.empty()) return;
+        assert(shared_ != nullptr && allowOversized_ && &scratch != arena_);
+        int64_t expected = 0;
+        bool dense = true;
+        for (int32_t blob = 0; blob < blobCount(); ++blob) {
+            int32_t handle = 0; blobPool_.copyRunTo(blob * 4, 4, reinterpret_cast<char*>(&handle));
+            assert(handle != 0);
+            if (handle > 0) continue;
+            if (static_cast<int64_t>(handle) != -expected - 1) { dense = false; break; }
+            expected += blobEnd(blob) - blobStarts_[blob];
+        }
+        if (dense && expected == oversized_.size()) return;
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<char> compact(&scratch, &dirty);
+        for (int32_t blob = 0; blob < blobCount(); ++blob) {
+            int32_t handle = 0; blobPool_.copyRunTo(blob * 4, 4, reinterpret_cast<char*>(&handle));
+            if (handle > 0) continue;
+            assert(handle < 0);
+            const int32_t start = compact.size();
+            const int32_t length = blobEnd(blob) - blobStarts_[blob];
+            for (int32_t offset = 0; offset < length;) {
+                int32_t count = 0; const char* bytes = blobChunk(blob, offset, count);
+                compact.appendRun(bytes, count); offset += count;
+            }
+            const int32_t replacement = -start - 1;
+            const char* bytes = reinterpret_cast<const char*>(&replacement);
+            for (int32_t byte = 0; byte < 4; ++byte) blobPool_.setAt(blob * 4 + byte, bytes[byte]);
+        }
+        refillFrom(oversized_, compact);
+    }
+
+    /// @brief Release shared payload after local key references have been reset.
+    ///
+    /// @details The pool checks every client before releasing any payload.
+    ///
+    /// @return Nothing.
+    inline void BytesKeyStore::releaseSharedIfUnused() {
+        assert(shared_ != nullptr);
+        shared_->releaseIfUnused();
+    }
+
+    /// @brief Release shared payload after local value references have been reset.
+    ///
+    /// @details The pool retains payload while any key or value client uses it.
+    ///
+    /// @return Nothing.
+    inline void BlobCsrValueStore::releaseSharedIfUnused() {
+        assert(shared_ != nullptr);
+        shared_->releaseIfUnused();
+    }
 
 }

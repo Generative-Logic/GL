@@ -32,6 +32,17 @@
 #include <algorithm>
 #include <cstring>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#include <cstdio>
+#include <mutex>
+#pragma comment(lib, "dbghelp.lib")
+#endif
+
 namespace gl {
 
     /// @brief Bind to the global manager that grants this arena's blocks.
@@ -86,7 +97,7 @@ namespace gl {
     /// @param blockIndex The block index the cursor has reached.
     void LbArena::ensureBlock(int64_t blockIndex) {
         while (static_cast<int64_t>(blocks_.size()) <= blockIndex) {
-            blocks_.push_back(global_->acquireBlock());
+            blocks_.push_back(global_->acquireBlock(purpose_));
         }
     }
 
@@ -111,6 +122,47 @@ namespace gl {
         assert(align >= 1 && (align & (align - 1)) == 0 && align <= 16
             && "LbArena::alloc alignment must be a power of two in [1,16]");
         ensureGeometry();
+#ifdef _WIN32
+        if (bytes > blockBytes_) {
+            static std::mutex oversizedDiagnosticMutex;
+            std::lock_guard<std::mutex> lock(oversizedDiagnosticMutex);
+            const HANDLE process = GetCurrentProcess();
+            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS);
+            const BOOL symbolsReady = SymInitialize(process, nullptr, TRUE);
+            assert(symbolsReady);
+            void* frames[24];
+            const USHORT frameCount = CaptureStackBackTrace(0, 24, frames, nullptr);
+            char report[32768];
+            int used = std::snprintf(report, sizeof(report),
+                "[OR-MAIL-OVERSIZED] bytes=%d blockBytes=%d arena=%p",
+                bytes, blockBytes_, static_cast<void*>(this));
+            for (USHORT frame = 0; frame < frameCount; ++frame) {
+                alignas(SYMBOL_INFO) char symbolBytes[sizeof(SYMBOL_INFO) + 1024] = {};
+                auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBytes);
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 1023;
+                DWORD64 displacement = 0;
+                const DWORD64 address = reinterpret_cast<DWORD64>(frames[frame]);
+                const BOOL named = SymFromAddr(process, address, &displacement, symbol);
+                IMAGEHLP_LINE64 line{};
+                line.SizeOfStruct = sizeof(line);
+                DWORD lineDisplacement = 0;
+                const BOOL located = SymGetLineFromAddr64(process, address, &lineDisplacement, &line);
+                const int count = std::snprintf(report + used, sizeof(report) - used,
+                    " | frame%u=%p %s %s:%lu", frame, frames[frame],
+                    named ? symbol->Name : "<unresolved>",
+                    located ? line.FileName : "<unresolved>", located ? line.LineNumber : 0UL);
+                assert(count > 0 && count < static_cast<int>(sizeof(report)) - used);
+                used += count;
+            }
+            FILE* output = nullptr;
+            const errno_t opened = fopen_s(&output, ".debug/traps.log", "ab");
+            assert(opened == 0 && output != nullptr);
+            std::fprintf(output, "%s\n", report);
+            std::fclose(output);
+            SymCleanup(process);
+        }
+#endif
         assert(bytes <= blockBytes_
             && "single arena allocation exceeds a block — raise "
                "static_block_bytes or rethink the caller");
@@ -176,7 +228,7 @@ namespace gl {
         const int32_t pb = global_->pageBytes();
         if (freeHead_ == nullptr) {
             ensureGeometry();
-            char* block = global_->acquireBlock();
+            char* block = global_->acquireBlock(purpose_);
             pageBlocks_.push_back(block);
             const int32_t ppb = global_->blockBytes() / pb;
             // Thread the fresh pages onto the intrusive LIFO: the next-free link
@@ -399,7 +451,7 @@ namespace gl {
         const int64_t reclaimed =
             static_cast<int64_t>(pageBlocks_.size()) - keptBlocks;
         for (int32_t b = keptBlocks; b < pageBlocks_.size(); ++b) {
-            global_->releaseBlock(pageBlocks_[b]);
+            global_->releaseBlock(pageBlocks_[b], purpose_);
         }
         pageBlocks_.truncate(keptBlocks);
         // Rebuild the intrusive free-list: the slots past the live prefix in the
@@ -440,7 +492,7 @@ namespace gl {
         int32_t got = 0;
         while (got < count) {
             const int32_t take = std::min(kChunk, count - got);
-            global_->acquireBlocks(take, chunk);
+            global_->acquireBlocks(take, chunk, purpose_);
             for (int32_t i = 0; i < take; ++i)
                 dir.push_back(chunk[i]);
             got += take;
@@ -461,7 +513,7 @@ namespace gl {
             const int32_t take = std::min(kChunk, n - done);
             for (int32_t i = 0; i < take; ++i)
                 chunk[i] = dir.peek(done + i);
-            global_->releaseBlocks(chunk, take);
+            global_->releaseBlocks(chunk, take, purpose_);
             done += take;
         }
     }
@@ -705,6 +757,48 @@ namespace gl {
     ///        header for the contract).
     ///
     /// @param global Pool to draw blocks from.
+    /// @brief Give the page table and the carved-block list caller-owned
+    ///        direct storage.
+    ///
+    /// @details
+    /// Forwards to `PtrDirectory::attachStorage` for both tables. The arena
+    /// must be unused (no block, no vid): a directory switches its direct
+    /// storage only while empty.
+    ///
+    /// @param pageTable          Array for the vid -> page table.
+    /// @param pageTableCapacity  Its entry count.
+    /// @param pageBlocks         Array for the carved-block list.
+    /// @param pageBlocksCapacity Its entry count.
+    void LbArena::attachDirectoryStorage(char** pageTable,
+                                         int32_t pageTableCapacity,
+                                         char** pageBlocks,
+                                         int32_t pageBlocksCapacity) {
+        assert(blocksHeld() == 0 && pageTable_.empty() && pageBlocks_.empty()
+            && "LbArena::attachDirectoryStorage on a used arena");
+        pageTable_.attachStorage(pageTable, pageTableCapacity);
+        pageBlocks_.attachStorage(pageBlocks, pageBlocksCapacity);
+    }
+
+    /// @brief Set the pool purpose this arena's blocks are attributed to.
+    ///
+    /// @details
+    /// Records the purpose and hands it to the three block directories, so
+    /// every block the arena draws or returns — data blocks and spilled
+    /// directory blocks alike — is booked under it. Asserts the arena holds no
+    /// block yet: a block must be returned under the purpose it was granted
+    /// under, and an arena that already holds blocks would break that pairing.
+    ///
+    /// @param purpose The consumer class; not `PoolPurpose::Count`.
+    void LbArena::setPurpose(PoolPurpose purpose) {
+        assert(purpose != PoolPurpose::Count);
+        assert(blocksHeld() == 0
+            && "LbArena::setPurpose after the arena acquired blocks");
+        purpose_ = purpose;
+        blocks_.setPurpose(purpose);
+        pageBlocks_.setPurpose(purpose);
+        pageTable_.setPurpose(purpose);
+    }
+
     void LbArena::bind(GlobalMemoryManager* global) {
         assert(global_ == nullptr && "LbArena::bind on a bound arena");
         assert(global != nullptr && global->initialized());

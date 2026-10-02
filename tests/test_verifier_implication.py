@@ -352,7 +352,7 @@ def test_implication_premise_ns_sibling_via_pair_comparable():
 def test_theorem_namespace_not_main():
     """theorem tag requires namespace == 'main'."""
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref")])
     line = make_proof_line(
         "(>[v1](in[v1,N])(in[v1,N]))",
         "main_boundary_orint_X_((=[a,b]))",
@@ -366,7 +366,7 @@ def test_theorem_not_in_global_registry():
     """Expression not present in state.global_theorems and no alpha-canonical
     or w/V revert match -> reject."""
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref")])
     line = make_proof_line(
         "(>[v1](=[v1,v1])(=[v1,v1]))",  # different theorem
         "main",
@@ -390,7 +390,7 @@ def test_theorem_malformed_expression():
     """Malformed (no opening paren) -> not matched, not normalized to any
     registered theorem."""
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref")])
     line = make_proof_line("in[v1,N]", "main", "theorem")
     assert_failure(check_theorem_tag, line, [line], state)
 
@@ -399,7 +399,7 @@ def test_theorem_malformed_expression():
 def test_theorem_alpha_canonical_arity_differs():
     """Even after alpha-canonicalization, a different arity won't match."""
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[(s[v1]),N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[(s[v1]),N]))", "single chapter proof", "ref")])
     line = make_proof_line(
         "(>[w1,w2](in[w1,w2,N])(in[(s[w1]),N]))", "main", "theorem")
     assert_failure(check_theorem_tag, line, [line], state)
@@ -409,7 +409,7 @@ def test_theorem_alpha_canonical_arity_differs():
 def test_theorem_namespace_descendant_scope():
     """theorem citation from a descendant scope is rejected (only 'main')."""
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref")])
     line = make_proof_line(
         "(>[v1](in[v1,N])(in[v1,N]))",
         "main_boundary_X_assumption",
@@ -422,7 +422,7 @@ def test_theorem_namespace_descendant_scope():
 def test_theorem_rest_with_garbage_ignored_but_main_check_fails():
     """Even with garbage rest fields, the ns check is the dominant gate."""
     state = make_state_with_globals(
-        [("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref")])
+        [("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref")])
     line = make_proof_line(
         "(>[v1](in[v1,N])(in[v1,N]))",
         "not_main",
@@ -436,8 +436,8 @@ def test_theorem_rest_with_garbage_ignored_but_main_check_fails():
 def test_theorem_disjoint_globals_set():
     """state.global_theorems contains other theorems, but not the cited one."""
     state = make_state_with_globals([
-        ("(>[v1](=[v1,v1])(=[v1,v1]))", "direct", "ref-1"),
-        ("(>[v1,v2](in[v1,v2])(in[v1,v2]))", "direct", "ref-2"),
+        ("(>[v1](=[v1,v1])(=[v1,v1]))", "single chapter proof", "ref-1"),
+        ("(>[v1,v2](in[v1,v2])(in[v1,v2]))", "single chapter proof", "ref-2"),
     ])
     line = make_proof_line(
         "(>[w1](mul[w1,zero])(=[w1,zero]))", "main", "theorem")
@@ -453,7 +453,7 @@ def test_task_formulation_namespace_not_main():
     """task formulation requires namespace == 'main'."""
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
-                        thm=("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref"))
+                        thm=("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref"))
     line = make_proof_line(
         "(in[v1,N])",
         "main_boundary_orint_X_((=[a,b]))",
@@ -477,7 +477,7 @@ def test_task_formulation_expr_not_a_premise():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line(
         "(=[zero,zero])",   # not a premise; also not the head
         "main", "task formulation",
@@ -487,13 +487,13 @@ def test_task_formulation_expr_not_a_premise():
 
 @register
 def test_task_formulation_expr_is_head_not_premise():
-    """Direct-proof head; head is NOT in the premise set -> reject (head is
+    """Single-chapter proof head; head is NOT in the premise set -> reject (head is
     only a valid task-formulation expr for contradiction-style proofs where
     head starts with '!')."""
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line(
         "(in[(s[v1]),N])",   # the head, not a premise
         "main", "task formulation",
@@ -508,7 +508,7 @@ def test_task_formulation_contradiction_wrong_clean_op():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])!(=[v1,zero]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line(
         "(=[v1,one])",   # not the head's cleanOp; not a premise either
         "main", "task formulation",
@@ -522,7 +522,7 @@ def test_task_formulation_premise_namespace_descendant():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line(
         "(in[v1,N])",
         "main_boundary_orint_X_((=[a,b]))",
@@ -536,7 +536,7 @@ def test_task_formulation_completely_unrelated_expression():
     """Random expression not even structurally close to any premise."""
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
-                        thm=("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref"))
+                        thm=("(>[v1](in[v1,N])(in[v1,N]))", "single chapter proof", "ref"))
     line = make_proof_line(
         "(or2[a,b,c,d])",
         "main", "task formulation",
@@ -553,7 +553,7 @@ def test_task_formulation_negated_premise_mismatched():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
-                             "direct", "ref"))
+                             "single chapter proof", "ref"))
     line = make_proof_line(
         "!(in[v1,N])",
         "main", "task formulation",

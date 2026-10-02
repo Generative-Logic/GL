@@ -167,7 +167,7 @@ def _coerce_definition_sets(raw: Any) -> Dict[str, Tuple[str, bool, bool]]:
 
 def _extract_arg_list(signature_raw: str) -> List[str]:
     """
-    From a short_mpl string like '(fold[N,s,+,f,n,m,p])',
+    From a short_mpl string like '(fold[N,s,+,op,f,n,m,p])',
     return ['N','s','+','f','n','m','p'] (whitespace-insensitive).
     Returns [] if brackets are missing.
     """
@@ -348,6 +348,8 @@ class configuration_reader(MappingABC):
         self.anchor_name: Optional[str] = None
         self.raw_proof_graph_folder: str = "files/raw_proof_graph"
         self.anchor_id: str = ""
+        self.generate_conjectures: bool = True
+        self.external_conjectures_file: str = ""
 
         # Auto-load if a valid path is supplied and exists; otherwise remain empty.
         if self.config_path and self.config_path.exists():
@@ -423,6 +425,10 @@ class configuration_reader(MappingABC):
         self.theorems_folder = obj.pop("theorems_folder", None)
         self.background_theorems_folder = obj.pop("background_theorems_folder", None)
         self.anchor_name = obj.pop("anchor_name", None)
+        self.generate_conjectures = obj.pop("generate_conjectures", True)
+        self.external_conjectures_file = obj.pop("external_conjectures_file", "")
+        assert type(self.generate_conjectures) is bool
+        assert isinstance(self.external_conjectures_file, str)
         # Top-level string setting: must be popped here — a plain `get` on the
         # reader searches only the expression map, so an un-popped folder key
         # would silently resolve to its caller-side default for every config.

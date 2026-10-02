@@ -263,8 +263,8 @@ for the whole run, and a batch configuration may pin one batch to CUDA with
 <code>use_gpu: true</code>. The
 CUDA full-run route keeps the same three barriers and the same
 final deposit door, but batches the read-only block images and runs request
-filtering, growth, ordering, evaluation, full provenance construction, and doom
-selection on the GPU. Split blocks still use the processor stump producer to
+filtering, growth, ordering, evaluation, and full provenance construction
+on the GPU. Every evaluated firing is retained until the shared finalization. Split blocks still use the processor stump producer to
 discover disjoint work branches. The device emits complete canonically ordered
 firing records; the host only converts their ownership and applies them. A selected
 CUDA route never silently falls back to the processor. Capacity-bounded chunks
@@ -275,7 +275,11 @@ the full route is additionally gated by the complete verifier count.</p>
 
 <p><b>CUDA growth is adaptive inside the global frontier.</b> A preparation pass
 builds one immutable normalised prefix and path summary for every live node in
-three measured fixed pools. Stable selection then lists short and long nodes in
+three measured fixed pools. Each prefix queries an index of possible next
+predicates, including their positive or negated form. The index is derived from
+the actual subkey and whole-key tables, including retained short subkeys; it
+preserves the prefix's argument-sharing pattern. Only matching predicate ranges
+after the original statement cursor enter candidate construction. Stable selection then lists short and long nodes in
 their original frontier order. The node spans are sorted by call, run, path, and
 candidate and scanned into one exact ordinal stream. Consecutive fixed windows
 cover that stream completely. Short threads and 64-lane blocks apply the cheap
@@ -283,8 +287,18 @@ gates, survivors compact stably, and only survivors perform the exact key and
 owner probes. Pool placement, window size, and thread arrival never become
 ordering keys; retained semantic tokens still determine every observable order.</p>
 
+<p>Statement setup also records which iterative arguments are distinct and are
+not recursion products. Candidates reuse this small mask, comparing only those
+arguments against the current prefix. Hypothesis length and scope checks run
+before that comparison. The membership word grows from one to four bytes per
+retained statement row; all acceptance decisions and statement positions stay
+the same.</p>
+
+<p>The scope comparison also supplies the deeper compatible scope immediately.
+Candidates reuse that answer; unrelated scopes still reject the combination.</p>
+
 <figure>
-<svg viewBox="0 0 760 224" role="img" aria-label="CUDA growth prepares pooled prefixes, selects short and long nodes, orders exact candidate spans, and processes every candidate through fixed windows">
+<svg viewBox="0 0 760 224" role="img" aria-label="CUDA growth prepares pooled prefixes, selects possible next predicates, and processes their original statement positions through fixed windows">
   <defs><marker id="gpu-prefix-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="14" y="52" width="108" height="78" rx="8" fill="#262938" stroke="#EF9F27"/>
   <text x="68" y="76" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">live frontier</text>
@@ -296,7 +310,7 @@ ordering keys; retained semantic tokens still determine every observable order.<
   <text x="226" y="80" fill="#8B8FA5" font-size="9" text-anchor="middle">prefix header</text>
   <text x="226" y="100" fill="#8B8FA5" font-size="9" text-anchor="middle">payload pool</text>
   <text x="226" y="120" fill="#8B8FA5" font-size="9" text-anchor="middle">variable pools</text>
-  <text x="226" y="138" fill="#8B8FA5" font-size="9" text-anchor="middle">path summaries</text>
+  <text x="226" y="138" fill="#8B8FA5" font-size="9" text-anchor="middle">prefix → predicates</text>
   <path d="M292 91 L328 91" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-prefix-ar)"/>
   <rect x="330" y="33" width="120" height="116" rx="8" fill="#262938" stroke="#B084EB"/>
   <text x="390" y="56" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">stable lists</text>
@@ -308,33 +322,65 @@ ordering keys; retained semantic tokens still determine every observable order.<
   <text x="546" y="56" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">canonical spans</text>
   <text x="546" y="82" fill="#8B8FA5" font-size="9" text-anchor="middle">call · run</text>
   <text x="546" y="104" fill="#8B8FA5" font-size="9" text-anchor="middle">path · candidate</text>
-  <text x="546" y="130" fill="#8B8FA5" font-size="8.5" text-anchor="middle">exact scan</text>
+  <text x="546" y="130" fill="#8B8FA5" font-size="8.5" text-anchor="middle">permitted ranges</text>
   <path d="M604 91 L628 91" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-prefix-ar)"/>
   <rect x="630" y="20" width="116" height="142" rx="8" fill="#262938" stroke="#EF9F27"/>
   <text x="688" y="43" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">fixed window</text>
-  <text x="688" y="67" fill="#8B8FA5" font-size="8.7" text-anchor="middle">cheap gates</text>
+  <text x="688" y="67" fill="#8B8FA5" font-size="8.7" text-anchor="middle">argument + scope gates</text>
   <text x="688" y="89" fill="#8B8FA5" font-size="8.7" text-anchor="middle">stable compact</text>
   <text x="688" y="111" fill="#8B8FA5" font-size="8.7" text-anchor="middle">exact key probes</text>
   <text x="688" y="133" fill="#8B8FA5" font-size="8.7" text-anchor="middle">events + children</text>
   <text x="688" y="151" fill="#8B8FA5" font-size="8" text-anchor="middle">repeat to exact end</text>
-  <text x="380" y="197" fill="#8B8FA5" font-size="9.5" text-anchor="middle">every candidate exactly once · fixed storage · semantic tokens reconstruct canonical output</text>
+  <text x="380" y="197" fill="#8B8FA5" font-size="9.5" text-anchor="middle">original positions · same accepted events · fixed storage · canonical output</text>
 </svg>
 <figcaption><b>Bounded does not mean limited.</b> Prefix construction happens once
-per node, then consecutive windows cover the complete canonical candidate stream;
-only cheap-gate survivors reach exact key and owner probes.</figcaption>
+per node, then consecutive windows cover every extension permitted by its
+next-predicate index. All original acceptance checks remain; impossible predicate
+extensions need no candidate work, and a statement whose argument contradicts a
+binding every licensing key shares is rejected before candidate preparation. Statement argument masks are reused across
+these windows.</figcaption>
 </figure>
 
-<p><b>The host projection is parallel across logical blocks.</b> Twelve independent,
-fixed-capacity arenas translate read-only block state into the GPU's 24 packed
-columns at the same time. A bounded merge then copies those columns, adjusts every
-array offset and hash-slot index, and puts the logical-block descriptors back in
-their original order before upload. Thus host-core completion order changes only
-where bytes sit in the packed arrays; tasks, firing records, provenance, and the
-exported proof retain canonical order. A direct all-column twin and the full
-shortcut identity gate cover the merge. Byte-identical name and rule-string
-tables share one physical packed slice. Each block retains all ten fixed
-hash-view descriptor ordinals, but only the whole-key/subkey pairs named by its
-executable batches carry entries; unselected pairs are exact empty views.</p>
+<p><b>Encoded statements are filtered before upload.</b> Each logical block supplies
+the core name and polarity of every rule premise. Only matching encoded statements
+enter device memory, in their original relative order; being a goal alone does not
+require upload. Argument matching, iteration limits, and frozen-branch filtering
+still run on the device.</p>
+<figure aria-label="Statement transfer filter"><svg viewBox="0 0 720 70" role="img">
+<rect x="5" y="10" width="180" height="45" fill="#e8eef5" rx="6"/>
+<text x="95" y="38" text-anchor="middle" fill="#17212b">Encoded statements</text>
+<text x="210" y="38" fill="currentColor">→</text>
+<rect x="245" y="10" width="220" height="45" fill="#e8eef5" rx="6"/>
+<text x="355" y="38" text-anchor="middle" fill="#17212b">Premise core + polarity</text>
+<text x="490" y="38" fill="currentColor">→</text>
+<rect x="525" y="10" width="185" height="45" fill="#e8eef5" rx="6"/>
+<text x="618" y="38" text-anchor="middle" fill="#17212b">Device statement slice</text>
+</svg></figure>
+<p><b>Construction reserves measured input sizes.</b> Consecutive complete logical
+blocks are packed against available GPU memory plus minimum execution scratch.
+Twelve host workers receive deterministic disjoint block assignments and reserve
+their measured column totals. The merge restores original block descriptor order;
+identical name and rule-string tables still share physical storage.</p>
+<figure aria-label="Measured parallel snapshot construction"><svg viewBox="0 0 720 80" role="img">
+<rect x="5" y="15" width="190" height="45" rx="6" fill="#e8eef5"/>
+<text x="100" y="43" text-anchor="middle" fill="#17212b">Measured block inputs</text>
+<text x="215" y="43" fill="currentColor">→</text>
+<rect x="245" y="15" width="215" height="45" rx="6" fill="#e8eef5"/>
+<text x="352" y="43" text-anchor="middle" fill="#17212b">Twelve disjoint builders</text>
+<text x="480" y="43" fill="currentColor">→</text>
+<rect x="525" y="15" width="190" height="45" rx="6" fill="#e8eef5"/>
+<text x="620" y="43" text-anchor="middle" fill="#17212b">Original block order</text>
+</svg></figure>
+<p><b>Full buffers pause and resume.</b> Requests remain on the GPU while bounded
+owner and value windows evaluate them. Completed results download to RAM; a marker
+is retained as one complete record after its key fragments assemble. The input
+snapshot stays unchanged. After all retained growth levels finish, the shared CPU/GPU
+content comparator sorts its records in RAM before the existing final deposit.</p>
+<figure aria-label="Automatic GPU batching and shared finalization"><svg viewBox="0 0 720 100" role="img">
+<text x="12" y="28" fill="currentColor">Available VRAM → reserve → reusable 2 MiB blocks → measured buffer shares</text>
+<text x="12" y="57" fill="currentColor">GPU generation → pause → evaluate windows → download → resume</text>
+<text x="12" y="86" fill="currentColor">Complete retained levels → RAM content sort → shared final deposit</text>
+</svg></figure>
 
 <p><b>Projection upload overlaps only independent host scheduling.</b> Fifteen
 packed columns needed by filtering, growth, and ordering copy immediately. Nine
@@ -344,8 +390,9 @@ stream joins before the first kernel, so all 24 columns are resident before any
 proof calculation starts. This changes waiting time only: no table is omitted,
 no kernel races an upload, and the device checksum still covers every used byte.</p>
 
-<p><b>The split is statistics-driven and expression-only.</b> Every burst runs to
-completion; there is no request cap, truncation, or discard-and-redo. At the end of
+<p><b>The split is statistics-driven and expression-only.</b> Every burst completes
+its deterministic retained growth levels; a storage limit never truncates it or causes
+discard-and-redo. At the end of
 an iteration, <code>proveKernel</code> totals each block's completed submatch work. A
 block whose work exceeds both the balanced per-core share and the setup break-even
 is marked as a straggler for the next iteration. A newly activated induction-zero
@@ -356,7 +403,10 @@ enumerates expression combinations called <i>stumps</i> from
 <code>overallHashMemory</code>, which is the superset from which the working and local
 hash memories are populated. The stumps are dealt round-robin into at most one
 bucket per logical core, then each bucket runs the ordinary request generator while
-accepting all rules. The filter and name sort are paid once per bucket.</p>
+accepting all rules. The filter and name sort are paid once per bucket. On the CUDA
+route the buckets join the same device pass as the unsplit blocks: the producers run
+first on the processor, then one projection, one device route and one finalize sweep
+cover every block of the iteration.</p>
 
 <p>A stump named here is always a <i>split</i> stump — a place in the search where
 one worker picks up. The generator once had a second, unrelated thing by the same
@@ -390,30 +440,51 @@ times faster and the whole run drops from 219 to 129 seconds.</p>
 <p>When the producer replaces a short combination level with a larger one, a short
 combination that can already complete a request is retained as a <b>terminal
 pre-stump</b>. Its bucket checks that combination against the actual hash memory for
-each request batch and sends valid requests through the same pre-evaluation, deduplication,
+each request batch and sends valid requests through the same pre-evaluation
 and checker as every other request, but does not grow it further. The larger child
 stumps own all larger combinations. This is why the overall memory is enough to
 discover work but is never trusted as the final validity decision.</p>
 
-<p>The split is invisible to the proof: every bucket only <i>reads</i> the shared
-block, writes its own firing records, and the merge sorts them, so neither the split
-nor thread order can change the result. Inside a bucket, generation and checking
-are <b>interleaved</b> — each request is checked the instant it is built. When a fired
-head shows the block doomed (a contradiction, a vacuous-truth contradiction, or a reached
-induction goal), the burst stops early — split or not — through the <b>doom line</b>: the
-triggering part publishes the pair (its own submatch counter at the trigger, its part
-number) onto one <i>external</i> per-block atomic (held by <code>proveKernel</code>, never
-a field on the block), lowered only by compare-and-swap to the minimum. Every part then
-stops once its <i>own</i> counter passes the published position, so each part covers the
-identical deterministic prefix of its stream no matter how threads are scheduled; two
-near-simultaneous triggers both publish, and the smaller (position, part-number) pair
-wins. The merge then takes <b>only the winning part's</b> records — the losing parts'
-chains end wherever the signal caught them, which is timing-dependent, so they are
-discarded unread rather than merged. That is sound because the doom detector mirrors the
-phase&nbsp;3 discharge exactly: a doomed block is discharged regardless, its statements
-never propagate, and everything culled was wasted-once-doomed. Timing shapes only
-wall-clock; the winner, its records, and the proof graph stay run-to-run byte-identical.
-</p>
+<p>Each bucket reads the same frozen block and produces complete firing records.
+The processor keeps its original early-exit position. The GPU uses the original
+goal and contradiction predicate, retains all results in the current growth
+level, then stops that block's later levels. One eight-byte state per block records
+whether CUDA observed a discharge. Physical buffer drains never commit the stop;
+all seed calls at the current depth or all nodes of a frontier wave finish first.
+The unfinished frontier stays in the pass's GPU frontier store, with any overflow in RAM. No request identities or pending firing
+history are retained for early exit. Multiple firings preserve their dependency
+levels, disintegration signals and proof origins. Captured heads reach goal closure and discharge
+in phase 3. Phase 1 also completes the shared hypothesis, discharge and scope-cleanup sequence for absorbed mail before GPU requests are built.</p>
+<p>Counterexample mode gates standard processing before the ordinary sequence:
+only registered and pending-head contradiction checks run, then the call returns.
+No mail absorb or equivalence processing runs inside that mode.</p>
+<p>GPU counterexample filtering constructs groups of 64 independent clones.
+They share setup and construction workers; automatic device planning divides
+each group into bounded chunks. Mirror refutation still follows the complete pass.</p>
+<p>Each candidate window launches only the covering slice of the ordered node
+lists. Nodes whose candidate ranges lie outside the window do not need gate
+workers; every candidate inside the window still receives the same checks.</p>
+<p>Frontier transfers use three pinned blocks from the existing host pool.
+Larger copy pages share each transfer call; each page fits one host block,
+and the blocks are unpinned before release. Early exit keeps only one state word per block.</p>
+<p>The processor is retained for the ASIC path. GPU performance may take priority
+over CPU matching. Valid proofs and deterministic GPU results remain required.</p>
+<p>The RAM-side sort uses bounded initial runs and page-backed run directories.
+Each merge pass reads two runs and writes one sorted run, so more results require
+more pages and passes rather than a fixed-size cursor array.</p>
+<figure><svg viewBox="0 0 760 116" role="img" aria-label="Completed growth levels precede canonical merging and phase 3 discharge">
+<rect x="8" y="20" width="190" height="62" rx="8" fill="#17212b" stroke="#5DCAA5"/>
+<text x="103" y="46" text-anchor="middle" fill="#fff" font-size="13">GPU level complete</text>
+<text x="103" y="66" text-anchor="middle" fill="#aaa" font-size="12">stop blocks with a discharge</text>
+<path d="M198 51 H264" stroke="#5DCAA5" stroke-width="2"/>
+<rect x="264" y="20" width="228" height="62" rx="8" fill="#17212b" stroke="#5DCAA5"/>
+<text x="378" y="46" text-anchor="middle" fill="#fff" font-size="13">Retained firing records</text>
+<text x="378" y="66" text-anchor="middle" fill="#aaa" font-size="12">canonical sort and deposit</text>
+<path d="M492 51 H550" stroke="#5DCAA5" stroke-width="2"/>
+<rect x="550" y="20" width="200" height="62" rx="8" fill="#17212b" stroke="#5DCAA5"/>
+<text x="650" y="46" text-anchor="middle" fill="#fff" font-size="13">Phase 3</text>
+<text x="650" y="66" text-anchor="middle" fill="#aaa" font-size="12">goal closure and discharge</text>
+</svg><figcaption>Execution timing does not choose which part of the proof survives.</figcaption></figure>
 
 <h2 id="barrier">5.2 &nbsp;The join barrier</h2>
 <p>
@@ -695,6 +766,91 @@ artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
 
+<section><h2>Capacity for the connected FTA batch</h2>
+<p>The full run and development shortcut use the same fixed GPU capacity
+profile. Both execute FTA from the same captured input. Its accepted-event ledger
+and ordering arrays share a 6,291,456-event ceiling; an overflow remains a
+visible failure. Per-pass counts record accepted events, raw requests, and
+unique requests so the reservation can be checked against the complete run.
+Frontier and prefix buffers are also sized from the full corpus, with at least
+twenty percent headroom in each resized pool. All full-run batches share these
+limits. Each batch allocates its full reservation, so larger limits can affect
+earlier batches even when their proof workload is unchanged. Runtime acceptance
+therefore compares the existing stages as well as complete proof identity.</p>
+<figure><svg viewBox="0 0 760 65" role="img" aria-label="Full and shortcut FTA growth and ordering share the same fixed event capacity">
+<text x="25" y="35" fill="currentColor">Growth: 6,291,456 events → ordering: 6,291,456 entries → unique requests</text>
+</svg></figure></section>
+<section id="reverse-owner-capacity"><h2>Reverse-owner work storage</h2><p>The shared full-run and replay evaluator reserves 4,194,304 entries of eight bytes for reverse-owner expansion. A measured batch required 2,880,228 entries; the reservation occupies 32 MiB. It changes fixed storage only: matching, ordering, provenance and the assertion on overflow remain unchanged.</p></section>
+<section id="automatic-block-plan"><h2>Allocate from the available GPU budget</h2>
+<p>The budget is the free VRAM after a runtime reserve, capped at 4 GiB by
+default: every chunk's plan fills the whole budget, so an uncapped budget would
+take nearly all VRAM whatever the chunk needs. The planner reserves measured LB
+input and minimum execution scratch, then fits processing buffers into reusable
+2 MiB blocks. Recorded full-pipeline demand
+seeds the proportions; completed-batch occupancy and drains adjust them. A large
+LB or pending output can receive space by reducing other processing capacities.
+The production planner uses measured costs, is tested across simulated VRAM budgets, and allocates at completed chunk boundaries. Individual payloads retain the CPU's existing storage representation,
+while result collections drain through value and marker-key windows.</p>
+<figure><svg viewBox="0 0 760 94" role="img" aria-label="Measured input and minimum scratch precede demand-based GPU block distribution">
+<text x="16" y="28" fill="currentColor" font-size="13">Available blocks (≤ 4 GiB) → LB input + minimum scratch → weighted processing buffers</text>
+<text x="16" y="65" fill="currentColor" font-size="13">Completed-batch occupancy and drains → adjust the next allocation</text>
+</svg></figure></section>
+<section id="allocation-sizing"><h2>Measure storage before reserving it</h2>
+<p>Each GPU buffer can report its complete device
+size before construction, including CUDA library workspace and aligned array
+placement. This supplies the automatic planner's byte costs. The production controller chooses and lends
+these capacities at completed chunk boundaries.</p>
+<figure><svg viewBox="0 0 760 65" role="img" aria-label="Proposed capacities are measured before GPU block reservation">
+<text x="16" y="36" fill="currentColor" font-size="13">Proposed capacities → array + library bytes + alignment → GPU block reservation</text>
+</svg></figure></section>
+<section id="generation-windows"><h2>Pause and resume request generation</h2>
+<p>The bounded generation component keeps each frontier level in GPU memory for
+the duration of one pass, the level and its children in two buffers; only the rows
+of a level too large for a buffer spill to RAM. CUDA
+processes seed, prefix and candidate windows. Cheap rejection uses the candidate buffer; the surviving indices are divided into output windows with enough room reserved before every write. Probe windows consume the remaining output space. A small tail, below one quarter of full-window capacity, pauses generation until evaluation retains
+all of those requests' results. Original call and premise identities remain intact.
+CUDA performs every semantic operation; the host schedules sizes from upper
+bounds and reads exact counts only when a buffer could fill. Frontier transfers prefer pinned 4,096-row pages within one host block. No early-exit request-identity pages are needed. Up to 65,536 consecutive frontier rows share one GPU preparation when their allocated columns fit. A transfer boundary does not force a new execution window. Complete pipeline runs verify theorem coverage and GPU determinism and record the transfer cost.</p>
+<figure><svg viewBox="0 0 760 104" role="img" aria-label="Frontier levels stay in GPU memory during a pass, spill to RAM only on overflow, and pause for request drains before reuse">
+<text x="16" y="26" fill="currentColor" font-size="13">GPU level (spilled RAM pages after) → combined prefixes → reject candidates → bounded survivors → requests</text>
+<text x="16" y="59" fill="currentColor" font-size="13">Children → next level in GPU memory (overflow to RAM); full requests → evaluate and retain results</text>
+<text x="16" y="92" fill="currentColor" font-size="12">Resume at the saved seed, page, prefix or candidate position.</text>
+</svg></figure></section>
+<section id="request-history-pages"><h2>Repeated requests and firing results</h2>
+<p>Every request that passes generation gates reaches evaluation, including
+repeated premise identities. There is no request duplicate table or retained
+history in RAM or GPU memory. Different requests may derive the same expression
+in the same validity scope. Their firing records remain: dependency levels,
+disintegration instructions and proof origins are combined by the existing
+result-deposit processing.</p>
+<figure><svg viewBox="0 0 760 104" role="img" aria-label="All recordable requests are evaluated, and multiple firing contributions reach result merging">
+<text x="16" y="25" fill="currentColor" font-size="13">Generation gates → every recordable request → CUDA evaluation</text>
+<text x="16" y="58" fill="currentColor" font-size="13">Multiple firings → preserve levels, instructions and proof origins</text>
+<text x="16" y="91" fill="currentColor" font-size="12">Existing deposit merge combines contributions. No request history.</text>
+</svg></figure></section>
+<section id="evaluation-windows"><h2>Resumable evaluation windows</h2>
+<p>The production evaluator uses bounded windows. Request checks run once. Wide offsets describe the complete owner and
+rule-value expansions; each physical window fits its processing arrays. A single
+request or encoded hit can cross several windows without restarting its checks.
+The caller retains each result before reusing a window. Device-side output bounds
+measure every result column before allocation, and one marker's keys can be
+emitted in consecutive fragments. Host sealing now keeps output pages open across
+downloads and assembles marker keys into one complete record. Repeated fragments
+reuse the sealed marker header and invariant arguments. Individual payloads retain the existing CPU span representation; the automatic
+planner reserves one supported fragment and all result collections stream.</p>
+<p>The output scheduler now packs complete values by measured capacity across
+every column, or selects the largest fitting marker-key fragment. Frontier rows cover one preparation or survivor probe, independently of
+the larger candidate-attempt storage. Small metadata transfers accumulate into one fitting execution batch; metadata pages do not
+force extra result downloads. If the smallest
+next fragment requires more storage, it retains its position and reports the
+required capacities. Production reserves the CPU-supported minimum fragment before execution;
+explicitly smaller component buffers keep this non-consuming scheduling state.</p>
+<figure><svg viewBox="0 0 760 88" role="img" aria-label="Frozen requests feed bounded owner and value windows while wide cursors retain progress">
+<text x="16" y="30" fill="currentColor" font-size="13">Frozen requests</text>
+<text x="177" y="30" fill="currentColor" font-size="13">→ owner window → value window → results</text>
+<path d="M290 40 V58 H177 V40 M455 40 V72 H350 V40" fill="none" stroke="#5DCAA5" stroke-width="2"/>
+<text x="16" y="72" fill="currentColor" font-size="12">Measure → reserve a fitting window → download → assemble complete records in RAM.</text>
+</svg></figure></section>
 </main>
 </body>
 </html>

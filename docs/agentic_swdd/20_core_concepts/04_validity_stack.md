@@ -32,13 +32,13 @@ GL tracks this as a literal stack of scope IDs, encoded via a per-LB `NameMap`.
 
 ## `NameMap` — the encoder
 
-Defined at [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp). Per-LB instance. Purpose: map scope-name strings to `int16_t` IDs for fast comparison, while registering parent-child relationships so that ancestor queries are cheap. The string dictionaries are façades over cold string tables in `LbMemory` (`nameStrings` / `subStrings`); the per-id scope hierarchy is a flat paged parent-pointer forest (`validityNodes`, one `ValidityNode` each) on the LB arena — the string tables and the forest all deload with the LB (see [`09_static_memory.md`](09_static_memory.md)).
+Defined at [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp). Per-LB instance. Purpose: map scope-name strings to 32-bit `NameId` values for fast comparison, while registering parent-child relationships so that ancestor queries are cheap. The string dictionaries are façades over cold string tables in `LbMemory` (`nameStrings` / `subStrings`); the per-id scope hierarchy is a flat paged parent-pointer forest (`validityNodes`, one `ValidityNode` each) on the LB arena — the string tables and the forest all deload with the LB (see [`09_static_memory.md`](09_static_memory.md)).
 
 Key methods:
 
 | Method | Purpose |
 |---|---|
-| `encodePush(parentId, payload)` | Mint a new scope as a child of `parentId`. Returns a fresh `int16_t`. |
+| `encodePush(parentId, payload)` | Mint a new scope as a child of `parentId`. Returns a fresh `NameId`. |
 | `encode(name)` | Given a canonical scope-name string, return its ID (creating if needed). |
 | `lookup(name)` | Non-minting probe — returns the existing ID or `0`. Burst-safe (read-only). |
 | `decode(id)` | Reverse lookup — returns an **owned `std::string` copy** (the bytes live on cold pages). |
@@ -56,9 +56,9 @@ The authoritative way to create a new scope. Example pattern (schematic, not rea
 
 ```cpp
 // Hypothesis scope under current scope:
-int16_t parent = stackOfValidity.back();                  // current top
+NameId parent = stackOfValidity.back();                   // current top
 std::string payload = "hypo_" + exprKey;                  // role + identifier
-int16_t newScope = nameMap.encodePush(parent, payload);   // mint
+NameId newScope = nameMap.encodePush(parent, payload);    // mint
 stackOfValidity.push_back(newScope);                       // push onto stack
 
 // Work in new scope...
@@ -105,7 +105,7 @@ A scope's `payload` is the arbitrary string handed to `encodePush`. Convention: 
 |---|---|---|
 | `"main"` | N/A (reserved root, id 1) | The top-level scope. Every theorem's head sits here. |
 | Sub-implication subproof, goal-driven on MAIN | `<goal>_subproof_(implicationN[…])` | `prepareIntegrationCore2` Case A: `<goal>` is the root `toBeProved` goal (verbatim, optionally `!`-negated) whose integration spawned the subproof, so a disproof of the goal can enumerate and wipe its scopes. Parsed by `splitSubproofPayload` / `stripSubproofPrefixView`. |
-| Sub-implication subproof, statement-driven or non-main | `(implicationN[…])` | `prepareIntegrationCore2` Case A with an empty `rootGoal` (admission / marker replays, load-time prefill) or a non-main parent (nested subproofs — they sit inside a goal-owned subtree already). |
+| Sub-implication subproof, statement-driven or non-main | `(implicationN[…])` | `prepareIntegrationCore2` Case A with an empty `rootGoal` (admission / marker replays, load-time prefill) or a non-main parent (nested subproofs — they sit inside a goal-owned subtree already). Retired by the end-of-burst `retireSettledImplicationSubproofs` once its implication is known at the parent (exactly or through the parent's classes) or a class-equal twin under the same parent holds more statements ([I-271](../30_invariants.md#i-271)). |
 | OR branch (integration) | `orint_<cleanSig>_(<head>)`; goal-driven on MAIN: `<goal>_subproof_orint_<cleanSig>_(<head>)` | `prepareIntegrationCore2` Case OR. `classifyOrScope` / `classifyOrScopeView` strip the goal prefix before classifying. |
 | OR branch (disintegration) | `ordis_<orSig>_(<cleanExpr>)` | `disintegrateExpr2`. |
 | Hypothetical-disintegration working scope | `_var0_<x>[_var1_<y>…]_hypo_<expr>` | `disintegrateExprHypothetically` (embeds the integrated expression — self-identifying). |
@@ -130,7 +130,7 @@ Returns whether scope `a` and scope `b` are on the same root-to-leaf path (a `ve
 
 Returns whichever of `a`, `b` is deeper in the scope tree. Used during scope-joining: a fact derived in scope `a` broadcast to an LB active in scope `b` takes effective scope `deeperOf(a, b)` — it holds wherever both hold.
 
-All three are O(scope-depth) int16 scans of the ancestor run (single digits in practice) and run only on single-threaded paths (never the parallel burst, which uses non-minting `lookup`). Orphan scopes (bypassing `encodePush`) break them — their ancestor list would be wrong.
+All three walk the parent-pointer forest in O(scope-depth), using 32-bit `NameId` values. Scope minting occurs on single-worker or barrier paths; parallel request generation and firing also use the non-minting `comparable` and `deeperOf` readers against fixed metadata (`memory.cpp` / `generateEncodedRequestsStatic` and `checkLocalEncodedMemoryStatic`). Orphan scopes (bypassing `encodePush`) break these comparisons because their ancestry would be wrong.
 
 ---
 
@@ -149,7 +149,7 @@ Before this migration, validityNames were free-form strings with scope relations
 The NameMap's id-form bookkeeping moved onto the cold paged tier (statification):
 
 - `stackOfValidity` / `ancestorsOf` became derived walks over a flat paged parent-pointer forest (`validityNodes` in `LbMemory`, one `ValidityNode{parentId, ownSubId}` per id), deload-persisted with the LB, lazily seeded on first encode (`D-138`; [`09_static_memory.md`](09_static_memory.md)).
-- `pairMap` was dropped — `verdict` / `comparable` / `deeperOf` derive from `ancestorsOf` (an int16 membership scan).
+- `pairMap` was dropped — `verdict` / `comparable` / `deeperOf` derive from the parent-pointer forest; current identifiers are 32-bit `NameId` values.
 - The tid+1 / off-table-`"main"` indirection was removed: a NameMap id equals its cold-table id directly, with `"main"` lazily interned as cold-table id 1 (the eternal-root contract covers the pre-intern window). This restores the direct int↔string mapping `main` always had.
 
 ---
@@ -176,11 +176,11 @@ Fix: use `decode` (owned copy), or finish using the span before any mint. This b
 
 ### OR branches
 
-An OR disintegration opens one scope per disjunct via `encodePush(current, "ordis_" + index)`. Each branch runs independently. When all branches converge on the same conclusion, `cleanUpOrIntegrationBranches` ([`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp)) detects convergence via scope classification (`classifyOrScope`) and promotes the common conclusion to the parent scope. See [`20_core_concepts/07_or_branching.md`](07_or_branching.md).
+OR disintegration identifies a cohort by its parent validity and original OR signature. `consumeOrLeavesCohort` opens the first admitted branch, and `drainPendingOrReleases` releases subsequent branches in the established order. `ordisMerge` records branch contributions and promotes a common conclusion to the parent when the live cohort converges; `cleanUpOrIntegrationBranches` handles the separate integration cleanup. See [`20_core_concepts/07_or_branching.md`](07_or_branching.md) for the scope payloads and lifecycle.
 
 ### Contradiction
 
-A contradiction LB carries its proof assumption structurally, while its inference scopes still begin at that LB's `main`. The assumption discharges only when both `X` and `!X` are present at that `main`; a pair whose shallowest common validity is an `_ordis_` branch cannot discharge the LB. If an expression also has a deeper duplicate, its separate main row still qualifies. The contradiction LB stays alive via `primedForContradiction` long enough for the main-scope discharge to fire. Contradictory-branch rejection and `_ordis_` cohort rewriting remain unimplemented.
+A contradiction LB carries its proof assumption structurally, while its inference scopes still begin at that LB's `main`. The assumption discharges only when both `X` and `!X` are present at that `main`; a pair whose shallowest common validity is an `_ordis_` branch cannot discharge the LB. If an expression also has a deeper duplicate, its separate main row still qualifies. The contradiction LB stays alive via `primedForContradiction` long enough for the main-scope discharge to fire. Refuted disintegration branches are retired by `drainDeadOrBranches`: the live cohort shrinks, the dead subtree is queued for cleanup, and `ordisMerge` rechecks convergence at the reduced count ([I-172](../30_invariants.md#i-172)).
 
 ### Integration
 
@@ -190,7 +190,7 @@ Reformulation-for-integration stages intermediate expressions in a scoped child.
 
 When an implication subproof at rooted scope `S = main_boundary_…_boundary_(implicationN[…])` closes via successful proof, every piece of per-LB state whose attached validity equals `S` or starts with `S + "_boundary_"` is physically removed. The mechanism — `Memory::wipeSubtree(closedVid)` defined in [`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp), taking the closed scope's `NameMap` validity id (minted + non-main, assert-enforced) and decoding it to `S` at the top — replaces the pre-existing selective cleanup (`cleanUpIntegrationPreparation` + `cleanUpIntegrationPreparationCore`) that erased only the rooted scope and its `_var0_*` fresh-binding children, leaving deeper sub-scopes (`_orint_…`, nested hypotheticals) as inert orphans behind the `intValidityNamesToFilter` ancestor-scan filter.
 
-**Deferral to burst boundary.** The wipe does not run immediately at the impl-discharge call site. The closed scope's validity id is queued into `Memory::pendingWipeScopes`; at the end of the burst (`performElemPhase3`, after `sanitizeHashMemory` + `sanitizeToBeProved`, before the EXIT trap) the queue is drained and `wipeSubtree` runs once per queued scope id. Immediate mid-kernel wipe would erase `intStatementLevelsMap` / `equivalenceClassesMap` entries that subsequent iterations of `addExprToMemoryBlockKernel`'s `sortedNew` loop assert-look-up. See [I-50](../30_invariants.md#i-50).
+**Deferral to burst boundary.** The wipe does not run immediately at the implication-discharge call site. The closed scope's validity id is queued into `Memory::pendingWipeScopes`; `performElemPhase3` drains the queue after the disproof, dead-branch, and pending-release work, before the EXIT trace. It sorts the scope ids by decoded names and calls `Memory::wipeSubtrees` once for their union. Immediate mid-kernel cleanup could invalidate the known-statement levels and equivalence-class data still being consumed. See [I-50](../30_invariants.md#i-50) and [I-233](../30_invariants.md#i-233).
 
 `cleanUpOrIntegrationBranches` (the OR-convergence sibling-wipe path) routes through the same queue — each victim scope is inserted into `pendingWipeScopes` rather than processed inline.
 
@@ -212,9 +212,9 @@ The full structure list (containers wiped, containers preserved on purpose) live
 ### Suspected fragility
 
 - **Payload-prefix convention is load-bearing but not asserted.** `classifyOrScope` scans the payload prefix. If a new scope kind is added with a prefix that accidentally collides with an existing one, classification silently misroutes.
-- **Validity-metadata growth.** Every `encodePush` appends one `ValidityNode` to `validityNodes` (4 bytes); it is never pruned (the forest grows monotonically), even for discharged scopes. It is paged on the LB arena and deloads with the LB, so the footprint is cold rather than heap, and the flat parent-pointer form is ~7× leaner than the earlier jagged lists — but still a memory-budget consideration for FTA-era runs. (The former `pairMap` hash that compounded this is gone — `verdict` walks the forest.)
+- **Validity-metadata growth.** Every `encodePush` appends one `ValidityNode` to `validityNodes` (8 bytes: two `NameId` fields in `memory_infra/lb_memory.hpp` / `ValidityNode`). The forest remains allocated for discharged scopes until teardown. Its pages deload with the block, but its monotone growth remains a memory-budget consideration. The former `pairMap` hash is absent; `verdict` walks the forest.
 - **Cross-LB scope consistency.** Each LB has its own `NameMap`. When a statement broadcasts from one LB to another, the receiver must translate the sender's scope ID to its own. This happens through the canonical payload string — but a mismatch in payload convention between LBs would silently misroute.
-- **Settled-goal verbatim match.** `drainDisprovedGoals` matches the deposited contradiction seed against MAIN goals and scope payloads verbatim, in both settlement directions; a goal rewritten by equivalence classes between spawn and settlement would miss the probe indistinguishably from the legitimate already-closed miss. Not exercised today — the contradiction pipeline runs only in incubator batches, which skip equivalence classes ([D-240](../40_decisions.md#d-240)). A canonicalization-aware fallback (canonicalizing both sides under the classes at that validity, the way `filterIterationsCore` selects a canonical) is the known fix if a main batch ever combines classes with `try_contradiction`.
+- **Settled-goal identity across equality changes.** Ordinary FTA runs use primed contradiction blocks with equivalence classes, so this path is not confined to incubator batches. The exact interaction between `drainDisprovedGoals`' source-goal identity, canonical watch materialization, and a goal rewritten between spawn and settlement requires a focused regression review. Do not infer that an unexamined miss is harmless or add a fallback without establishing the contract.
 
 ### Not exercised by tests
 

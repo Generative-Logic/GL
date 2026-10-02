@@ -14,7 +14,7 @@ and a commercial license — see https://generative-logic.com/license.
 > Normalisation/reshuffle is no longer a separately orchestrated stage — it is a workaround inside the conjecturer's emit logic. The `reshuffled_*.txt` files are still written, but the conjecturer writes them itself.
 
 > **Input:** `files/theorems/conjectures.txt` (conjecturer output) + `files/theorems/mirror_pairs.txt` (conjecturer-written mirror pairing for the mirror-refutation pass) + `files/simple_facts/simple_facts_<anchor>_<n>.txt` (fact tables) + `parameters.skip_ce_filter` / `parameters.mirror_refutation` flags.
-> **Output:** `files/theorems/filtered_conjectures.txt` (surviving conjectures).
+> **Output:** `files/theorems/filtered_conjectures.txt` (surviving conjectures); shortcut replay writes the corresponding file in `files/shortcut/theorems/`.
 > **Owner:** `filter.cpp` (extracted from `prover.cpp`, 2026-05-04). Public surface (top-level entry points):
 > - `readSimpleFacts` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — load `files/simple_facts/*` for the active anchor.
 > - `filterConjecturesWithCE` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — top-level orchestrator (the per-fact-file loop body).
@@ -24,7 +24,7 @@ and a commercial license — see https://generative-logic.com/license.
 > - `loadFactsForCEFiltering` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — install a fact list into every per-core CE body.
 > - `addConjectureForCEFiltering` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — register one conjecture into a per-core CE LB.
 > - `releaseCEBatchMemory` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — DFS-delete every CE node + reset CE containers.
-> - `generateEncodedRequestsStatic` ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) — the ONE hash-request generator, invoked here with an obligatory stump of length **0**: no element is mandatory, so a grown base candidate is already the finished request and is emitted inside the search (which is what preserves the contradiction early-exit). It calls `filterIntEncodedStatements` with `alsoAcceptFullKeys = true`, and that one flag is the whole difference between CE mode's statement universe and regular mode's: CE accepts statements appearing in `normalizedEncodedSubkeys` **or** `normalizedEncodedKeys`, regular mode accepts subkeys only, because with a non-empty stump every survivor must still be growable.
+> - `generateEncodedRequestsStatic` ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) — the ONE hash-request generator, invoked here with an obligatory stump of length **0**: no element is mandatory, so a grown base candidate is already the finished request and is emitted inside the search. CPU execution stops after a deactivating request; GPU execution retains completed growth levels, and its aggregate stop survives capacity drains. The dedicated CE branch of `standardProcessing` performs only contradiction checks. It calls `filterIntEncodedStatements` with `alsoAcceptFullKeys = true`, and that one flag is the whole difference between CE mode's statement universe and regular mode's: CE accepts statements appearing in `normalizedEncodedSubkeys` **or** `normalizedEncodedKeys`, regular mode accepts subkeys only, because with a non-empty stump every survivor must still be growable.
 >
 > The CE-only `ContradictionItem` row type lives in [`filter.hpp`](../../GL_Quick_VS/GL_Quick/src/filter.hpp). All bodies remain member functions of `ExpressionAnalyzer` (declared in `prover.hpp`); only the definitions moved.
 > **Entry site:** invoked near the top of `ExpressionAnalyzer::analyzeExpressions` after reading `conjectures.txt`, gated on `!parameters.skip_ce_filter`. Seen at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp).
@@ -40,9 +40,24 @@ Two observations explain why this is load-bearing:
 1. **Small-model testing is cheap.** A model of size 5 (the natural numbers restricted to `{0, 1, 2, 3, 4}`) gives a finite fact table of a few thousand rows. Running a single logic-block on this table to test one conjecture takes milliseconds.
 2. **Prover runtime on garbage is expensive.** Without the CE filter, the main prover would attempt to prove tautologically-false conjectures and waste its full warm-up + main-iteration budget before giving up. The prover has no affordance for "try briefly then move on"; it grinds.
 
-Per the project conventions's "Current results" section: the CE filter consumes approximately 80% of the Gauss batch's total runtime. Optimising the fact-base size is therefore the highest-leverage performance lever for batch-level wall-clock.
+Counterexample-filter cost depends on the workload and execution backend. The retained runtime comparison in `docs/GPU/batched_gpu_plan.md` separates every Peano and Gauss filter pass from prover runtime; historical percentages do not characterize the current batching workload.
 
 ---
+
+## Dedicated counterexample processing
+
+`prover.hpp` / `ExpressionAnalyzer::standardProcessing` begins with a
+`ceFilteringActive` gate. Counterexample mode checks registered contradictions
+and completed heads in `internalMailIn` against the loaded statement registry,
+requiring both sides at `main`, then returns. New heads are still in the internal
+channel at this seam, so checking the registry alone would miss their evidence.
+This path performs no absorb, equivalence application, goal processing, mail
+publication or delta clearing. It adds no inference and retains no request history.
+The ordinary processing sequence remains unchanged below the gate. Each
+counterexample clone runs one burst and is destroyed with its untouched channels
+and unused class deltas. Both processor and GPU counterexample runs use the gate.
+
+See I-236 and `docs/GPU/no_requests_plan.md`.
 
 ## The fact tables — `files/simple_facts/*.txt`
 
@@ -55,14 +70,14 @@ simple_facts_<actual_name>_<n>.txt
 
 The C++ reader derives `<actual_name>` from the anchor — for `AnchorPeano`, that is `peano`; for `AnchorGauss`, `gauss`. The optional `_<n>` suffix distinguishes multiple tables. When multiple files match, they are read in ascending `n` order and applied as a sequence — each pass shrinks the surviving set.
 
-Current state ( checkout):
+Historical initial state ( checkout):
 
 ```
 files/simple_facts/simple_facts_peano_5.txt   2680 lines
 files/simple_facts/simple_facts_peano_6.txt   3752 lines
 ```
 
-No Gauss or incubator fact files on this branch — they are generated by the incubator pipeline when it runs.
+That initial snapshot had no Gauss or incubator fact files. The live incubator pipeline generates fact files consumed by subsequent batches.
 
 ### What the fact table contains
 
@@ -169,24 +184,24 @@ CE filtering runs **one hashburst per conjecture**: `numberIterationsConjectureF
 
 CE mode differs from main-prover mode in one key detail: **no mandatory elements**. Regular hash-request generation runs `generateEncodedRequestsStatic` with an obligatory stump of one or two elements, requiring an element already known to the LB to be present in the generated request. CE mode passes a stump of length 0, dropping this requirement — any combination of fact arguments is a valid hash target, so the filter can explore freely within the model.
 
+GPU groups share clone construction and prover setup; automatic device planning may split a group into several bounded chunks. Each clone remains independent, and mirror refutation runs only after all conjectures finish. CPU uses its unchanged ASIC worker queue.
+
 ### Data flow diagram
 
 ```
-facts template LB (loaded once)  +  conjectures.txt / simple_facts_*
-                 |                  (+ mirror_pairs.txt -> mirrorPartnerMap)
+facts template LB (loaded once) + conjectures / simple facts / mirror pairs
+                 |
                  v
-   filterConjecturesWithCE  --  pool of max(1, logicalCores) workers over a
-                 |              global atomic conjecture queue (no batch
-                 |              barrier). Per conjecture:
-                 |                clone template -> install conjecture rule
-                 |                one hashburst: phase1 / burst / phase3
-                 |                burstDeactivates stops the burst early
-                 |                dischargeContradiction -> contradictionTable[i]
-                 |                delete clone
-                 |              post-join: applyMirrorRefutations flips the
-                 |              mirror partners of every refuted conjecture
+   filterConjecturesWithCE
+                 |-- CPU: workers pull independent conjectures from one queue
+                 |        clone -> phase 1 -> CPU burst stop -> phase 3 -> destroy
+                 |
+                 |-- GPU: groups of 64 independently constructed clones
+                 |        phase 1 -> bounded CUDA generation/evaluation
+                 |        -> GPU request-key cutoff -> phase 3 -> destroy
+                 |
                  v
-   filtered_conjectures.txt  (survivors)
+   contradictionTable -> applyMirrorRefutations -> filtered_conjectures.txt
 ```
 
 ---
@@ -234,7 +249,7 @@ In other words: the CE filter is *fast* because someone else (the incubator) did
 
 ## Open questions
 
-- **OPEN-10 — RESOLVED.** `loadFactsForCEFiltering` at [`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp) iterates `batchSize` (= `logicalCores`) and for each per-core CE body calls, for every line in the facts list, `addExprToMemoryBlock(s, *lb0, 0, 4, lvl0, origin, -1, -1, "main", false)`. So: facts are added via the **generic** `addExprToMemoryBlock` path — which handles atomic statements and implication-shaped facts differently based on their MPL shape. Atomic facts like `(in2[i0,i1,s])` become registered statements (the status-4 fact load); implication-shaped facts like `(>[v1](in2[i0,v1,s])(=[v1,i1]))` are disintegrated and installed as hash-rule implications. One loading primitive, polymorphic over fact shape.
+- **OPEN-10 — RESOLVED.** `filter.cpp` / `filterConjecturesWithCE` calls `loadFactsForCEFiltering` with `batchSize = 1` to build one fact template. Its fact rows use the status-4 `addExprToMemoryBlock` door. Each candidate receives a private `cloneFactsTemplate` clone and its own conjecture rule; template loading is not repeated for each worker.
 - **OPEN-11 — RESOLVED.** No per-conjecture timeout exists. The only timing control is `parameters.numberIterationsConjectureFiltering` applied to the outer prover loop uniformly across the whole batch. A single pathologically-slow conjecture can thus starve the rest of its batch of iterations. In practice this has not bitten the project (CE filter is dominated by the number of fact-file applications, not per-conjecture work), but the asymmetry is real — a deeply-nested conjecture could consume the budget others needed. A per-conjecture step cap would be a sensible hardening. **Note (2026-06-08, ):** the per-part submatch cap `maxNumberHashRequests` added for the main-path LB split is explicitly **bypassed** in CE mode — `BurstSink::canAccept` short-circuits on `ceFilteringActive`, so a CE burst runs its full enumeration and is halted only by the contradiction early-exit, never truncated by the cap. Capping CE would make it miss refutations and wrongly keep conjectures. See [I-73](../30_invariants.md#i-73), [D-109](../40_decisions.md#d-109).
 
 ---
@@ -247,6 +262,26 @@ In other words: the CE filter is *fast* because someone else (the incubator) did
 - — j-copy requirement history.
 - — isolation weakness.
 - — standard debugging approach for CE filter issues.
+
+### Canonical-only unused fact rows
+
+The per-clone signed premise-core set identifies the fact cores usable by its
+conjecture rule. Ordinary fact rows outside that set and the unsigned goal-core
+set use canonical-only encoded storage, with the standard equality and anchor
+exclusions. `prover.hpp` and `canonicalizeUnusedDeposit` skip only their new
+history bridge while `ceFilteringActive` is set: status-4 fact registration and
+`Memory::cloneFactsTemplate` intentionally provide no source origin rows in the
+clone, and counterexample clones are not exported as proof certificates. The
+ordinary-prover source-history assertion remains active.
+
+## Filter artifact routing
+
+`filter.cpp` / `ExpressionAnalyzer::saveFilteredConjectures` writes to the
+analyzer's `filteredConjecturesDirectory`. Its default retains the main theorem
+folder; `run_modes.cpp` / `fullRun` supplies the shortcut theorem folder for
+replay. This keeps replay's generated survivors beside its actual input and
+prevents a shortcut from writing this file into the main output tree. The
+in-memory filtered list and all proof decisions are unchanged.
 
 ---
 

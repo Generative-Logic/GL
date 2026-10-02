@@ -51,6 +51,8 @@ namespace gl {
             /// held in its own counter rather than a synthetic row, so this is
             /// purely the assert ceiling for a real tag.
             constexpr int kTagSlack = kTagSpace - 1;
+            constexpr int kTagSharedBytes = kTagSpace - 2;
+            constexpr int kTagSharedExpressions = kTagSpace - 3;
 
             // Per-worker accumulator rows. A worker writes only its own row, so
             // concurrent samples never share a cache line's owner and no atomic
@@ -70,6 +72,25 @@ namespace gl {
             int64_t g_samples = 0;
             int64_t g_peakSample = -1;
 
+            // Physical view (per worker slot, folded, and at the peak): the
+            // pinned blocks split into live pages, free pages parked in held
+            // blocks and the remaining block bytes, plus each container's held
+            // pages as `LbMemory::visitLiveBytes` reports them. Container names
+            // are string literals recorded per slot (a worker writes only its
+            // own row), so the name capture needs no synchronization.
+            constexpr int kPhysicalRows = 96;
+            enum PhysicalSplit { kLivePages = 0, kFreePages, kOtherBlocks, kLbs, kSplitCount };
+            int64_t g_slotPhysical[kSlots][kPhysicalRows];
+            const char* g_slotPhysicalNames[kSlots][kPhysicalRows];
+            int g_slotPhysicalCount[kSlots];
+            int64_t g_slotSplit[kSlots][kSplitCount];
+            int64_t g_foldedPhysical[kPhysicalRows];
+            int64_t g_foldedSplit[kSplitCount];
+            int64_t g_peakPhysical[kPhysicalRows];
+            int64_t g_peakSplit[kSplitCount];
+            const char* g_physicalNames[kPhysicalRows];
+            int g_physicalCount = 0;
+
             /// Detection idiom for the `indexBytes()` accessor the FIRST facet
             /// of every cold container carries (C++17 — no concepts). A facet
             /// without it contributes no index bytes, which is what keeps a
@@ -80,6 +101,12 @@ namespace gl {
             struct HasIndexBytes<
                 T, std::void_t<decltype(std::declval<const T&>().indexBytes())>>
                 : std::true_type {};
+
+            template <typename T, typename = void>
+            struct HasResidentContentBytes : std::false_type {};
+            template <typename T>
+            struct HasResidentContentBytes<T, std::void_t<decltype(
+                std::declval<const T&>().residentContentBytes())>> : std::true_type {};
 
             /// One row of the tag naming tables: the container the tag belongs
             /// to and the column inside it.
@@ -168,6 +195,11 @@ namespace gl {
                 {85, "copyOwners", "runStarts"},
                 {86, "copyOwners", "blobStarts"},
                 {87, "copyOwners", "blobPool"},
+                {88, "rejectedMapSubproof", "keys"},
+                {89, "rejectedMapSubproof", "runStarts"},
+                {90, "rejectedMapSubproof", "blobStarts"},
+                {91, "rejectedMapSubproof", "blobPool"},
+                {92, "subproofRevisitInProgress", "keys"},
             };
 
             const FacetName kColdMailFacets[] = {
@@ -233,8 +265,6 @@ namespace gl {
                 {18, "validityNodes", ""},
                 {19, "intValidityNamesToFilter", "keys"},
                 {20, "intAxedVariables", "keys"},
-                {21, "canBeSentIds", "keys"},
-                {22, "canBeSentMarkerIds", "keys"},
                 {23, "pendingWipeScopes", "keys"},
                 {24, "orDisjunctCount", "keys"},
                 {25, "orDisjunctCount", "values"},
@@ -281,6 +311,36 @@ namespace gl {
                 {819, "compactExpansions", "blobPool"},
                 {820, "expansionCarrierCount", "keys"},
                 {821, "expansionCarrierCount", "values"},
+                {822, "usedAsPremiseCorePairs", "keys"},
+                {824, "appliedPremiseCorePairs", "keys"},
+                {826, "closedOrGoalLevels", "keys"},
+                {827, "closedOrGoalLevels", "runStarts"},
+                {828, "closedOrGoalLevels", "values"},
+                {829, "orImplications", "facet0"},
+                {830, "orImplications", "facet1"},
+                {831, "orImplications", "facet2"},
+                {832, "orImplications", "facet3"},
+                {833, "orImplications", "facet4"},
+                {834, "orImplications", "facet5"},
+                {835, "orImplications", "facet6"},
+                {836, "orImplications", "facet7"},
+                {837, "existenceReplays", "keys"},
+                {838, "existenceReplays", "values"},
+                {839, "canonicalEquivalenceClassesMap", "keys"},
+                {840, "canonicalEquivalenceClassesMap", "runStarts"},
+                {841, "canonicalEquivalenceClassesMap", "blobStarts"},
+                {842, "canonicalEquivalenceClassesMap", "blobPool"},
+                {843, "canonicalMemberRepresentatives", "keys"},
+                {844, "canonicalMemberRepresentatives", "values"},
+                {845, "canonicalClassChanges", "keys"},
+                {846, "canonicalClassChanges", "values"},
+                {872, "orSupportFacts", "keys"},
+                {873, "orSupportFacts", "values"},
+                {874, "orSupportEqualities", "keys"},
+                {875, "orSupportEqualities", "runStarts"},
+                {876, "orSupportEqualities", "values"},
+                {kTagSharedBytes, "sharedNativeKeys", "payloadAndLocations"},
+                {kTagSharedExpressions, "sharedExpressions", "recordsAndMetadata"},
             };
 
             /// One band of tags owned by a repeated family.
@@ -393,6 +453,8 @@ namespace gl {
             std::memset(g_slotBytes, 0, sizeof(g_slotBytes));
             std::memset(g_slotIndex, 0, sizeof(g_slotIndex));
             std::memset(g_slotSlack, 0, sizeof(g_slotSlack));
+            std::memset(g_slotPhysical, 0, sizeof(g_slotPhysical));
+            std::memset(g_slotSplit, 0, sizeof(g_slotSplit));
         }
 
         void addLbSample(const LbMemory& lb, unsigned slot) {
@@ -410,9 +472,10 @@ namespace gl {
                     const int idx = static_cast<int>(tag);
                     assert(idx >= 0 && idx < kTagSlack
                            && "mem_tracker: ContainerTag exceeds MEM_TAG_SPACE");
-                    const int64_t bytes =
-                        static_cast<int64_t>(sizeof(T))
+                    int64_t bytes = static_cast<int64_t>(sizeof(T))
                         * static_cast<int64_t>(c.size());
+                    if constexpr (HasResidentContentBytes<C>::value)
+                        bytes = c.residentContentBytes();
                     row[idx] += bytes;
                     logical += bytes;
                     // Only a container's FIRST facet carries indexBytes(), so a
@@ -424,18 +487,59 @@ namespace gl {
                         indexes += ib;
                     }
                 });
-            // What the arena physically holds beyond content and index is
-            // slack: whole pinned blocks and the unused tail of every 8 KiB
-            // page a container touched. It belongs to no tag.
+            const int64_t sharedBytes = lb.sharedNativeKeys.logicalByteCount()
+                + static_cast<int64_t>(lb.sharedNativeKeys.count()) * sizeof(ColdStringLocation);
+            const int64_t sharedIndex = lb.sharedNativeKeys.indexBytes();
+            row[kTagSharedBytes] += sharedBytes;
+            irow[kTagSharedBytes] += sharedIndex;
+            logical += sharedBytes;
+            indexes += sharedIndex;
+            const int64_t expressionBytes = lb.sharedExpressions.residentContentBytes();
+            const int64_t expressionIndex = lb.sharedExpressions.indexBytes();
+            row[kTagSharedExpressions] += expressionBytes;
+            irow[kTagSharedExpressions] += expressionIndex;
+            logical += expressionBytes;
+            indexes += expressionIndex;
+            // The residual includes padding, parked pages, bookkeeping and
+            // useful derived storage absent from this content enumeration.
             const int64_t physical = lb.manager.blocksHeld()
                                    * static_cast<int64_t>(lb.manager.blockBytes());
             const int64_t accounted = logical + indexes;
             if (physical > accounted) g_slotSlack[slot] += physical - accounted;
+
+            // Physical view: live pages, free pages parked inside held blocks,
+            // and whatever else the held blocks carry (byte-bump blocks and
+            // spilled block directories), then each container's held pages.
+            const int64_t pageBytes = lb.manager.pageBytes();
+            const int64_t livePageBytes =
+                static_cast<int64_t>(lb.manager.livePages()) * pageBytes;
+            const int64_t freePageBytes =
+                static_cast<int64_t>(lb.manager.freePageCount()) * pageBytes;
+            int64_t* split = g_slotSplit[slot];
+            split[kLivePages] += livePageBytes;
+            split[kFreePages] += freePageBytes;
+            split[kOtherBlocks] += physical - livePageBytes - freePageBytes;
+            split[kLbs] += 1;
+            int64_t* prow = g_slotPhysical[slot];
+            const char** names = g_slotPhysicalNames[slot];
+            int count = 0;
+            lb.visitLiveBytes([prow, names, &count](const char* name, int64_t bytes) {
+                assert(count < kPhysicalRows
+                    && "mem_tracker: more visitLiveBytes terms than kPhysicalRows");
+                assert((names[count] == nullptr || std::strcmp(names[count], name) == 0)
+                    && "mem_tracker: visitLiveBytes order changed between samples");
+                names[count] = name;
+                prow[count] += bytes;
+                ++count;
+            });
+            g_slotPhysicalCount[slot] = count;
         }
 
         void commitIterationSample() {
             std::memset(g_folded, 0, sizeof(g_folded));
             std::memset(g_foldedIndex, 0, sizeof(g_foldedIndex));
+            std::memset(g_foldedPhysical, 0, sizeof(g_foldedPhysical));
+            std::memset(g_foldedSplit, 0, sizeof(g_foldedSplit));
             g_foldedSlack = 0;
             for (int s = 0; s < kSlots; ++s) {
                 for (int t = 0; t < kTagSpace; ++t) {
@@ -443,6 +547,14 @@ namespace gl {
                     g_foldedIndex[t] += g_slotIndex[s][t];
                 }
                 g_foldedSlack += g_slotSlack[s];
+                for (int r = 0; r < kSplitCount; ++r)
+                    g_foldedSplit[r] += g_slotSplit[s][r];
+                for (int r = 0; r < g_slotPhysicalCount[s]; ++r) {
+                    g_foldedPhysical[r] += g_slotPhysical[s][r];
+                    if (g_physicalNames[r] == nullptr)
+                        g_physicalNames[r] = g_slotPhysicalNames[s][r];
+                }
+                g_physicalCount = std::max(g_physicalCount, g_slotPhysicalCount[s]);
             }
 
             const auto poolBytes = [](GlobalMemoryManager& m) -> int64_t {
@@ -480,6 +592,8 @@ namespace gl {
                 std::memcpy(g_peak, g_folded, sizeof(g_peak));
                 std::memcpy(g_peakIndex, g_foldedIndex, sizeof(g_peakIndex));
                 std::memcpy(g_peakGlobals, g_globals, sizeof(g_peakGlobals));
+                std::memcpy(g_peakPhysical, g_foldedPhysical, sizeof(g_peakPhysical));
+                std::memcpy(g_peakSplit, g_foldedSplit, sizeof(g_peakSplit));
             }
         }
 
@@ -502,6 +616,46 @@ namespace gl {
             g_peakTotal = 0;
             g_samples = 0;
             g_peakSample = -1;
+            std::memset(g_slotPhysical, 0, sizeof(g_slotPhysical));
+            std::memset(g_slotPhysicalNames, 0, sizeof(g_slotPhysicalNames));
+            std::memset(g_slotPhysicalCount, 0, sizeof(g_slotPhysicalCount));
+            std::memset(g_slotSplit, 0, sizeof(g_slotSplit));
+            std::memset(g_foldedPhysical, 0, sizeof(g_foldedPhysical));
+            std::memset(g_foldedSplit, 0, sizeof(g_foldedSplit));
+            std::memset(g_peakPhysical, 0, sizeof(g_peakPhysical));
+            std::memset(g_peakSplit, 0, sizeof(g_peakSplit));
+            std::memset(g_physicalNames, 0, sizeof(g_physicalNames));
+            g_physicalCount = 0;
+        }
+
+        /// @brief Read the physical split of the peak sample.
+        ///
+        /// @return The peak's physical split; zero before the first commit.
+        PhysicalPeak physicalPeak() {
+            PhysicalPeak p;
+            p.livePageBytes = g_peakSplit[kLivePages];
+            p.freePageBytes = g_peakSplit[kFreePages];
+            p.otherBlockBytes = g_peakSplit[kOtherBlocks];
+            p.logicBlocks = g_peakSplit[kLbs];
+            int64_t content = 0, index = 0;
+            for (int t = 0; t < kTagSpace; ++t) { content += g_peak[t]; index += g_peakIndex[t]; }
+            p.contentBytes = content;
+            p.indexBytes = index;
+            p.containerCount = g_physicalCount;
+            return p;
+        }
+
+        /// @brief Held-page bytes of one container at the peak sample.
+        ///
+        /// @param name A `LbMemory::visitLiveBytes` container name.
+        /// @return The container's held-page bytes at the peak; asserts when
+        ///         no term carries that name.
+        int64_t physicalPeakBytesOf(const char* name) {
+            for (int r = 0; r < g_physicalCount; ++r)
+                if (g_physicalNames[r] != nullptr && std::strcmp(g_physicalNames[r], name) == 0)
+                    return g_peakPhysical[r];
+            assert(false && "mem_tracker: no visitLiveBytes term with that name");
+            return -1;
         }
 
         namespace {
@@ -732,6 +886,39 @@ namespace gl {
               << std::string(58, '-') << "-+-----------+----------+------\n";
             for (const Node& k : root.kids)
                 emitTextNode(o, k, 0, g_peakTotal, content);
+            {
+                const PhysicalPeak pp = physicalPeak();
+                const int64_t pinned = pp.livePageBytes + pp.freePageBytes + pp.otherBlockBytes;
+                const int64_t padding = pp.livePageBytes - pp.contentBytes - pp.indexBytes;
+                o << "\nPhysical split of the peak sample's pinned blocks ("
+                  << pp.logicBlocks << " logic blocks sampled)\n\n"
+                  << "  pinned blocks               : " << mib(pinned) << " MiB\n"
+                  << "    live pages                : " << mib(pp.livePageBytes) << " MiB  ("
+                  << pct(pp.livePageBytes, pinned) << " %)\n"
+                  << "      content                 : " << mib(pp.contentBytes) << " MiB\n"
+                  << "      derived indexes         : " << mib(pp.indexBytes) << " MiB\n"
+                  << "      page padding            : " << mib(padding) << " MiB  ("
+                  << pct(padding, pp.livePageBytes) << " % of live pages)\n"
+                  << "    free pages in held blocks : " << mib(pp.freePageBytes) << " MiB  ("
+                  << pct(pp.freePageBytes, pinned) << " %)\n"
+                  << "    other block bytes         : " << mib(pp.otherBlockBytes) << " MiB  ("
+                  << pct(pp.otherBlockBytes, pinned) << " %)\n\n"
+                  << "Held pages per container (visitLiveBytes; pages incl. directories and\n"
+                     "hash-index pages), share of live pages\n\n";
+                int order[kPhysicalRows];
+                for (int r = 0; r < g_physicalCount; ++r) order[r] = r;
+                std::stable_sort(order, order + g_physicalCount, [](int a, int b) {
+                    return g_peakPhysical[a] > g_peakPhysical[b];
+                });
+                for (int i = 0; i < g_physicalCount; ++i) {
+                    const int r = order[i];
+                    if (g_peakPhysical[r] == 0) continue;
+                    o << "  " << std::left << std::setw(40)
+                      << (g_physicalNames[r] != nullptr ? g_physicalNames[r] : "?")
+                      << std::right << std::setw(10) << mib(g_peakPhysical[r]) << " MiB  "
+                      << std::setw(6) << pct(g_peakPhysical[r], pp.livePageBytes) << " %\n";
+                }
+            }
             o << "\nProcess-wide footprint at the same sample (PHYSICAL block\n"
                  "bytes — a different, strictly larger denominator; NOT folded\n"
                  "into the percentages).\n\n";

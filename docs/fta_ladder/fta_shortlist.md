@@ -9,33 +9,146 @@ and a commercial license — see https://generative-logic.com/license.
 > **Agent-oriented documentation.** This document is written for AI agents working with the GL codebase. Human readers: see the [paper](https://arxiv.org/abs/2508.00017) and the [README](README.md). The document is intentionally dense, cross-linked, and weakness-explicit — agents thrive on that, humans usually don't.
 
 
-# FTA shortlist — the exhaustive lemma ladder for the shortcut
+# FTA shortlist — nonempty ordered factorization via the least divisor
 
-> **Status:** DRAFT for maintainer review. Human-language lemma list; MPL
-> formalization follows after review. This document implements the strategy
-> announced in the blog post *To Be or Not to Be* (2026-07-31): GL receives
-> its previously proved Peano theorems externally in MPL, plus the list below
-> as true conjectures, and must assemble the proofs autonomously in an order
-> of its own making — up to and including FTA. Auto-discovery is deferred.
-> The list is deliberately EXHAUSTIVE: every lemma a careful human proof
-> walks through, at the granularity a human would actually cite.
+> **Status:** CORRECTED MATHEMATICAL SHORTLIST; MPL formalization and new GL
+> proof runs remain separate. All entries A1–E6 are preserved verbatim.
+> E6, F1, F2, F5 and the conditional form of F3 are proved and certified, with
+> unique Fold values; E1 is retained for consistency, with its ground instances
+> deferred. The other retained entries are established.
+> Every sequence in the revised route is nonempty. Proofs stop at singletons.
+> Existence selects the least nontrivial divisor and appends it to construct
+> a nonincreasing factorization directly. No empty product, recursive definition,
+> general concatenation, rearrangement relation, or sorting theorem is required.
 
-**Conventions.** All variables range over ℕ (Peano). No subtraction and no
-division anywhere — every statement is in witness form (`a ≤ b` means
-`∃k: a + k = b`; `d | n` means `∃k: d·k = n`). `s` is successor; `a < b`
-abbreviates `s(a) ≤ b`; `n ≥ 2` abbreviates `2 ≤ n`; `p ∤ a` abbreviates
-`¬(p | a)`. `Π(P)` is the product of a finite sequence `P` (fold with `·`);
-`⧺` is concatenation; `|P|` is length; `x ∈ P` is membership; `(a)` is the
-singleton sequence.
+**Target.** Every natural number `n ≥ 2` has exactly one nonincreasing,
+nonempty sequence of primes with product `n`, where uniqueness means the
+same length and the same entry at each position. No factorization of `1`
+is constructed or required.
 
-**Given externally (not on the list):** the proved Peano corpus —
-commutativity / associativity of `+` and `·`, distributivity, the successor
-and zero laws (`a + 0 = a`, `a + s(b) = s(a + b)`, `a·0 = 0`,
-`a·s(b) = a·b + a`), injectivity of `s`, `s(a) ≠ 0`, plus the incubator
-ground facts. Overlaps between Part A/B/C below and the corpus move from
-"conjecture" to "externally provided" at MPL-formalization time (Open
-decision 4). New *definitions* (`|`, `prime`, sequences, `Π`, `∈`, `≈`)
-enter as MPL definitions, not as conjectures.
+## Conventions and representation
+
+Scalar variables range over ℕ (Peano). Sequence variables range over the
+canonical nonempty finite sequences specified below. No subtraction or
+numerical-division operator occurs in theorem statements: `a ≤ b` means
+`∃k: a + k = b`, and `d | n` means `∃k: d·k = n`. The symbol `s` is successor;
+`a < b` abbreviates `s(a) ≤ b`; `n ≥ 2` abbreviates `2 ≤ n`; and
+`p ∤ a` abbreviates `¬(p | a)`.
+
+**Canonical indexing.** A sequence `P` has positive length `|P|` and is a
+finite function on exactly the positions `0,…,m`, with values in ℕ, where
+`m+1=|P|`. Thus `P(0)` is always defined; the singleton has endpoint zero
+and length one. Write `last(P)=P(m)` for the entry at that endpoint. This is
+an abbreviation for the existing indexed value, not a new primitive operation;
+MPL carries the endpoint and value as explicit variables. A proper prefix is
+formed only at length at least two and retains the original zero-based indices.
+Length changes use witness form, for example `|R| + 1 = |P|`.
+
+The existing representation is `sequence[N,+,zero,m,P]` with `m∈N`. Here
+`zero` denotes the theory's actual object for zero. These MPL-shaped
+expressions are schematic, not ready-to-copy theorem rows. Numeric MPL
+tokens are variable names, not automatically numeral literals. The endpoint
+parameter is the last index, not the length; no primitive length operation
+is assumed. All FTA sequences use this nonempty zero-based domain.
+
+Membership is the direct, nonrecursive property
+
+```text
+x ∈ P :⟺ ∃i: 0 ≤ i < |P| ∧ P(i) = x.
+```
+
+Singleton `(a)` has domain `[0,0]` and value `a`. For nonempty `P`,
+`append(P,a)` has length `|P|+1`, retains `P(i)` at every position
+`0≤i<|P|`, and has value `a` at the new last position `|P|`. These equations
+specify a finite graph directly; they do not refer to `append` in its own
+definition.
+F1 and F5 certify that the corresponding constructions exist. There is no binary
+concatenation operation in the required library, and no empty operand.
+
+**Sequence agreement is pointwise.** Use a separate mathematical notation:
+
+```text
+P ≡ Q :⟺ |P| = |Q| ∧ (∀i: 0 ≤ i < |P| ⟹ P(i) = Q(i)).
+```
+
+Scalar `=` continues to mean equality of natural-number values. Sequence
+agreement `≡` is expanded into the displayed property in MPL, or given a
+nonrecursive public predicate with precisely that meaning. It is not
+translated as scalar `(=[P,Q])`: the current FTA equality ports have type
+`(1)`, whereas sequence objects have type `P(x(1)(1))`.
+
+No equality of allocation or witness identifiers, or general function-object
+equality theorem, is required. Singleton and append notation identify their
+pointwise sequence, independently of the particular graph witness. F13
+supplies the agreement and property-transfer bridges; substitution into
+sequence properties must use those bridges, not assume scalar equality.
+
+**Existing product notation.** Keep `Π(P)` and the existing Fold relation.
+For endpoint `m` with `m+1=|P|`, the schematic interpretation of `Π(P)=z` is
+`fold[N,s,+,*,P,zero,m,z]`, with the sequence and nonempty-domain guards above.
+Addition constructs the index interval, multiplication accumulates the
+entries, and the first entry supplies the initial value. The Fold signature
+is unchanged. No second product predicate or replacement accumulator
+definition is introduced.
+
+The total-operation notation presupposes existence and unique value on this
+domain. The following obligations are explicit work in the existing library,
+even though they are not additional numbered FTA entries:
+
+| Required library result | Role and evidence boundary |
+|---|---|
+| Singleton, append, and nonempty proper-prefix graph construction | F1 and F5 are certified, including exact domains, totality and unique entry values. The append definition supplies the indexed bridges, and set-definition reformulation supplies the shared graph witness. F4 reuses the proved Gauss `limitSequence` restriction to the preceding endpoint. |
+| Product existence for every guarded nonempty sequence | Must be supplied by an established theorem or proved using the existing Fold relation. The saved conditional product tests do not establish this general result. |
+| Unique Fold value for a fixed guarded sequence | Needed to read Fold as `Π`. Proved and certified: two Fold values of one sequence over one range are equal (supplied row 89). |
+| Fold transfer between pointwise agreeing sequences | Needed for the product clause of F13; retain both sequences' domain guards. |
+| Bounded induction statements sufficient for G3 and I4 | Must be expressed and proved from the existing natural-number induction principle, rather than assumed to be automatically available. |
+
+The current Fold ledger records the tested product statements as conditional
+value results with Fold in the premise. They are useful evidence for the
+representation, not a certificate of all the library results above.
+
+**A noncircular product-library proof order.** Construct singleton graphs
+and their Fold witnesses first. From an existing Fold witness `g` for `P`,
+let `m` be its endpoint, `L=m+1=|P|`, and `z=g(m)` its final value.
+Construct a witness `h` for `append(P,a)` by the direct graph equations
+`h(i)=g(i)` for `0≤i≤m` and `h(L)=z·a`. All previous successor equations
+are retained. The sole new transition is from m to L, and its equation is
+exactly `h(L)=g(m)·a`. The starting value is unchanged. This extends an
+existing witness; it neither shifts its indices nor recursively defines a
+new product. State the construction conditionally on the supplied Fold value z.
+Prove unique Fold values by induction along the guarded interval, and prove
+Fold transfer using pointwise agreement. Positive-length induction with F4,
+the singleton witness and this conditional witness-extension construction
+then establishes product existence for every sequence. Only afterwards use
+the unconditional function-style equations F2/F3 throughout the ladder.
+The existence proof must use the conditional Fold construction, not assume
+the totality already implicit in a displayed `Π` equation.
+
+**Induction is a proof principle, not a recursive definition.** The native
+prover supplies zero and successor induction. Sequence arguments can use
+the statement universal over all sequences of length `k+1`; their meaningful
+base is a singleton and their step has a nonempty proper prefix of length `k+1`.
+All auxiliary parameters stay universally quantified where the induction
+hypothesis must change them.
+
+For strong-induction sketches, prove the bounded formula
+`U(k):⟺ ∀m: m≤k ⟹ T(m)` by ordinary induction. Its successor step uses
+`U(k)` at every `m<k+1`. For I4 take `T(m)` to be its implication with guard
+`m≥2`; for G3 take `T(b)` to be its statement universally in `a`. The zero
+cases outside the guards are vacuous propositions, not empty sequences or
+products. I5's length induction must remain universal in the competing
+sequence `Q`. These are explicit mathematical formulations to encode in MPL;
+the document does not claim the current scheduler infers the strengthening.
+
+**Given externally:** the proved Peano corpus — commutativity and
+associativity of `+` and `·`, distributivity, the successor and zero laws
+(`a+0=a`, `a+s(b)=s(a+b)`, `a·0=0`, `a·s(b)=a·b+a`), injectivity of `s`,
+`s(a)≠0`, and the established incubator facts. E1's retained ground instances
+are not silently added to that proved input set.
+
+There are **87 numbered entries**: the 57 unchanged entries A1–E6 and 30
+entries F1–I6. F2 remains statement 59; E6 remains statement 57. The catalog
+order is not a proof order, and one entry may require several MPL conjectures.
 
 ---
 
@@ -128,183 +241,445 @@ Definition: `prime(p):⟺ p ≥ 2 ∧ ∀d: (d | p ⟹ d = 1 ∨ d = p)`.
  *(E3: `d ≥ 2` would force `d = p`, contradicting `p ∤ a`.)*
 - **E6 (57) (composite split).** `n ≥ 2 ∧ ¬prime(n) ⟹ ∃a, b: n = a·b ∧ 2 ≤ a < n ∧ 2 ≤ b < n`.
  *(Negate the definition; C9/C12 give the bounds, C11 the cofactor.)*
-- **E7 (58) (prime divisor exists).** `n ≥ 2 ⟹ ∃p: prime(p) ∧ p | n`.
- *(STRONG induction on `n`: prime → itself via C2; composite → E6, recurse
- on the smaller factor, lift with C5.)*
-- **E8 (59) (least nontrivial divisor is prime — alternative route to E7).**
- `n ≥ 2 ∧ d | n ∧ d ≥ 2 ∧ (∀e: e | n ∧ e ≥ 2 ⟹ d ≤ e) ⟹ prime(d)`.
- *(Any proper divisor of `d` divides `n` (C5) and undercuts minimality.
- Listed as the well-ordering variant; E7's strong-induction route is
- primary.)*
 
-## Part F — finite sequences and products
 
-Definitions: finite sequences over ℕ; `Π` by fold with `·` and `Π(∅) = 1`
-(Open decision 2); `|P|`; `x ∈ P`; `primeseq(P):⟺ ∀x ∈ P: prime(x)`.
 
-- **F1 (60) (singleton length).** `|(a)| = 1`.
-- **F2 (61) (concat length).** `|P ⧺ Q| = |P| + |Q|`.
-- **F3 (62) (empty product).** `Π(∅) = 1`.
-- **F4 (63) (singleton product).** `Π((a)) = a`.
-- **F5 (64) (head product).** `Π((a) ⧺ P) = a · Π(P)`. *(Fold step.)*
-- **F6 (65) (concatenation product).** `Π(P ⧺ Q) = Π(P) · Π(Q)`.
- *(Induction on `|P|` via F5; associativity.)*
-- **F7 (66) (singleton membership).** `x ∈ (a) ⟺ x = a`.
-- **F8 (67) (concat membership).** `x ∈ P ⧺ Q ⟺ x ∈ P ∨ x ∈ Q`.
-- **F9 (68) (membership split).** `x ∈ P ⟹ ∃P₁, P₂: P = P₁ ⧺ (x) ⧺ P₂`.
- *(Induction on `|P|`.)*
-- **F10 (69) (primeseq closure).** `primeseq(∅)`; `primeseq((p)) ⟺ prime(p)`;
- `primeseq(P ⧺ Q) ⟺ primeseq(P) ∧ primeseq(Q)`.
-- **F11 (70) (element divides product).** `x ∈ P ⟹ x | Π(P)`.
- *(F9 + F6/F4 + C7.)*
-- **F12 (71) (prime sequence product positive).** `primeseq(P) ⟹ Π(P) ≥ 1`.
- *(Induction; E2 + B2.)*
-- **F13 (72) (nonempty prime product is ≥ 2).** `primeseq(P) ∧ |P| ≥ 1 ⟹ Π(P) ≥ 2`.
- *(F5 head form; E2; B6.)*
-- **F14 (73) (trivial product forces empty).** `primeseq(P) ∧ Π(P) = 1 ⟹ P = ∅`.
- *(Contrapositive of F13.)*
+## Part F — nonempty finite sequences and products
 
-## Part G — Euclid's lemma (division-free route)
+Every sequence variable below has the canonical nonempty zero-based domain from the
+conventions. Define only the ordinary property
 
-- **G1 (74) (remainder keeps non-divisibility).**
- `prime(p) ∧ p ∤ a ∧ a = q·p + r ∧ r < p ⟹ r ≥ 1 ∧ p ∤ r`.
- *(`r = 0` would give `p | a` via D3; `p | r` would give `p | a` via C6/C7.)*
-- **G2 (75) (Bézout base).** `∃x, y: 1·x = p·y + 1`. *(Witnesses `x = 1, y = 0`.)*
-- **G3 (76) (Bézout descent step).**
- `a = q·p + r ∧ r·x = p·y + 1 ⟹ a·x = p·(q·x + y) + 1`.
- *(Pure ring rewriting: distributivity, associativity, commutativity.)*
-- **G4 (77) (one-sided Bézout for a prime).**
- `prime(p) ∧ p ∤ a ⟹ ∃x, y: a·x = p·y + 1`.
- *(STRONG induction on `a`: D1 splits `a = q·p + r`; G1 gives `r ≥ 1`,
- `p ∤ r`, and `r < p ≤ a` unless `a < p` already — descent to `r`, lift
- with G3; base via G2 when `a = 1`. The heaviest lemma on the list. Over ℕ
- the identity is one-sided by design: no integers, no subtraction.)*
-- **G5 (78) (Euclid's lemma).** `prime(p) ∧ p | a·b ⟹ p | a ∨ p | b`.
- *(If `p ∤ a`: G4 gives `a·x = p·y + 1`; multiply by `b`:
- `a·b·x = p·b·y + b`; `p` divides the left side (C7) and `p·b·y`, so C8
- gives `p | b`.)*
-- **G6 (79) (prime divides a sequence product).**
- `prime(p) ∧ p | Π(P) ⟹ ∃x ∈ P: p | x`.
- *(Induction on `|P|`: head form F5, G5 at each step; empty case
- impossible via F3 and `p ≥ 2`.)*
-- **G7 (80) (prime occurs in a prime sequence it divides).**
- `prime(p) ∧ primeseq(P) ∧ p | Π(P) ⟹ p ∈ P`.
- *(G6 gives an element `p` divides; E4 makes it equal to `p`.)*
+```text
+primeseq(P) :⟺ ∀x: x ∈ P ⟹ prime(x).
+```
 
-## Part H — rearrangement (equality up to order)
+- **F1 (58) (singleton construction and indexing).**
+ `∀a ∃P: |P|=1 ∧ P(0)=a`.
+ Write its pointwise sequence `(a)`.
+ *(Construct the graph consisting of the pair `(0,a)` and prove its domain,
+ totality and unique value. The singleton-to-interval and singleton-relation-to-sequence implications generate existence statements through set-definition reformulation. Any two such sequences agree by F13.)*
 
-Definition (Open decision 1): `P ≈ Q`, inductively — `∅ ≈ ∅`; and
-`(p) ⧺ P′ ≈ Q:⟺ ∃Q₁, Q₂: Q = Q₁ ⧺ (p) ⧺ Q₂ ∧ P′ ≈ Q₁ ⧺ Q₂`.
+- **F2 (59) (singleton product).** `Π((a))=a`.
+ *(The singleton's own value graph supplies a Fold witness. Its first and
+ last positions coincide; there is no successor pair inside the interval.
+ Unique Fold value gives the displayed equation. No empty base is used.)*
 
-- **H1 (81) (reflexivity).** `P ≈ P`. *(Induction on `|P|`; split with `Q₁ = ∅`.)*
-- **H2 (82) (length invariance).** `P ≈ Q ⟹ |P| = |Q|`. *(Induction; F2.)*
-- **H3 (83) (symmetry).** `P ≈ Q ⟹ Q ≈ P`. *(Induction on `|P|`.)*
-- **H4 (84) (transitivity).** `P ≈ Q ∧ Q ≈ R ⟹ P ≈ R`. *(Induction.)*
-- **H5 (85) (product invariance).** `P ≈ Q ⟹ Π(P) = Π(Q)`.
- *(Induction; F6/F5 + commutativity/associativity.)*
-- **H6 (86) (primeseq invariance).** `P ≈ Q ∧ primeseq(P) ⟹ primeseq(Q)`.
- *(Induction; F10.)*
-- **H7 (87) (membership invariance).** `P ≈ Q ∧ x ∈ P ⟹ x ∈ Q`.
-- **H8 (88) (removal product).** `Q = Q₁ ⧺ (p) ⧺ Q₂ ⟹ Π(Q) = p · Π(Q₁ ⧺ Q₂)`.
- *(F6/F4 + commutativity/associativity.)*
-- **H9 (89) (removal keeps primeseq).** `primeseq(Q₁ ⧺ (p) ⧺ Q₂) ⟹ primeseq(Q₁ ⧺ Q₂)`. *(F10.)*
-- **H10 (90) (insertion congruence).** `P ≈ Q₁ ⧺ Q₂ ⟹ (p) ⧺ P ≈ Q₁ ⧺ (p) ⧺ Q₂`.
- *(Definitional split.)*
+- **F3 (60) (append product).**
+ `Π(append(P,a))=Π(P)·a`.
+ *(Use the existing Fold witness for P and extend it by one pair as described
+ in the conventions. Previous indices and accumulator values are unchanged;
+ the new final value is the old final value multiplied by a.
+ Unique Fold value gives the equality. The conditional witness construction
+ is available before general Fold totality, so the library proof is not
+ circular. No general concatenation-product theorem is required.)*
+ **Proved and Lean-certified in conditional form.** For a sequence R on
+ `[0,s(m)]`, a Fold value p of R up to m gives the Fold value `p·R(s(m))` up
+ to `s(m)` (supplied row 81); conversely, Fold values p up to m and w up to
+ `s(m)` satisfy `w = p·R(s(m))` (row 87). Two Fold values of one sequence over
+ one range are equal (row 89), and restricting a sequence keeps its Fold value
+ over the shorter range (rows 88 and 90). That every nonempty sequence has a
+ Fold value (general product existence) is not yet proved.
 
-## Part I — uniqueness and the final theorems
+- **F4 (61) (singleton-or-longer decomposition).**
+ `|P|=1 ⟹ P ≡ (last(P))`;
+ `|P|≥2 ⟹ ∃R:`
+ ` P ≡ append(R,last(P)) ∧ |R|+1=|P| ∧ 1≤|R|<|P|`.
+ *(In the longer case the nonzero endpoint has the form s(k). Reuse the
+ proved Gauss `limitSequence` construction to restrict P to `[0,k]`, obtaining
+ the nonempty prefix R with unchanged indices and values. F5's indexed
+ equations recover pointwise agreement with P. Retain exact domains and
+ unique entry values. In the singleton case `last(P)=P(0)`; no proper prefix
+ is constructed.)*
 
-- **I1 (91) (uniqueness core).**
- `primeseq(P) ∧ primeseq(Q) ∧ Π(P) = Π(Q) ⟹ P ≈ Q`.
- *(Induction on `|P|`. Empty case: F3 + F14 force `Q = ∅`. Step: head `p`
- divides `Π(P) = Π(Q)` (F11), G7 puts `p ∈ Q`, F9 splits `Q`, H8 + B8
- cancel `p` on both sides, H9 keeps primeseq, induction on the tails,
- close with H10.)*
-- **I2 (92) (FTA, existence half).**
- `n ≥ 2 ⟹ ∃P: primeseq(P) ∧ |P| ≥ 1 ∧ Π(P) = n`.
- *(STRONG induction on `n`: prime → singleton (F4, F10); composite → E6
- splits `n = a·b` with both factors in `[2, n)`, induction gives prime
- sequences for `a` and `b`, concatenate (F6, F10, F2).)*
-- **I3 (93) (FTA, uniqueness half).**
- `n ≥ 2 ∧ primeseq(P) ∧ primeseq(Q) ∧ Π(P) = n ∧ Π(Q) = n ⟹ P ≈ Q`.
- *(I1 at `n`.)*
-- **I4 (94) (FTA, combined statement).**
- `∀n ≥ 2 ∃P: primeseq(P) ∧ |P| ≥ 1 ∧ Π(P) = n ∧ (∀Q: primeseq(Q) ∧ Π(Q) = n ⟹ Q ≈ P)`.
- *(I2 + I3.)*
+- **F5 (62) (append construction and indexed bridges).**
+ **Proved and Lean-certified.** The `appendToSequence` graph is a sequence
+ on the extended interval, and constructive reformulation supplies its
+ existence. Its defining equations are the indexed bridges below.
+ For every natural number `a` and nonempty sequence `P`, there is `R` with
+ `|R|=|P|+1`, `R(|P|)=a`, and
+ `∀i: 0≤i<|P| ⟹ R(i)=P(i)`.
+ Write its pointwise sequence `append(P,a)`; in particular its length is
+ at least two, and `last(append(P,a))=a`.
+ *(Adjoin the pair `(|P|,a)` to P's graph. Its new position is disjoint from
+ the old domain `[0,m]`, where `m+1=|P|`. A14/A17 separate every position in
+ the extended interval into an old position or the new endpoint. Establish
+ the exact domain, totality and unique values, and then pointwise uniqueness.
+ This constructs only a one-element append, not arbitrary concatenation.)*
 
-## Part J — strong-induction packaging (superseded — native mechanism)
+- **F6 (63) (membership bridges).**
+ `x ∈ append(P,a) ⟺ x∈P ∨ x=a`;
+ `x ∈ (a) ⟺ x=a`;
+ `last(P) ∈ P`.
+ *(Use the indexed membership definition, F1 and F5. The last-position
+ witness is valid because every sequence here has positive length.)*
 
-**Decided (2026-07-31):** strong induction enters GL as an internal proof
-mechanism, introduced the same way weak induction is — a native method the
-prover schedules itself, not assembled helper machinery. The former
-packaging lemmas J1–J4 (package base / step / unwrap over
-`Q(n):⟺ ∀m ≤ n: P(m)`, plus the per-predicate course-of-values scheme)
-are no longer needed as lemmas and are dropped from the list; the shortlist
-ends at I4 (94).
+- **F7 (64) (prime singleton and append closure).**
+ `primeseq((p)) ⟺ prime(p)`;
+ `primeseq(append(P,p)) ⟺ primeseq(P) ∧ prime(p)`.
+ *(Unfold primeseq and use F6. No empty-sequence clause is present.)*
+
+- **F8 (65) (a member divides the sequence product).**
+ `x∈P ⟹ x | Π(P)`.
+ *(Induct on positive length, universally in the sequence and member.
+ F4 separates singleton and longer cases; F13 transfers properties across
+ pointwise agreement. The singleton uses F6/F2/C2. In the longer case F6
+ gives membership in the prefix or `x=last(P)`. The induction hypothesis
+ and C7 handle the prefix case; C2/C7 handle the last entry. F10 supplies
+ the product decomposition in both cases.)*
+
+- **F9 (66) (nonempty prime-product lower bound).**
+ `primeseq(P) ⟹ Π(P)≥2`.
+ *(Induct on positive length. A singleton uses F7/E2/F2. In the longer
+ case F4/F11 give a nonempty prime prefix R and prime last entry p. The
+ induction hypothesis gives `Π(R)≥2`; E2 gives `p≥1`. B6 gives
+ `Π(R)≤Π(R)·p`; combine F10 and A7. The product is neither zero nor one.)*
+
+- **F10 (67) (product of an existing prefix/last-entry decomposition).**
+ `P ≡ append(R,a) ⟹ Π(P)=Π(R)·a`.
+ *(F13's product transfer followed by F3. This directly matches the
+ decomposition returned by F4, with R nonempty.)*
+
+- **F11 (68) (primality of an existing prefix/last-entry decomposition).**
+ `P ≡ append(R,p) ⟹`
+ ` (primeseq(P) ⟺ primeseq(R) ∧ prime(p))`.
+ *(F13's primality transfer and F7. This is the longer-sequence bridge;
+ the singleton uses F7 directly.)*
+
+- **F12 (69) (prime-sequence members are at least two).**
+ `primeseq(P) ∧ x∈P ⟹ x≥2`.
+ *(Unfold primeseq and use E2.)*
+
+- **F13 (70) (pointwise agreement and property transfer).**
+ Agreement `≡` is reflexive, symmetric and transitive. In addition:
+ `a=b ⟹ (a) ≡ (b)`;
+ `a=b ∧ P≡Q ⟹ append(P,a) ≡ append(Q,b)`;
+ `P≡Q ⟹ last(P)=last(Q)`;
+ `P≡Q ⟹ Π(P)=Π(Q)`;
+ `P≡Q ⟹ (x∈P ⟺ x∈Q)`;
+ `P≡Q ⟹ (primeseq(P) ⟺ primeseq(Q))`;
+ `P≡Q ⟹ (ordered(P) ⟺ ordered(Q))`.
+ *(Use the explicit same-length/entry formula and the graphs from F1/F5.
+ Equal lengths give equal endpoints by A11, so entry agreement gives equal
+ last values. Product transfer uses the Fold congruence result established
+ in the foundation stage; the other properties transfer by their definitions,
+ with ordered defined in Part H.
+ Catalog position is not proof order. Each direction needed in MPL is a
+ separate conjecture. No scalar equality between sequence objects is used.)*
+
+- **F14 (71) (a longer prime sequence exceeds its last entry).**
+ `primeseq(P) ∧ |P|≥2 ⟹ last(P)<Π(P)`.
+ *(F4/F11 give nonempty prime prefix R and prime last entry `p=last(P)`.
+ E2 gives `p≥1`, F9 gives `Π(R)≥2`, and B7 gives `p<p·Π(R)`.
+ Commutativity and F10 give the displayed strict inequality.
+ This closes the singleton-versus-longer uniqueness cases directly.)*
+
+## Part G — Euclid's lemma via symmetric Bézout
+
+Define the ordinary properties
+
+```text
+coprime(a,b) :⟺ ∀d: d | a ∧ d | b ⟹ d=1.
+bez1(a,b) :⟺ ∃x,y: (a·x=b·y+1) ∨ (b·y=a·x+1).
+```
+
+Neither is recursive. The second is the subtraction-free natural-number
+form of a Bézout identity with coefficient difference ±1. Zero coefficients
+remain allowed.
+
+- **G1 (72) (coprimality survives a Euclidean step).**
+ `coprime(a,b) ∧ a=q·b+r ⟹ coprime(b,r)`.
+ *(If `d|b` and `d|r`, C7/C6 give `d|a`; the original coprimality gives
+ `d=1`. No new greatest-common-divisor construction is needed.)*
+
+- **G2 (73) (Bézout transport through a Euclidean step).**
+ `a=q·b+r ∧ bez1(b,r) ⟹ bez1(a,b)`.
+ First prove the two arithmetic implications separately:
+ `a=q·b+r ∧ b·x=r·y+1 ⟹ b·(x+q·y)=a·y+1`;
+ `a=q·b+r ∧ r·y=b·x+1 ⟹ a·y=b·(q·y+x)+1`.
+ *(Distributivity, associativity and commutativity prove both identities.
+ Then discharge the two bez1 cases. The first uses output witnesses
+ `(y,x+q·y)` in the second orientation; the second uses `(y,q·y+x)` in the
+ first orientation. Both witnesses of each identity stay in one scope.)*
+
+- **G3 (74) (Bézout for positive coprime naturals).**
+ `coprime(a,b) ∧ a≥1 ∧ b≥1 ⟹ bez1(a,b)`.
+ *(Strong induction on b, universally in a, implemented by the bounded
+ statement in the conventions. D1 gives `a=q·b+r`, `r<b`. If `r=0`,
+ then `b|a` and `b|b`, so coprimality gives `b=1`; use
+ `1·1=a·0+1`. If `r≠0`, then `r≥1`; G1 gives coprimality of `(b,r)`.
+ Apply the induction hypothesis at r with first argument b, and lift by G2.
+ The changed first argument must not be fixed outside the hypothesis.)*
+
+- **G4 (75) (Euclid's lemma).**
+ `prime(p) ∧ p | a·b ⟹ p | a ∨ p | b`.
+ *(If `p∤a`, E5 gives `coprime(p,a)`. C3 shows `a≠0`, hence `a≥1`;
+ E2 gives `p≥1`. Apply G3. Multiply either Bézout orientation by b;
+ `a·b` and the explicit p-multiple are divisible by p, and C8 isolates b.)*
+
+- **G5 (76) (prime divides a nonempty sequence product).**
+ `prime(p) ∧ p | Π(P) ⟹ ∃x: x∈P ∧ p|x`.
+ *(Induct on positive length, universally in p and P. The singleton case
+ uses F2/F6 with its sole entry. In the longer case use F4/F10 and G4:
+ p divides the prefix product or the last entry. Use the induction
+ hypothesis in the first case; choose the last entry in the second.
+ F6/F13 lift membership to P.)*
+
+- **G6 (77) (prime occurs in a prime sequence it divides).**
+ `prime(p) ∧ primeseq(P) ∧ p | Π(P) ⟹ p∈P`.
+ *(G5 gives a member x divisible by p. That member is prime; E4 gives
+ `p=x`. Multiplicities are handled later by pointwise sequence agreement,
+ not by treating membership as sequence equality.)*
+
+## Part H — order directly on indexed positions
+
+Define the ordinary property
+
+```text
+ordered(P) :⟺
+    ∀i,j: 0≤i ∧ i<j ∧ j<|P| ⟹ P(j)≤P(i).
+```
+
+Thus entries are nonincreasing; equal adjacent primes are allowed. The last
+entry is a minimum. This uses only indexed entries. No self-reference,
+sequence splitting around an arbitrary member, or sorting construction occurs.
+
+- **H1 (78) (a singleton is ordered).** `ordered((a))`.
+ *(There are no indices with `0≤i<j<1`.)*
+
+- **H2 (79) (a nonempty prefix stays ordered).**
+ `ordered(append(P,a)) ⟹ ordered(P)`.
+ *(Use F5 at the same indices. For an existing decomposition
+ `Q≡append(P,a)`, first use F13 to transfer orderedness.)*
+
+- **H3 (80) (the last entry bounds every member).**
+ `ordered(P) ∧ x∈P ⟹ last(P)≤x`.
+ *(Write m for the endpoint and choose a membership index i. A17 gives
+ `i≤m`. If `i=m`, use reflexivity. Otherwise A14 gives `i<m`, and the
+ nonincreasing order property gives `P(m)≤P(i)`. This includes singletons.)*
+
+- **H4 (81) (append below the last entry preserves order).**
+ `ordered(P) ∧ a≤last(P) ⟹ ordered(append(P,a))`.
+ *(For positions `i<j` in the new sequence, either both are old positions
+ and ordered(P) applies, or j is the new endpoint. In the latter case H3
+ and transitivity give `a≤last(P)≤P(i)`. F5 supplies the entry values.
+ Callers supply just one scalar comparison, not a universal lower-bound
+ premise. The prefix is nonempty.)*
+
+## Part I — least-divisor construction of the canonical factorization
+
+The construction chooses the least nontrivial divisor at each descent.
+It appends that divisor after the cofactor's nonincreasing factorization.
+
+- **I1 (82) (bounded least divisor).**
+ `(∃d: 2≤d ∧ d≤k ∧ d|n) ⟹`
+ `∃p: 2≤p ∧ p≤k ∧ p|n ∧`
+ ` (∀d: 2≤d ∧ d≤k ∧ d|n ⟹ p≤d)`.
+ *(Ordinary induction on k. At k=0 no qualifying divisor exists. At the
+ successor step, use the old minimum if there is a candidate at or below k;
+ every additional candidate is k+1 and lies above it. Otherwise the premise
+ forces the candidate to be k+1. A14/A17 rule out a smaller candidate.
+ No recursively defined least-divisor function is introduced.)*
+
+- **I2 (83) (least nontrivial divisor exists).**
+ `n≥2 ⟹ ∃p: p|n ∧ p≥2 ∧ (∀d: d|n ∧ d≥2 ⟹ p≤d)`.
+ *(Apply I1 with k=n. C2 provides candidate n. C9 bounds every divisor
+ of the positive n by n, so the bounded minimum is the required minimum.)*
+
+- **I3 (84) (the least nontrivial divisor is prime).**
+ `p|n ∧ p≥2 ∧ (∀d: d|n ∧ d≥2 ⟹ p≤d) ⟹ prime(p)`.
+ *(Retain the already proved E6 route. If p is not prime, E6 gives
+ `p=a·b` with `2≤a<p`. Thus `a|p`; C5 gives `a|n`. Minimality gives
+ `p≤a`, contradicting `a<p` by A12/A8/A13. The cofactor b and its bounds
+ remain in E6's shared witness bundle, although this consumer needs only a.
+ Removing the E6 dependency alone is not a simplification of GL's work;
+ no alternative primality proof is required by this revision.)*
+
+- **I4 (85) (nonempty ordered prime-factorization existence).**
+ `n≥2 ⟹ ∃P: |P|≥1 ∧ primeseq(P) ∧ ordered(P) ∧ Π(P)=n`.
+ *(Strong induction on n, implemented with the bounded statement from
+ the conventions. I2 chooses the least nontrivial divisor p and I3 gives
+ primality. Choose m with `n=p·m`. C11/C10 give `m|n` and `m≥1`.
+
+ **Singleton case, m=1:** then n=p. F1 constructs `(p)`; F7/H1/F2 give
+ its primality, order and product n. No factorization of one is requested.
+
+ **Longer case, m≠1:** A20 gives `m≥2` and C12 gives `m<n`. The induction
+ hypothesis supplies a nonempty ordered prime sequence Q with product m.
+ Put `q=last(Q)`. F6 gives `q∈Q`; F12 gives `q≥2`; F8 gives `q|m`.
+ C11/C5 give `q|n`, so minimality gives the single comparison `p≤q`.
+ Construct `append(Q,p)` by F5. H4 gives order from `p≤last(Q)`, F7 gives
+ primality, and F3 gives product `m·p=p·m=n` by commutativity. F5 gives
+ positive length. No universal comparison with all prefix members is needed.)*
+
+- **I5 (86) (uniqueness of nonempty ordered prime factorization).**
+ `primeseq(P) ∧ ordered(P) ∧ primeseq(Q) ∧ ordered(Q) ∧ Π(P)=Π(Q)`
+ `⟹ P≡Q`.
+
+ First establish and reuse the separate scalar bridge with the same
+ premises and conclusion `last(P)=last(Q)`. It needs no induction or
+ decomposition: put `p=last(P)`, `q=last(Q)`; F6 gives membership and hence
+ primality.
+ F8 and product equality give `p|Π(Q)`; G6/H3 give `q≤p`.
+ Symmetrically `p≤q`; A8 gives `p=q`.
+
+ Now induct on the positive length of P, universally in Q. Do not assume
+ the two lengths equal. Apply the scalar bridge before any decomposition.
+
+ **Both singleton:** F4 gives `P≡(p)` and `Q≡(q)`; `p=q` and F13 give
+ `P≡Q`.
+
+ **Exactly one singleton:** if P is the singleton, F2/F13 give `Π(P)=p`.
+ The longer Q satisfies `q<Π(Q)` by F14. Product equality and `p=q`
+ contradict A21. Exchange the roles for the other case. No singleton prefix
+ is constructed and no product of an empty sequence occurs.
+
+ **Both longer:** F4 gives `P≡append(P′,p)` and `Q≡append(Q′,q)`, with
+ nonempty prefixes and `|P′|+1=|P|`. H2/F11/F13 give ordered prime prefixes.
+ F10 and `p=q` give `Π(P′)·p=Π(Q′)·p`. E2 and B8 cancel the common final
+ factor p.
+ The induction hypothesis gives `P′≡Q′`. Append congruence and transitivity
+ from F13 give `P≡Q`.
+
+- **I6 (87) (Fundamental Theorem of Arithmetic — nonempty canonical form).**
+ `∀n≥2 ∃P:`
+ ` |P|≥1 ∧ primeseq(P) ∧ ordered(P) ∧ Π(P)=n ∧`
+ ` (∀Q: |Q|≥1 ∧ primeseq(Q) ∧ ordered(Q) ∧ Π(Q)=n ⟹ Q≡P)`.
+ *(Choose P by I4 and use I5 for each competing Q with the same product.
+ Agreement fixes length, each indexed prime, and every multiplicity.
+ Positive-length conditions are displayed to emphasize the target, although
+ the sequence convention already supplies them.)*
 
 ---
 
-## Missing capabilities (separate review part)
+## Dependency guide and proof order
 
-What the current engine (v0.10.0, rungs 1–2 machinery) does not yet have,
-mapped to the lemmas that need it:
+1. **Existing arithmetic:** retain A1–E6 unchanged, including the proved E6.
+ E1 remains in the catalog for consistency and is not a prerequisite of
+ the general factorization argument.
+2. **Sequence and Fold foundations:** construct the finite graphs needed by
+ F1/F5/F4 and establish pointwise agreement properties. Establish the
+ singleton and conditional append Fold witnesses, unique Fold value,
+ transfer under agreement and general positive-length product existence
+ in the order described in the conventions. F2/F3 then apply as equations.
+3. **Small sequence bridges:** F5 gives F6; F6 gives F7; Fold transfer/F3 give
+ F10; agreement/F7 give F11; primality gives F12. F13's order clause uses
+ the direct definition in Part H and does not depend on an order theorem.
+4. **Inductive sequence facts:** F4/F6/F10/C2/C7 give F8; F4/F7/F11/F10/E2/B6
+ give F9; F4/F9/F11/F10/E2/B7 and commutativity give F14.
+5. **Ordering:** prove H1–H3 from the indexed definitions and F5/F6, then H4.
+6. **Least divisor and existence:** prove I1 by ordinary induction, I2 using
+ C2/C9, and I3 using the established E6/C5. Encode the bounded induction
+ statement for I4 and use only the prefix's last entry in its append step.
+7. **Euclid chain:** G1, the two G2 arithmetic implications, and D1 give G3
+ under the explicit bounded induction formulation. E5/G3/C7/C8 give G4;
+ G4/F2/F4/F6/F10 give G5; G5/E4 give G6. This chain is independent of I4.
+8. **Uniqueness:** prove I5's scalar equal-last-entry bridge from F6/F8/G6/H3/A8;
+ handle boundaries with F2/F4/F14; cancel and reconstruct the longer case
+ with F10/B8/H2/F11/F13. Finally combine I4 and I5 into I6.
 
-1. **Strong induction (course-of-values).** Needed by E7, G4, I1, I2. The
- prover schedules structural zero/successor induction on a digit argument;
- the ladder needs `(∀m < n: P(m)) ⟹ P(n)`. **Decided (2026-07-31):**
- ships as a native internal proof mechanism, introduced the same way weak
- induction is; Part J stays off the conjecture list.
-2. **Descent on a measure / two-component descent.** G4's Euclidean descent
- walks remainder pairs `(p, a) → (p, r)` — termination is by the strictly
- decreasing remainder, not structural recursion. Either a
- termination-measure capability or the single-variable strong-induction
- reformulation (as G4 is phrased above).
-3. **Finite sequences as first-class proof objects.** Sequences of unbounded
- length with `Π`, `⧺`, `|·|`, `∈`, and *induction over sequence length*
- (F6, F9, G6, H1–H10, I1). The Gauss fold machinery covers fixed-bound
- sums; the ladder needs general finite sequences with a length-induction
- principle and the Part-F algebra.
-4. **Rearrangement (multiset equality).** The inductive `≈` with its closure
- lemmas (Part H). Alternatives at review: canonical *sorted* sequences
- (needs sortedness + a least-prime-factor argument) or per-prime
- occurrence counting (needs counting machinery). The inductive `≈` is the
- lightest.
-5. **Witness-generation budgets.** G4's Bézout witnesses `x, y` are not
- bounded by the operands, and D1's `q` grows with `a`. The per-batch
- generation cap (`maxIterationNumberVariable`, D-232) bounds witness depth
- tightly today; the ladder needs either principled per-conjecture budgets
- or witnesses arriving lemma-level via the conjecture list rather than
- search-level.
-6. **Nested case analysis at scale.** Already present (rungs 1–2): B1, A15,
- D1's rollover split, E6/I2's prime-vs-composite, G5's disjunctive
- conclusion. Deeper and more frequent cohorts than rung 2 — expected to
- stress the existing OR machinery, not to require new kinds of it.
-7. **Definitional intake.** `|` (divisibility), `prime`, sequences with
- `Π`/`⧺`/`∈`/length, and `≈` as new MPL definitions plus their incubator
- ground facts (E1-style instances). Also the intake path itself: the full
- Peano corpus as externally provided theorems is the blog post's rule of
- engagement and needs to stay a first-class, verifier-covered channel.
-8. **Negative statements as first-class conjectures.** `p ∤ a` premises and
- conclusions (G1, G4, E1's `¬prime` instances) ride the
- reductio/contradiction machinery from rung 2.1 — expected to work,
- listed because the ladder uses negation far more densely than the rungs
- did.
+## MPL authoring obligations
 
-## Open decisions for review
+- Preserve exact zero-based sequence-domain guards, the natural endpoint
+ (which may be zero), positive length and the
+ existing eight-slot Fold signature. Values `P(i)` are represented by
+ `in2` with explicit value variables, not inserted as terms in MPL slots.
+- Expand pointwise agreement into scalar length/entry facts, or use an
+ explicitly defined nonrecursive property. Do not use scalar equality on
+ function objects. Carry the relevant lengths and endpoints as explicit
+ parameters. Expand `last(P)` using the endpoint and an `in2` value variable.
+- Prove graph existence, totality and unique entry values for the needed
+ constructions. A well-defined graph body is not by itself all those proofs.
+- Separate equivalence directions and independent conjunctive conclusions
+ into their own conjectures. Do not split an existential witness bundle
+ into unrelated existences: the same P must satisfy domain, primality,
+ order and product, and the same Bézout witnesses must satisfy its identity.
+- Use at most one configured output slot per public predicate. Additional
+ witnesses remain bound in the common property as needed. A shorter
+ mathematical notation is not a claim that its exact MPL form is available.
+- Record ordinary-induction versions of the bounded G3/I4 statements and
+ retain changing parameters inside the induction hypothesis. Product,
+ member and uniqueness inductions likewise quantify over all appropriate
+ sequences of the chosen positive length.
+- Track the proof of each required MPL row independently. The 87 catalog
+ entries, supplied conjecture count and verified theorem count need not
+ coincide. No new proof or runtime claim follows from this document edit.
 
-1. **Uniqueness formalization:** inductive rearrangement `≈` (recommended)
- vs sorted canonical sequences vs occurrence counting.
-2. **Empty product:** `Π(∅) = 1` as used above (cleaner algebra, F6
- unconditional) vs nonempty-only sequences (closer to current fold usage;
- would condition F6 and complicate I1's base case).
-3. **Granularity of G4:** keep as one heavy lemma with G1–G3 as supports (as
- listed), or split the descent into an explicit gcd-style chain (more
- conjectures, shallower steps).
-4. **Corpus overlap:** which Part A/B/C items are already in the proved
- Peano corpus (move from "conjecture" to "externally provided") — check
- against `files/theorems/theorems.txt` at MPL-formalization time.
-5. **Part J — DECIDED (2026-07-31):** strong induction is implemented
- natively as a GL internal mechanism (like weak induction); the Part-J
- packaging lemmas stay off the conjecture list.
+## Clarifications for the unchanged arithmetic ladder
+
+All bytes of the A1–E6 section are retained, including the existing proof
+notes. One proof-note clarification is recorded here rather than changing
+that established section: C8's sketch uses B9 on multiplication by d, which
+requires `d≥1`. If `d=0`, C4 applied to `d|a` and `d|(a+b)` gives
+`a=0` and `a+b=0`; A5 gives `b=0`, and C3 gives `d|b`. If `d≠0`, A20
+gives the positivity required by B9 and the retained argument applies.
+The C8 statement is unchanged.
+
+E6 is established, not an outstanding prerequisite to prove again. I3 keeps
+its proof through E6. A direct divisor-by-divisor proof is mathematically
+possible, but removing that dependency alone does not justify replacing an
+available theorem with another proof route. The simplifications adopted here
+instead remove general concatenation and reduce I4's order obligation to one
+comparison. Their runtime effect has not been measured.
+
+## Changes in this correction
+
+| Previous formulation | Corrected formulation |
+|---|---|
+| Blanket proved status for A1–E6 | E6 and the established ladder are acknowledged; E1 stays unchanged for consistency with its deferred status explicit. |
+| General nonempty concatenation and its product law | Singleton, one-element append and nonempty proper prefix suffice; F3/F5 concern only append. |
+| Shifted sequence and accumulator graphs | Append preserves all previous indices and Fold values, adding one final pair to each graph. |
+| Ascending factors with the least divisor inserted first | Nonincreasing factors with the least divisor appended last; F1 remains zero-based. |
+| Optional interpretation of sequence object equality | Explicit pointwise agreement `≡`, with F13 transfer bridges and scalar `=` reserved for values. |
+| Product-library prerequisites stated abstractly | Exact existing Fold interface, explicit obligations, evidence boundary and a noncircular witness-based proof order. |
+| Strong induction only named in proof sketches | Bounded statements explain its derivation from ordinary successor induction. |
+| H4 requires a bound for every prefix member | H4 requires only `a≤last(P)` for an already ordered nonempty prefix. |
+| I4 compares p with every prefix member | I4 compares p only with the last prefix prime. |
+| G2 mixes arithmetic rearrangement with its disjunction | Two separate oriented arithmetic implications feed the shared Bézout transport. |
+| I5 repeats its distinguished-entry comparison inside its proof | A separate reusable scalar equal-last-entry bridge precedes the boundary split. |
+| F14 stated only for a constructed sequence | F14 compares the last entry of any prime sequence of length at least two with its product. |
+
+The labels and global numbers A1–I6 are retained. F2 remains statement 59,
+and I6 remains statement 87. Entries F10/F11 match an existing decomposition
+directly and are small consumers of the basic construction/transfer lemmas.
+
+## Scope and source references
+
+The theorem is the canonical nonincreasing-sequence form of FTA for `n≥2`.
+It fixes multiplicities through same-length pointwise agreement; ordinary
+membership is never used as a replacement for sequence agreement. A separate
+theorem about permuting an arbitrarily ordered factorization is outside this
+route and is not a prerequisite.
+
+No zero-length sequence, empty product, empty prefix, arbitrary member removal,
+general concatenation, sorting construction, or factorization of one is used.
+Arithmetic zero and one remain available, including zero remainders and
+zero Bézout coefficients. The existing Fold uses successor equations for a
+witness, but none of the new graph or property definitions is recursive.
+
+Local sources checked for this revision (paths relative to the GL repository):
+
+- `files/definitions/sequence.mpl`, `interval.mpl`, `fXY.mpl`, and `fold.mpl`:
+ actual sequence/domain and product interfaces.
+- `files/definitions/limitSequence.mpl` and the proved Gauss restriction
+ implication with its generated existence: nonempty prefix restriction
+ at the preceding endpoint, retaining the original indices.
+- `files/config/ConfigFTA.json`, entries `=`, `sequence`, and `fold`:
+ scalar equality types, sequence relation types and Fold slot order.
+- `docs/agentic_swdd/03b_mpl_cookbook.md`: separate conjecture heads,
+ shared existential scopes, explicit values and one-output predicates.
+- `docs/agentic_swdd/10_pipeline/04_prover.md`, Induction, and
+ `GL_Quick_VS/GL_Quick/src/prover.cpp`, `addTheoremToMemory`:
+ ordinary zero/successor induction.
+- `proof_export/certificate.py`, `_defined_output_totality`:
+ constructive graph witnesses require an acyclic definition closure.
+
+
+F1, F2, F5 and the conditional form of F3 are implemented and certified,
+together with unique Fold values. General product existence, F4 and the rest
+of the append-based route through I6 remain a mathematical and formalization
+proposal. New conjectures, general Fold
+prerequisite proofs and performance gains are not claimed to have been
+implemented or verified by this document revision.
 
 ---
 

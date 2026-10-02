@@ -27,13 +27,13 @@ Reads literally: *"for any instantiation of the Peano anchor, and for any `v1` s
 
 In natural-number terms: *"0 + 1 = 1"*. The premise `s(i0) = v1` pins `v1 = 1` (since `i1 = s(i0) = 1` by the anchor, and `s` is injective), so the conclusion `i0 + i1 = v1` reads `0 + 1 = 1`.
 
-**Method:** direct (not induction, not mirror, not reformulation). Row 1 of `global_theorem_list.txt` on the current branch:
+**Method:** single chapter proof (not induction, not mirror, not reformulation). Row 1 of `global_theorem_list.txt` on the current branch:
 
 ```text
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))	direct	-1
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))	single chapter proof	-1
 ```
 
-The `-1` in column 3 signals "no induction variable" — direct proofs use `-1` there.
+The `-1` in column 3 signals "no induction variable" — single-chapter proofs use `-1` there.
 
 ---
 
@@ -78,7 +78,7 @@ Decoded with the anchor's slot map `1 → N, 2 → i0, 3 → s, 4 → +, 5 → *
 The conjecturer also produces reshuffled / mirrored variants (canonicalised argument orders + the mirror with the output premise swapped to head). Those go to `files/theorems/reshuffled_conjectures.txt` and `files/theorems/reshuffled_mirrored_conjectures.txt`, and the mirror is **also folded into `conjectures.txt`** so the prover proves it for real (D-112) instead of fabricating a `mirrored statement` row. Our theorem's mirror then appears in the global theorem list as a genuinely-proved theorem (row refreshed from disk after the next full run):
 
 ```text
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,i1,v1,+])(in2[i0,v1,s])))	direct	-1
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,i1,v1,+])(in2[i0,v1,s])))	single chapter proof	-1
 ```
 
 — "if `i0 + i1 = v1`, then `s(i0) = v1`". As a directly-proved theorem its reference column is `-1`.
@@ -116,7 +116,7 @@ Our theorem's premises match this rule with the binding `v1 → i0, v2 → v1` (
 
 Under this unification, the rule's conclusion `(in3[v1,i1,v2,+])` becomes `(in3[i0,i1,v1,+])` — exactly the head we want.
 
-The prover emits the conclusion via `addStatement`, records origin entries into `exprOriginMap`, and marks the goal as proved. The theorem enters `globalTheoremList` with method `"direct"` and reference `-1`.
+The prover emits the conclusion via `addStatement`, records origin entries into `exprOriginMap`, and marks the goal as proved. The theorem enters `globalTheoremList` with method `"single chapter proof"` and reference `-1`.
 
 ---
 
@@ -148,7 +148,7 @@ The processor applies the four-priority renaming scheme. For our theorem:
 - **Priority 3.** No additional non-anchor vars found in chapter lines.
 - **Priority 4.** `_copy` suffix derivation: `0_copy` already resolved by Priority 2.5.
 
-Output: `files/processed_proof_graph/0_direct_proof.txt`:
+Output: `files/processed_proof_graph/0_single_chapter_proof.txt`:
 
 ```text
 (in3[i0,i1,v1,+])	main	implication	(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	main	(AnchorPeano[N,0_copy,s,+,*,i1])	main	(in2[i0,v1,s])	main
@@ -172,7 +172,7 @@ The theorem's head `(in3[i0,i1,v1,+])` in row 1 is the chapter's "goal reached" 
 Row 1 of the list (rendered form):
 
 ```text
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))	direct	-1
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))	single chapter proof	-1
 ```
 
 Priority 1+2 seeded the chapter's v-numbering from this expression, so the chapter's `v1` matches the theorem's `v1`. This is the [I-10](30_invariants.md#i-10) invariant in action.
@@ -181,7 +181,7 @@ Priority 1+2 seeded the chapter's v-numbering from this expression, so the chapt
 
 ## Stage 7 — HTML export
 
-The HTML generator renders `files/processed_proof_graph/0_direct_proof.txt` into `files/full_proof_graph/chapter<N>.html`. For each row:
+The HTML generator renders `files/processed_proof_graph/0_single_chapter_proof.txt` into `files/full_proof_graph/chapter<N>.html`. For each row:
 
 - The `<title>` tag shows the theorem's MPL expression and a human-readable caption (e.g. *"from v1 is a successor of 0, we conclude 0 + 1 = v1"*).
 - The proof-line `<div>` for row 1 renders:
@@ -197,7 +197,7 @@ The embedded `GL_BINARY_MAP` includes the entries for `AnchorPeano` and `Natural
 
 ## Stage 8 — Verifier validates
 
-`verify_chapter` runs on `0_direct_proof.txt`. For each row, the row's tag dispatches to the appropriate checker.
+`verify_chapter` runs on `0_single_chapter_proof.txt`. For each row, the row's tag dispatches to the appropriate checker.
 
 ### Row 1 — `implication`
 
@@ -214,7 +214,7 @@ All three hold ⇒ counter for `implication` gets `.record(True)`.
 `check_theorem_tag` at [`verifier.py`](../verifier.py):
 
 - LHS is the successor rule for `+`. Is it in `state.global_theorems`?
-- Yes — it is theorem #28 in the list (`(>[s,+,i1](AnchorPeano[…])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	direct	-1` or similar entry). 
+- Yes — it is theorem #28 in the list (`(>[s,+,i1](AnchorPeano[…])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	single chapter proof	-1` or similar entry).
 - **Self-reference guard:** is it the same as the chapter's own theorem `(>[i0,s,+,i1](AnchorPeano[…])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))`? No — they differ in shape. Self-reference counter not triggered.
 
 ✓ counter for `theorem` records success.

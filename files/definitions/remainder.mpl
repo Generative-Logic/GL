@@ -1,0 +1,10 @@
+!(>[q]
+	(in[q,N])
+	(>[t]
+		(in[t,N])
+		!(&
+			(&(in3[q,d,t,*])(in3[t,r,a,+]))
+			(strictOrder[N,+,r,d])
+		)
+	)
+)

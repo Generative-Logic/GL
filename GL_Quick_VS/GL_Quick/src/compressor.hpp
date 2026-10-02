@@ -49,7 +49,7 @@ namespace gl {
     /// derivability are dropped; survivors form the output set.
     ///
     /// @see [`Compressor`](#compressor) — owns a `std::vector<CompressorNode>`.
-    /// @see `compressor.cpp::isDerivable` — derivability oracle.
+    /// @see CompressorReachability::isDerivable — derivability oracle.
     struct CompressorNode {
         // expression -> list of alternative dep lists
         std::map<ExpressionWithValidity,
@@ -58,6 +58,47 @@ namespace gl {
         ExpressionWithValidity head;
         std::string originalTheorem;
     };
+
+    /// @brief Reusable integer projection of one compressor dependency graph.
+    ///
+    /// @details Expression and scope pairs retain distinct identities. Each
+    /// alternative derivation stores its dependency count and reverse links,
+    /// allowing each newly reachable expression to notify only its consumers.
+    /// The graph is immutable between candidate tests; only the seed theorem
+    /// availability changes. No ordering or provenance is emitted by this type.
+    class CompressorReachability {
+    public:
+        /// @brief Index one extracted graph for repeated derivability tests.
+        ///
+        /// @details Preserves every alternative, repeated dependency, premise,
+        /// and expression scope. Only theorem seeds that occur in this graph
+        /// are retained, since other expressions cannot affect its head.
+        /// @param node Extracted graph, premises, and target expression.
+        /// @param theorems Complete theorem seed list; seeds have main scope.
+        /// @return A graph with stable local expression and derivation indices.
+        /// @invariant Construction does not modify the source graph or prover.
+        CompressorReachability(const CompressorNode& node,
+                               const std::vector<std::string>& theorems);
+
+        /// @brief Test the least fixed point under the candidate removed set.
+        ///
+        /// @details Seeds premises, unconditional derivations, and surviving
+        /// theorem expressions. A derivation fires when all its dependency
+        /// occurrences are reached. An unseeded cycle remains unreachable.
+        /// @param deadTheorems Theorem expressions unavailable as initial seeds.
+        /// @return True exactly when the target is reachable.
+        /// @invariant All per-query state is local; repeated calls are independent.
+        bool isDerivable(const std::set<std::string>& deadTheorems) const;
+
+    private:
+        std::size_t head_ = 0;
+        std::vector<std::vector<std::size_t>> consumers_;
+        std::vector<std::size_t> derivationHeads_;
+        std::vector<std::size_t> dependencyCounts_;
+        std::vector<std::size_t> initialAlive_;
+        std::vector<std::pair<std::string, std::size_t>> theoremSeeds_;
+    };
+
 
     /// @brief Post-proof redundancy eliminator — drops theorems that are
     /// derivable from the rest.
@@ -68,7 +109,7 @@ namespace gl {
     /// (Phase 1) to extract a `CompressorNode` whose graph captures every
     /// alternative derivation path of the theorem's head. Phase 2 then
     /// performs greedy multi-pass redundancy elimination: a theorem is
-    /// "dead" if it can be removed without breaking any other theorem's
+    /// "dead" if it can be removed without breaking any extracted theorem's
     /// derivability. Survivors form the output set, which becomes the
     /// authoritative `files/theorems/theorems.txt` content — the
     /// regression-claim source of truth for the run.
@@ -93,7 +134,7 @@ namespace gl {
         /// @brief Run Phase 1 (graph extraction) + Phase 2 (greedy
         /// redundancy elimination).
         /// @return The essential (surviving) theorem strings, in
-        ///         deterministic stable order.
+        ///         lexicographic order after expansion.
         std::vector<std::string> run();
 
     private:
@@ -118,15 +159,6 @@ namespace gl {
         /// @return Surviving theorem texts.
         std::vector<std::string> runPhase2();
 
-        /// @brief Forward-reachability check — true iff `node.head` is
-        /// reachable from its premises + theorems NOT in `dead_theorems`
-        /// through `node.graph`.
-        /// @details Walks alternative dependency lists; a head is
-        ///          reachable if any alternative's deps are all
-        ///          reachable. Used by Phase 2 to verify that a
-        ///          candidate kill set leaves every theorem provable.
-        bool isDerivable(const CompressorNode& node,
-                         const std::set<std::string>& dead_theorems) const;
     };
 
 } // namespace gl

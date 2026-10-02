@@ -164,3 +164,29 @@ TEST(or_intro_rules, atomic_premises_emit_no_intro) {
         ASSERT_FALSE(introShaped);
     }
 }
+
+TEST(or_intro_rules, conjunction_alternatives_preserve_order_signs_and_binders) {
+    for (const bool nested : {false, true}) {
+        gl::ExpressionAnalyzer ea(std::string("Peano"));
+        const std::string alternative = nested
+            ? "(&(=[y,12])(&(=[x,10])!(in[y,1])))"
+            : "(&(=[y,12])(=[x,10]))";
+        std::string compact = "(>[x,y]!(&!(in2[x,y,11])!" + alternative + ")(in2[x,y,13]))";
+        ea.precompileStructuralOperators(compact);
+        compact = ea.compileImplicationToCompact(compact);
+        const int levels[] = {0};
+        const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
+        ea.addExprToMemoryBlock(gl::StrSpan(compact), ea.body, 0, 0, levels, 1,
+            origin, -1, -1, gl::StrSpan("main", 4), false);
+        bool found = false;
+        for (const auto& chain : decodeOriginalChains(ea.body)) {
+            if (chain.back().rfind("(or", 0) != 0 || chain[0].rfind("(=[", 0) != 0) continue;
+            ASSERT_EQ(chain.size(), nested ? size_t(4) : size_t(3));
+            ASSERT_TRUE(chain[0].find("u_12") != std::string::npos);
+            ASSERT_TRUE(chain[1].find("u_10") != std::string::npos);
+            if (nested) ASSERT_TRUE(chain[2].rfind("!(in[", 0) == 0);
+            found = true;
+        }
+        ASSERT_TRUE(found);
+    }
+}

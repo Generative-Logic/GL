@@ -95,3 +95,22 @@ TEST(admission_integration_reshuffle, drain_replays_deferred_prepare_integration
     pages.seal();
     pages.freePages();
 }
+
+
+TEST(admission_integration_reshuffle, fold_compiles_two_independent_binary_operations) {
+    gl::ExpressionAnalyzer analyzer("Gauss");
+    const auto& config = analyzer.coreExpressionMap.at("fold");
+    ASSERT_EQ(config.arity, 8);
+    ASSERT_EQ(config.inputIndices, (std::vector<int>{6}));
+    ASSERT_EQ(config.outputIndices, (std::vector<int>{7}));
+    const auto& compiled = analyzer.compiledExpressions.at("fold");
+    ASSERT_EQ(compiled.arity, 8);
+    ASSERT_EQ(compiled.elements.size(), std::size_t{2});
+    const auto parameters = ce::getArgs(compiled.signature);
+    const auto interval = ce::getArgs(compiled.elements[0]);
+    ASSERT_EQ(ce::extractExpression(compiled.elements[0]), std::string("interval"));
+    ASSERT_EQ(interval[1], parameters[2]);
+    const auto accumulated = ce::getArgs(compiled.elements[1]);
+    ASSERT_TRUE(std::find(accumulated.begin(), accumulated.end(), parameters[3]) != accumulated.end());
+    ASSERT_TRUE(std::find(accumulated.begin(), accumulated.end(), parameters[2]) == accumulated.end());
+}

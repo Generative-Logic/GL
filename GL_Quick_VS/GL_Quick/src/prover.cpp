@@ -1,4 +1,4 @@
-﻿/* Generative Logic : A deterministic reasoning and knowledge generation engine.
+/* Generative Logic : A deterministic reasoning and knowledge generation engine.
  Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
@@ -22,13 +22,16 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
+#include "project_paths.hpp"
 #include "prover.hpp"
+#include "infra/phase2_trace.hpp"
 #include "infra/diagnostics_log.hpp"
 
 #include "parameters.hpp"
 #include "infra/hashburst_dump.hpp"
 #include "infra/rt_tracker.hpp"
 #include "infra/mem_tracker.hpp"
+#include "infra/memory_census.hpp"
 #include "memory_infra/global_memory_manager.hpp"
 #include "memory_infra/scratch_arena.hpp"
 #include "memory_infra/lb_deload.hpp"
@@ -55,8 +58,14 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#ifdef USE_MIMALLOC
+#include <mimalloc.h>
+#endif
 
 namespace gl {
+    thread_local FtaBlowupAudit* ftaBlowupAudit = nullptr;
+
+
 
     //Declarations
     static std::map<int64_t, std::vector<std::vector<int>>> generateAllMappings(int n, int m);
@@ -154,7 +163,8 @@ namespace gl {
 // Default constructor definition
 ExpressionAnalyzer::ExpressionAnalyzer(
     std::string anchorID,
-    std::optional<Phase2Backend> selectedPhase2Backend)
+    std::optional<Phase2Backend> selectedPhase2Backend,
+    std::optional<std::filesystem::path> glBinaryFile)
     :parameters(),
     phase2Backend(Phase2Backend::cpu),
     body(),
@@ -181,7 +191,7 @@ ExpressionAnalyzer::ExpressionAnalyzer(
     namespace fs = std::filesystem;
 
     // Path logic matches readSimpleFacts / saveProvedTheorems
-    fs::path configPath = fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
+    fs::path configPath = gl::projectRoot()
         / "files" / "config" / ("Config" + anchorID + ".json");
 
     if (fs::exists(configPath)) {
@@ -203,7 +213,22 @@ ExpressionAnalyzer::ExpressionAnalyzer(
                 if (pp.contains("minNumOperatorsKey")) parameters.minNumOperatorsKey = pp["minNumOperatorsKey"];
                 if (pp.contains("minNumOperatorsKeyCE")) parameters.minNumOperatorsKeyCE = pp["minNumOperatorsKeyCE"];
                 if (pp.contains("maxIterationNumberVariable")) parameters.maxIterationNumberVariable = pp["maxIterationNumberVariable"];
+                if (pp.contains("maxIntegrationDepth")) {
+                    assert(pp["maxIntegrationDepth"].is_number_integer());
+                    const int64_t depth = pp["maxIntegrationDepth"].get<int64_t>();
+                    assert(depth >= 0 && depth < INT_MAX && "invalid maxIntegrationDepth");
+                    parameters.maxIntegrationDepth = static_cast<int>(depth);
+                }
                 if (pp.contains("standardMaxSecondaryNumber")) parameters.standardMaxSecondaryNumber = pp["standardMaxSecondaryNumber"];
+                if (pp.contains("maxNumberFilteredStatements")) {
+                    assert(pp["maxNumberFilteredStatements"].is_number_integer()
+                        && "maxNumberFilteredStatements must be an integer");
+                    const int64_t filteredLimit = pp["maxNumberFilteredStatements"].get<int64_t>();
+                    assert(filteredLimit > 0
+                        && filteredLimit <= ExecutionParameters::MAX_FILTERED_POSITION_CODE
+                        && "maxNumberFilteredStatements exceeds the filtered-position representation");
+                    parameters.maxNumberFilteredStatements = static_cast<int>(filteredLimit);
+                }
                 if (pp.contains("trackHistory")) parameters.trackHistory = pp["trackHistory"];
                 if (pp.contains("inductionMaxAdmissionDepth")) parameters.inductionMaxAdmissionDepth = pp["inductionMaxAdmissionDepth"];
                 if (pp.contains("inductionMaxSecondaryNumber")) parameters.inductionMaxSecondaryNumber = pp["inductionMaxSecondaryNumber"];
@@ -249,6 +274,8 @@ ExpressionAnalyzer::ExpressionAnalyzer(
         }
     }
 
+    assert(parameters.maxNumberFilteredStatements > 0
+        && parameters.maxNumberFilteredStatements <= ExecutionParameters::MAX_FILTERED_POSITION_CODE);
     phase2Backend = selectedPhase2Backend.value_or(
         parameters.use_gpu ? Phase2Backend::cuda : Phase2Backend::cpu);
 #ifndef GL_CUDA
@@ -259,12 +286,10 @@ ExpressionAnalyzer::ExpressionAnalyzer(
         && "the CUDA Phase 2 route was selected, but this build has no CUDA "
            "support (build the Visual Studio project, or make USE_CUDA=1)");
 #endif
-    // The single backend-ownership boundary derives the SSD policy: CUDA and
-    // SSD deload are mutually exclusive, so a CUDA batch runs the
-    // resident-only steward; a processor batch keeps its configured
-    // permission (default true) and pages through the working-set steward.
-    parameters.allow_ssd_deload = parameters.allow_ssd_deload
-        && phase2Backend == Phase2Backend::cpu;
+    // Both Phase 2 backends keep the configured SSD permission (default true)
+    // and page through the working-set steward: the CUDA route claims every
+    // logic block it reads inside a steward window and keeps a window open
+    // while the device output grows the pool (D-409).
     std::cout << "[EXECUTION-POLICY] phase2_backend="
               << (phase2Backend == Phase2Backend::cuda ? "cuda" : "cpu")
               << " config_use_gpu=" << (parameters.use_gpu ? "true" : "false")
@@ -278,6 +303,20 @@ ExpressionAnalyzer::ExpressionAnalyzer(
     diagnosticsLog() << "=== batch " << anchorID << " phase2_backend="
                      << (phase2Backend == Phase2Backend::cuda ? "cuda" : "cpu")
                      << " ===" << std::endl;
+    // Memory census: the fixed per-object sizes behind the pool figures (a
+    // Memory shell occupies one LbStore slot; slots never straddle a block).
+    {
+        const std::size_t slotStride =
+            (sizeof(Memory) + alignof(Memory) - 1) / alignof(Memory) * alignof(Memory);
+        diagnosticsLog() << "[lb-geometry] memory_object_bytes=" << sizeof(Memory)
+                         << " lb_memory_bytes=" << sizeof(LbMemory)
+                         << " lb_arena_bytes=" << sizeof(LbArena)
+                         << " int_encoded_expr_bytes=" << sizeof(IntEncodedExpr)
+                         << " lb_store_slot_stride_bytes=" << slotStride
+                         << " lb_store_slots_per_block="
+                         << static_cast<std::size_t>(parameters.static_lb_block_bytes) / slotStride
+                         << std::endl;
+    }
 
     // Statification sizing triple must satisfy the carving contract (pool a
     // whole multiple of block with block a power of two, and block a whole
@@ -353,18 +392,17 @@ ExpressionAnalyzer::ExpressionAnalyzer(
     variableCounter = 0;
 
     // Cross-batch persistent naming: load the per-batch GL_binary_<Tag>.json
-    // (which Python pre-populated by copying GL_binary_shared.json before
-    // invoking this executable). The loader populates compiledExpressions,
-    // registers repetitionExclusionMap entries for spontaneous operators,
-    // and bumps the four shared counters so newly-allocated names start
-    // above the highest already in use. variableCounter remains zero.
-    // No-op on a clean run when the file does not yet exist.
-    {
-        fs::path glBinDir = fs::path(__FILE__).parent_path()
-                            .parent_path().parent_path().parent_path()
-                          / "files" / "GL_binaries";
-        fs::path glBinFile = glBinDir / ("GL_binary_" + anchorID + ".json");
-        this->loadGlBinary(glBinFile);
+    // the caller hands in (the batch driver passes the file Python
+    // pre-populated by copying GL_binary_shared.json before invoking this
+    // executable). The loader populates compiledExpressions, restores
+    // generated and public logical-predicate reuse entries, and bumps the
+    // four shared counters so newly-allocated names start above the highest
+    // already in use. variableCounter remains zero. No-op on a clean run
+    // when the file does not yet exist. Without a file — every unit test —
+    // nothing is read: the registry is compiled from the config alone, so
+    // no run output reaches a test.
+    if (glBinaryFile) {
+        this->loadGlBinary(*glBinaryFile);
     }
 
     Dependencies dependencyTable;
@@ -435,8 +473,13 @@ ExpressionAnalyzer::ExpressionAnalyzer(
     // non-worker thread hit the fallback while that worker ran.
     initGenScratchArenas(logicalCores + 1);
 
-    compileCoreExpressionMap();
+    // Compaction scratch: one permutation scratch per worker slot on the
+    // never-deloaded LB-body pool, for the worker's end-of-phase-1 compaction
+    // of its own claimed logic block (compactIfFragmented).
+    initCompactionScratchArenas(logicalCores + 1);
 
+    compileCoreExpressionMap();
+    compileContrapositionFamilies();
 }
 
 //#pragma optimize("", off)
@@ -854,8 +897,8 @@ std::string ExpressionAnalyzer::expandExpr(const std::string& expr) {
     }
 
     // 5. Collision Avoidance (Disentanglement)
-    // Goal: If an input argument (e.g., "x") is NOT a formal parameter but appears 
-    // inside the definition (as a bound variable), we must rename the bound variable 
+    // Goal: If an input argument (e.g., "x") is NOT a formal parameter but appears
+    // inside the definition (as a bound variable), we must rename the bound variable
     // in the definition to avoid capturing the input "x".
 
     std::map<std::string, std::string> collisionRenamingMap;
@@ -880,7 +923,7 @@ std::string ExpressionAnalyzer::expandExpr(const std::string& expr) {
 
         // If we are here, 'inputArg' is being passed in, but it is NOT a parameter slot.
         // We must ensure 'defString' does not contain 'inputArg' as a local variable.
-        // We speculatively add it to the renaming map. 
+        // We speculatively add it to the renaming map.
         // ce::replaceKeysInString will only perform the replacement if the key exists.
 
         // Generate a unique name: inputArg + Counter
@@ -1626,17 +1669,16 @@ void ExpressionAnalyzer::multiplyImplication(StrSpan implication,
 
 //#pragma optimize("", off)
 /// @brief Install the dead-end variable-copy equalities for every
-/// hypo-scoped validity — the once-per-burst reaction to hypothetical
-/// disintegration.
+/// hypo-scoped validity before standard class application.
 ///
 /// @details
 /// `disintegrateExprHypothetically` opens validity scopes named
 /// `parent + "_boundary_" + "_var0_<x>[_var1_<y>...]" + "_hypo_" + expr`,
-/// one per hypothetically disintegrated integration goal. Once per burst
-/// (phase 3, the `REACT_TO_HYPO` scope — one worker owns the LB), this
-/// function walks every equivalence-class scope of the LB and, on each
+/// one per hypothetically disintegrated integration goal. Both ordinary
+/// standard-processing calls react after input clearing and before class
+/// application, with one worker owning the LB. This function walks every equivalence-class scope of the LB and, on each
 /// hypo-scoped row, checks every class member that is one of the payload
-/// variables: when ALL of its class-mates are `int_lev_*` names and at
+/// variables: when ALL of its class-mates are forced or ordinary integration witness names and at
 /// least one class-mate exists, the dead-end equality `(=[var,var_copy])`
 /// is installed at the PARENT scope via `addExprToMemoryBlock` with the
 /// `variableCopy` origin (the "variable copy" proof tag).
@@ -1675,7 +1717,7 @@ void ExpressionAnalyzer::multiplyImplication(StrSpan implication,
 /// one set per firing.
 ///
 /// @param mb The LB whose equivalence-class scopes are surveyed; the add
-///           door mints into `mb.nameMap` (phase-3 single-owner access).
+///           door mints into `mb.nameMap` under the owning worker claim.
 /// @see parseHypoScopeVars, HypoScopeParse — the name parse;
 ///      `disintegrateExprHypothetically` — the hypo-scope producer;
 ///      `EqClassNameCaches::kindOf` — the class-mate tier probe.
@@ -1723,6 +1765,7 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
 
     for (int32_t r = 0; r < n; ++r) {
         const NameId classesValId = vids[r];
+        if (mb.phase3IgnoresScope(classesValId)) continue;
 
         // Cheap pre-filter on the raw span (gate 1; pure read). The full
         // parse below re-runs it on the owned copy — byte-identical
@@ -1792,9 +1835,8 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
                     if (otherId == varId) continue;
 
                     hasOthers = true;
-                    // Other variable must be an int_lev_* name.
-                    if (mb.eqClassNameCaches.kindOf(otherId, mb.nameMap)
-                        != NameKind::IntLev) {
+                    // Every other member must be a disintegration witness.
+                    if (!isDisintegrationWitnessShape(mb.nameMap.decodeView(otherId))) {
                         conditionMet = false;
                         break;
                     }
@@ -1959,22 +2001,11 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     }
 #endif
 
-    // Streaming consumer: each generated request is checked inline (dependency
-    // skip + checkLocalEncodedMemoryStatic) instead of being buffered and
-    // checked afterwards. The external `doomLine` atomic — per-LB, shared by
-    // all the LB's parts and living OUTSIDE the LB — lets any part end its
-    // burst early without writing anything on the LB (I-66): a doom trigger
-    // publishes its deterministic stream position, every part stops once its
-    // own counter passes that position, and the finalize merges the winning
-    // part's chain alone.
-    //
-    // No submatch cap: a burst without a doom trigger runs to COMPLETION and a
-    // straggler is split preemptively next iteration (the stats-driven trigger
-    // in proveKernel), never truncated mid-burst. The CE filter was already
-    // uncapped (ceFilteringActive).
+    // Processor requests stop at the original deterministic cutoff. Complete
+    // output of the winning request is retained; Phase 3 owns discharge.
     BurstSink sink{ this, &body, coreId, &sealedPages, &doomLine,
-                    static_cast<int32_t>(splitStump.ordinal),
-                    SealedRecordCursor<FiringRecord>(sealedPages) };
+        static_cast<int32_t>(splitStump.ordinal),
+        SealedRecordCursor<FiringRecord>(sealedPages) };
 
     // ===================================================================
     // Request generation. performElemPhase1's absorb filled
@@ -2128,19 +2159,12 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     // the busiest part in the finalize sweep. The former emitted-request count
     // (sink.produced) no longer drives the cap or the split.
 
-    // Release this slot's scratch string arena: return its blocks to the pool
-    // and bump the generation so any ScratchString that escaped this executor
+    // Return this slot's string and request-generation scratch blocks to the
+    // pool and bump both generations, so any view that escaped this executor
     // asserts at its access site (I-116). No retention — the next executor on
     // this slot re-acquires lazily. performElem2 is single-exit, so this runs
     // on every path.
-    scratchArenas().forSlot(coreId).releaseAll();
-    // The request-generation scratch arena rides the same per-task lifetime:
-    // return its blocks to the pool on every exit path (the DFS stack frames and
-    // the per-batch containers held this iteration). The slot's rule-index
-    // stagings ride it too and must be empty here (every window flushed).
-    assert(ruleStagings().slotIsEmpty(coreId)
-        && "performElem2 exit: staged rule-index writes outlive their window");
-    genScratchArenas().forSlot(coreId).releaseAll();
+    releaseSlotScratch(scratchArenas(), genScratchArenas(), ruleStagings(), coreId);
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
@@ -2160,6 +2184,7 @@ void ExpressionAnalyzer::performElemPhase2(Memory& body,
     SealedPageSet* const* parts, int32_t partCount,
     int64_t doomLine,
     bool firingRecordsCanonical) {
+    gl::Phase2TraceScope phase2FinalizeTrace("GL.Phase2.Finalize", partCount);
     // Per-LB finalize of the FLAT executor pool: apply this LB's captured firing
     // records and drain the per-burst admission / integration staging. The
     // executors already ran in proveKernel's flat (LB, part) sweep, each read-only
@@ -2378,7 +2403,7 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     //     cross-iteration deferred emissions from the previous
     //     step's pre-burst discharge AND post-burst discharge
     //     AND the vacuous-truth path inside addExprToMemoryBlock
-    //     AND the updateGlobalDirect siblings (status=1).
+    //     AND the updateGlobalSingleChapter siblings (status=1).
     //   - internalMailOut = body.sameIterationInternalMail —
     //     any discharge parent-scope emission during THIS absorb
     //     writes here; it then feeds the same step's hashburst
@@ -2445,6 +2470,22 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
 #endif
     } // RT_SCOPE PRE_FIXPOINT_MAIL_ABSORB
 
+    body.lbMemory.sharedNativeKeys.collect(compactionScratchArenas().forSlot(coreId));
+
+    // Return whole blocks of freed pages before phase 2 reads this LB (the
+    // per-burst resets above free pages the refill may not reuse). The page
+    // pack is content-invisible (I-107) and runs under this worker's
+    // exclusive claim; counterexample clones are short-lived and skipped.
+    if (!ceFilteringActive)
+        steward::compactIfFragmented(body.lbMemory,
+                                     compactionScratchArenas().forSlot(coreId));
+
+    // CUDA route: record this LB's Phase 2 read image while it is still
+    // claimed and resident; the chunk packing reads the record instead of the
+    // LB (D-409). A discharged LB gets no task.
+    if (phase2Backend == Phase2Backend::cuda && body.isActive)
+        recordPhase2Measurement(body);
+
     // Release the claim — phase 1 is done with this LB, so it is deloadable
     // again (the steward may now reclaim it). CE clones have no steward.
 #if PHASE13_DEEP_TIMING
@@ -2464,8 +2505,50 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
 #endif
 }
 
+/// @brief Record the CUDA Phase 2 read-image measurement of one claimed,
+///        resident LB at the end of its phase 1.
+///
+/// @param body The active LB whose phase 1 just finished.
+void ExpressionAnalyzer::recordPhase2Measurement(Memory& body) const {
+    assert(phase2MeasurementEpoch != 0
+        && "recordPhase2Measurement before proveKernel started a burst");
+    body.phase2TaskUsage =
+        gpu::measurePhase2TaskProjectionUsage(body, 0, ceFilteringActive);
+    if (body.phase2TaskUsage.tasks != 0) {
+        body.phase2SelectedHashMemories =
+            gpu::selectPhase2HashMemories(body, ceFilteringActive);
+        assert(body.phase2SelectedHashMemories != 0);
+        body.phase2ProjectionUsage = gpu::measurePhase2ProjectionUsage(
+            body, *this, body.phase2SelectedHashMemories, true);
+    } else {
+        body.phase2SelectedHashMemories = 0;
+        body.phase2ProjectionUsage = gpu::Phase2ProjectionUsage{};
+    }
+    body.phase2MeasurementEpoch = phase2MeasurementEpoch;
+}
+
 /// @see Declaration in `prover.hpp` for the full contract.
 void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
+    FtaBlowupAudit audit;
+    static const bool auditEnabled = [] {
+#ifdef _WIN32
+        size_t required = 0;
+        const errno_t result = getenv_s(&required, nullptr, 0, "GL_FTA_BLOWUP_TRACE");
+        assert(result == 0);
+        return required != 0;
+#else
+        return std::getenv("GL_FTA_BLOWUP_TRACE") != nullptr;
+#endif
+    }();
+    const bool auditTarget = auditEnabled && hashburst_dump::isTargetLB(body);
+    assert(ftaBlowupAudit == nullptr);
+    if (auditTarget) {
+#if RT_MEASUREMENT
+        audit.burst = gl::rt_tracker::g_currentHashburstIndex;
+#endif
+        ftaBlowupAudit = &audit;
+    }
+
     // Publish this worker's slot for the absorb door's per-slot scratch arena
     // (read deep in disintegration by prefixArgumentsWithU).
     g_currentCoreId = static_cast<int>(coreId);
@@ -2502,6 +2585,20 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     recordPhase3Detail(Phase13TimingSlot::claimLoad, claimLoadStarted);
 #endif
 
+    assert(body.phase3IgnoredOrRoots == nullptr
+        && "Phase 3 exclusion context is already bound");
+    ScratchArena& phase3Arena = genScratchArenas().forSlot(coreId);
+    DirtyState phase3Dirty = DirtyState::Clean;
+    ColdHashSet<PodKeyStore<NameId>> ignoredOrRoots(&phase3Arena, &phase3Dirty);
+    PagedVector<NameId> ignoredLiveRoots(&phase3Arena, &phase3Dirty);
+    this->collectPhase3IgnoredOrRoots(body, ignoredOrRoots);
+    for (int32_t id = 1; id <= ignoredOrRoots.count(); ++id) {
+        const NameId root = ignoredOrRoots.decode(id);
+        if (body.orLiveBranches.lookup(root) != 0)
+            ignoredLiveRoots.push_back(root);
+    }
+    body.phase3IgnoredOrRoots = ignoredOrRoots.empty() ? nullptr : &ignoredOrRoots;
+
     { RT_SCOPE_HERE("POST_FIXPOINT_MAIL_FLUSH");
     this->standardProcessing(body,
                              /*externalMailIn=*/nullptr,
@@ -2515,182 +2612,10 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // would leave that commit nothing to ship.
     } // RT_SCOPE POST_FIXPOINT_MAIL_FLUSH
 
-#if PHASE13_DEEP_TIMING
-    const auto reactToHypothesisStarted = std::chrono::steady_clock::now();
-#endif
-    { RT_SCOPE_HERE("REACT_TO_HYPO");
-	reactToHypo(body);
-    } // RT_SCOPE REACT_TO_HYPO
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::reactToHypothesis,
-                       reactToHypothesisStarted);
-#endif
-
-    { RT_SCOPE_HERE("END_OF_BURST_SANITIZE");
-    // End-of-burst sanitization: walk `toBeProved` and rewrite goals
-    // whose `it_/int_` args are now downprioritized under the active
-    // equi-classes. One pass per burst — equi-class machinery has
-    // stabilized by this point. (The hash-memory twin is gone: the rules
-    // stay canonical through the install gate and the applyEquiClasses
-    // compact hook, D-312.)
-#if PHASE13_DEEP_TIMING
-    const auto sanitizeToBeProvedStarted = std::chrono::steady_clock::now();
-#endif
-    {
-        RT_SCOPE("SANITIZE_TOBEPROVED");
-        this->sanitizeToBeProved(body);
+    for (int32_t id = 0; id < ignoredLiveRoots.size(); ++id) {
+        assert(body.intValidityNamesToFilter.lookup(ignoredLiveRoots[id]) != 0
+            && "an excluded live OR branch must close and be wiped in this phase");
     }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::sanitizeToBeProved,
-                       sanitizeToBeProvedStarted);
-    const auto drainDisprovedGoalsStarted = std::chrono::steady_clock::now();
-#endif
-
-    // Disproved-goal cleanup: probe the inbox against this LB's MAIN goals
-    // and, on a hit, erase the goal plus its integration machinery — the
-    // matched scope roots land on pendingWipeScopes so the radical wipe
-    // below removes the nested state in this same burst.
-    {
-        RT_SCOPE("DRAIN_DISPROVED_GOALS");
-        this->drainDisprovedGoals(body);
-    }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::drainDisprovedGoals,
-                       drainDisprovedGoalsStarted);
-    const auto drainDeadOrBranchesStarted = std::chrono::steady_clock::now();
-#endif
-
-    // Dead _ordis_ branch retirement: a branch whose asserted disjunct is
-    // refuted (staged by ordisMerge's probe) is wiped, its cohort's
-    // bookkeeping shrinks, and convergence re-checks at the reduced count.
-    // Runs after the disproof drain (wholesale-retired cohorts are gone
-    // first) and before the wipe drain below so the branch wipes land in
-    // this same burst.
-    {
-        RT_SCOPE("DRAIN_DEAD_OR_BRANCHES");
-        this->drainDeadOrBranches(body);
-    }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::drainDeadOrBranches,
-                       drainDeadOrBranchesStarted);
-    const auto freezeResolvedOrBranchesStarted =
-        std::chrono::steady_clock::now();
-#endif
-
-    // Duplicate-or-cohort retirement: when a class merge made two OPEN
-    // cohorts at one parent equi variants of each other, keep the most
-    // advanced (branch-statement census, lex tie-break) and retire the
-    // rest — live branches to pendingWipeScopes, scheduling rows erased,
-    // frozen branches and history kept. Runs before the freeze sweep so
-    // retired branches are never evaluated, and before the wipe drain so
-    // the subtree wipes land in this same burst.
-    {
-        RT_SCOPE("RETIRE_DUPLICATE_OR_COHORTS");
-        this->retireDuplicateOrCohorts(body);
-    }
-
-    // Or-branch freeze: every live _ordis_ branch whose chain goals are all
-    // known at the branch or above is frozen — its subtree leaves the request
-    // universe from the next burst on, nothing is wiped. Runs after the
-    // retirement drain (this burst's dead branches are filtered first) and
-    // before the release drain.
-    {
-        RT_SCOPE("FREEZE_RESOLVED_OR_BRANCHES");
-        this->freezeResolvedOrBranches(body);
-    }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::freezeResolvedOrBranches,
-                       freezeResolvedOrBranchesStarted);
-    const auto drainPendingOrReleasesStarted =
-        std::chrono::steady_clock::now();
-#endif
-
-    // Sequenced or-disintegration: release the next pending branch of every
-    // cohort whose live branch resolved this burst (a toBeProved goal
-    // reached under the branch, or the branch retired refuted by the drain
-    // above — the retirement staging must land first so a refuted live
-    // branch releases its successor in this same burst).
-    {
-        RT_SCOPE("DRAIN_PENDING_OR_RELEASES");
-        this->drainPendingOrReleases(body);
-    }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::drainPendingOrReleases,
-                       drainPendingOrReleasesStarted);
-    const auto wipeSubtreesStarted = std::chrono::steady_clock::now();
-#endif
-
-    // D-72: drain pending subtree wipes
-    // queued during this burst by impl-closure call sites
-    // (addExprToMemoryBlockKernel ~3872 / ~3950) and by
-    // cleanUpOrIntegrationBranches. Wipe per closed scope runs the
-    // full radical sweep over Memory + HashMemory; see the Doxygen
-    // block above the declaration in memory.hpp for the structure
-    // list and rationale. Deferring to here is what makes wiping
-    // intStatementLevelsMap / equivalenceClassesMap safe: the kernel's
-    // sortedNew loops have all completed for this burst, so no
-    // in-flight iteration can be invalidated.
-    if (!body.pendingWipeScopes.empty()) {
-        RT_SCOPE("WIPE_SUBTREES");
-        // Quiescence (D-194): a subtree wipe eradicates state
-        // (and can leave the net statement count unchanged if it also erased what
-        // this burst added), so flag it as a mutation directly rather than relying
-        // on the count diff.
-        body.mutatedThisBurst = true;
-        // Snapshot the cold set's ids then reset it, so wipeSubtree's own
-        // inserts into other fields run against a fresh container.
-        // Sort the IDS by their DECODED names (compareSpans == std::string
-        // byte-lex): the ColdHashSet dedups vids and the interner is
-        // injective, so the id sort is tie-free and reproduces the former
-        // decoded-string std::sort drain order exactly (I-84). The id run
-        // rides the per-slot gen-scratch byte-bump tier (I-124), reclaimed
-        // by the popTo below; the comparator's decodeView spans are
-        // consumed inside each pure-read comparison and nothing mints into
-        // the NameMap before the wipes consume ids, not spans (I-3).
-        const unsigned slot = (g_currentCoreId >= 0)
-            ? static_cast<unsigned>(g_currentCoreId)
-            : genScratchArenas().slotCount() - 1;
-        ScratchArena& gArena = genScratchArenas().forSlot(slot);
-        const ArenaOffset drainMark = gArena.cursor();
-        const int32_t n = body.pendingWipeScopes.count();
-        NameId* ids = reinterpret_cast<NameId*>(gArena.resolve(
-            gArena.alloc(n * static_cast<int32_t>(sizeof(NameId)),
-                         alignof(NameId))));
-        for (int32_t i = 1; i <= n; ++i)
-            ids[i - 1] = body.pendingWipeScopes.decode(i);
-        body.pendingWipeScopes.resetToFresh();
-        std::sort(ids, ids + n, [&](NameId a, NameId b) {
-            return compareSpans(body.nameMap.decodeView(a),
-                                body.nameMap.decodeView(b)) < 0;
-        });
-        for (int32_t k = 0; k < n; ++k)
-            body.wipeSubtree(ids[k]);
-        gArena.popTo(drainMark);
-    }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::wipeSubtrees,
-                       wipeSubtreesStarted);
-    const auto sweepAncestorKnownRowsStarted =
-        std::chrono::steady_clock::now();
-#endif
-
-    // Ancestor-known sweep (I-187): drop
-    // statement-LIST rows at non-main scopes whose text a strict ancestor
-    // knows — the branch-first residue the deposit-time gates cannot see
-    // (NameMap has no child index). Runs LAST: after the sanitize twins
-    // (rewrites stabilized) and after the dead-branch and wipe drains
-    // (retired scopes are gone, so the sweep never touches a scope a wipe
-    // just erased). Registry rows survive as the dedup tombstones the
-    // gates and re-check paths read.
-    {
-        RT_SCOPE("SWEEP_ANCESTOR_KNOWN_ROWS");
-        this->sweepAncestorKnownRows(body);
-    }
-#if PHASE13_DEEP_TIMING
-    recordPhase3Detail(Phase13TimingSlot::sweepAncestorKnownRows,
-                       sweepAncestorKnownRowsStarted);
-#endif
-    } // RT_SCOPE END_OF_BURST_SANITIZE
 
 #if PHASE13_DEEP_TIMING
     const auto quiescenceAndDumpsStarted =
@@ -2785,6 +2710,15 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     }
 #endif
 
+    body.lbMemory.sharedNativeKeys.collect(compactionScratchArenas().forSlot(coreId));
+    // Scope cleanup and shared-key collection can leave whole blocks of free
+    // pages. Pack them while this worker still owns the block exclusively;
+    // virtual page identities and proof content remain unchanged.
+    if (!ceFilteringActive)
+        steward::compactIfFragmented(body.lbMemory,
+                                     compactionScratchArenas().forSlot(coreId));
+    body.sampleParkedSourceStorage();
+
 #if MEM_MEASUREMENT
     // End-of-burst memory poll. This is the last point at which the burst's LB
     // is still claimed and resident, and a deloaded container reads empty behind
@@ -2838,6 +2772,29 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     recordPhase3Detail(Phase13TimingSlot::releaseClaim,
                        releaseClaimStarted);
 #endif
+    ftaBlowupAudit = nullptr;
+    if (auditTarget) {
+        FILE* out = nullptr;
+#ifdef _WIN32
+        const errno_t openResult = fopen_s(&out, ".debug/traps.log", "a");
+        assert(openResult == 0);
+#else
+        out = std::fopen(".debug/traps.log", "a");
+#endif
+        assert(out);
+        std::fprintf(out, "[FTA-CFE-SUM] burst=%d calls=%llu matches=%llu direct=%llu variants=%llu direct_variants=%llu setup_ns=%llu probes_ns=%llu snapshot_members=%llu equality_calls=%llu equality_members=%llu\n",
+            audit.burst, audit.calls, audit.matches, audit.directMatches,
+            audit.variants, audit.directVariants, audit.setupNs, audit.probesNs,
+            audit.snapshotMembers, audit.equalityCalls, audit.equalityMembers);
+        std::fprintf(out, "[FTA-EQ-SUM] burst=%d setup=%llu same=%llu ancestor=%llu closure=%llu writeback=%llu delta=%llu ledger=%llu weak=%llu origins=%llu origin_b_calls=%llu origin_b_comparisons=%llu origin_b_ns=%llu origin_a_calls=%llu origin_a_comparisons=%llu origin_a_ns=%llu\n",
+            audit.burst, audit.classStageNs[0], audit.classStageNs[1], audit.classStageNs[2],
+            audit.classStageNs[3], audit.classStageNs[4], audit.classStageNs[5],
+            audit.classStageNs[6], audit.classStageNs[7], audit.classStageNs[8],
+            audit.originBCalls, audit.originBComparisons, audit.originBNs,
+            audit.originACalls, audit.originAComparisons, audit.originANs);
+        std::fclose(out);
+    }
+
 }
 
 /// @brief Walk a theorem expression and return the set of args that must
@@ -3071,15 +3028,15 @@ bool ExpressionAnalyzer::tryBackReformulateOperatorHead(
 
 // analyze_expressions.cpp
 // Thread-safe: locks globalTheoremList only when mutating it.
-/// @brief Record one proven direct theorem into the global theorem list —
-/// direct theorem path.
+/// @brief Record one proven single-chapter theorem into the global theorem
+/// list — non-induction theorem path.
 ///
 /// @details
 /// Post-`pool.join()` collector for theorems that were proved by a
 /// direct path (rather than via the auxy-indexed indirect path
 /// handled by `updateGlobal`). Same I-28 contract: workers never
 /// touch the global state during the parallel phase, only seal the
-/// theorem bytes onto `updateGlobalDirectPages`; `drainUpdateGlobalDirect`
+/// theorem bytes onto `updateGlobalSingleChapterPages`; `drainUpdateGlobalSingleChapter`
 /// is the single sorted replay point that calls this per record.
 ///
 /// Result: a fresh row in `globalTheoremList` and matching entries
@@ -3100,7 +3057,7 @@ bool ExpressionAnalyzer::tryBackReformulateOperatorHead(
 /// See the declaration in `prover.hpp` for the full contract.
 ///
 /// @param theorem  The theorem string (the dedup key).
-/// @param method   Emission-path label (`direct`, `induction`, ...).
+/// @param method   Emission-path label (`single chapter proof`, `induction`, ...).
 /// @param aux2     Method-specific third column.
 /// @param aux3     Method-specific fourth column.
 /// @param producer The emitting grid LB (vacuous-reversion attribution), or
@@ -3335,7 +3292,7 @@ void ExpressionAnalyzer::repairTierCitationOrigins(Memory* producer) {
     }
 }
 
-void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int coreId,
+void ExpressionAnalyzer::updateGlobalSingleChapter(const std::string& theorem, int coreId,
     const Memory* producer, bool registerGlobally) {
     // 1) Disintegrate to chain + head
     std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
@@ -3400,8 +3357,12 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             const std::string& refTheoremRaw = pair.first;
             const std::string& refTheoremCompiled = pair.second;
 
-            this->appendGlobalTheorem(refTheoremCompiled, "reformulated statement", theorem, "-1", producer);
-            std::cout << refTheoremCompiled << std::endl;
+            // One run-log line per registered theorem: a second producer of
+            // the same text (a twin block, a later burst) registers nothing
+            // and prints nothing.
+            if (this->appendGlobalTheorem(refTheoremCompiled, "reformulated statement", theorem, "-1", producer)) {
+                std::cout << refTheoremCompiled << std::endl;
+            }
 
             if (parameters.trackHistory) {
                 ExpressionWithValidity ev(refTheoremCompiled, "main");
@@ -3452,12 +3413,13 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             ExpressionWithValidity ev(theorem, "main");
             addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
         }
-        this->appendGlobalTheorem(theorem, "direct", "-1", "-1", producer);
-        std::cout << theorem << std::endl;
+        if (this->appendGlobalTheorem(theorem, "single chapter proof", "-1", "-1", producer)) {
+            std::cout << theorem << std::endl;
+        }
         checkOrCompletion(theorem, coreId);
     }
     if (willBackReformulate) {
-        // Register original as "direct" so it gets a full proof chapter.
+        // Register the original for one complete proof chapter.
         // ASIC 0.1 reshuffle: it travels SOLELY as the D-76 compact
         // statement (legacy Mail::implications removed); deferred deposit.
         recordPendingCompaction(theorem, static_cast<int>(origKy.size()), coreId);
@@ -3465,12 +3427,14 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             ExpressionWithValidity ev(theorem, "main");
             addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
         }
-        this->appendGlobalTheorem(theorem, "direct", "-1", "-1", producer);
-        this->appendGlobalTheorem(
-            backReformulated, "incubator back reformulation", theorem, "-1",
-            producer);
-        std::cout << theorem << std::endl;
-        std::cout << backReformulated << std::endl;
+        if (this->appendGlobalTheorem(theorem, "single chapter proof", "-1", "-1", producer)) {
+            std::cout << theorem << std::endl;
+        }
+        if (this->appendGlobalTheorem(
+                backReformulated, "incubator back reformulation", theorem, "-1",
+                producer)) {
+            std::cout << backReformulated << std::endl;
+        }
         checkOrCompletion(theorem, coreId);
 
         if (parameters.trackHistory) {
@@ -3551,13 +3515,10 @@ void ExpressionAnalyzer::deactivateRecursively() {
             }
         });
 
-        // 2. Check if all children are deactivated
-        bool allChildrenDeactivated = true;
-        simpleMapStore.forEachChild(node, [&](const gl::StrSpan&, Memory* child) {
-            if (child && child->isActive) {
-                allChildrenDeactivated = false;
-            }
-        });
+        // 2. Check if all children are deactivated — an order-free question,
+        //    so the unordered probe answers it without sorting the children.
+        const bool allChildrenDeactivated = !simpleMapStore.anyChild(node,
+            [](const Memory* child) { return child && child->isActive; });
 
         // 3. Deactivate node if conditions are met:
         //    - All children are inactive
@@ -3617,6 +3578,11 @@ void ExpressionAnalyzer::deactivateRecursively() {
 /// Same teardown protocol as `deactivateRecursively` — proof stacks
 /// are cached pre-teardown via `cachedProofStacks`.
 ///
+/// The closing tree-wide prune is owed (`deactivationSweepOwed`), not run
+/// here: `proveKernel` settles it with one `deactivateRecursively` sweep
+/// after the iteration's theorem drains
+/// (D-451).
+///
 /// @param theorem Theorem text identifying the per-theorem LBs.
 /// @param root    Root sentinel from which to walk.
 void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memory& root) {
@@ -3624,7 +3590,7 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
     std::vector<int> originals;
     originals.reserve(8);
     for (const auto& kv : this->globalDependencies.originalAuxyMap) {
-        if (kv.second.expr == theorem) 
+        if (kv.second.expr == theorem)
             originals.push_back(kv.first);
     }
 
@@ -3698,10 +3664,11 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
     // 4) Bubble up: if a block has no active children, deactivate it too
     for (auto rit = chainBlocks.rbegin(); rit != chainBlocks.rend(); ++rit) {
         Memory* block = *rit;
-        bool anyActiveChild = false;
-        simpleMapStore.forEachChild(block, [&](const gl::StrSpan&, Memory* child) {
-            if (child && child->isActive) { anyActiveChild = true; }
-        });
+        // Order-free question: the unordered probe stops at the first active
+        // child instead of sorting all of them (an anchor block can hold
+        // thousands).
+        const bool anyActiveChild = simpleMapStore.anyChild(block,
+            [](const Memory* child) { return child && child->isActive; });
         // Disable the LB when no active children AND no MAIN-namescope
         // toBeProved entries remain. Entries at deeper scopes (hypothetical,
         // OR-branch, integration boundaries) do NOT keep the LB alive —
@@ -3731,7 +3698,12 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
         }
     }
 
-	deactivateRecursively();  // Further prune the tree globally
+    // The global prune of the tree is owed, not run here: proveKernel settles
+    // it with one deactivateRecursively sweep right after the iteration's
+    // theorem drains, before anything else reads isActive. The sweep is a
+    // monotone fixpoint, so one sweep after all walks leaves the same inactive
+    // set as one sweep per walk (D-451).
+    deactivationSweepOwed = true;
 }
 
 
@@ -3755,7 +3727,7 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
 /// @param coreId             Producing thread id (purely informational).
 /// @invariant [I-28](../../docs/agentic_swdd/30_invariants.md#i-28) — drain runs
 ///            only after `pool.join()`.
-/// @see `updateGlobalDirect` — direct (non-auxy) counterpart.
+/// @see `updateGlobalSingleChapter` — direct (non-auxy) counterpart.
 void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int coreId) {
     // ---- dependency bookkeeping (short critical section) ----
     int originalIndex = -1;
@@ -3806,7 +3778,7 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
     Memory* memoryBlock = accessMemory(ky, this->body);
     if (memoryBlock != NULL) {
         // Vacuous-premise emission gate (the induction twin of the
-        // drainUpdateGlobalDirect gate): an induction theorem whose chain
+        // drainUpdateGlobalSingleChapter gate): an induction theorem whose chain
         // LB sits at or below a contradicted premise set is vacuous — do
         // not promote it. Runs at the single-threaded post-join drain of
         // updateGlobalTuples, so the parent walk is race-free.
@@ -3895,9 +3867,10 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
             }
 
             // ---- record in globalTheoremList (short critical section) ----
-            this->appendGlobalTheorem(exprFullBind, "induction", indVar,
-                recCounter, memoryBlock);
-            std::cout << exprFullBind << std::endl;
+            if (this->appendGlobalTheorem(exprFullBind, "induction", indVar,
+                    recCounter, memoryBlock)) {
+                std::cout << exprFullBind << std::endl;
+            }
             // checkOrCompletion below intentionally keeps `expr` (the
             // partial-bind, as-scheduled form) because or_pairs.txt is loaded
             // verbatim from the conjecturer's output and stores theorems in
@@ -3911,9 +3884,10 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                     const std::string& refTheoremRaw = pair.first;
                     const std::string& refTheoremCompiled = pair.second;
 
-                    this->appendGlobalTheorem(refTheoremCompiled,
-                        "reformulated statement", expr, "-1", memoryBlock);
-                    std::cout << refTheoremCompiled << std::endl;
+                    if (this->appendGlobalTheorem(refTheoremCompiled,
+                            "reformulated statement", expr, "-1", memoryBlock)) {
+                        std::cout << refTheoremCompiled << std::endl;
+                    }
 
                     if (parameters.trackHistory) {
                         ExpressionWithValidity ev(refTheoremCompiled, "main");
@@ -4259,8 +4233,8 @@ int ExpressionAnalyzer::compareProducerChains(const Memory* a, const Memory* b) 
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
-int ExpressionAnalyzer::updateGlobalDirectLess(const UpdateGlobalDirectRec& a,
-                                               const UpdateGlobalDirectRec& b) {
+int ExpressionAnalyzer::updateGlobalSingleChapterLess(const UpdateGlobalSingleChapterRec& a,
+                                               const UpdateGlobalSingleChapterRec& b) {
     const int c = compareSpans(StrSpan(a.theorem), StrSpan(b.theorem));
     if (c != 0) return c;
     // Level-verdict tiebreak, TRUE FIRST: when one theorem seals from both a
@@ -4279,19 +4253,19 @@ int ExpressionAnalyzer::updateGlobalDirectLess(const UpdateGlobalDirectRec& a,
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
-void ExpressionAnalyzer::drainUpdateGlobalDirect() {
+void ExpressionAnalyzer::drainUpdateGlobalSingleChapter() {
     // proveKernel emplaces the page set before phase-1 and this is its sole,
     // unconditionally-reached post-join call site — always engaged here.
-    assert(updateGlobalDirectPages
-        && "drainUpdateGlobalDirect: proveKernel must emplace the page set");
-    SealedPageSet& ps = *updateGlobalDirectPages;
-    if (ps.recordCount() == 0) { updateGlobalDirectPages.reset(); return; }
+    assert(updateGlobalSingleChapterPages
+        && "drainUpdateGlobalSingleChapter: proveKernel must emplace the page set");
+    SealedPageSet& ps = *updateGlobalSingleChapterPages;
+    if (ps.recordCount() == 0) { updateGlobalSingleChapterPages.reset(); return; }
 
     // Single-threaded post-join (g_currentCoreId == -1 -> reserved last gen
     // slot). Gather record pointers, index-sort on the (theorem bytes, level
     // verdict true-first, producer chain) total order — every key a pure
     // function of proof state, never the dispatch coreId. The refs / idx ride
-    // the gen-scratch tiers; the sealed strings ride updateGlobalDirectPages
+    // the gen-scratch tiers; the sealed strings ride updateGlobalSingleChapterPages
     // (never crossed, I-124).
     const unsigned slot = (g_currentCoreId >= 0)
         ? static_cast<unsigned>(g_currentCoreId)
@@ -4299,21 +4273,21 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
     ScratchArena& gArena = genScratchArenas().forSlot(slot);
     const ArenaOffset mark = gArena.cursor();
     DirtyState d = DirtyState::Clean;
-    PagedVector<const UpdateGlobalDirectRec*> refs(&gArena, &d);
-    ps.forEachRecord<UpdateGlobalDirectRec>(
-        [&](const UpdateGlobalDirectRec& r) { refs.push_back(&r); });
+    PagedVector<const UpdateGlobalSingleChapterRec*> refs(&gArena, &d);
+    ps.forEachRecord<UpdateGlobalSingleChapterRec>(
+        [&](const UpdateGlobalSingleChapterRec& r) { refs.push_back(&r); });
 
     const int32_t n = static_cast<int32_t>(refs.size());
     int32_t* idx = reinterpret_cast<int32_t*>(
         gArena.resolve(gArena.alloc(n * sizeof(int32_t), alignof(int32_t))));
     for (int32_t i = 0; i < n; ++i) idx[i] = i;
     std::sort(idx, idx + n, [&](int32_t a, int32_t b) {
-        return updateGlobalDirectLess(*refs[static_cast<size_t>(a)],
+        return updateGlobalSingleChapterLess(*refs[static_cast<size_t>(a)],
                                       *refs[static_cast<size_t>(b)]) < 0;
     });
 
     for (int32_t oi = 0; oi < n; ++oi) {
-        const UpdateGlobalDirectRec& r = *refs[static_cast<size_t>(idx[oi])];
+        const UpdateGlobalSingleChapterRec& r = *refs[static_cast<size_t>(idx[oi])];
         // Vacuous-premise emission gate: a theorem sealed by an LB whose
         // premise set turned out inconsistent (self-or-ancestor
         // mainContradiction) is vacuous — suppress it. The flags were set
@@ -4321,15 +4295,15 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
         // sees them; the parent walk is race-free here (the sanctioned
         // I-28 seam).
         assert(r.producer
-            && "drainUpdateGlobalDirect: seal sites must carry the producer LB");
+            && "drainUpdateGlobalSingleChapter: seal sites must carry the producer LB");
         if (hasContradictedAncestor(r.producer)) continue;
-        // Materialize the std::string at the still-heap updateGlobalDirect edge
+        // Materialize the std::string at the still-heap updateGlobalSingleChapter edge
         // (the sink is not a statification target; the sealed bytes crossing the
         // join is the win). The sealed strings are live until freePages() below.
         // The sealed level verdict rides along: a false verdict runs only the
         // lifecycle section inside plus the proved-not-broadcast tier
         // registration (D-278).
-        updateGlobalDirect(StrSpan(r.theorem).toStdString(), r.coreId,
+        updateGlobalSingleChapter(StrSpan(r.theorem).toStdString(), r.coreId,
                            r.producer, r.allLevelsInvolved);
 
         // Settled-goal deposit: a primed __contradiction__ discharge emits a
@@ -4367,7 +4341,7 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
     gArena.popTo(mark);
     ps.seal();
     ps.freePages();
-    updateGlobalDirectPages.reset();
+    updateGlobalSingleChapterPages.reset();
 }
 
 /// @brief End-of-burst drain of the settled-goal inbox — close the MAIN goal
@@ -4503,7 +4477,7 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
         // scrubbing of a dead goal's machinery; a proved goal's history and
         // products stay like any proved statement's. Twin retirement (and,
         // when the sealed level verdict allowed it, registration) already
-        // happened at the deposit seam (drainUpdateGlobalDirect ->
+        // happened at the deposit seam (drainUpdateGlobalSingleChapter ->
         // deactivateUnnecessary); a level-refused settlement still closes
         // here (D-278).
         {
@@ -4598,6 +4572,10 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
         body.integrationStartIntMap.eraseIf([&](NameId tid) {
             return tmplMatches(tid);
         });
+
+        // ---- 3b. the goal's parked implication subproofs ----
+        // (D-406)
+        this->eraseGoalSubproofParks(body, seed);
 
         // Origin keys pack BOTH halves in the originInterner space — NEVER
         // the NameMap (I-91) — so subtree membership must gate on the DECODED
@@ -4922,9 +4900,10 @@ void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
     // through ordisMerge — the canonical promotion path. The deposit spans
     // (expression + rebuilt branch validity) alias lbStateInterner cold bytes
     // and the string-scratch arena respectively, both stable across the
-    // re-fire's mints. A missing levels row is the already-converged defined
-    // skip (the expression was promoted and collapsed from its branches by an
-    // earlier full-cohort convergence).
+    // re-fire's mints. A successfully wiped branch retains only the derivation
+    // levels of goals current at closure. Those levels may be used only while
+    // the expression remains a goal on this cohort's parent chain. Other wiped
+    // expressions have no retained levels and do not re-fire from this seam.
     const StrSpan BOUNDARY_ORDIS("_boundary_ordis_", 16);
     for (int32_t r = 0; r < rowKeys.size(); ++r) {
         const int32_t survN = rowStarts[r + 1] - rowStarts[r];
@@ -4964,10 +4943,23 @@ void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
         const StrSpan branchV(bvBuf, bvLen);
         const int32_t lvlsId = lookupStatementLevels(
             body.intStatementLevelsMap, body.nameMap, exprV, branchV);
-        if (lvlsId == 0) continue;
+        const NameId exprId = body.nameMap.lookup(exprV);
+        const NameId branchId = body.nameMap.lookup(branchV);
+        const NameId parentId = body.nameMap.lookup(parentV);
+        bool isGoal = false;
+        for (NameId scope = parentId; scope != 0;
+             scope = body.nameMap.parentOf(scope)) {
+            if (body.intToBeProved.lookup(packStatementKey(exprId, scope)) != 0)
+                isGoal = true;
+        }
+        const int32_t savedLevelsId = lvlsId == 0 && isGoal
+            ? body.lbMemory.closedOrGoalLevels.lookup(StatementKey{ exprId, branchId })
+            : 0;
+        if (lvlsId == 0 && savedLevelsId == 0) continue;
         int lvRun[256];
-        const int32_t lvN = coldIntRunAt(
-            body.intStatementLevelsMap, lvlsId, lvRun, 256);
+        const int32_t lvN = lvlsId != 0
+            ? coldIntRunAt(body.intStatementLevelsMap, lvlsId, lvRun, 256)
+            : coldIntRunAt(body.lbMemory.closedOrGoalLevels, savedLevelsId, lvRun, 256);
         ordisMerge(exprV, branchV, lvRun, lvN, body);
     }
     gArena.popTo(gMark);
@@ -5021,8 +5013,6 @@ void ExpressionAnalyzer::retireDuplicateOrCohorts(Memory& body)
             entryPool.push_back(body.processedOrLedger.valueAt(id, j));
         scopeRows.push_back(row);
     }
-
-    const StrSpan BOUNDARY_ORDIS("_boundary_ordis_", 16);
 
     for (int32_t si = 0; si < static_cast<int32_t>(scopeRows.size()); ++si) {
         const LedgerScopeRow& sr = scopeRows[static_cast<std::size_t>(si)];
@@ -5091,27 +5081,9 @@ void ExpressionAnalyzer::retireDuplicateOrCohorts(Memory& body)
             // member's `_ordis_` branch scopes (prefix
             // `<parent>_boundary_ordis_<sig>_(`, which every branch scope
             // and branch descendant extends).
-            for (int32_t j = 0; j < sr.n; ++j) score[j] = 0;
-            for (int32_t r = 0; r < body.intEncodedStatements.size(); ++r) {
-                const StrSpan rowV = body.nameMap.decodeView(
-                    body.intEncodedStatements[r].validityId);
-                if (rowV.len <= vName.len + BOUNDARY_ORDIS.len) continue;
-                if (!equalSpans(StrSpan(rowV.ptr, vName.len), vName)) continue;
-                if (!equalSpans(StrSpan(rowV.ptr + vName.len,
-                                        BOUNDARY_ORDIS.len),
-                                BOUNDARY_ORDIS)) continue;
-                const StrSpan tail(rowV.ptr + vName.len + BOUNDARY_ORDIS.len,
-                                   rowV.len - vName.len - BOUNDARY_ORDIS.len);
-                for (int32_t j = 0; j < sr.n; ++j) {
-                    if (groupOf[j] != g || cohortIdOf[j] == 0) continue;
-                    const StrSpan sig = text[j];
-                    if (tail.len > sig.len + 1
-                        && equalSpans(StrSpan(tail.ptr, sig.len), sig)
-                        && tail.ptr[sig.len] == '_') {
-                        ++score[j];
-                    }
-                }
-            }
+            for (int32_t j = 0; j < sr.n; ++j)
+                score[j] = groupOf[j] == g && cohortIdOf[j] != 0
+                    ? orCohortStatementCount(body, vName, text[j]) : 0;
 
             // Keeper: most branch statements; ties to the byte-lex
             // smaller signature (deterministic).
@@ -5166,34 +5138,1056 @@ void ExpressionAnalyzer::retireDuplicateOrCohorts(Memory& body)
 }
 
 
-/// @brief End-of-burst release drain of the sequenced or-disintegration
-///        cohorts — mint the next pending branch of every resolved cohort.
+/// @brief Satisfied-cohort retirement — see the declaration's Doxygen block
+///        in `prover.hpp` for the full contract.
 ///
 /// @details
-/// See the declaration's Doxygen block in `prover.hpp` for the full contract
-/// (staging sources, the defined skips, the ranking, the release channel).
-/// Implementation notes:
+/// Implementation notes: pass 1 walks the live branches (each carries its
+/// cohort's live disjunct in its scope name) and pass 2 the queued cohorts;
+/// both test the still-open disjuncts at the cohort parent with
+/// `orDisjunctTrueAt` and collect the satisfied cohort ids in walk order.
+/// Pass 3 retires them with the duplicate-loser steps. The probe mints
+/// nothing into the NameMap or the `lbStateInterner`, so the held
+/// `decodeView` spans stay valid to last use (I-3).
 ///
-/// - Heap-free (Rule 28): the cohort snapshot rides the gen-scratch tier,
-///   the branch-validity string the string tier, both reclaimed at exit;
-///   the disjunct / clean-form arrays are bounded stack runs
-///   (`MAX_INSTRUCTION_ELEMENTS`).
-/// - Span lifetimes: every decoded span in the loop aliases
-///   `lbStateInterner` cold pages, and nothing in the loop mints into that
-///   interner (the seed door mints NameMap, the origin door mints
-///   `originInterner`, the queue rebuild inserts KNOWN ids), so the spans
-///   stay valid to last use (I-3).
-/// - The released seed rides `sameIterationInternalMail` exactly like an
-///   `ordisMerge` promotion; the branch scope name itself is minted by the
-///   door's `NameMap::encode`, which re-derives boundary parentage
-///   (I-139), so no explicit `encodePush` is needed here.
+/// @param body The LB whose open cohorts are swept.
+/// @return (void)
+void ExpressionAnalyzer::retireSatisfiedOrCohorts(Memory& body)
+{
+    const int32_t liveN = body.orLiveBranches.count();
+    const int32_t pendingRowN = body.orPendingBranches.count();
+    if (liveN == 0 && pendingRowN == 0) return;
+
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    DirtyState dirty = DirtyState::Clean;
+    ColdHashSet<PodKeyStore<int32_t>> satisfied(&gArena, &dirty);
+    satisfied.resetToFresh();
+
+    // The cohort of one live branch; the branch's own disjunct comes back
+    // through the out-span (a wrapped payload body, unwrapped here).
+    const auto liveCohortOf = [&](NameId vid, StrSpan& disjunctOut) -> int32_t {
+        StrSpan orSigV, branchBodyV;
+        const OrScopeKind kind = classifyOrScopeView(body.nameMap, vid,
+                                                     orSigV, branchBodyV);
+        assert(kind == OrScopeKind::Disintegration
+            && "orLiveBranches vid must be an _ordis_ branch scope");
+        (void)kind;
+        assert(branchBodyV.len >= 2 && branchBodyV.ptr[0] == '('
+            && branchBodyV.ptr[branchBodyV.len - 1] == ')'
+            && "ordis branch payload must be a wrapped (disjunct)");
+        disjunctOut = StrSpan(branchBodyV.ptr + 1, branchBodyV.len - 2);
+        const NameId parentId = body.nameMap.parentOf(vid);
+        assert(parentId != 0 && "an _ordis_ branch scope has a cohort parent");
+        return lookupOrCohortId(body.lbStateInterner,
+            body.lbStateInterner.lookup(body.nameMap.decodeView(parentId)),
+            body.lbStateInterner.lookup(orSigV));
+    };
+    // Whether a queued disjunct of the cohort holds at its parent scope.
+    const auto pendingHolds = [&](int32_t cohortId, NameId parentId) -> bool {
+        const int32_t pRow = body.orPendingBranches.lookup(cohortId);
+        if (pRow == 0) return false;
+        const int32_t n = body.orPendingBranches.runLen(pRow);
+        for (int32_t j = 0; j < n; ++j) {
+            const StrSpan w = body.lbStateInterner.decodeView(
+                body.orPendingBranches.valueAt(pRow, j));
+            assert(w.len >= 2 && w.ptr[0] == '(' && w.ptr[w.len - 1] == ')'
+                && "pending ordis disjunct must be a wrapped (disjunct)");
+            if (orDisjunctTrueAt(StrSpan(w.ptr + 1, w.len - 2), parentId, body))
+                return true;
+        }
+        return false;
+    };
+
+    // ---- 1. live branches: the live disjunct and the queued ones ----
+    for (int32_t li = 1; li <= liveN; ++li) {
+        const NameId vid = body.orLiveBranches.decode(li);
+        // A retired or wipe-closed branch is the freeze sweep's defined drop.
+        if (body.intValidityNamesToFilter.lookup(vid) != 0) continue;
+        StrSpan liveDisjunct;
+        const int32_t cohortId = liveCohortOf(vid, liveDisjunct);
+        assert(cohortId != 0 && "a live ordis branch has an interned cohort");
+        // Defined skip: the cohort was retired wholesale by this seam's
+        // drainDisprovedGoals; its parent lies in a disproof-wiped subtree,
+        // which covers this branch too.
+        if (body.orDisjunctCount.lookup(cohortId) == 0) continue;
+        if (satisfied.lookup(cohortId) != 0) continue;
+        const NameId parentId = body.nameMap.parentOf(vid);
+        if (orDisjunctTrueAt(liveDisjunct, parentId, body)
+            || pendingHolds(cohortId, parentId)) {
+            satisfied.mint(cohortId);
+        }
+    }
+
+    // ---- 2. queued cohorts without a live branch ----
+    for (int32_t id = 1; id <= pendingRowN; ++id) {
+        const int32_t cohortId = body.orPendingBranches.decodeKey(id);
+        if (satisfied.lookup(cohortId) != 0) continue;
+        // Defined skip: a cohort retired wholesale (count row gone).
+        if (body.orDisjunctCount.lookup(cohortId) == 0) continue;
+        const LbStatePairKey cohort =
+            decodeOrCohortIds(body.lbStateInterner, cohortId);
+        const NameId parentId = body.nameMap.lookup(
+            body.lbStateInterner.decodeView(static_cast<int32_t>(cohort.high)));
+        assert(parentId != 0 && "ordis cohort parent scope must be interned");
+        // Defined skip: a filtered parent belongs to a retired region.
+        if (body.intValidityNamesToFilter.lookup(parentId) != 0) continue;
+        if (pendingHolds(cohortId, parentId)) satisfied.mint(cohortId);
+    }
+
+    // ---- 3. retire (the retireDuplicateOrCohorts loser steps) ----
+    if (satisfied.count() > 0) {
+        for (int32_t li = 1; li <= liveN; ++li) {
+            const NameId vid = body.orLiveBranches.decode(li);
+            if (body.intValidityNamesToFilter.lookup(vid) != 0) continue;
+            StrSpan liveDisjunct;
+            if (satisfied.lookup(liveCohortOf(vid, liveDisjunct)) != 0)
+                body.pendingWipeScopes.mint(vid);
+        }
+        body.orLiveBranches.eraseIf([&](const NameId& v) {
+            return body.pendingWipeScopes.lookup(v) != 0;
+        });
+        body.orDisjunctCount.eraseIf([&](int32_t cid) {
+            return satisfied.lookup(cid) != 0;
+        });
+        body.orPendingBranches.eraseSetIf([&](int32_t cid) {
+            return satisfied.lookup(cid) != 0;
+        });
+        body.orPendingLevels.eraseSetIf([&](int32_t cid) {
+            return satisfied.lookup(cid) != 0;
+        });
+        for (int32_t k = 1; k <= satisfied.count(); ++k)
+            body.orStarterPick.erase(satisfied.decode(k));
+        body.mutatedThisBurst = true;
+    }
+    satisfied.release();
+    gArena.popTo(gMark);
+}
+
+
+/// @brief End-of-burst retirement of settled implication subproofs — see the
+///        declaration's Doxygen block in `prover.hpp` for the full contract.
 ///
-/// @param memoryBlock The LB whose release inbox is drained.
-/// @invariant Staged cohorts process in decoded (parent, signature) order;
-///            the released disjunct is a pure function of the remaining
-///            pending set plus the LB's anchor arguments (I-84).
-/// @see Memory::pendingOrReleases, Memory::orPendingBranches,
-///      Memory::orPendingLevels, pickTopOrDisjunct, collectAnchorArgs.
+/// @details
+/// Implementation notes: the candidates are collected first (payload copies
+/// on the string tier, because the known-part probe and the canonical-form
+/// build run class and index maintenance), then the known-part retirement
+/// runs per candidate, then the survivors are sorted by (parent, canonical
+/// payload, payload) so every collapse group is one contiguous run. The
+/// census runs only for groups of two or more.
+///
+/// @param body The LB whose open subproofs are swept.
+/// @return (void)
+/// @invariant Mints nothing into the NameMap or the template interner.
+/// @see retireDuplicateOrCohorts, compactKnownUpToEquality,
+///      scopeSubtreeStatementCount.
+void ExpressionAnalyzer::retireSettledImplicationSubproofs(Memory& body)
+{
+    const int32_t keyN = body.integrationPrepared.count();
+    if (keyN == 0) return;
+
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    const unsigned sSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& sArena = scratchArenas().forSlot(sSlot);
+    ScratchScope sweepStrings(sArena);
+
+    // A scope is open unless it or an ancestor is wiped (the filter holds
+    // every wiped scope) or already queued for this burst's wipe.
+    const auto closedOrQueued = [&](NameId scope) {
+        for (NameId s = scope; s != 0; s = body.nameMap.parentOf(s))
+            if (body.intValidityNamesToFilter.contains(s)
+                || body.pendingWipeScopes.contains(s)) return true;
+        return false;
+    };
+
+    struct Candidate { NameId scope; NameId parent; StrSpan payload; StrSpan parentName; StrSpan canonical; };
+    DirtyState dirty = DirtyState::Clean;
+    PagedVector<Candidate> open(&gArena, &dirty);
+    for (int32_t id = 1; id <= keyN; ++id) {
+        const int64_t key = body.integrationPrepared.decode(id);
+        StrSpan payloadView, parentView;
+        decodeTemplateKeyView(key, body.templateInterner, body.nameMap, payloadView, parentView);
+        // Bare implication payloads only: goal-driven payloads start with
+        // their goal, and every other prepared template is no subproof.
+        if (!startsWithSpan(payloadView, "(implication", 12)) continue;
+        const int32_t boundaryLen = static_cast<int32_t>(NameMap::BOUNDARY_LEN);
+        const int32_t nameLen = parentView.len + boundaryLen + payloadView.len;
+        char* nameBuf = sArena.allocBytes(nameLen);
+        std::memcpy(nameBuf, parentView.ptr, static_cast<std::size_t>(parentView.len));
+        std::memcpy(nameBuf + parentView.len, NameMap::BOUNDARY_STR, NameMap::BOUNDARY_LEN);
+        std::memcpy(nameBuf + parentView.len + boundaryLen, payloadView.ptr,
+                    static_cast<std::size_t>(payloadView.len));
+        // A prepared implication template whose scope was never pushed is an
+        // integration expression, not a Case A subproof.
+        const NameId scope = body.nameMap.lookup(StrSpan(nameBuf, nameLen));
+        if (scope == 0 || closedOrQueued(scope)) continue;
+        const StatementKey sk = Codec<StatementKey>::decode(key);
+        const ScratchString payload = ScratchString::copyFrom(sArena, payloadView.ptr, payloadView.len);
+        const ScratchString parentName = ScratchString::copyFrom(sArena, parentView.ptr, parentView.len);
+        open.push_back(Candidate{ scope, sk.validity, StrSpan(payload), StrSpan(parentName), StrSpan() });
+    }
+    if (open.empty()) { gArena.popTo(gMark); return; }
+
+    // 1. Known part: the implication is already known at the parent scope.
+    PagedVector<int32_t> alive(&gArena, &dirty);
+    for (int32_t i = 0; i < open.size(); ++i) {
+        const Candidate& c = open[i];
+        if (compactKnownUpToEquality(c.payload, c.parentName, body)) {
+            body.pendingWipeScopes.mint(c.scope);
+            continue;
+        }
+        alive.push_back(i);
+    }
+    if (alive.size() < 2) { gArena.popTo(gMark); return; }
+
+    // 2. Collapse: equal canonical payloads under one parent form one group.
+    for (int32_t a = 0; a < alive.size(); ++a) {
+        Candidate c = open[alive[a]];
+        int lvRun[256];
+        int32_t lvN = 0;
+        const CanonicalForm form = canonicalFormAtScope(c.payload, c.parentName, body,
+                                                        sArena, lvRun, lvN, 256);
+        c.canonical = form.text;
+        open.setAt(alive[a], c);
+    }
+    const int32_t aliveN = alive.size();
+    int32_t* order = reinterpret_cast<int32_t*>(gArena.resolve(gArena.alloc(
+        aliveN * static_cast<int32_t>(sizeof(int32_t)), static_cast<int32_t>(alignof(int32_t)))));
+    for (int32_t a = 0; a < aliveN; ++a) order[a] = alive[a];
+    std::sort(order, order + aliveN, [&](int32_t x, int32_t y) {
+        const Candidate& l = open[x];
+        const Candidate& r = open[y];
+        if (l.parent != r.parent) return l.parent < r.parent;
+        const int c = compareSpans(l.canonical, r.canonical);
+        if (c != 0) return c < 0;
+        return compareSpans(l.payload, r.payload) < 0;
+    });
+    for (int32_t start = 0; start < aliveN;) {
+        int32_t end = start + 1;
+        while (end < aliveN && open[order[end]].parent == open[order[start]].parent
+               && equalSpans(open[order[end]].canonical, open[order[start]].canonical))
+            ++end;
+        if (end - start >= 2) {
+            // Keeper: most statements in its subtree; ties to the byte-lex
+            // smaller payload, which the sort already put first.
+            int32_t keep = start;
+            int32_t keepScore = scopeSubtreeStatementCount(body, open[order[start]].scope);
+            for (int32_t k = start + 1; k < end; ++k) {
+                const int32_t score = scopeSubtreeStatementCount(body, open[order[k]].scope);
+                if (score > keepScore) { keep = k; keepScore = score; }
+            }
+            for (int32_t k = start; k < end; ++k)
+                if (k != keep) body.pendingWipeScopes.mint(open[order[k]].scope);
+        }
+        start = end;
+    }
+    gArena.popTo(gMark);
+}
+
+/// @brief Count runtime statements in one scope and every scope nested below
+///        it.
+///
+/// @details The collapse census of `retireSettledImplicationSubproofs`: one
+/// pass over `intEncodedStatements`, counting each row whose validity is the
+/// scope itself or a strict descendant in the validity forest. Reads no proof
+/// history and mints nothing.
+///
+/// @param body  Owning resident block.
+/// @param scope Minted validity id of the subtree root.
+/// @return Number of runtime statements in the subtree.
+/// @see retireSettledImplicationSubproofs; orCohortStatementCount.
+int32_t ExpressionAnalyzer::scopeSubtreeStatementCount(const Memory& body,
+    NameId scope) const
+{
+    assert(scope != 0 && "scopeSubtreeStatementCount: expected a minted scope");
+    int32_t count = 0;
+    for (int32_t i = 0; i < body.intEncodedStatements.size(); ++i) {
+        const NameId validity = body.intEncodedStatements[i].validityId;
+        if (validity == scope || body.nameMap.isStrictAncestor(scope, validity)) ++count;
+    }
+    return count;
+}
+
+/// @brief Read the root of one integration task.
+///
+/// @details
+/// Every task in the task table (`LbMemory::integrationTasks`) carries the
+/// root it was prepared on behalf of, set once at registration and never
+/// rewritten (I-284). A root is its own root.
+///
+/// @param mb   Owning block with its task table resident.
+/// @param task Registered task key (non-zero).
+/// @return The task's root key.
+/// @invariant Asserts the task is registered.
+/// @see registerIntegrationTask, noteIntegrationReach.
+int64_t ExpressionAnalyzer::integrationRootOf(const Memory& mb, int64_t task)
+{
+    assert(task != 0 && "integrationRootOf: expected a task key");
+    const IntegrationTaskRec* rec = mb.lbMemory.integrationTasks.find(task);
+    assert(rec != nullptr && "integrationRootOf: task not registered");
+    return rec->root;
+}
+
+/// @brief Record that a requester reached an existing integration derivative,
+///        marking the owning task shared when the requester works for a
+///        different root.
+///
+/// @details
+/// The sharing rule of the finished-task wipe: a derivative belongs to the
+/// node that created it — a task, or a gate node grouping one opening's
+/// derivatives (`registerIntegrationGate`). When a door finds the derivative
+/// already present and the requester is an independent trigger (task zero) or
+/// works for another root, the owning node is marked
+/// `IntegrationTaskRec::kShared`; a shared node strictly below a finished root
+/// survives with everything below it. An independent derivative (owner zero)
+/// and a requester of the same root change nothing.
+///
+/// @param mb            Owning block with its task table resident.
+/// @param ownerTask     Task owning the reached derivative (0 = none).
+/// @param requesterTask Task on whose behalf the door runs (0 = none).
+/// @return (void)
+/// @see IntegrationTaskRec, integrationTaskWipeable.
+void ExpressionAnalyzer::noteIntegrationReach(Memory& mb, int64_t ownerTask, int64_t requesterTask)
+{
+    if (ownerTask == 0 || ownerTask == requesterTask) return;
+    const int32_t id = mb.lbMemory.integrationTasks.lookup(ownerTask);
+    assert(id != 0 && "noteIntegrationReach: owner task not registered");
+    IntegrationTaskRec rec = mb.lbMemory.integrationTasks.valueAt(id);
+    if (requesterTask != 0 && integrationRootOf(mb, requesterTask) == rec.root) return;
+    if ((rec.flags & IntegrationTaskRec::kShared) != 0) return;
+    rec.flags |= IntegrationTaskRec::kShared;
+    mb.lbMemory.integrationTasks.setValueAt(id, rec);
+}
+
+/// @brief Record the owner of a derivative keyed in one owner map, or note the
+///        reach of an existing one.
+///
+/// @details
+/// A key already owned is a reach (`noteIntegrationReach`). A key that existed
+/// before without an owner is an independent derivative and stays unowned. A
+/// new key created on behalf of a task is owned by that task; a new key created
+/// by an independent trigger stays unowned.
+///
+/// @param mb            Owning block.
+/// @param owners        The owner map of the derivative kind.
+/// @param key           The derivative's key in that map.
+/// @param requesterTask Task on whose behalf the door runs (0 = none).
+/// @param existedBefore Whether the derivative existed before this door ran.
+/// @return (void)
+/// @see LbMemory::integrationPreparedOwners, noteIntegrationReach.
+void ExpressionAnalyzer::recordIntegrationOwner(Memory& mb, TypedColdMap<int64_t, int64_t>& owners,
+    int64_t key, int64_t requesterTask, bool existedBefore)
+{
+    assert(!integrationTaskRetired(mb, requesterTask)
+        && "recordIntegrationOwner: a retired node makes a derivative");
+    const int64_t* owner = owners.find(key);
+    if (owner != nullptr) {
+        noteIntegrationReach(mb, *owner, requesterTask);
+        return;
+    }
+    if (existedBefore || requesterTask == 0) return;
+    owners.insert(key, requesterTask);
+}
+
+/// @brief Register one integration task in the task table.
+///
+/// @details
+/// A task prepared while `Memory::integrationTaskContext` is zero is a root:
+/// its root is its own key and it is classified for the finish test —
+/// `kExactRoot` for a text without a marker, `kOutputRoot` for a positive
+/// operator text with exactly one marker at a slot the operator's
+/// configuration declares as output (`CoreExpressionConfig::outputIndices`),
+/// neither otherwise; a classified root stages a recheck of its scope
+/// (`stageRootRecheck`), since its value may already be known. A task prepared
+/// on behalf of another task inherits that task's root verbatim, names it as
+/// parent and is never classified: only roots finish. A key already registered
+/// (a gate erased by a disproof and
+/// prepared again, or a gate node whose key equals a task's) keeps its record,
+/// and the new registration counts as a reach (`noteIntegrationReach`); a
+/// retired key (its gate erased by a disproof and opened again by a live
+/// requester) is registered anew below that requester.
+///
+/// @param mb         Owning block.
+/// @param taskKey    Packed template key of the task text at its scope.
+/// @param text       Task text (`marker` in place of each changeable argument);
+///                   read only for a root.
+/// @param parentTask Task on whose behalf this task is prepared (0 = none).
+/// @return The registered task's root key.
+/// @see IntegrationTaskRec, prepareIntegration.
+int64_t ExpressionAnalyzer::registerIntegrationTask(Memory& mb, int64_t taskKey, StrSpan text,
+    int64_t parentTask)
+{
+    assert(taskKey != 0 && "registerIntegrationTask: expected a task key");
+    assert(!integrationTaskRetired(mb, parentTask)
+        && "registerIntegrationTask: a retired node prepares a derivative");
+    const int32_t existing = mb.lbMemory.integrationTasks.lookup(taskKey);
+    const bool revived = existing != 0 && integrationTaskRetired(mb, taskKey);
+    if (existing != 0 && !revived) {
+        noteIntegrationReach(mb, taskKey, parentTask);
+        return integrationRootOf(mb, taskKey);
+    }
+    IntegrationTaskRec rec{};
+    rec.parent = parentTask;
+    rec.root = parentTask != 0 ? integrationRootOf(mb, parentTask) : taskKey;
+    rec.flags = 0;
+    rec.outputSlot = -1;
+    if (parentTask == 0) {
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t argN = getArgsSpans(text, args, ExecutionParameters::MAX_ARITY);
+        int32_t markerN = 0, markerSlot = -1;
+        for (int32_t i = 0; i < argN; ++i) {
+            if (equalSpans(args[i], StrSpan("marker", 6))) { ++markerN; markerSlot = i; }
+        }
+        if (markerN == 0) {
+            rec.flags |= IntegrationTaskRec::kExactRoot;
+        } else if (markerN == 1 && !text.empty() && text[0] != '!') {
+            const ce::CoreExpressionConfig* cfg = coreConfig(extractExpressionSpan(text));
+            if (cfg != nullptr
+                && std::find(cfg->outputIndices.begin(), cfg->outputIndices.end(), markerSlot)
+                       != cfg->outputIndices.end()) {
+                rec.flags |= IntegrationTaskRec::kOutputRoot;
+                rec.outputSlot = markerSlot;
+            }
+        }
+    }
+    if (revived) {
+        // A retired node whose gate a disproof erased is opened again by a
+        // live requester: a new node under that requester.
+        mb.lbMemory.integrationTasks.setValueAt(existing, rec);
+        mb.lbMemory.finishedIntegrationRoots.erase(taskKey);
+    } else {
+        mb.lbMemory.integrationTasks.insert(taskKey, rec);
+    }
+    // A new root may already be known; the next sweep tests it.
+    if ((rec.flags & (IntegrationTaskRec::kExactRoot | IntegrationTaskRec::kOutputRoot)) != 0)
+        stageRootRecheck(mb, Codec<StatementKey>::decode(taskKey).validity);
+    return rec.root;
+}
+
+/// @brief Whether a node was removed with its finished root.
+///
+/// @details
+/// A retired node (`IntegrationTaskRec::kRetired`) lost every derivative in
+/// the finished-task wipe; no door creates a new derivative on its behalf
+/// (asserted at the ownership doors), and a retired task is not prepared again
+/// (`prepareIntegration`). Zero, the independent requester, is never retired.
+///
+/// @param mb   Owning block.
+/// @param task Registered node key, or 0.
+/// @return True iff @p task is nonzero and retired.
+/// @invariant Asserts a nonzero key is registered.
+/// @see wipeFinishedRootDerivatives, registerIntegrationTask.
+bool ExpressionAnalyzer::integrationTaskRetired(const Memory& mb, int64_t task)
+{
+    if (task == 0) return false;
+    const IntegrationTaskRec* rec = mb.lbMemory.integrationTasks.find(task);
+    assert(rec != nullptr && "integrationTaskRetired: node not registered");
+    return (rec->flags & IntegrationTaskRec::kRetired) != 0;
+}
+
+/// @brief Register one opening gate as a node below the task opening it.
+///
+/// @details
+/// A subproof opening (Case A), a case split (Case OR) and a rule installation
+/// (Case B) each create derivatives a later requester can reach through the
+/// gate alone. Registering the gate as its own node in the task table, with
+/// the opening task as parent, lets such a reach share exactly that opening's
+/// derivatives instead of the whole task. An opening without a task stays
+/// independent.
+///
+/// @param mb         Owning block.
+/// @param gateKey    Packed template key of the gate (non-zero).
+/// @param parentTask Task opening the gate (0 = none).
+/// @return The node key (@p gateKey), or 0 when @p parentTask is 0.
+/// @see registerIntegrationTask, noteTemplateGateReach.
+int64_t ExpressionAnalyzer::registerIntegrationGate(Memory& mb, int64_t gateKey, int64_t parentTask)
+{
+    assert(gateKey != 0 && "registerIntegrationGate: expected a gate key");
+    if (parentTask == 0) return 0;
+    registerIntegrationTask(mb, gateKey, StrSpan(), parentTask);
+    return gateKey;
+}
+
+/// @brief Whether a task's derivatives are removed when its root finishes.
+///
+/// @details
+/// Walks the task's parent chain up to @p root: the task is removable when the
+/// chain reaches @p root and no node on it strictly below @p root is shared.
+/// The root's own mark is ignored: its finish settles the same expression for
+/// every requester that reached it.
+///
+/// @param mb   Owning block.
+/// @param task Registered task key (0 = an independent derivative).
+/// @param root Finished root key.
+/// @return True when the task belongs to @p root and nothing on its chain
+///         below the root is shared.
+/// @see noteIntegrationReach, sweepFinishedIntegrationRoots.
+bool ExpressionAnalyzer::integrationTaskWipeable(const Memory& mb, int64_t task, int64_t root)
+{
+    if (task == 0) return false;
+    const IntegrationTaskRec* rec = mb.lbMemory.integrationTasks.find(task);
+    assert(rec != nullptr && "integrationTaskWipeable: task not registered");
+    if (rec->root != root) return false;
+    for (int64_t t = task; t != root;) {
+        const IntegrationTaskRec* r = mb.lbMemory.integrationTasks.find(t);
+        assert(r != nullptr && "integrationTaskWipeable: broken parent chain");
+        if ((r->flags & IntegrationTaskRec::kShared) != 0) return false;
+        assert(r->parent != 0 && "integrationTaskWipeable: parent chain misses its root");
+        t = r->parent;
+    }
+    return true;
+}
+
+/// @brief Whether a root's expression, or some value of its declared output
+///        slot, is known at a scope or one of its ancestors as the product of
+///        an integration, up to the scope's complete classes.
+///
+/// @details
+/// The finish test of a classified root. Only rows marked
+/// `StatementFlags::integrated` count — rows fired by an integration rule in
+/// this block or mailed with the sender's integrated bit — so a value another
+/// rule built (a lemma, an ordinary implication) never finishes a root and
+/// never removes its pending integration (D-444). An
+/// exact root (no marker, @p outputSlot `-1`) is known through a literal
+/// marked row at @p scopeId or an ancestor, or through a marked row of the
+/// same operator whose arguments all have the task arguments'
+/// representatives at @p scopeId. An output root such as
+/// `(fold[1,3,4,5,G,2,rec,marker])` is known through a marked row of the same
+/// operator whose arguments outside @p outputSlot have the task arguments'
+/// representatives. Candidate rows come from the shared known-statement shape
+/// postings (`canonicalUses.statementMatches`); arguments compare token by
+/// token through the recorded representatives (`canonicalArgumentAtScope`).
+/// Creates no proof row, mints no LB interner and initializes no class view.
+///
+/// @param text       Flat root text (`marker` at @p outputSlot) on caller-owned
+///                   storage.
+/// @param outputSlot Zero-based output slot, or -1 for an exact root.
+/// @param scopeId    Minted root scope.
+/// @param mb         Owning block.
+/// @return True iff the root is known as described.
+/// @see elementKnownAtOrAbove — the implication-gate twin.
+/// @see markStatementIntegrated — the only writer of the counted mark.
+bool ExpressionAnalyzer::integrationRootKnownAtOrAbove(StrSpan text, int32_t outputSlot,
+    NameId scopeId, Memory& mb)
+{
+    assert(scopeId != 0 && "integrationRootKnownAtOrAbove: expected a minted scope");
+    StrSpan taskArgs[ExecutionParameters::MAX_ARITY];
+    const int32_t arity = getArgsSpans(text, taskArgs, ExecutionParameters::MAX_ARITY);
+    assert(outputSlot < arity && "integrationRootKnownAtOrAbove: output slot past the arity");
+    if (outputSlot < 0) {
+        const NameId literal = mb.nameMap.lookup(text);
+        if (literal != 0) {
+            const int32_t literalAncestors = mb.nameMap.ancLen(scopeId);
+            for (int32_t k = 0; k < literalAncestors; ++k) {
+                const StatementFlags* flags = mb.intKnownStatements.find(
+                    StatementKey{ literal, mb.nameMap.ancAt(scopeId, k) });
+                if (flags != nullptr && flags->integrated) return true;
+            }
+        }
+    }
+    int32_t labelLength = 0;
+    while (labelLength < text.len && text[labelLength] != '[') ++labelLength;
+    auto& index = mb.lbMemory.canonicalUses.statementMatches;
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    ensureCanonicalTemplateIndex(mb, mb.intKnownStatements, index, arena, true);
+    const int32_t label = index.labels.lookup(StrSpan(text.ptr, labelLength));
+    if (label == 0) return false;
+    StrSpan wanted[ExecutionParameters::MAX_ARITY];
+    for (int32_t i = 0; i < arity; ++i)
+        wanted[i] = i == outputSlot ? StrSpan() : canonicalArgumentAtScope(mb, taskArgs[i], scopeId);
+    bool known = false;
+    const int32_t ancestors = mb.nameMap.ancLen(scopeId);
+    for (int32_t k = 0; k < ancestors && !known; ++k) {
+        index.keysByShape.forEach(packInt32Pair(label, mb.nameMap.ancAt(scopeId, k)), [&](int64_t key) {
+            if (known) return;
+            const StatementKey candidate = Codec<StatementKey>::decode(key);
+            const StatementFlags* flags = mb.intKnownStatements.find(candidate);
+            if (flags == nullptr || !flags->integrated) return;
+            const StrSpan row = mb.nameMap.decodeView(candidate.orig);
+            StrSpan rowArgs[ExecutionParameters::MAX_ARITY];
+            if (getArgsSpans(row, rowArgs, ExecutionParameters::MAX_ARITY) != arity) return;
+            for (int32_t i = 0; i < arity; ++i) {
+                if (i == outputSlot) continue;
+                if (!equalSpans(wanted[i], canonicalArgumentAtScope(mb, rowArgs[i], scopeId))) return;
+            }
+            known = true;
+        });
+    }
+    return known;
+}
+
+/// @brief Select everything a finished root's removal takes.
+///
+/// @details
+/// A derivative is selected when its owning node is removable for @p root
+/// (`integrationTaskWipeable`): admission entries and parks by the task on each
+/// record, scopes, rules, copies, algebra keys, admission-set keys and triggers
+/// through their owner maps. A scope is listed only when no ancestor scope is
+/// listed too, since the ordered wipe removes a whole subtree. Reads only.
+///
+/// @param body   Owning block.
+/// @param root   Finished root key.
+/// @param out    Empty selection bound to the caller's arena.
+/// @return (void)
+/// @see integrationTaskWipeable, sweepFinishedIntegrationRoots.
+void ExpressionAnalyzer::selectFinishedRootDerivatives(const Memory& body, int64_t root,
+    FinishedRootSelection& out)
+{
+    const auto& tasks = body.lbMemory.integrationTasks;
+    for (int32_t id = 1; id <= tasks.count(); ++id) {
+        const int64_t key = tasks.keyAt(id);
+        if (tasks.lookup(key) == 0) continue;
+        const IntegrationTaskRec& rec = tasks.valueAt(id);
+        if (rec.root != root) continue;
+        if (key != root && (rec.flags & IntegrationTaskRec::kShared) != 0) ++out.sharedNodes;
+        if (integrationTaskWipeable(body, key, root)) out.nodes.push_back(key);
+    }
+
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    // Records carry their task as the last field (`Codec<IntegrationEntry>`).
+    const auto records = [&](const TypedColdBlobMap<int64_t, IntegrationEntry>& map,
+                             PagedVector<int64_t>& keys, int32_t& selected) {
+        for (int32_t id = 1; id <= map.count(); ++id) {
+            const int64_t key = map.keyAt(id);
+            const int32_t live = map.lookup(key);
+            if (live == 0) continue;
+            int32_t hits = 0;
+            for (int32_t j = 0; j < map.runLen(live); ++j) {
+                const ArenaOffset mark = arena.cursor();
+                int32_t length = 0;
+                const char* bytes = map.peekRecordBytes(live, j, length, arena);
+                assert(length >= static_cast<int32_t>(sizeof(int64_t)));
+                int64_t task;
+                std::memcpy(&task, bytes + length - sizeof(int64_t), sizeof(int64_t));
+                arena.popTo(mark);
+                if (integrationTaskWipeable(body, task, root)) ++hits;
+            }
+            if (hits == 0) continue;
+            keys.push_back(key);
+            selected += hits;
+        }
+    };
+    records(body.overallHashMemory.admissionMapIntegration, out.entryKeys, out.entries);
+    records(body.overallHashMemory.rejectedMapSubproof, out.parkKeys, out.parks);
+
+    DirtyState dirty = DirtyState::Clean;
+    TypedColdSet<int64_t> scopes(&arena, &dirty);
+    const auto& scopeOwners = body.lbMemory.integrationScopeOwners;
+    for (int32_t id = 1; id <= scopeOwners.count(); ++id) {
+        const int64_t scope = scopeOwners.keyAt(id);
+        if (scopeOwners.lookup(scope) == 0) continue;
+        if (integrationTaskWipeable(body, scopeOwners.valueAt(id), root)) scopes.mint(scope);
+    }
+    for (int32_t i = 1; i <= scopes.count(); ++i) {
+        const NameId scope = static_cast<NameId>(scopes.keyAt(i));
+        bool nested = false;
+        for (NameId s = body.nameMap.parentOf(scope); s != 0 && !nested; s = body.nameMap.parentOf(s))
+            nested = scopes.contains(s);
+        if (!nested) out.scopes.push_back(scope);
+    }
+
+    const auto owned = [&](const TypedColdMap<int64_t, int64_t>& owners,
+                           PagedVector<int64_t>& list, auto present) {
+        for (int32_t id = 1; id <= owners.count(); ++id) {
+            const int64_t key = owners.keyAt(id);
+            if (owners.lookup(key) == 0) continue;
+            if (integrationTaskWipeable(body, owners.valueAt(id), root) && present(key))
+                list.push_back(key);
+        }
+    };
+    const auto always = [](int64_t) { return true; };
+    const HashMemory& hm = body.overallHashMemory;
+    owned(body.lbMemory.integrationRuleOwners, out.rules, always);
+    owned(body.lbMemory.integrationCopyOwners, out.copies, always);
+    owned(body.lbMemory.algebraKeyOwners, out.algebraKeys,
+        [&](int64_t key) { return hm.admissionMap.lookup(key) != 0; });
+    owned(body.lbMemory.admissionSetOwners, out.setKeys,
+        [&](int64_t key) { return hm.admissionSetIntegration.contains(key); });
+    owned(body.lbMemory.admissionTriggerOwners, out.triggers,
+        [&](int64_t key) { return hm.triggersForAdmissionSetIntegration.contains(key); });
+}
+
+/// @brief Remove everything the selection of one finished root names.
+///
+/// @details
+/// The removal half of the finished-task wipe (I-284):
+/// marks the selected nodes retired; removes each selected rule exactly from
+/// the overall, local and delta hash memories (`removeRuleFromHashMemory`, then
+/// one `finishRuleRemovals` per instance) and drops its owner record and its
+/// copies' records; rewrites every selected admission-entry and park key's run
+/// without the retired nodes' records, erasing a key left empty; erases the
+/// selected algebra keys with their status, and the admission-set keys and
+/// triggers from every instance, with their owner records; queues the selected
+/// scopes on `pendingWipeScopes`. Facts, proof history and prepared gates stay.
+/// Asserts afterwards that a new selection for the root names nothing but its
+/// nodes and the queued scopes.
+///
+/// @param body      Owning block (single-threaded phase-3 seam).
+/// @param root      The finished root.
+/// @param selection The root's selection (`selectFinishedRootDerivatives`).
+/// @return (void)
+/// @see sweepFinishedIntegrationRoots, integrationTaskRetired.
+void ExpressionAnalyzer::wipeFinishedRootDerivatives(Memory& body, int64_t root,
+    const FinishedRootSelection& selection)
+{
+    auto& tasks = body.lbMemory.integrationTasks;
+    for (int32_t i = 0; i < selection.nodes.size(); ++i) {
+        const int32_t id = tasks.lookup(selection.nodes[i]);
+        assert(id != 0 && "wipeFinishedRootDerivatives: node not registered");
+        IntegrationTaskRec rec = tasks.valueAt(id);
+        assert(rec.root == root && (rec.flags & IntegrationTaskRec::kRetired) == 0
+            && "wipeFinishedRootDerivatives: node of another root or retired twice");
+        rec.flags |= IntegrationTaskRec::kRetired;
+        tasks.setValueAt(id, rec);
+    }
+
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(arena), stringFrame(strings);
+    DirtyState dirty = DirtyState::Clean;
+
+    // Rules: exact removal from every instance the integration install wrote
+    // (the delta instance may have been reset since), then one compaction per
+    // instance. The texts are copied off the interners the removal encodes.
+    if (selection.rules.size() > 0) {
+        ColdHashSet<BytesKeyStore> visited(&arena, &dirty);
+        ColdHashSet<PodKeyStore<int64_t>> dropSet(&arena, &dirty);
+        for (int32_t i = 0; i < selection.rules.size(); ++i) {
+            ScratchScope textFrame(strings);
+            const RuleOwner rule = selection.rules[i];
+            const int32_t implicationId = static_cast<int32_t>(static_cast<uint64_t>(rule) >> 32);
+            const NameId scope = static_cast<NameId>(static_cast<uint32_t>(rule));
+            const StrSpan implicationView = body.ruleInterner.decodeView(implicationId);
+            const ScratchString implication = ScratchString::copyFrom(strings,
+                implicationView.ptr, implicationView.len);
+            const StrSpan scopeView = body.nameMap.decodeView(scope);
+            const ScratchString scopeName = ScratchString::copyFrom(strings,
+                scopeView.ptr, scopeView.len);
+            removeRuleFromHashMemory(body, body.overallHashMemory, StrSpan(implication),
+                StrSpan(scopeName), visited, dropSet, /*onlyIfPresent=*/false,
+                RuleJustification::integration);
+            removeRuleFromHashMemory(body, body.localHashMemory, StrSpan(implication),
+                StrSpan(scopeName), visited, dropSet, /*onlyIfPresent=*/false,
+                RuleJustification::integration);
+            removeRuleFromHashMemory(body, body.localHashMemoryDelta, StrSpan(implication),
+                StrSpan(scopeName), visited, dropSet, /*onlyIfPresent=*/true,
+                RuleJustification::integration);
+            body.lbMemory.integrationRuleOwners.erase(rule);
+        }
+        finishRuleRemovals(body.overallHashMemory, dropSet, arena);
+        finishRuleRemovals(body.localHashMemory, dropSet, arena);
+        finishRuleRemovals(body.localHashMemoryDelta, dropSet, arena);
+    }
+    for (int32_t i = 0; i < selection.copies.size(); ++i)
+        body.lbMemory.integrationCopyOwners.erase(selection.copies[i]);
+
+    // Admission entries and parks: each selected key keeps its other records
+    // verbatim, in stored order; a key left empty is erased.
+    const auto dropRecords = [&](TypedColdBlobMap<int64_t, IntegrationEntry>& map,
+                                 const PagedVector<int64_t>& keys, bool demands) {
+        TypedColdSet<int64_t> emptied(&arena, &dirty);
+        for (int32_t i = 0; i < keys.size(); ++i) {
+            const int64_t key = keys[i];
+            const int32_t id = map.lookup(key);
+            assert(id != 0 && "wipeFinishedRootDerivatives: a selected key is absent");
+            const int32_t records = map.runLen(id);
+            const ArenaOffset mark = arena.cursor();
+            const char** kept = reinterpret_cast<const char**>(arena.resolve(arena.alloc(
+                records * static_cast<int32_t>(sizeof(const char*)),
+                static_cast<int32_t>(alignof(const char*)))));
+            int32_t* lengths = reinterpret_cast<int32_t*>(arena.resolve(arena.alloc(
+                records * static_cast<int32_t>(sizeof(int32_t)),
+                static_cast<int32_t>(alignof(int32_t)))));
+            int32_t keptCount = 0;
+            int64_t total = 0;
+            for (int32_t j = 0; j < records; ++j) {
+                int32_t length = 0;
+                const char* bytes = map.peekRecordBytes(id, j, length, arena);
+                assert(length >= static_cast<int32_t>(sizeof(int64_t)));
+                int64_t task;
+                std::memcpy(&task, bytes + length - sizeof(int64_t), sizeof(int64_t));
+                if (integrationTaskRetired(body, task)) continue;
+                kept[keptCount] = bytes;
+                lengths[keptCount++] = length;
+                total += length;
+            }
+            assert(keptCount < records && "wipeFinishedRootDerivatives: a selected key holds no retired record");
+            if (keptCount == 0) {
+                emptied.mint(key);
+            } else {
+                char* buffer = arena.resolve(arena.alloc(static_cast<int32_t>(total), 1));
+                int64_t at = 0;
+                for (int32_t k = 0; k < keptCount; ++k) {
+                    std::memcpy(buffer + at, kept[k], static_cast<std::size_t>(lengths[k]));
+                    at += lengths[k];
+                }
+                map.inner().assignRun(key, buffer, lengths, keptCount);
+                if (demands) body.lbMemory.canonicalUses.integrationDemands.changed(key);
+            }
+            arena.popTo(mark);
+        }
+        if (emptied.count() > 0)
+            map.eraseBlobIf([&](int64_t key) { return emptied.contains(key); });
+    };
+    dropRecords(body.overallHashMemory.admissionMapIntegration, selection.entryKeys, true);
+    dropRecords(body.overallHashMemory.rejectedMapSubproof, selection.parkKeys, false);
+
+    // Algebra keys with their status; admission-set keys and triggers from
+    // every instance.
+    if (selection.algebraKeys.size() > 0) {
+        TypedColdSet<int64_t> keys(&arena, &dirty);
+        for (int32_t i = 0; i < selection.algebraKeys.size(); ++i) {
+            const int64_t key = selection.algebraKeys[i];
+            keys.mint(key);
+            body.overallHashMemory.admissionStatusMap.erase(key);
+            body.lbMemory.algebraKeyOwners.erase(key);
+        }
+        body.overallHashMemory.admissionMap.eraseBlobIf([&](int64_t key) { return keys.contains(key); });
+    }
+    HashMemory* const instances[4] = { &body.overallHashMemory, &body.localHashMemory,
+                                       &body.localHashMemoryDelta, &body.workingMemory };
+    for (int32_t i = 0; i < selection.setKeys.size(); ++i) {
+        for (HashMemory* hm : instances) hm->admissionSetIntegration.erase(selection.setKeys[i]);
+        body.lbMemory.admissionSetOwners.erase(selection.setKeys[i]);
+    }
+    for (int32_t i = 0; i < selection.triggers.size(); ++i) {
+        for (HashMemory* hm : instances) hm->triggersForAdmissionSetIntegration.erase(selection.triggers[i]);
+        body.lbMemory.admissionTriggerOwners.erase(selection.triggers[i]);
+    }
+
+    // Scopes ride the ordered subtree wipe that follows.
+    for (int32_t i = 0; i < selection.scopes.size(); ++i)
+        body.pendingWipeScopes.mint(selection.scopes[i]);
+
+    FinishedRootSelection left(&arena, &dirty);
+    selectFinishedRootDerivatives(body, root, left);
+    assert(left.entries == 0 && left.parks == 0 && left.rules.size() == 0
+        && left.copies.size() == 0 && left.algebraKeys.size() == 0
+        && left.setKeys.size() == 0 && left.triggers.size() == 0
+        && "wipeFinishedRootDerivatives: a derivative of the finished root remains");
+    for (int32_t i = 0; i < left.scopes.size(); ++i)
+        assert(body.pendingWipeScopes.contains(left.scopes[i])
+            && "wipeFinishedRootDerivatives: a scope of the finished root is not queued");
+
+    // No owner record names a retired node any more, including those of keys
+    // already gone: a key made again later belongs to its new requester.
+    const auto dropRetiredOwners = [&](TypedColdMap<int64_t, int64_t>& owners) {
+        TypedColdSet<int64_t> retired(&arena, &dirty);
+        for (int32_t id = 1; id <= owners.count(); ++id) {
+            const int64_t key = owners.keyAt(id);
+            if (owners.lookup(key) == 0) continue;
+            if (integrationTaskRetired(body, owners.valueAt(id))) retired.mint(key);
+        }
+        for (int32_t i = 1; i <= retired.count(); ++i) owners.erase(retired.keyAt(i));
+    };
+    dropRetiredOwners(body.lbMemory.integrationScopeOwners);
+    dropRetiredOwners(body.lbMemory.integrationRuleOwners);
+    dropRetiredOwners(body.lbMemory.integrationCopyOwners);
+    dropRetiredOwners(body.lbMemory.algebraKeyOwners);
+    dropRetiredOwners(body.lbMemory.admissionSetOwners);
+    dropRetiredOwners(body.lbMemory.admissionTriggerOwners);
+}
+
+/// @brief Detect the roots finished since the last sweep and remove everything
+///        derived from them.
+///
+/// @details
+/// The finished-task wipe (I-284). Detection drains
+/// `Memory::pendingRootArrivals` and `pendingRootRechecks`: a live classified
+/// root is tested (`integrationRootKnownAtOrAbove`) when a row of its operator
+/// arrived at its scope or an ancestor, or when its scope or an ancestor was
+/// staged for a recheck (a class view change, or the root's own registration).
+/// A finished root enters `finishedIntegrationRoots` once, in task-table
+/// order; its derivatives are selected (`selectFinishedRootDerivatives`) and
+/// removed (`wipeFinishedRootDerivatives`).
+///
+/// Runs in `standardProcessing` immediately before
+/// `retireSettledImplicationSubproofs`, so the ordered wipe drain that follows
+/// removes the queued scopes; proof history, facts and prepared keys stay.
+///
+/// @param body The LB swept (resident, inside its own burst).
+/// @return (void)
+/// @invariant Consumes both pending queues completely.
+/// @see retireSettledImplicationSubproofs, drainSubproofArrivals.
+void ExpressionAnalyzer::sweepFinishedIntegrationRoots(Memory& body)
+{
+    auto& arrivals = body.pendingRootArrivals;
+    auto& rechecks = body.pendingRootRechecks;
+    if (arrivals.size() == 0 && rechecks.size() == 0) return;
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(arena), stringFrame(strings);
+    DirtyState dirty = DirtyState::Clean;
+
+    // Arrival shapes: the operator label of each newly known row at its scope.
+    ColdHashSet<BytesKeyStore> labels(&arena, &dirty);
+    TypedColdSet<int64_t> shapes(&arena, &dirty);
+    for (int32_t i = 0; i < arrivals.size(); ++i) {
+        const StatementKey arrival = Codec<StatementKey>::decode(arrivals[i]);
+        const StrSpan text = body.nameMap.decodeView(arrival.orig);
+        int32_t length = 0;
+        while (length < text.len && text[length] != '[') ++length;
+        shapes.mint(packInt32Pair(labels.mint(StrSpan(text.ptr, length)), arrival.validity));
+    }
+    TypedColdSet<int64_t> changed(&arena, &dirty);
+    for (int32_t i = 0; i < rechecks.size(); ++i) changed.mint(rechecks[i]);
+    arrivals.clear();
+    rechecks.clear();
+
+    // A root is tested when an arrival of its operator or a recheck reached
+    // its scope or an ancestor. The task table is not written during the
+    // walk.
+    const auto& tasks = body.lbMemory.integrationTasks;
+    const int32_t prefixLength = static_cast<int32_t>(sizeof(kContradictionScopePrefix) - 1);
+    PagedVector<int64_t> finished(&arena, &dirty);
+    for (int32_t id = 1; id <= tasks.count(); ++id) {
+        const int64_t key = tasks.keyAt(id);
+        if (tasks.lookup(key) == 0) continue;
+        const IntegrationTaskRec& rec = tasks.valueAt(id);
+        if ((rec.flags & (IntegrationTaskRec::kExactRoot | IntegrationTaskRec::kOutputRoot)) == 0) continue;
+        if (body.lbMemory.finishedIntegrationRoots.contains(key)) continue;
+        const StatementKey root = Codec<StatementKey>::decode(key);
+        if (body.phase3IgnoresScope(root.validity)) continue;
+        ScratchScope textFrame(strings);
+        const StrSpan view = body.templateInterner.decodeView(root.orig);
+        const ScratchString owned = ScratchString::copyFrom(strings, view.ptr, view.len);
+        StrSpan text(owned);
+        // A negated-compound task is keyed by its contradiction scope payload.
+        if (text.len > prefixLength && std::memcmp(text.ptr, kContradictionScopePrefix, prefixLength) == 0)
+            text = StrSpan(text.ptr + prefixLength, text.len - prefixLength);
+        int32_t length = 0;
+        while (length < text.len && text[length] != '[') ++length;
+        const int32_t label = labels.lookup(StrSpan(text.ptr, length));
+        bool candidate = false;
+        for (NameId s = root.validity; s != 0 && !candidate; s = body.nameMap.parentOf(s))
+            candidate = changed.contains(s) || (label != 0 && shapes.contains(packInt32Pair(label, s)));
+        if (!candidate) continue;
+        const int32_t outputSlot = (rec.flags & IntegrationTaskRec::kOutputRoot) != 0 ? rec.outputSlot : -1;
+        if (integrationRootKnownAtOrAbove(text, outputSlot, root.validity, body)) finished.push_back(key);
+    }
+
+    for (int32_t i = 0; i < finished.size(); ++i) {
+        const int64_t root = finished[i];
+        body.lbMemory.finishedIntegrationRoots.mint(root);
+        FinishedRootSelection selection(&arena, &dirty);
+        selectFinishedRootDerivatives(body, root, selection);
+        wipeFinishedRootDerivatives(body, root, selection);
+    }
+}
+
+
+/// @brief Test whether this block has work that can require OR cases.
+///
+/// @details
+/// Explicit goals retain their usual eligibility. An active primed
+/// contradiction block also has proof work even without explicit goals;
+/// its obligation is discharged by a registered main-scope contradiction.
+///
+/// @param body The resident logical block whose proof state is inspected.
+/// @return True for explicit goals or an active primed contradiction block.
+/// @invariant Does not allocate or change proof, history or scheduling state.
+/// @see consumeOrLeavesCohort, drainPendingOrReleases.
+bool ExpressionAnalyzer::hasOrProofWork(const Memory& body) const {
+    return !body.intToBeProved.empty()
+        || (body.isActive && body.primedForContradiction);
+}
+
+/// @brief Test whether an OR branch covers every current chain goal.
+///
+/// @details
+/// Relevant goals live at the branch itself or any ancestor through main.
+/// Each must be known at the branch or above. An empty relevant goal set
+/// remains unresolved in an active primed contradiction block; otherwise it
+/// qualifies. Goals in sibling and descendant scopes do not participate.
+///
+/// @param body The resident logical block whose registries are read.
+/// @param branchId A minted OR-disintegration branch root.
+/// @return True when no relevant goal remains unknown on the chain.
+/// @invariant The predicate neither mints names nor reads proof history.
+/// @see ancestorKnown, collectPhase3IgnoredOrRoots, freezeResolvedOrBranches.
+bool ExpressionAnalyzer::orBranchGoalsResolved(const Memory& body,
+                                              NameId branchId) {
+    StrSpan signature, disjunct;
+    assert(classifyOrScopeView(body.nameMap, branchId, signature, disjunct)
+            == OrScopeKind::Disintegration
+        && "branch resolution requires an OR-disintegration root");
+    bool hasRelevantGoal = false;
+    for (int32_t goalIndex = 1; goalIndex <= body.intToBeProved.count();
+         ++goalIndex) {
+        const StatementKey goal = body.intToBeProved.decodeKey(goalIndex);
+        if (!body.nameMap.ancContains(branchId, goal.validity)) continue;
+        hasRelevantGoal = true;
+        if (!ancestorKnown(body, goal.orig, branchId, /*includeSelf=*/true)
+            && body.lbMemory.orSupportFacts.lookup(StatementKey{ goal.orig, branchId }) == 0)
+            return false;
+    }
+    return hasRelevantGoal || !body.primedForContradiction || !body.isActive;
+}
+
+/// @brief Snapshot the OR roots eligible for Phase 3 inference exclusion.
+///
+/// @details
+/// Walk existing scope identifiers, including roots whose seeds are still
+/// queued. The result is fixed before any Phase 3 inference runs; descendants
+/// are covered by the later ancestry test without extending this root set.
+///
+/// @param body The resident logical block, read without mutation.
+/// @param roots An initially empty arena-backed output set.
+/// @return Nothing.
+/// @invariant No goal, branch marker, name or wipe queue is changed.
+/// @see orBranchGoalsResolved, Memory::phase3IgnoresScope.
+void ExpressionAnalyzer::collectPhase3IgnoredOrRoots(const Memory& body,
+    ColdHashSet<PodKeyStore<NameId>>& roots) {
+    assert(roots.empty() && "Phase 3 root snapshot must start empty");
+    const int32_t nameCount = body.nameMap.nameCount();
+    for (NameId scope = 1; scope <= nameCount; ++scope) {
+        if (body.nameMap.parentOf(scope) == 0) continue;
+        if (body.intValidityNamesToFilter.lookup(scope) != 0) continue;
+        StrSpan signature, disjunct;
+        if (classifyOrScopeView(body.nameMap, scope, signature, disjunct)
+                != OrScopeKind::Disintegration) continue;
+        if (orBranchGoalsResolved(body, scope)) roots.mint(scope);
+    }
+}
+
+/// @brief Queue resolved OR-disintegration branches for subtree wipeout.
+///
+/// @details
+/// Evaluate every live branch against the current goals on the branch's own
+/// ancestor chain. A goal must be known at the branch or above; unrelated goals
+/// are ignored and an empty chain-goal set qualifies. The resolved marker and
+/// pending wipe queue are updated after the read-only predicate completes.
+///
+/// The ordered end-of-burst wipe removes runtime state throughout each queued
+/// subtree, preserving convergence bookkeeping, cohort counts and history.
+/// Only booked current-goal derivation levels are saved separately for later
+/// reduced-count convergence. Parent-chain goals close through the ordinary
+/// convergence deposit path.
+///
+/// @param body The resident logical block whose live branches are evaluated.
+/// @return Nothing.
+/// @invariant The predicate reads statement membership, never origin history.
+/// @invariant No runtime registry is erased while the goal snapshot is scanned.
+/// @see Memory::wipeSubtree, Memory::pendingWipeScopes, ancestorKnown.
 void ExpressionAnalyzer::freezeResolvedOrBranches(Memory& body) {
     const int32_t liveN = body.orLiveBranches.count();
     if (liveN == 0) return;
@@ -5214,15 +6208,45 @@ void ExpressionAnalyzer::freezeResolvedOrBranches(Memory& body) {
         const NameId chainStart = body.nameMap.parentOf(vid);
         assert(chainStart != 0
             && "an _ordis_ branch scope has a cohort parent");
-        bool resolved = true;
-        for (int32_t gi = 1; gi <= goalN && resolved; ++gi) {
-            const StatementKey goal = body.intToBeProved.decodeKey(gi);
-            // Chain goal: its scope is the cohort parent or an ancestor of it.
-            if (!body.nameMap.ancContains(chainStart, goal.validity)) continue;
-            if (!ancestorKnown(body, goal.orig, vid, /*includeSelf=*/true))
-                resolved = false;
+        if (orBranchGoalsResolved(body, vid)) {
+            // Retain only booked current-goal derivation levels. Ancestor-known
+            // goals with no contribution booked at this branch need no record.
+            const int32_t parentStateId = body.lbStateInterner.lookup(
+                body.nameMap.decodeView(chainStart));
+            const int32_t signatureId = body.lbStateInterner.lookup(orSigV);
+            const int32_t disjunctId = body.lbStateInterner.lookup(branchBodyV);
+            const int32_t cohortId = lookupOrCohortId(
+                body.lbStateInterner, parentStateId, signatureId);
+            for (int32_t gi = 1; gi <= goalN; ++gi) {
+                const StatementKey goal = body.intToBeProved.decodeKey(gi);
+                if (!body.nameMap.ancContains(chainStart, goal.validity)) continue;
+                const int32_t expressionId = body.lbStateInterner.lookup(
+                    body.nameMap.decodeView(goal.orig));
+                const int32_t booked = body.orBookkeeping.lookup(
+                    LbStatePairKey{ expressionId, cohortId });
+                if (booked == 0) continue;
+                bool contributed = false;
+                for (int32_t j = 0; j < body.orBookkeeping.runLen(booked); ++j) {
+                    if (body.orBookkeeping.valueAt(booked, j) == disjunctId)
+                        contributed = true;
+                }
+                if (!contributed) continue;
+                const StatementKey key{ goal.orig, vid };
+                if (body.lbMemory.orSupportFacts.lookup(key) != 0) {
+                    assert(body.lbMemory.closedOrGoalLevels.lookup(key) != 0);
+                    continue;
+                }
+                const int32_t levelRow = body.intStatementLevelsMap.lookup(key);
+                assert(levelRow != 0
+                    && "booked current goal must retain derivation levels until its branch wipe");
+                int levels[256];
+                const int32_t count = coldIntRunAt(
+                    body.intStatementLevelsMap, levelRow, levels, 256);
+                body.lbMemory.closedOrGoalLevels.assignSet(key, levels, count);
+            }
+            body.frozenOrBranches.mint(vid);
+            body.pendingWipeScopes.mint(vid);
         }
-        if (resolved) body.frozenOrBranches.mint(vid);
     }
     body.orLiveBranches.eraseIf([&](const NameId& v) {
         return body.frozenOrBranches.lookup(v) != 0
@@ -5233,10 +6257,9 @@ void ExpressionAnalyzer::freezeResolvedOrBranches(Memory& body) {
 void ExpressionAnalyzer::drainPendingOrReleases(Memory& body) {
     const int32_t stagedN = body.pendingOrReleases.count();
     if (stagedN == 0) return;
-    // No goals, no or branches (I-206): a goal-less LB
-    // releases nothing — the staging drops (a goal-less registry never regains
-    // a goal, so the drop is final); its live branches freeze vacuously.
-    if (body.intToBeProved.empty()) {
+    // Active contradiction blocks can advance cases without explicit goals.
+    // Other blocks without proof work discard the release staging.
+    if (!hasOrProofWork(body)) {
         body.pendingOrReleases.resetToFresh();
         return;
     }
@@ -5274,6 +6297,21 @@ void ExpressionAnalyzer::drainPendingOrReleases(Memory& body) {
             body.lbStateInterner.decodeView(static_cast<int32_t>(cb.low)))
             < 0;
     });
+
+    // The queue rewrites of the released cohorts are recorded here and applied
+    // after the loop: ONE compaction of orPendingBranches (and one of
+    // orPendingLevels) per drain instead of one per release — the whole-map
+    // eraseSetIf (a full survivor slide plus an index rebuild) was the drain's
+    // cost. The result is the sequential one byte for byte: every released key
+    // is erased, then re-minted at the end of the key column in release order
+    // with the same sorted inserts, and no cohort of this drain reads another
+    // cohort's row in between.
+    // Page-tier records (a drain can stage thousands of cohorts — the D1
+    // negated-head block — so no single byte-bump run may size by the count).
+    struct ReleasedCohort { int32_t cid; int32_t survivorStart; int32_t survivorCount; };
+    DirtyState drainDirty = DirtyState::Clean;
+    PagedVector<ReleasedCohort> released(&gArena, &drainDirty);
+    PagedVector<int32_t> survivors(&gArena, &drainDirty);
 
     for (int32_t ci = 0; ci < stagedN; ++ci) {
         const int32_t cid = cids[ci];
@@ -5390,21 +6428,50 @@ void ExpressionAnalyzer::drainPendingOrReleases(Memory& body) {
                     : parameters.max_origin_per_expr));
         }
 
-        // The released disjunct leaves the queue: rebuild the run without it
-        // through the canonical doors. An emptied queue drops the cohort's
-        // level row too.
-        body.orPendingBranches.eraseSetIf(
-            [&](int32_t k) { return k == cid; });
+        // The released disjunct leaves the queue: record the survivors; the
+        // run is rebuilt without it after the loop (one compaction per drain).
+        // An emptied queue drops the cohort's level row too.
+        released.push_back(ReleasedCohort{ cid, survivors.size(), pendN - 1 });
         for (int32_t j = 0; j < pendN; ++j) {
             if (j == top) continue;
-            body.orPendingBranches.insertSorted(cid, djIds[j],
-                DecodedIdLess{ &body.lbStateInterner });
-        }
-        if (pendN == 1) {
-            body.orPendingLevels.eraseSetIf(
-                [&](int32_t k) { return k == cid; });
+            survivors.push_back(djIds[j]);
         }
     }
+
+    const int32_t releasedN = released.size();
+    if (releasedN > 0) {
+        RT_SCOPE_HERE("DRAIN_OR_QUEUE_REWRITE");
+        // Membership sets for the two compactions' predicates (the release
+        // order stays in `released`).
+        ColdHashSet<PodKeyStore<int32_t>> releasedSet(&gArena, &drainDirty);
+        ColdHashSet<PodKeyStore<int32_t>> emptiedSet(&gArena, &drainDirty);
+        releasedSet.resetToFresh();
+        emptiedSet.resetToFresh();
+        for (int32_t r = 0; r < releasedN; ++r) {
+            releasedSet.mint(released[r].cid);
+            if (released[r].survivorCount == 0) emptiedSet.mint(released[r].cid);
+        }
+        body.orPendingBranches.eraseSetIf([&](int32_t k) {
+            return releasedSet.lookup(k) != 0;
+        });
+        for (int32_t r = 0; r < releasedN; ++r) {
+            const ReleasedCohort rc = released[r];
+            for (int32_t j = 0; j < rc.survivorCount; ++j) {
+                body.orPendingBranches.insertSorted(rc.cid,
+                    survivors[rc.survivorStart + j],
+                    DecodedIdLess{ &body.lbStateInterner });
+            }
+        }
+        if (emptiedSet.count() > 0) {
+            body.orPendingLevels.eraseSetIf([&](int32_t k) {
+                return emptiedSet.lookup(k) != 0;
+            });
+        }
+        releasedSet.release();
+        emptiedSet.release();
+    }
+    released.clear();
+    survivors.clear();
     gArena.popTo(gMark);
 }
 
@@ -5434,95 +6501,19 @@ std::string ExpressionAnalyzer::negate(std::string expr) {
 
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
-/// @brief Predicate: is the given expression allowed to be mailed to
-/// child LBs from this one?
+/// @brief Test a circulating expression against the witness-class mail boundary.
 ///
-/// @details
-/// Mail-out gating per [I-26](../../docs/agentic_swdd/30_invariants.md#i-26):
-/// statements/implications mailed out must be MAIN-validity-only;
-/// the exprOriginMap mirror is ALL-SCOPES. This function enforces
-/// the validity-side gate by reading the expression's scope and the
-/// LB's `canBeSentIds` / `canBeSentMarkerIds` filters. Returns
-/// false if the expression carries a non-`"main"` scope on the
-/// implication/statement channel.
-///
-/// An expression whose `int_lev` witness tokens all carry a level strictly
-/// below the LB's own `level` passes unconditionally (parent-level pass):
-/// those names arrived by ancestor mail and are already known at every
-/// descendant. Own-level tokens qualify only through the memo filters.
-///
-/// @param expression  Canonical MPL expression text (span over a
-///                    caller-stable buffer; the interior is mint-free so the
-///                    span cannot dangle).
-/// @param body        Owning LB whose `canBeSentIds` defines the
-///                    mail-eligibility filters.
-/// @return True iff the expression is mailable on the routing channel.
-/// @invariant [I-26](../../docs/agentic_swdd/30_invariants.md#i-26).
+/// @details Any ordinary integration witness refuses statement or compact-rule
+/// mail, regardless of depth or owning block. Forced and algebraic names do not
+/// refuse it; the caller still enforces validity and routing requirements.
+/// Proof-history and internal replay channels do not use this restriction.
+/// @param expression Complete expression text, including prefixed arguments.
+/// @param body Owning block, retained in the shared call interface.
+/// @return True exactly when no ordinary integration witness occurs.
+/// @invariant Pure lexical policy; no permission store or origin-map read.
 bool ExpressionAnalyzer::allowedForMail(StrSpan expression, const Memory& body) {
-    // Single pre-pass: existence + single-distinct collection of the
-    // int_lev_\d+_\d+ tokens. This folds the former separate regex existence
-    // gate and the regex-iterator std::set collection into one
-    // scan — verdict-identical because both are pure reads with zero mints and
-    // zero side effects between them (the memo probe below inserted nothing).
-    // theVar is the sole distinct token's span (into `expression`) on verdict 1.
-    StrSpan theVar;
-    const int intLevVerdict = scanSingleDistinctIntLev(expression, theVar);
-    if (intLevVerdict == 0) {
-        return true;
-    }
-
-    // Parent-level pass: an expression whose int_lev tokens ALL carry a level
-    // strictly below this LB's own level is mailable unconditionally — such
-    // names can only have arrived by ancestor mail (mail flows down only,
-    // I-57), and every ancestor deposit is pulled by ALL of this LB's
-    // descendants directly, so the names are known below by construction.
-    // Implication-shaped text is still refused (rules travel only as
-    // compacts, I-54). Own-level tokens fall through to the memo gates.
-    if (!(expression.len >= 2 && expression.ptr[0] == '(' && expression.ptr[1] == '>')
-        && allIntLevLevelsBelow(expression, body.level)) {
-        return true;
-    }
-
-    // Non-minting probe: a never-interned expression cannot carry a
-    // memo entry (inserts encode at single-threaded sites).
-    {
-        const NameId exprId = body.nameMap.lookup(expression);
-        if (exprId != 0 && body.canBeSentIds.contains(exprId)) {
-            return true;
-        }
-    }
-
-    if (intLevVerdict != 1) {
-        return false;
-    }
-
-    if (expression.len >= 2 && expression.ptr[0] == '(' && expression.ptr[1] == '>') {
-        return false;
-    }
-
-    // Check if replaced with marker it is included in Memory::canBeSentMarkerIds.
-    // Build the marker form on the per-slot string-scratch arena (fresh bytes,
-    // byte-exact twin of ce::replaceKeysInString), held as a NAMED ScratchString
-    // so its span stays live to the lookup. This path is mint-free (I-3), so
-    // theVar / expression spans cannot dangle.
-    const unsigned strSlot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : scratchArenas().slotCount() - 1;
-    ScratchArena& strArena = scratchArenas().forSlot(strSlot);
-    ScratchScope scope(strArena);
-    const StrReplacement pair[1] = { { theVar, StrSpan("marker", 6) } };
-    const ScratchString markerExpr = replaceKeysScratch(strArena, expression, pair, 1);
-
-    const NameId markerId = body.nameMap.lookup(StrSpan(markerExpr));
-    if (markerId != 0 && body.canBeSentMarkerIds.contains(markerId)) {
-        const LogicalEntity* e = compiledEntity(extractExpressionSpan(expression));
-        assert(e && "allowedForMail: core expression must be compiled");
-        if (!equalSpans(StrSpan(e->category), StrSpan("atomic", 6))) {
-            return true;
-        }
-    }
-
-    return false;
+    (void)body;
+    return !containsIntegrationWitness(expression);
 }
 
 /// @brief Collect the `u_`-prefixed "remaining" argument names of an
@@ -5671,7 +6662,7 @@ int32_t ExpressionAnalyzer::extractRemainingArgs(StrSpan str, StrSpan* out, int3
 /// @return True iff at least one reformulation was produced.
 bool ExpressionAnalyzer::reformulateTheorem(const std::string& theorem, std::vector<std::pair<std::string, std::string>>& outTheorems) {
     if (parameters.ban_disintegration) return false;
-    
+
     bool foundAny = false;
 
     // 1. Disintegrate the original theorem
@@ -5712,7 +6703,7 @@ bool ExpressionAnalyzer::reformulateTheorem(const std::string& theorem, std::vec
         reshuffledKey.push_back(std::get<0>(originalChain[targetDefIdx]));
 
         // B. Reconstruct the Full Theorem with the ORIGINAL Head
-        // This is crucial: we need the system to calculate the binding scope 
+        // This is crucial: we need the system to calculate the binding scope
         // for the new order of premises.
         std::string tempTheorem = reconstructImplication(reshuffledKey, head);
 
@@ -5887,6 +6878,10 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
         && ((levelCount == 1 && levels[0] == -1) || levels[0] >= 0)
         && "addEquality: invalid statement level run");
 
+    const NameId phase3Scope = memoryBlock.nameMap.lookup(validityName);
+    if (phase3Scope != 0 && memoryBlock.phase3IgnoresScope(phase3Scope))
+        return;
+
     const StatementFlags* eqRow = lookupStatementFlags(
         memoryBlock.intKnownStatements, memoryBlock.nameMap, expr, validityName);
     if (eqRow == nullptr)
@@ -5897,7 +6892,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validityName));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkEq, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkEq, local);
+        publishKnownStatementKey(memoryBlock, pkEq, local);
 
         if (parameters.trackHistory && origin.present) {
             assert(origin.tag != OriginTag::COUNT);
@@ -5961,7 +6956,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validitySpan));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkEqM, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkEqM, local);
+        publishKnownStatementKey(memoryBlock, pkEqM, local);
 
         if (parameters.trackHistory) {
             // symmetry-of-equality mirror origin: one antecedent = the
@@ -6037,6 +7032,10 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
         && ((levelCount == 1 && levels[0] == -1) || levels[0] >= 0)
         && "addNegatedEquality: invalid statement level run");
 
+    const NameId phase3Scope = memoryBlock.nameMap.lookup(validityName);
+    if (phase3Scope != 0 && memoryBlock.phase3IgnoresScope(phase3Scope))
+        return;
+
     const StatementFlags* negRow = lookupStatementFlags(
         memoryBlock.intKnownStatements, memoryBlock.nameMap, expr, validityName);
     if (negRow == nullptr)
@@ -6047,7 +7046,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validityName));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkNeg, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkNeg, local);
+        publishKnownStatementKey(memoryBlock, pkNeg, local);
 
         if (parameters.trackHistory && origin.present) {
             assert(origin.tag != OriginTag::COUNT);
@@ -6111,7 +7110,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validitySpan));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkNegM, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkNegM, local);
+        publishKnownStatementKey(memoryBlock, pkNegM, local);
 
         if (parameters.trackHistory) {
             // symmetry-of-inequality mirror origin: one antecedent = the
@@ -6142,9 +7141,33 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
 
 //#pragma optimize("", off)
 
-void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory& mb, StrSpan validityName) {
+/// @brief Prepare the integration of every premise of every rule chain whose
+///        head can establish a goal up to one `(1)`-typed constant (CNFE), and
+///        add the demanded variable copies.
+///
+/// @details
+/// Candidates are the chains of the masked-key family of `OriginalsHeadIndex`
+/// whose key equals the goal's key masked at one slot; the key carries the
+/// sign, so a rule concluding the goal's negation is never a candidate. Only
+/// chains with an id of at least @p firstChainId are visited: the goal door
+/// passes `1`, the goal rescan passes the first chain its previous rescans
+/// left unvisited, since a repeated visit of a (goal, chain) pair changes
+/// nothing. The candidate list is snapshotted at entry; chains minted by the
+/// preparations are left to the next call.
+///
+/// @param inputExprStr The goal (span over a caller-stable buffer).
+/// @param mb           The owning LB.
+/// @param validityName The goal's scope (span over a caller-stable buffer).
+/// @param firstChainId The smallest chain id to visit; `>= 1`.
+/// @return Nothing.
+/// @invariant Zero heap; visits candidates in ascending chain-id order.
+/// @see OriginalsHeadIndex, maskedHeadKey, prepareIntegration.
+void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory& mb, StrSpan validityName,
+                                                   int32_t firstChainId) {
+    assert(firstChainId >= 1 && "checkNecessityForEquality: chain ids start at 1");
 
     if (parameters.ban_disintegration) return;
+    transferUnaryIntegrationDemands(mb);
 
     // Atomic RT attribution: self-time = the whole-registry chain scan
     // (decode + head match); the mint-heavy premise handling below opens
@@ -6168,26 +7191,129 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
     const int32_t inputArgN = getArgsSpans(StrSpan(genericInput), inputArgs,
                                            ExecutionParameters::MAX_ARITY);
 
-    // Iterate all original implications (D9): the shared decoded-lex index over the
-    // originals rule registry (byte-bump int32[] on genScratchArenas) reproduces the
-    // former originalChains snapshot + std::sort order; the loop writes
-    // (prepareIntegration per matched premise), so order is observable (I-84). Each
-    // chain's rule ids are read zero-copy (IdVecKeyView) into a stack buffer, then
-    // copyFrom'd onto sArena (0% heap; the ids extracted BEFORE any originals mint).
-    const int32_t chainCount = mb.overallHashMemory.originals.count();
+    // Head prefilter (exact). The walk below accepts a chain only when its head
+    // names the deposit's operator, that operator has a config, and the head's
+    // single constant sits at a slot whose definition set is `(1)`. Both config
+    // facts depend on the operator alone, so a deposit whose operator has no
+    // config or no `(1)` slot cannot match any chain: the walk is skipped
+    // before any chain is touched, with the same (empty) effect.
+    {
+        const ce::CoreExpressionConfig* inputCfg = coreConfig(inputName);
+        if (inputCfg == nullptr) return;
+        bool numeralSlot = false;
+        for (int32_t i = 0; i < inputArgN && !numeralSlot; ++i) {
+            const std::pair<std::string, bool>* ds = findDefinitionSet(inputCfg, i + 1);
+            numeralSlot = (ds != nullptr
+                && equalSpans(StrSpan(ds->first), StrSpan("(1)", 3)));
+        }
+        if (!numeralSlot) return;
+    }
+
+    // Candidate chains (D9): the derived head index over the originals rule
+    // registry (`OriginalsHeadIndex`, page tier on genScratchArenas for the
+    // snapshot below) answers, per argument slot of the input, exactly the
+    // chains whose head has its single `(1)`-slot constant at that slot and
+    // every other argument equal to the input's — the masked head key
+    // (`maskedHeadKey`) of the head equals the input's key masked at the slot.
+    // The per-slot answers are disjoint (a chain has one constant slot) and
+    // each ascending; their union is sorted into the ascending id order of the
+    // registry, the order the former full walk visited. The loop writes
+    // (prepareIntegration per matched premise), so order is observable (I-84).
+    // The candidate list is snapshotted before the loop: the loop mints
+    // `originals`, and only the chains present at entry are visited. Each
+    // chain's rule ids are read zero-copy (IdVecKeyView) into a stack buffer,
+    // then copyFrom'd onto sArena (0% heap; the ids extracted BEFORE any
+    // originals mint).
     const unsigned ocSlot = (g_currentCoreId >= 0)
         ? static_cast<unsigned>(g_currentCoreId)
         : genScratchArenas().slotCount() - 1;
     ScratchArena& ocArena = genScratchArenas().forSlot(ocSlot);
-    ScratchScope ocScope(ocArena);
-    int32_t* chainIdx = (chainCount == 0) ? nullptr
-        : reinterpret_cast<int32_t*>(ocArena.resolve(ocArena.alloc(
-              chainCount * static_cast<int32_t>(sizeof(int32_t)),
-              static_cast<int32_t>(alignof(int32_t)))));
+    const ArenaOffset ocMark = ocArena.cursor();
+    DirtyState chainIdxDirty = DirtyState::Clean;
+    PagedVector<int32_t> chainIdx(&ocArena, &chainIdxDirty);
     int32_t chainN = 0;
+    const bool negatedInput = genericInput.size() > 0 && StrSpan(genericInput).ptr[0] == '!';
     {
-        RT_SCOPE_HERE("CNFE_SORT_CHAINS");
-        chainN = sortOriginalChainIndex(mb, chainIdx, chainCount);
+        RT_SCOPE_HERE("CNFE_HEAD_INDEX");
+        OriginalsHeadIndex& headIndex = mb.overallHashMemory.originalsHeadIndex;
+        // One key buffer for the builder and the probes: the index copies a
+        // key before the next callback, and each probe consumes its key
+        // before the next is built.
+        char keyBuf[kMaxMaskedHeadKeyBytes];
+        headIndex.ensureBuilt(mb.overallHashMemory.originals.count(),
+            [&](int32_t id) -> StrSpan {
+                const StrSpan kb = mb.overallHashMemory.originals.inner().keyAt(id);
+                const IdVecKeyView kv = viewIdVecKey(kb);
+                const int32_t n = kv.count();
+                if (n == 0) return StrSpan("", 0);   // an empty chain has no head; never matched
+                return extractExpressionSpan(mb.ruleInterner.decodeView(kv.idAt(n - 1)));
+            },
+            [&](int32_t id) -> StrSpan {
+                // The masked head key of an acceptable chain: its head has
+                // exactly one non-`u_` argument (the constant), the head's
+                // operator has a config, and the constant's slot has the
+                // definition set `(1)` — the per-chain checks of the walk
+                // below that depend on the chain alone. Every other chain is
+                // left out of the masked family (an empty span).
+                const StrSpan kb = mb.overallHashMemory.originals.inner().keyAt(id);
+                const IdVecKeyView kv = viewIdVecKey(kb);
+                const int32_t n = kv.count();
+                if (n == 0) return StrSpan("", 0);
+                const StrSpan headView = mb.ruleInterner.decodeView(kv.idAt(n - 1));
+                const StrSpan headName = extractExpressionSpan(headView);
+                StrSpan headArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t headArgN = getArgsSpans(headView, headArgs,
+                                                      ExecutionParameters::MAX_ARITY);
+                int32_t constantIndex = -1;
+                int32_t constantCount = 0;
+                for (int32_t i = 0; i < headArgN; ++i) {
+                    const bool isVar = (headArgs[i].len >= 2 && headArgs[i].ptr[0] == 'u'
+                                        && headArgs[i].ptr[1] == '_');
+                    if (!isVar) { ++constantCount; constantIndex = i; }
+                }
+                if (constantCount != 1) return StrSpan("", 0);
+                const ce::CoreExpressionConfig* cfg = coreConfig(headName);
+                if (cfg == nullptr) return StrSpan("", 0);
+                const std::pair<std::string, bool>* ds =
+                    findDefinitionSet(cfg, constantIndex + 1);
+                if (ds == nullptr || !equalSpans(StrSpan(ds->first), StrSpan("(1)", 3)))
+                    return StrSpan("", 0);
+                // The head's sign is part of the key: a head concluding the
+                // negation of a deposit never matches it.
+                const bool negatedHead = headView.len > 0 && headView.ptr[0] == '!';
+                return maskedHeadKey(headName, negatedHead, headArgs, headArgN,
+                                     constantIndex, keyBuf, kMaxMaskedHeadKeyBytes);
+            });
+        // One probe per slot of the input, the answers merged ascending. The
+        // probe carries the goal's sign; chains below firstChainId were visited
+        // for this goal by an earlier call and are skipped.
+        const ArenaOffset candMark = ocArena.cursor();
+        int32_t candCap = 0;
+        int32_t* cand = nullptr;
+        int32_t candN = 0;
+        for (int32_t slot = 0; slot < inputArgN; ++slot) {
+            const StrSpan probe = maskedHeadKey(inputName, negatedInput, inputArgs, inputArgN,
+                                                slot, keyBuf, kMaxMaskedHeadKeyBytes);
+            headIndex.chainsWithMaskedKey(probe, [&](int32_t id) {
+                if (id < firstChainId) return;
+                if (candN == candCap) {
+                    // Grow the byte-bump candidate run (doubling; the old run
+                    // stays below the cursor until the pop).
+                    const int32_t newCap = candCap == 0 ? 64 : candCap * 2;
+                    int32_t* grown = reinterpret_cast<int32_t*>(ocArena.resolve(
+                        ocArena.alloc(newCap * static_cast<int32_t>(sizeof(int32_t)),
+                                      static_cast<int32_t>(alignof(int32_t)))));
+                    for (int32_t c = 0; c < candN; ++c) grown[c] = cand[c];
+                    cand = grown;
+                    candCap = newCap;
+                }
+                cand[candN++] = id;
+            });
+        }
+        std::sort(cand, cand + candN);
+        for (int32_t c = 0; c < candN; ++c) chainIdx.push_back(cand[c]);
+        ocArena.popTo(candMark);
+        chainN = chainIdx.size();
     }
     RT_NOTE_ITERATIONS_HERE(chainN);
     for (int32_t cix = 0; cix < chainN; ++cix) {
@@ -6218,8 +7344,14 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
         const StrSpan headView = mb.ruleInterner.decodeView(chainIds[count - 1]);
         const StrSpan headName = extractExpressionSpan(headView);
 
-        // Structural check: Name and Arity must match the input expression
-        if (!equalSpans(headName, inputName)) continue;
+        // Structural check: the index guarantees the name and the sign; the
+        // arity must match the input expression.
+        assert(equalSpans(headName, inputName)
+            && "checkNecessityForEquality: the head index yielded a chain of another operator");
+        assert((headView.len > 0 && headView.ptr[0] == '!') == negatedInput
+            && "checkNecessityForEquality: the head index yielded a chain of the opposite sign");
+        assert(chainIdx[cix] >= firstChainId
+            && "checkNecessityForEquality: a chain below the floor reached the walk");
         StrSpan headArgs[ExecutionParameters::MAX_ARITY];
         const int32_t headArgN = getArgsSpans(headView, headArgs,
                                               ExecutionParameters::MAX_ARITY);
@@ -6362,8 +7494,8 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
         }
 
         if (conditionMet) {
-            // NEW CHECK: Check if the duplicated var (targetVar) already has another var =[var,var2]
-            // We check the equivalence classes for the current validity scope.
+            // Reuse an equality already visible at the target scope before
+            // introducing another variable copy.
             bool hasExistingEquality = false;
             {
                 const NameId targetVarId = mb.nameMap.lookup(targetVar);
@@ -6373,18 +7505,19 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
                 // any mint, so the peeked views stay valid. Bucket resolution
                 // mirrors decodeClassesAt: name -> id -> bucket, {} at either miss.
                 const NameId gateValId = mb.nameMap.lookup(validityName);
+                if (gateValId != 0) initializeCanonicalScope(mb,gateValId);
                 const int32_t bucketId = (gateValId == 0)
-                    ? 0 : mb.equivalenceClassesMap.lookup(gateValId);
+                    ? 0 : mb.canonicalEquivalenceClassesMap.lookup(gateValId);
                 if (bucketId != 0) {
                     const unsigned slot = (g_currentCoreId >= 0)
                         ? static_cast<unsigned>(g_currentCoreId)
                         : genScratchArenas().slotCount() - 1;
                     ScratchArena& gArena = genScratchArenas().forSlot(slot);
-                    const int32_t cc = mb.equivalenceClassesMap.runLen(bucketId);
+                    const int32_t cc = mb.canonicalEquivalenceClassesMap.runLen(bucketId);
                     for (int32_t ci = 0; ci < cc; ++ci) {
                         ScratchScope viewScope(gArena);
                         int32_t blen = 0;
-                        const char* bp = mb.equivalenceClassesMap.peekRecordBytes(
+                        const char* bp = mb.canonicalEquivalenceClassesMap.peekRecordBytes(
                             bucketId, ci, blen, gArena);
                         const EquivalenceClassView view{ bp, blen };
                         if (targetVarId != 0 && classHasMember(view, targetVarId)) {
@@ -6446,6 +7579,8 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
                 false);
         }
     }
+    chainIdx.clear();
+    ocArena.popTo(ocMark);
 }
 
 // Count disjuncts in an expanded OR expression like !(&!(&!(d1)!(d2))!(d3))
@@ -6482,132 +7617,133 @@ bool ExpressionAnalyzer::checkForEquivalence(StrSpan expr,
     StrSpan validityName,
     Memory& memoryBlock)
 {
-    // 1. Parse arguments (D1: spans over the stable `expr`).
-    StrSpan args[ExecutionParameters::MAX_ARITY];
-    const int32_t argN = getArgsSpans(StrSpan(expr), args, ExecutionParameters::MAX_ARITY);
-
-    // Access the equivalence class list for this validity scope
-    const NameId eqClassesValId = memoryBlock.nameMap.lookup(validityName);
-    assert(eqClassesValId != 0
-        && memoryBlock.equivalenceClassesMap.lookup(eqClassesValId) != 0
-        && "disintegrateEquivalenceClass: expected a bucket at this validity");
-    // Member-run snapshot (page tier) taken ONCE before the args loop — the
-    // former decodeClassesById heap vector, reduced to member ids (the loop
-    // reads only membership + member names). The reused snapshot decouples from
-    // the Cartesian expansion's later mints EXACTLY as the heap snapshot did
-    // (I-142); classStarts[ci] is the start of class ci's
-    // member run in memberPool.
-    const unsigned eqSlot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : genScratchArenas().slotCount() - 1;
-    ScratchArena& eqArena = genScratchArenas().forSlot(eqSlot);
-    DirtyState snapDirty = DirtyState::Clean;
-    PagedVector<NameId> memberPool(&eqArena, &snapDirty);
-    PagedVector<int32_t> classStarts(&eqArena, &snapDirty);
-    {
-        const int32_t bucketId =
-            memoryBlock.equivalenceClassesMap.lookup(eqClassesValId);
-        const int32_t cc = (bucketId == 0)
-            ? 0 : memoryBlock.equivalenceClassesMap.runLen(bucketId);
-        for (int32_t ci = 0; ci < cc; ++ci) {
-            ScratchScope peekScope(eqArena);
-            int32_t blen = 0;
-            const char* bp = memoryBlock.equivalenceClassesMap.peekRecordBytes(
-                bucketId, ci, blen, eqArena);
-            const EquivalenceClassView v{ bp, blen };
-            classStarts.push_back(static_cast<int32_t>(memberPool.size()));
-            for (int32_t k = 0; k < v.memberCount(); ++k)
-                memberPool.push_back(v.memberId(k));
-        }
-    }
-
-    // 2. Per-arg possibility RANGE over memberPool (D2): either a class member
-    // run [possStart, possStart+possLen) in decoded-lex storage order, or a "self"
-    // singleton (the arg span itself). The class-membership scan is id-based
-    // (unchanged); the chosen member decodes at the D5 replacement build.
-    int32_t possStart[ExecutionParameters::MAX_ARITY];
+    FtaBlowupAudit* audit=ftaBlowupAudit;
+    const auto auditStarted=audit ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const NameId scope=memoryBlock.nameMap.lookup(validityName);
+    assert(scope!=0 && "checkForEquivalence: expected a registered scope");
+    const unsigned slot=g_currentCoreId>=0 ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount()-1;
+    ScratchArena& arena=genScratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    DirtyState dirty=DirtyState::Clean;
+    initializeCanonicalScope(memoryBlock,scope);
+    const StatementFlags* direct=lookupStatementFlags(memoryBlock.intKnownStatements,memoryBlock.nameMap,expr,validityName);
+    const bool directMatch=direct!=nullptr && direct->fullyDisintegrated;
+    uint64_t checkedVariants=0;
+    uint64_t snapshotMembers=0;
+    int32_t argN=0;
     int32_t possLen[ExecutionParameters::MAX_ARITY];
-    bool    possSelf[ExecutionParameters::MAX_ARITY];
-    StrSpan possSelfSpan[ExecutionParameters::MAX_ARITY];
-    for (int32_t ai = 0; ai < argN; ++ai) {
-        const StrSpan arg = args[ai];
-        // Non-minting probe: a never-interned arg is in no class.
-        const NameId argId = memoryBlock.nameMap.lookup(arg);
-        const int32_t classCount = classStarts.size();
-        bool foundClass = false;
-        for (int32_t ci = 0; ci < classCount && !foundClass; ++ci) {
-            const int32_t start = classStarts[ci];
-            const int32_t end = (ci + 1 < classCount)
-                ? classStarts[ci + 1] : static_cast<int32_t>(memberPool.size());
-            bool contains = false;
-            if (argId != 0) {
-                for (int32_t k = start; k < end; ++k) {
-                    if (memberPool[k] == argId) { contains = true; break; }
-                }
-            }
-            if (contains) {
-                possStart[ai] = start; possLen[ai] = end - start; possSelf[ai] = false;
-                foundClass = true; // one class per validity
-            }
-        }
-        // If not found, it is its own only possibility.
-        if (!foundClass) {
-            possSelf[ai] = true; possSelfSpan[ai] = arg; possStart[ai] = 0; possLen[ai] = 1;
+    if(audit) {
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        argN=getArgsSpans(expr,args,ExecutionParameters::MAX_ARITY);
+        for(int32_t i=0;i<argN;++i) possLen[i]=1;
+        const int32_t bucket=memoryBlock.canonicalEquivalenceClassesMap.lookup(scope);
+        if(bucket!=0) for(int32_t i=0;i<memoryBlock.canonicalEquivalenceClassesMap.runLen(bucket);++i) {
+            ScratchScope classFrame(arena);
+            int32_t length=0;
+            const char* bytes=memoryBlock.canonicalEquivalenceClassesMap.peekRecordBytes(bucket,i,length,arena);
+            const EquivalenceClassView cls{bytes,length};
+            snapshotMembers+=cls.memberCount();
+            for(int32_t j=0;j<argN;++j)
+                if(classHasMember(cls,memoryBlock.nameMap.lookup(args[j]))) possLen[j]=cls.memberCount();
         }
     }
-
-    // 4. Generate All Variants (Cartesian Product) and Check.
-    int32_t indices[ExecutionParameters::MAX_ARITY];
-    for (int32_t i = 0; i < argN; ++i) indices[i] = 0;
-
-    const unsigned vSlot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : scratchArenas().slotCount() - 1;
-    ScratchArena& vArena = scratchArenas().forSlot(vSlot);
-
-    while (true) {
-        // A/B. Per-tuple StrReplacement run + variant (D5). The chosen member id
-        // decodes zero-copy via decodeView; this is SAFE because the ONLY interner
-        // touch inside the loop is the non-minting lookupStatementFlags probe, so
-        // no NameMap mint intervenes before the span's last use (I-3, 09c §1).
-        ScratchScope vScope(vArena);
-        StrReplacement rep[ExecutionParameters::MAX_ARITY];
-        for (int32_t i = 0; i < argN; ++i) {
-            rep[i].key = args[i];
-            rep[i].value = possSelf[i]
-                ? possSelfSpan[i]
-                : memoryBlock.nameMap.decodeView(memberPool[possStart[i] + indices[i]]);
-        }
-        const ScratchString variant = replaceKeysScratch(vArena, StrSpan(expr), rep, argN);
-
-        // C. Check if this variant is a REGISTERED statement flagged FULLY
-        // DISINTEGRATED. A variant that is merely present (mail-origin, or
-        // a local twin whose witness was rejected) was NOT fully disintegrated,
-        // so it must NOT suppress this disintegration — gate on the
-        // fullyDisintegrated flag, not local-ness and not mere presence.
-        const StatementFlags* cfeVarRow = lookupStatementFlags(
-            memoryBlock.intKnownStatements, memoryBlock.nameMap, StrSpan(variant), StrSpan(validityName));
-        if (cfeVarRow && cfeVarRow->fullyDisintegrated) {
-            return true;
-        }
-
-        // D. Advance indices (odometer style).
-        int32_t i = argN - 1;
-        while (i >= 0) {
-            indices[i]++;
-            if (indices[i] < possLen[i]) {
-                break; // Successfully incremented this position
+    const auto auditPrepared = audit ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
+    const auto recordAudit = [&](bool matched) {
+        if (!audit) return;
+        const uint64_t elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - auditStarted).count();
+        const uint64_t setup = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            auditPrepared - auditStarted).count();
+        ++audit->calls; audit->matches += matched; audit->directMatches += directMatch;
+        audit->variants += checkedVariants;
+        if (directMatch) audit->directVariants += checkedVariants;
+        audit->setupNs += setup; audit->probesNs += elapsed - setup;
+        audit->snapshotMembers += snapshotMembers;
+        if (checkedVariants >= 10000 || elapsed >= 5000000) {
+            char line[32768];
+            int used = std::snprintf(line, sizeof(line),
+                "[FTA-CFE] burst=%d ns=%llu setup_ns=%llu variants=%llu matched=%d direct=%d status=%d allowed=%d lengths=",
+                audit->burst, elapsed, setup, checkedVariants, matched, directMatch, audit->status, audit->disintegrationAllowed);
+            assert(used > 0 && used < sizeof(line));
+            for (int32_t i = 0; i < argN; ++i) {
+                const int count = std::snprintf(line + used, sizeof(line) - used,
+                    "%s%d", i ? "," : "", possLen[i]);
+                assert(count > 0 && count < sizeof(line) - used); used += count;
             }
-            else {
-                indices[i] = 0; // Reset this position and carry over
-                i--;
-            }
+            const int count = std::snprintf(line + used, sizeof(line) - used,
+                " expr=%.*s scope=%.*s\n", expr.len, expr.ptr, validityName.len, validityName.ptr);
+            assert(count > 0 && count < sizeof(line) - used); used += count;
+            FILE* out = nullptr;
+#ifdef _WIN32
+        const errno_t openResult = fopen_s(&out, ".debug/traps.log", "a");
+        assert(openResult == 0);
+#else
+        out = std::fopen(".debug/traps.log", "a");
+#endif
+        assert(out);
+            assert(std::fwrite(line, 1, used, out) == used); std::fclose(out);
         }
-        // If we wrapped around the first index, we are done
-        if (i < 0) break;
+    };
+    if(directMatch) { checkedVariants=1; recordAudit(true); return true; }
+    const int32_t bucket=memoryBlock.canonicalEquivalenceClassesMap.lookup(scope);
+    if(bucket==0 || memoryBlock.canonicalEquivalenceClassesMap.runLen(bucket)==0) {
+        recordAudit(false); return false;
     }
-
+    PagedVector<int64_t> matches(&arena,&dirty);
+    matchingCanonicalTemplates(memoryBlock,memoryBlock.intKnownStatements,
+        memoryBlock.lbMemory.canonicalUses.statementMatches,expr,scope,scope,matches,arena,true);
+    for(int32_t i=0;i<matches.size();++i) {
+        ++checkedVariants;
+        const StatementFlags* record=memoryBlock.intKnownStatements.find(Codec<StatementKey>::decode(matches[i]));
+        assert(record!=nullptr);
+        if(record->fullyDisintegrated) { recordAudit(true); return true; }
+    }
+    recordAudit(false);
     return false;
+}
+
+/// @brief Test whether a compact is a known statement at one scope, up to
+///        that scope's complete equivalence classes.
+///
+/// @details The known-part check of `prepareIntegrationCore2` Case A: an
+/// implication compact that is already a known statement needs no subproof.
+/// A literal row at the exact scope is a direct hit. Otherwise the shared
+/// statement posting index compares the compact with every known statement
+/// owned by that exact scope after both are normalized through the scope's
+/// complete class view (I-254), so a statement that names another member of a
+/// class counts. Unlike `checkForEquivalence`, the disintegration state of the
+/// matching row is irrelevant: a known statement is known whether or not it
+/// was disintegrated.
+///
+/// @param compact Candidate compact statement on caller-owned storage.
+/// @param validityName Exact scope that owns the matching statement; it must
+///        already be registered in the block's name map.
+/// @param memoryBlock Owning block, its classes and known-statement store.
+/// @return Whether the compact, or a class variant of it at this scope, is a
+///         known statement owned by that scope.
+/// @invariant Creates no proof row; only arena-backed derived comparison
+///            indexes are synchronized.
+/// @see checkForEquivalence, matchingCanonicalTemplates.
+bool ExpressionAnalyzer::compactKnownUpToEquality(StrSpan compact,
+    StrSpan validityName,
+    Memory& memoryBlock)
+{
+    if (lookupStatementFlags(memoryBlock.intKnownStatements, memoryBlock.nameMap,
+            compact, validityName) != nullptr)
+        return true;
+    const NameId scope = memoryBlock.nameMap.lookup(validityName);
+    assert(scope != 0 && "compactKnownUpToEquality: expected a registered scope");
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    DirtyState dirty = DirtyState::Clean;
+    PagedVector<int64_t> matches(&arena, &dirty);
+    matchingCanonicalTemplates(memoryBlock, memoryBlock.intKnownStatements,
+        memoryBlock.lbMemory.canonicalUses.statementMatches, compact, scope, scope,
+        matches, arena, true);
+    return matches.size() > 0;
 }
 
 // Turn optimizations OFF for just this section
@@ -6667,12 +7803,12 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, StrSpan validityName, S
         if (!isTarget) continue;
         found = true;
 
-        // 3. Canonical variable: first int_lev_* member in decoded-lex order,
-        // fallback first it_*_lev_* (firstSpecialMemberId, templated on the view).
+        // 3. Preferred special member: forced, integration by numeric depth,
+        // then algebraic, with decoded lexical ties.
         const NameId canonicalId = firstSpecialMemberId(ec, mb);
         if (canonicalId == 0) return;  // no special-tier members -> nothing weak
 
-        // 4. Weak = special tier (int_/it_) AND not canonical. Dual-write via the
+        // 4. Weak = special witness AND not the preferred special member. Dual-write via the
         // packed twin (D-134). Write site, minting allowed.
         const NameId weakValidityId = mb.nameMap.encode(validityName);
         for (int32_t k = 0; k < ec.memberCount(); ++k) {
@@ -6736,14 +7872,23 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, StrSpan validityName, S
 ///
 /// @param expr           Canonical MPL expression text.
 /// @param memoryBlock    Target LB.
+/// @param iteration      Witness generation carried by the arrival.
+/// @param status         Deposit route selecting the processing contract.
 /// @param involvedLevels Ascending-unique level run — LB levels at which
 ///                       the expression is admissible (caller-owned per
 ///                       the levels-run chain contract).
 /// @param involvedLevelCount The level count (`>= 0`).
-/// @param ...            Many trailing parameters routing the deposit
-///                       through specific paths (origin tag,
-///                       admission-update flag, mail-out flag,
-///                       sender LB, etc.).
+/// @param origin         Recorded derivation of the deposit.
+/// @param coreId         Worker slot; -1 selects the setup slot.
+/// @param auxyIndex      Auxiliary goal registration index.
+/// @param validityName   Scope in which the expression is offered.
+/// @param doNotDisintegrate Suppress disintegration for this offer.
+/// @param allowOrDisintegration Permit rule-product OR cohort opening.
+/// @param registeredOut  Optional encoded registration result.
+/// @param recursionHead  Force-disintegrate the induction implication's head.
+/// @param convergenceMailOut Explicit convergence output during input absorption;
+///                       nullptr selects same-iteration mail for ordinary callers.
+/// @return Nothing; writes the expression through the ordinary deposit doors.
 /// @invariant [I-9](../../docs/agentic_swdd/30_invariants.md#i-9) — addEquality
 ///            mirror guard.
 /// @invariant [I-12](../../docs/agentic_swdd/30_invariants.md#i-12) — !(=[a,b])
@@ -6752,7 +7897,7 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, StrSpan validityName, S
 ///            ancestor-scan dedupe at entry.
 /// @invariant [I-28](../../docs/agentic_swdd/30_invariants.md#i-28) — cross-LB
 ///            writes deferred to post-`pool.join()` collectors.
-/// @see `addExprToMemoryBlockKernel` — inner kernel.
+/// @see `disintegrateExpr2` — structural disintegration.
 /// @see `addToHashMemory` (memory.cpp) — implication branch.
 /// @see `addEquality`, `addNegatedEquality` — shape-specific branches.
 void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
@@ -6766,7 +7911,14 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     StrSpan validityName,
     bool doNotDisintegrate,
     bool allowOrDisintegration,
-    IntEncodedExpr* registeredOut) {
+    IntEncodedExpr* registeredOut,
+    bool recursionHead,
+    ColdMail* convergenceMailOut, int32_t replayKinds, int32_t replayIntegrationDepth) {
+
+    // A deposited statement is a fact, never an integration derivative: the
+    // rules and tasks it raises are independent of any active task
+    // (I-284).
+    IntegrationTaskScope factDeposit(memoryBlock, 0);
 
     // Two-route or-cohort opening (admission-based ordis; restores the D-32
     // gate READ the sequenced branch had overridden): route (b) is the
@@ -6781,6 +7933,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     // disintegrateExpr2 directly (bypassing this door) with both defaults
     // false, so no cohort ever mints — and no park ever writes — at a
     // sentinel scope.
+    if ((replayKinds & 8) != 0) status = 5;
     allowOrDisintegration = allowOrDisintegration && !doNotDisintegrate;
     const bool allowOrProbe = !doNotDisintegrate;
 
@@ -6796,6 +7949,8 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         RT_SCOPE_HERE("DOOR_ENTRY_GATES");
         origId = memoryBlock.nameMap.encode(expr);
         valId = memoryBlock.nameMap.encode(validityName);
+        if (memoryBlock.phase3IgnoresScope(valId)) return;
+        initializeCanonicalScope(memoryBlock, valId);
 
         // Site F — dup suppression via ancestor scan. A known statement at any
         // ancestor scope (including self) means the same fact already holds at a
@@ -6808,7 +7963,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         // predicate (one definition of the contract across every door); a
         // refusal still carries the or-branch resolution signal (I-174) — the
         // branch derived the expression even though the deposit is redundant.
-        if (!parameters.compressor_mode
+        if (!parameters.compressor_mode && replayKinds == 0
             && ancestorKnown(memoryBlock, origId, valId, /*includeSelf=*/true)) {
             stageOrReleaseForRefusedDeposit(memoryBlock, origId, valId);
             return;
@@ -6828,9 +7983,8 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     // admitted. For every status except a goal (2) and every shape except
     // the two equality shapes (goal closure is literal and neither shape is
     // ever multiplied) and anchors (a scope identity, I-53), the text is
-    // rewritten under the equivalence classes at its OWN scope
-    // (`canonicalFormAtScope`: a fresh scope's bucket is empty, so seeds
-    // keep the spelling their scope name / identity was minted from). A
+    // rewritten under the maintained complete class view at its scope.
+    // Raw scope identities remain separate from the deposited text. A
     // changed deposit: (1) keeps the RAW text's producer history line
     // (Rule 16 — the canonical form's bridge below terminates on it) and,
     // for a local status, ships that line to mailOut so a receiver's
@@ -6891,6 +8045,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             // it), both ids carry the or-branch resolution signal.
             const NameId canonId = memoryBlock.nameMap.lookup(cf.text);
             if (!parameters.compressor_mode && canonId != 0
+                && replayKinds == 0
                 && ancestorKnown(memoryBlock, canonId, valId, /*includeSelf=*/true)) {
                 stageOrReleaseForRefusedDeposit(memoryBlock, origId, valId);
                 stageOrReleaseForRefusedDeposit(memoryBlock, canonId, valId);
@@ -6994,6 +8149,8 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         upsertStatementKey(memoryBlock.intKnownStatements,
             packStatementKey(ie.originalId, ie.validityId),
             /*local=*/true);
+        this->recordNegationWatchFor(memoryBlock, ie);
+        this->stageWatchArrival(memoryBlock, ie);
 
         return;
     }
@@ -7042,7 +8199,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             const int assertArgN = getArgsSpans(expr, assertArgs, ExecutionParameters::MAX_ARITY);
             for (int ai = 0; ai < assertArgN; ++ai) {
                 const StrSpan& a = assertArgs[ai];
-                if (isIntLevShape(a) || isItLevShape(a)) {
+                if (isDisintegrationWitnessShape(a) || isItLevShape(a)) {
                     hasItInt = true;
                     break;
                 }
@@ -7071,7 +8228,8 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 
             {
                 RT_SCOPE_HERE("DOOR_GOAL_CHECK_NECESSITY");
-                checkNecessityForEquality(expr, memoryBlock, validityName);
+                // A new goal is visited against every chain.
+                checkNecessityForEquality(expr, memoryBlock, validityName, 1);
             }
         }
 
@@ -7098,15 +8256,11 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         }
         {
             RT_SCOPE_HERE("DOOR_PREPARE_INTEGRATION");
-            prepareIntegration(expr, unchRun, unchN, memoryBlock, validityName, expr);
+            // The goal door: the prepared expression is the goal itself, so a
+            // positive `=` goal is typed on the spot (I-267).
+            prepareIntegration(expr, unchRun, unchN, memoryBlock, validityName, expr,
+                               /*typedEqualityGoal=*/true);
         }
-        // `allowedForMail` probes the memo only for `int_lev_*`-carrying
-        // expressions (its lexical scanSingleDistinctIntLev gate short-circuits
-        // everything else), so any other entry could never be read.
-        if (containsSpan(expr, StrSpan("int_lev_", 8))) {
-            memoryBlock.canBeSentIds.mint(memoryBlock.nameMap.encode(expr));
-        }
-
         const ce::CoreExpressionConfig* cfg = coreConfig(extractExpressionSpan(expr));
 
         if (cfg != nullptr && !cfg->inputIndices.empty()) {
@@ -7169,15 +8323,20 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                 expr.len > 11 && startsWithSpan(expr, "!(existence", 11)
                 && expr.ptr[11] >= '0' && expr.ptr[11] <= '9';
 
-            // Or-uniqueness gate: an or<N> deposit whose equi class already
+            // Or-uniqueness gate: an or<N> deposit whose processing identity already
             // has a fully-processed representative at this scope stays a
             // PASSIVE statement — registered below and multiplied by
             // applyEquiClasses like any statement, but never disintegrated
             // (no K/subset-exclusion compacts, no cohort, no ordis park),
             // on every entry path (local and the flag-5 relay alike).
-            // Ordered before checkForEquivalence so a suppressed or skips
-            // the Cartesian probe.
+            // Ordered before checkForEquivalence so a suppressed OR skips
+            // the general completed-expression lookup.
             const bool orCompactDeposit = isOrCompactSpan(expr);
+            const bool inheritedOrEligible = status == 3 && orCompactDeposit
+                && hasOrProofWork(memoryBlock);
+            const bool statusAllowsDisintegration = status != 3
+                || isCompactImplication || isNegatedExistence
+                || inheritedOrEligible;
             bool orEquiDuplicate = false;
             if (orCompactDeposit && !doNotDisintegrate) {
                 RT_SCOPE_HERE("DOOR_OR_EQUI_GATE");
@@ -7189,11 +8348,16 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             bool cfeEq = false;
             if (!doNotDisintegrate && !orEquiDuplicate) {
                 RT_SCOPE_HERE("DOOR_CHECK_EQUIVALENCE");
+                if (ftaBlowupAudit) {
+                    ftaBlowupAudit->status = status;
+                    ftaBlowupAudit->disintegrationAllowed =
+                        statusAllowsDisintegration;
+                }
                 cfeEq = checkForEquivalence(expr, validityName, memoryBlock);
             }
             const bool willDisintegrate =
-                !doNotDisintegrate && !orEquiDuplicate && !cfeEq
-                && (status != 3 || isCompactImplication || isNegatedExistence);
+                !doNotDisintegrate && !orEquiDuplicate && (replayKinds != 0 || !cfeEq)
+                && statusAllowsDisintegration;
             // Hoist the two return channels ABOVE the if/else so both branches
             // fill ONE `out` (per-slot arena, freed per task); consumed directly
             // below via forEachSorted (no std::set<EWV> edge-materialization).
@@ -7203,27 +8367,25 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             DisintProducts out(&genScratchArenas().forSlot(deSlot));
             if (willDisintegrate)
             {
-                // Rule-19 invariant: a non-rule-carrier must only reach
-                // disintegrateExpr2 under a local status (0/1) or the
-                // flag-5 relay status (5). status=3 is admissible here ONLY
-                // for the two rule-carrier shapes — compact implication or
-                // negated compact existence (the guard enforces it);
-                // anything else reaching here with status=3 fires this
-                // assert and pins the forbidden path.
+                // Ordinary inherited ORs require recipient proof work.
+                // Other status-3 shapes remain limited to the two existing
+                // rule carriers; local and flag-5 deposits retain their doors.
                 assert(isCompactImplication || isNegatedExistence
+                    || inheritedOrEligible
                     || status == 0 || status == 1 || status == 5);
                 {
                     RT_SCOPE_HERE("DOOR_DISINTEGRATE");
                     fullDisintegrationHappened = this->disintegrateExpr2(expr,
                             memoryBlock,
                             iteration,
-                            status == 0,
+                            status == 0 || recursionHead,
                             validityName,
                             out,
                             /*trackHistoryLocal=*/true,
                             allowOrDisintegration,
                             involvedLevels, involvedLevelCount,
-                            allowOrProbe);
+                            allowOrProbe, replayKinds, status == 5, replayIntegrationDepth,
+                            recursionHead);
                 }
                 // First representative: record the or's full processing so
                 // later equi variants at this scope stay passive (the
@@ -7291,45 +8453,73 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             if (out.implications.count() > 0)
             {
                 RT_SCOPE_HERE("DOOR_GOALS_CHECK_NECESSITY");
-                // Check necessity for equality for all pending proofs.
-                // Snapshot the packed goal keys sorted by decoded
-                // (original, validity) -- byte-identical processing order to the
-                // former decodeToBeProvedSorted walk (I-87). The keys are
-                // NameMap-id pairs and NameMap only appends, so the snapshot
-                // survives checkNecessityForEquality's mints AND any goal-registry
-                // insert/erase during the walk; each row's two strings are decoded
-                // FRESH right before use (after any prior mint), so no decodeView
-                // span crosses a mint (I-3, 09c pitfall 5). tbpKeys rides the
-                // slot's gen-scratch byte-bump tier, allocated BEFORE any callee
-                // ScratchScope mark, so every inner rewind pops back above it.
-                const unsigned tbpSlot = (g_currentCoreId >= 0)
-                    ? static_cast<unsigned>(g_currentCoreId)
-                    : genScratchArenas().slotCount() - 1;
-                ScratchArena& tbpArena = genScratchArenas().forSlot(tbpSlot);
-                ScratchScope tbpScope(tbpArena);
-                int32_t tbpN = 0;
-                int64_t* tbpKeys = sortToBeProvedKeys(memoryBlock.intToBeProved,
-                    memoryBlock.nameMap, tbpArena, tbpN);
-                const unsigned goalStrSlot = (g_currentCoreId >= 0)
-                    ? static_cast<unsigned>(g_currentCoreId)
-                    : scratchArenas().slotCount() - 1;
-                ScratchArena& goalStrArena = scratchArenas().forSlot(goalStrSlot);
-                for (int32_t i = 0; i < tbpN; ++i) {
-                    const int64_t k = tbpKeys[i];
-                    const NameId oid = Codec<StatementKey>::decode(k).orig;
-                    const NameId vid = Codec<StatementKey>::decode(k).validity;
-                    // copyFrom per row onto the string tier: checkNecessityFor-
-                    // Equality mints NameMap, so a raw decodeView would dangle
-                    // (I-3, 09c pitfall 5).
-                    ScratchScope goalRowScope(goalStrArena);
-                    const StrSpan os = memoryBlock.nameMap.decodeView(oid);
-                    const ScratchString original =
-                        ScratchString::copyFrom(goalStrArena, os.ptr, os.len);
-                    const StrSpan vs = memoryBlock.nameMap.decodeView(vid);
-                    const ScratchString validity =
-                        ScratchString::copyFrom(goalStrArena, vs.ptr, vs.len);
-                    this->checkNecessityForEquality(StrSpan(original), memoryBlock, StrSpan(validity));
+                // Check necessity for equality for all pending proofs, over the
+                // chains no earlier rescan visited: every goal has been visited
+                // against chains 1..goalScanChainMark (a goal door visits all
+                // chains; a repeated (goal, chain) visit changes nothing). The
+                // floor stays unchanged until this rescan ends, so a nested
+                // rescan inside a preparation visits the same range and the
+                // first visits keep their order. Without new chains no goal is
+                // visited; the unary-demand transfer every visit starts with
+                // still runs once.
+                HashMemory& goalScanHm = memoryBlock.overallHashMemory;
+                const int32_t firstNewChain = goalScanHm.goalScanChainMark + 1;
+                const int32_t chainsAtStart = goalScanHm.originals.count();
+                assert(firstNewChain <= chainsAtStart + 1
+                    && "addExprToMemoryBlock: goal-rescan floor above the chain count");
+                if (firstNewChain > chainsAtStart) {
+                    if (memoryBlock.intToBeProved.count() > 0)
+                        this->transferUnaryIntegrationDemands(memoryBlock);
+                } else {
+                    // Snapshot the packed goal keys sorted by decoded
+                    // (original, validity) -- byte-identical processing order to the
+                    // former decodeToBeProvedSorted walk (I-87). The keys are
+                    // NameMap-id pairs and NameMap only appends, so the snapshot
+                    // survives checkNecessityForEquality's mints AND any goal-registry
+                    // insert/erase during the walk; each row's two strings are decoded
+                    // FRESH right before use (after any prior mint), so no decodeView
+                    // span crosses a mint (I-3, 09c pitfall 5). tbpKeys rides the
+                    // slot's gen-scratch byte-bump tier, allocated BEFORE any callee
+                    // ScratchScope mark, so every inner rewind pops back above it.
+                    const unsigned tbpSlot = (g_currentCoreId >= 0)
+                        ? static_cast<unsigned>(g_currentCoreId)
+                        : genScratchArenas().slotCount() - 1;
+                    ScratchArena& tbpArena = genScratchArenas().forSlot(tbpSlot);
+                    ScratchScope tbpScope(tbpArena);
+                    int32_t tbpN = 0;
+                    int64_t* tbpKeys = sortToBeProvedKeys(memoryBlock.intToBeProved,
+                        memoryBlock.nameMap, tbpArena, tbpN);
+                    const unsigned goalStrSlot = (g_currentCoreId >= 0)
+                        ? static_cast<unsigned>(g_currentCoreId)
+                        : scratchArenas().slotCount() - 1;
+                    ScratchArena& goalStrArena = scratchArenas().forSlot(goalStrSlot);
+                    for (int32_t i = 0; i < tbpN; ++i) {
+                        const int64_t k = tbpKeys[i];
+                        const NameId oid = Codec<StatementKey>::decode(k).orig;
+                        const NameId vid = Codec<StatementKey>::decode(k).validity;
+                        // copyFrom per row onto the string tier: checkNecessityFor-
+                        // Equality mints NameMap, so a raw decodeView would dangle
+                        // (I-3, 09c pitfall 5).
+                        ScratchScope goalRowScope(goalStrArena);
+                        const StrSpan os = memoryBlock.nameMap.decodeView(oid);
+                        const ScratchString original =
+                            ScratchString::copyFrom(goalStrArena, os.ptr, os.len);
+                        const StrSpan vs = memoryBlock.nameMap.decodeView(vid);
+                        const ScratchString validity =
+                            ScratchString::copyFrom(goalStrArena, vs.ptr, vs.len);
+                        this->checkNecessityForEquality(StrSpan(original), memoryBlock, StrSpan(validity),
+                                                        firstNewChain);
+                    }
                 }
+                // Every goal of the snapshot has now visited chains up to
+                // chainsAtStart; goals registered meanwhile visited all chains
+                // at their door. A nested rescan may already have raised the
+                // floor further. Chain ids renumber only in the owner-less
+                // sweep, which never runs inside the door (I-60).
+                assert(goalScanHm.originals.count() >= chainsAtStart
+                    && "addExprToMemoryBlock: the chain map shrank during the goal rescan");
+                if (goalScanHm.goalScanChainMark < chainsAtStart)
+                    goalScanHm.goalScanChainMark = chainsAtStart;
             }
 
             // Process statements — each carries its own validity name (normal
@@ -7338,48 +8528,44 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             out.statements.forEachSorted([&](StrSpan evOrig, StrSpan evValidity)
             {
                 RT_SCOPE_HERE("DOOR_STATEMENT_ROW");
-                int64_t pkEv = 0;
-                const bool evHasKey = lookupOriginKey(memoryBlock.originInterner,
-                    evOrig, evValidity, pkEv);
-                assert(evHasKey);
-                (void)evHasKey;
-                const int32_t oidOrigin = memoryBlock.exprOriginMap.lookup(pkEv);
-                assert(oidOrigin != 0 && memoryBlock.exprOriginMap.runLen(oidOrigin) > 0);
-                // frontId: peek exprOriginMap record 0 zero-copy (IdOriginBlobView)
-                // instead of an owning recordAt decode. The peek is valid while the
-                // run is resident + unmutated; the deps are copied out BEFORE
-                // addStatement (the next mint), so no straddle-dangle (I-3).
-                const unsigned foSlot = (g_currentCoreId >= 0)
-                    ? static_cast<unsigned>(g_currentCoreId)
-                    : genScratchArenas().slotCount() - 1;
+                // A replay does not change an already-known source carrier's locality.
+                // Its newly materialized products still use ordinary local admission.
+                if (replayKinds != 0 && equalSpans(evOrig, expr)
+                    && equalSpans(evValidity, validityName)
+                    && ancestorKnown(memoryBlock, origId, valId, true)) return;
+                const unsigned foSlot = g_currentCoreId >= 0
+                    ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
                 ScratchArena& foArena = genScratchArenas().forSlot(foSlot);
+                ScratchArena& foStrArena = scratchArenas().forSlot(foSlot);
                 ScratchScope foScope(foArena);
-                int32_t foBlen = 0;
-                const char* foBytes = memoryBlock.exprOriginMap.peekRecordBytes(
-                    oidOrigin, 0, foBlen, foArena);
-                const IdOriginBlobView foView = viewIdOriginBlob(foBytes, foBlen);
-                // Copy each dep's (expression, validity) onto the string tier
-                // (MANDATORY: addStatement mints originInterner, the SAME interner
-                // the deps decode from, I-3). An equality1 tail can run up to the
-                // 64-dep chain cap.
-                const unsigned foStrSlot = (g_currentCoreId >= 0)
-                    ? static_cast<unsigned>(g_currentCoreId)
-                    : scratchArenas().slotCount() - 1;
-                ScratchArena& foStrArena = scratchArenas().forSlot(foStrSlot);
                 ScratchScope foStrScope(foStrArena);
                 OriginDep frontDeps[64];
-                int frontDepN = 0;
-                for (int32_t d = 0; d < foView.depN; ++d) {
-                    assert(frontDepN < 64 && "front origin chain exceeds 64");
-                    StrSpan eSpan, vSpan;
-                    decodeOriginKeyView(idOriginDepAt(foView, d),
-                        memoryBlock.originInterner, eSpan, vSpan);
-                    const ScratchString eC = ScratchString::copyFrom(foStrArena, eSpan.ptr, eSpan.len);
-                    const ScratchString vC = ScratchString::copyFrom(foStrArena, vSpan.ptr, vSpan.len);
-                    frontDeps[frontDepN++] = { StrSpan(eC), StrSpan(vC) };
+                TransientOrigin frontTO{};
+                if (parameters.trackHistory) {
+                    int64_t pkEv = 0;
+                    const bool evHasKey = lookupOriginKey(memoryBlock.originInterner,
+                        evOrig, evValidity, pkEv);
+                    assert(evHasKey);
+                    (void)evHasKey;
+                    const int32_t oidOrigin = memoryBlock.exprOriginMap.lookup(pkEv);
+                    assert(oidOrigin != 0 && memoryBlock.exprOriginMap.runLen(oidOrigin) > 0);
+                    int32_t foBlen = 0;
+                    const char* foBytes = memoryBlock.exprOriginMap.peekRecordBytes(
+                        oidOrigin, 0, foBlen, foArena);
+                    const IdOriginBlobView foView = viewIdOriginBlob(foBytes, foBlen);
+                    int frontDepN = 0;
+                    for (int32_t d = 0; d < foView.depN; ++d) {
+                        assert(frontDepN < 64 && "front origin chain exceeds 64");
+                        StrSpan eSpan, vSpan;
+                        decodeOriginKeyView(idOriginDepAt(foView, d),
+                            memoryBlock.originInterner, eSpan, vSpan);
+                        const ScratchString eC = ScratchString::copyFrom(foStrArena, eSpan.ptr, eSpan.len);
+                        const ScratchString vC = ScratchString::copyFrom(foStrArena, vSpan.ptr, vSpan.len);
+                        frontDeps[frontDepN++] = { StrSpan(eC), StrSpan(vC) };
+                    }
+                    frontTO = TransientOrigin{
+                        true, static_cast<OriginTag>(foView.tag), frontDeps, frontDepN };
                 }
-                const TransientOrigin frontTO{
-                    true, static_cast<OriginTag>(foView.tag), frontDeps, frontDepN };
 
                 // `addStatement` is the single statement-add door.
                 // It dispatches internally to `addEquality` /
@@ -7402,18 +8588,6 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                         || (status == 5 && !isCarrier)
                         || rewriteIsLocal;
 
-                    // The single-token carriers among a status-5
-                    // disintegration's products memoize as sendable
-                    // (canBeSentIds) exactly like the force-deep local
-                    // path's products — "products mail normally". Sorted
-                    // walk order (forEachSorted) keeps the mint order
-                    // deterministic (I-105). The carrier is excluded.
-                    if (status == 5 && !isCarrier
-                        && containsSpan(evOrig, StrSpan("int_lev_", 8))) {
-                        memoryBlock.canBeSentIds.mint(
-                            memoryBlock.nameMap.encode(evOrig));
-                    }
-
                     // Id-form out-param on the per-slot gen-scratch arena —
                     // addStatement is void now (PagedVector is non-movable, cannot
                     // be returned). Page-tier buffer; coexists with addStatement's
@@ -7428,30 +8602,34 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                         RT_SCOPE_HERE("DOOR_ADD_STATEMENT");
                         this->addStatement(evOrig, memoryBlock, isLocal,
                             involvedLevels, involvedLevelCount, frontTO,
-                            evValidity, added);
+                            evValidity, added, out.orSources.contains(evOrig, evValidity), convergenceMailOut);
                     }
 
-                    // `added` is not read before here, so index-sort it into the
-                    // exact former std::sort(std::vector<EWV>) order
-                    // (sortStatementRows) and decode each row at the consumption
-                    // edge. Each row's (original, validity) is copied into a per-row
+                    // Consume `added` in emission order and decode each row at
+                    // the consumption edge. Its (original, validity) is copied into a per-row
                     // string-scratch ScratchString (byte-identical to nameMap.decode,
                     // on the string tier) rather than a heap std::string; the string
                     // tier is disjoint from the NameMap / interner cold tables the
                     // consumers mint into, so the StrSpan handed to each consumer
                     // survives those mints where a raw decodeView span would dangle
-                    // (I-3 / I-138). The order index
-                    // rides a ScratchScope on addedArena's byte-bump tier; a per-row
-                    // ScratchScope on the string arena reclaims the two copies.
-                    ScratchScope addedSortScope(addedArena);
-                    const int32_t* order =
-                        sortStatementRows(added, memoryBlock.nameMap, addedArena);
+                    // (I-3 / I-138). The byte-bump merge window preserves the
+                    // caller's scratch lifetime; each string window reclaims
+                    // its two copies after the row's consumers finish.
+                    ScratchScope addedMergeScope(addedArena);
+                    // An induction admission serves a product of this
+                    // disintegration only when the disintegrated original has
+                    // numbers as its only arguments; the deposit itself and a
+                    // deposit that is not disintegrated propagate as before
+                    // (I-285).
+                    const bool inductionAllowed = !willDisintegrate
+                        || (equalSpans(evOrig, expr) && equalSpans(evValidity, validityName))
+                        || hasOnlyNumberArguments(expr);
                     const unsigned rowStrSlot = (g_currentCoreId >= 0)
                         ? static_cast<unsigned>(g_currentCoreId)
                         : scratchArenas().slotCount() - 1;
                     ScratchArena& rowStrArena = scratchArenas().forSlot(rowStrSlot);
                     for (int32_t idx = 0; idx < added.size(); ++idx) {
-                        const IntEncodedExpr& addedRow = added[order[idx]];
+                        const IntEncodedExpr& addedRow = added[idx];
                         ScratchScope rowStrScope(rowStrArena);
                         const StrSpan addOrigView =
                             memoryBlock.nameMap.decodeView(addedRow.originalId);
@@ -7469,7 +8647,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                         {
                             RT_SCOPE_HERE("DOOR_ADMISSION_RECURSION");
                             updateAdmissionMapRecursion(StrSpan(addExpression), memoryBlock,
-                                                        StrSpan(effectiveValidity));
+                                                        StrSpan(effectiveValidity), inductionAllowed);
                         }
 
                         const int32_t addLvlsId = lookupStatementLevels(
@@ -7486,7 +8664,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                         {
                             RT_SCOPE_HERE("DOOR_ORDIS_MERGE");
                             ordisMerge(StrSpan(addExpression), StrSpan(effectiveValidity),
-                                       lvRun, lvN, memoryBlock);
+                                       lvRun, lvN, memoryBlock, convergenceMailOut);
                         }
                     }
                 }
@@ -7965,12 +9143,17 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                                             int iteration,
                                             bool proved,
                                             Dependencies& dependencyTable) {
-    // D-45: `proved` parameter is dead. The single caller
-    // (prover.cpp:7028 inside the conjecture-batch loop) always
-    // passes false, and the body's proved=true branch was already
-    // unreachable. Guard with assert so we notice if a future caller
-    // re-introduces proved=true (the branch's body has been deleted
-    // and would need to be reconstructed alongside a real origin row).
+    // Initial compound deposits can install many rules before the next reader.
+    // Use the same staging window as premise seeding in the compressor.
+    const auto seedExpression = [&](auto&& expression, Memory& block, auto&&... args) {
+        ++block.ruleStagingArmDepth;
+        this->addExprToMemoryBlock(std::forward<decltype(expression)>(expression),
+            block, std::forward<decltype(args)>(args)...);
+        --block.ruleStagingArmDepth;
+        if (block.ruleStagingArmDepth == 0) closeRuleIndexStaging(block);
+    };
+    // Initial registration accepts conjectures only. Supplied theorems enter
+    // through broadcast and mail absorption as already available rule fuel.
     assert(!proved);
     (void)proved;
 
@@ -7985,6 +9168,21 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
     std::vector<std::string> chain;
     chain.reserve(tempChain.size());
     for (std::size_t i = 0; i < tempChain.size(); ++i) chain.push_back(std::get<0>(tempChain[i]));
+
+    // A set- or relation-typed `=` head integrates by extensionality
+    // (I-267): compile its entity on this single-threaded
+    // seam, before the head is seeded as a goal below.
+    {
+        StrSpan leaves[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1];
+        int32_t leafN = 0;
+        for (const std::string& premise : chain) {
+            assert(leafN < ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
+                && "addTheoremToMemory: premise chain exceeds MAX_ADMISSION_KEY_ELEMENTS");
+            leaves[leafN++] = StrSpan(premise);
+        }
+        leaves[leafN++] = StrSpan(head);
+        ensureTypedEqualityEntityForTheorem(leaves, leafN);
+    }
 
     // Output-collision conjecture: two same-operator premises fuse their
     // result binders into one shared output name (the MPL encoding of an
@@ -8008,6 +9206,10 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
 
         Memory* existingChild = simpleMapStore.findChild(memoryBlock, element);
         if (existingChild != NULL) {
+            // A shared chain prefix: the record is a function of the key chain
+            // (I-267), so the rebuilt record must agree.
+            assert(lbVarDefinitionSetsMatch(*existingChild)
+                && "addTheoremToMemory: shared LB's variable definition sets changed");
             memoryBlock = existingChild;
         } else {
             Memory* child = lbStore.create<Memory>();
@@ -8016,6 +9218,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
             child->parentMemory = memoryBlock;
             child->level = static_cast<int>(index);
             child->setExprKey(element);
+            assignLbVarDefinitionSets(*child);
 
             this->permanentBodies.push_back(child);
 
@@ -8024,7 +9227,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
 
             const int lvRun[1] = { child->level };
             const TransientOrigin origin{ true, OriginTag::taskFormulation, nullptr, 0 };
-            this->addExprToMemoryBlock(element, *child, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
+            seedExpression(element, *child, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
 
             // LB-creation paired mailOut write — documented exception to the
             // "fillMailOut sole writer" invariant. fillMailOut runs only
@@ -8058,7 +9261,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
             const TransientOrigin copyOrigin{
                 true, OriginTag::variableCopy, nullptr, 0 };
             const int lvRunCopy[1] = { memoryBlock->level };
-            this->addExprToMemoryBlock(StrSpan(copyEquality),
+            seedExpression(StrSpan(copyEquality),
                 *memoryBlock, iteration, 0, lvRunCopy, 1,
                 copyOrigin, -1, -1, StrSpan("main", 4), false);
 
@@ -8098,7 +9301,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
 
                     // recX label for equality block, generic 'rec' for the auxy implication chain
                     const std::string recArg = std::string("rec") + std::to_string(memoryBlock->recursionCounter);
-                    
+
 
                     std::string auxyImplication;
                     std::vector<std::string> auxyChain;
@@ -8130,7 +9333,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                     const std::string tempExpr  = std::string("(in2[") + recArg + "," + digitArg + "," + sName + "])";
                     const std::string tempExpr2 = std::string("(in2[") + "rec"   + "," + digitArg + "," + sName + "])";
 
- 
+
 
                     // ensure unique
                     if (simpleMapStore.findChild(memoryBlock, tempExpr) == nullptr) {
@@ -8140,6 +9343,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         tempMb->level = static_cast<int>(index + 1);
                         tempMb->parentMemory = memoryBlock;
                         tempMb->setExprKey(tempExpr);
+                        assignLbVarDefinitionSets(*tempMb);
                         tempMb->recursionHypothesisId =
                             tempMb->nameMap.encode(tempExpr2);
                         tempMb->isPartOfRecursion = true;
@@ -8179,22 +9383,30 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                             parameters.minNumOperatorsKey,
                             StrSpan("implication", 11), true, StrSpan(auxyImplication), StrSpan("main", 4));
 
+                        // The installed induction implication's ruleInterner id
+                        // — the firing site marks this rule's fired head as the
+                        // induction hypothesis (FiringRecord::recursionHead).
+                        // Non-minting: addToHashMemory minted it just above.
+                        tempMb->recursionAuxyImplId =
+                            tempMb->ruleInterner.lookup(StrSpan(auxyImplication));
+                        assert(tempMb->recursionAuxyImplId != 0
+                            && "recursion block #1: auxy implication not in ruleInterner after install");
 
                         // add (in2[rec,...]) to temp block
                         {
                             const int lvRun2[1] = { tempMb->level };
 							const TransientOrigin or1{ true, OriginTag::recursion, nullptr, 0 };
-                            this->addExprToMemoryBlock(tempExpr2, *tempMb, iteration, 0, lvRun2, 1, or1, -1, -1, StrSpan("main", 4), false);
+                            seedExpression(tempExpr2, *tempMb, iteration, 0, lvRun2, 1, or1, -1, -1, StrSpan("main", 4), false);
                         }
 
                         // queue head as "to be proved" with auxy index
-                        this->addExprToMemoryBlock(head,
+                        seedExpression(head,
                                                    *tempMb,
                                                    iteration,
                                                    2,
                                                    nullptr, 0,
                                                    TransientOrigin{},
-							                       -1,     
+							                       -1,
                                                    dependencyTable.auxyIndex,
                                                    StrSpan("main", 4),
                                                    false);
@@ -8231,6 +9443,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         // unmarked form.
                         tempMb2->setExprKey(
                             tempExpr4 + "_induction_" + recArg + "_");
+                        assignLbVarDefinitionSets(*tempMb2);
                         tempMb2->recursionHypothesisId =
                             tempMb2->nameMap.encode(tempExpr4);
                         tempMb2->isPartOfRecursion = true;
@@ -8239,7 +9452,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         // When head == tempExpr4 (e.g. companion theorem where head is (=[7,2])),
                         // the status=0 add puts it in intKnownStatements, which would cause
                         // the status=2 call to return early without creating the toBeProved entry.
-                        this->addExprToMemoryBlock(head,
+                        seedExpression(head,
                                                    *tempMb2,
                                                    iteration,
                                                    2,
@@ -8253,7 +9466,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         {
                             const int lvRun4[1] = { tempMb2->level };
 							const TransientOrigin or2{ true, OriginTag::recursion, nullptr, 0 };
-                            this->addExprToMemoryBlock(tempExpr4, *tempMb2, iteration, 0, lvRun4, 1, or2, -1, -1, StrSpan("main", 4), false);
+                            seedExpression(tempExpr4, *tempMb2, iteration, 0, lvRun4, 1, or2, -1, -1, StrSpan("main", 4), false);
                         }
 
                         tempMb2->isActive = false;
@@ -8275,11 +9488,12 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                 if (headRow != nullptr) {
                     // Head already derived (e.g. from anchor disintegration) — register directly
                     std::string fullTheorem = reconstructImplication(chain, head);
-                    this->appendGlobalTheorem(fullTheorem, "direct", "-1",
-                        "-1", memoryBlock);
-                    std::cout << fullTheorem << std::endl;
+                    if (this->appendGlobalTheorem(fullTheorem, "single chapter proof", "-1",
+                            "-1", memoryBlock)) {
+                        std::cout << fullTheorem << std::endl;
+                    }
                 } else {
-                    this->addExprToMemoryBlock(head, *memoryBlock, iteration, 2, nullptr, 0, TransientOrigin{}, -1, -1, StrSpan("main", 4), false);
+                    seedExpression(head, *memoryBlock, iteration, 2, nullptr, 0, TransientOrigin{}, -1, -1, StrSpan("main", 4), false);
                 }
             }
 
@@ -8297,7 +9511,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                     const TransientOrigin copyOrigin{
                         true, OriginTag::variableCopy, nullptr, 0 };
                     const int lvRunCopy[1] = { memoryBlock->level };
-                    this->addExprToMemoryBlock(StrSpan(copyEquality),
+                    seedExpression(StrSpan(copyEquality),
                         *memoryBlock, iteration, 0, lvRunCopy, 1,
                         copyOrigin, -1, -1, StrSpan("main", 4), false);
 
@@ -8370,6 +9584,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                                         contradictionLB->parentMemory = predecessor;
                                         contradictionLB->level = static_cast<int>(index);
                                         contradictionLB->setExprKey(contradictionKey);
+                                        assignLbVarDefinitionSets(*contradictionLB);
                                         contradictionLB->primedForContradiction = true;
                                         contradictionLB->contradictionTheoremId =
                                             contradictionLB->nameMap.encode(contrTheorem);
@@ -8379,7 +9594,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                                         // Seed with clean operator expression as fuel
                                         const int lvRun[1] = { contradictionLB->level };
                                         const TransientOrigin origin{ true, OriginTag::taskFormulation, nullptr, 0 };
-                                        this->addExprToMemoryBlock(cleanOp, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
+                                        seedExpression(cleanOp, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
 
                                         // LB-creation paired mailOut write — see comment at the
                                         // chain-walk LB-creation site (~line 4618) for rationale.
@@ -8415,6 +9630,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         contradictionLB->parentMemory = memoryBlock;
                         contradictionLB->level = static_cast<int>(index + 1);
                         contradictionLB->setExprKey(contradictionKey);
+                        assignLbVarDefinitionSets(*contradictionLB);
                         contradictionLB->primedForContradiction = true;
                         contradictionLB->contradictionTheoremId =
                             contradictionLB->nameMap.encode(
@@ -8425,7 +9641,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         // Add the head expression as fuel (status 0)
                         const int lvRun[1] = { contradictionLB->level };
                         const TransientOrigin origin{ true, OriginTag::taskFormulation, nullptr, 0 };
-                        this->addExprToMemoryBlock(head, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
+                        seedExpression(head, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
 
                         // LB-creation paired mailOut write — see comment at the
                         // chain-walk LB-creation site (~line 4618) for rationale.
@@ -8462,6 +9678,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                     contradictionLB->parentMemory = memoryBlock;
                     contradictionLB->level = static_cast<int>(index + 1);
                     contradictionLB->setExprKey(contradictionKey);
+                    assignLbVarDefinitionSets(*contradictionLB);
                     contradictionLB->primedForContradiction = true;
                     contradictionLB->contradictionTheoremId =
                         contradictionLB->nameMap.encode(
@@ -8472,7 +9689,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                     // Add the negated head as fuel (status 0)
                     const int lvRun[1] = { contradictionLB->level };
                     const TransientOrigin origin{ true, OriginTag::taskFormulation, nullptr, 0 };
-                    this->addExprToMemoryBlock(negHead, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
+                    seedExpression(negHead, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
 
                     // LB-creation paired mailOut write — see comment at the
                     // chain-walk LB-creation site for rationale. Documented
@@ -8500,207 +9717,125 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
 //#pragma optimize("", off)
 
 
-void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
-    Memory& memoryBlock,
-    StrSpan validityName)
+void ExpressionAnalyzer::revisitRejected2(StrSpan key, Memory& mb, StrSpan validityName) {
+    if (queueCanonicalWake(mb,key,validityName,1)) return;
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    ScratchScope stringFrame(strings);
+    const ScratchString ownedKey = ScratchString::copyFrom(strings, key.ptr, key.len);
+    const ScratchString ownedValidity = ScratchString::copyFrom(strings, validityName.ptr, validityName.len);
+    key = StrSpan(ownedKey); validityName = StrSpan(ownedValidity);
+    if (!hasPotentialParkedDemand(mb, key, validityName, false)) return;
+    StrSpan scopes[ExecutionParameters::MAX_SCOPE_DEPTH];
+    scopes[0] = validityName; const int32_t count = 1;
+    for (int32_t i = 0; i < count; ++i) {
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<int64_t> matches(&arena, &dirty);
+        matchingCanonicalTemplates(mb, mb.overallHashMemory.rejectedMap,
+            mb.lbMemory.canonicalUses.algebraParkMatches, key, mb.nameMap.lookup(scopes[i]),
+            mb.nameMap.lookup(validityName), matches, arena);
+        for (int32_t k = 0; k < matches.size(); ++k) {
+            const auto records = snapshotRejectedRun(mb.overallHashMemory.rejectedMap, matches[k], arena);
+            for (int32_t r = 0; r < records.count; ++r)
+                queueParkedExistence(mb, key, records.views[r], scopes[i], validityName, false);
+        }
+    }
+    releaseAncestorRejected2(key, mb, validityName);
+}
+
+/// @brief Record an unchanged expression inherited into a descendant scope.
+///
+/// @details The zoom in row has exactly one dependency: the same expression
+/// at its source scope. Parent history is neither read nor copied. The normal
+/// history writer retains its duplicate and capacity policy; this operation
+/// returns no decision to the reasoning algorithm.
+///
+/// @param mb Owning logic block and internal-mail history sink.
+/// @param expression Released expression, unchanged by the transfer.
+/// @param sourceValidity Exact source scope of the ancestor park.
+/// @param targetValidity Exact descendant scope receiving the expression.
+/// @return (void)
+/// @invariant Only history is written; source derivations and release state are untouched.
+/// @see releaseParkedProductIntoScope, addInternalMailOrigin.
+void ExpressionAnalyzer::recordZoomInOrigin(Memory& mb,
+    StrSpan expression, StrSpan sourceValidity, StrSpan targetValidity)
 {
-    auto& rm = memoryBlock.overallHashMemory.rejectedMap;
+    const OriginDep source[1] = {{ expression, sourceValidity }};
+    const int maxOrigins = parameters.compressor_mode
+        ? parameters.compressor_max_origins_per_expr
+        : parameters.max_origin_per_expr;
+    addInternalMailOrigin(mb.sameIterationInternalMail, mb.originInterner,
+        expression, targetValidity, OriginTag::zoomIn, source, 1, maxOrigins);
+}
 
-    // Guard: prevent re-entrant processing of the same marker. Non-minting
-    // probe — a never-interned template is never in progress.
-    int64_t revisitPk = 0;
-    const bool revisitKeyKnown = lookupTemplateKey(memoryBlock.templateInterner,
-        memoryBlock.nameMap, markedExpr, validityName, revisitPk);
-    if (revisitKeyKnown
-        && memoryBlock.overallHashMemory.revisitInProgress.contains(revisitPk)) {
-        return;
+bool ExpressionAnalyzer::releaseParkedProductIntoScope(Memory& mb,
+    StrSpan product,
+    const StrSpan* siblings, int32_t siblingCount,
+    const int* levels, int32_t levelCount,
+    StrSpan parkValidity,
+    StrSpan targetValidity,
+    ScratchArena& gArena)
+{
+    (void)gArena;
+    // Known-skip: the product is already visible at the target scope (known
+    // there or at one of its ancestors) — this demand needs nothing and the
+    // park stays for a later scope. Non-minting: an un-interned product text
+    // cannot be known anywhere.
+    const NameId targetVid = mb.nameMap.lookup(targetValidity);
+    assert(targetVid != 0
+        && "releaseParkedProductIntoScope: the demand scope is interned (its key was minted)");
+    const NameId productId = mb.nameMap.lookup(product);
+    if (productId != 0
+        && ancestorKnown(mb, productId, targetVid, /*includeSelf=*/true)) {
+        return false;
     }
 
-    // Packed probe via the guard's non-minting lookup above — a
-    // never-interned template has no rejection cohort.
-    if (!revisitKeyKnown) {
-        return;
-    }
-    const int32_t rmId = rm.lookup(revisitPk);
-    if (rmId == 0) {
-        return;
+    insertInternalStatement(mb.sameIterationInternalMail, mb.nameMap,
+        product, targetValidity, levels, levelCount);
+    for (int32_t i = 0; i < siblingCount; ++i) {
+        insertInternalStatement(mb.sameIterationInternalMail, mb.nameMap,
+            siblings[i], targetValidity, levels, levelCount);
     }
 
-
-    // [user-directed budget guard] Revival must respect the secondary-variable
-    // budget; without a cnt cap it re-admits sums with unbounded secondary it_
-    // vars (revival otherwise bypasses isAdmitted's gate entirely). markedExpr is
-    // the marker form (the witness slot is "marker", NOT counted), so
-    // cnt(markedExpr) < maxNumberSecondaryVariables(=2) is equivalent to the
-    // revived constituent's cnt <= 2 — symmetric with the isAdmitted gate.
-    // l+p' has markedExpr cnt=1 (just p'), so it still revives; a marked cnt>=2
-    // (constituent cnt>=3) is no longer reanimated.
-    if (countPatternOccurrences(markedExpr, memoryBlock.overallHashMemory, memoryBlock.nameMap)
-        >= parameters.maxNumberSecondaryVariables) {
-        return;
-    }
-
-    // [user-directed fix] it_depth control for revival. Revival otherwise
-    // bypasses the iteration-depth bound entirely (the comment on the count
-    // guard above notes the same for secondary count), re-admitting sums
-    // whose it_ depth exceeds what the disintegration gate allows.
-    // Parameterised via parameters.maxIterationNumberVariable (not
-    // hardcoded). Strict >, aligned with the request-building gate in
-    // filterIntEncodedStatements: generations up to and including the cap
-    // revive. (Unlike the count guard above, the iteration quantity has no
-    // marked-vs-constituent offset, so the comparison matches the request
-    // side verbatim.)
-    if (extractMaxIterationNumber(markedExpr) > parameters.maxIterationNumberVariable) {
-        return;
-    }
-
-    memoryBlock.overallHashMemory.revisitInProgress.mint(
-        mintTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
-                        markedExpr, validityName));
-
-    // Snapshot the rejected cohort as VERBATIM blob copies on the gen
-    // scratch arena — copy BEFORE erase: eraseBlobIf restructures the blob
-    // pool, so peeked pointers into `rm` dangle past it. The historical
-    // operation order (snapshot -> erase -> process) is preserved exactly,
-    // so the loop below still processes only the entries that existed
-    // before this call (entries it adds indirectly via addExprToMemoryBlock
-    // -> updateRejectedMap re-mint the key afresh). The cold run is stored
-    // canonical under DecodedRejectedValueLess (the insertRejectedValue RMW
-    // contract), so walking the copies in run order IS walking the former
-    // RejectedValueSet snapshot — the set's dedup is a no-op on a
-    // canonical run.
-    const unsigned slot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : genScratchArenas().slotCount() - 1;
-    ScratchArena& gArena = genScratchArenas().forSlot(slot);
-    const ArenaOffset mark = gArena.cursor();
-
-    struct BlobRec { ArenaOffset off; int32_t len; };
-    DirtyState recsDirty = DirtyState::Clean;
-    PagedVector<BlobRec> recs(&gArena, &recsDirty);
-    const int32_t runLen = rm.runLen(rmId);
-    for (int32_t j = 0; j < runLen; ++j) {
-        int32_t bl = 0;
-        const char* bp = rm.peekRecordBytes(rmId, j, bl, gArena);
-        const ArenaOffset off = gArena.alloc(bl, 1);
-        std::memcpy(gArena.resolve(off), bp, static_cast<std::size_t>(bl));
-        recs.push_back(BlobRec{ off, bl });
-    }
-
-    // Remove the snapshot entries. At this single-threaded point the cold run
-    // holds exactly the snapshot (nothing was added since the snapshot above),
-    // so erasing them empties the run and the key is dropped — the heap path's
-    // "preserve newly-added" branch was unreachable here too. Entries the
-    // emission loop below adds via updateRejectedMap re-mint the key afresh.
-    rm.eraseBlobIf([revisitPk](int64_t k) { return k == revisitPk; });
-
-    // No-equality direct revival — the rejection record's cohort is mailed
-    // verbatim to sameIterationInternalMail (the span/run door takes an empty
-    // equalities array). The verifier-relevant `disintegration` origin for
-    // each child was written at the original production site by
-    // disintegrateExprCore2's trackExpansionHistory and is already present
-    // in memoryBlock.exprOriginMap; the mail's `equality1` self-source
-    // origin cannot displace it (addOrigin's cap-full preference protects
-    // foundation origins from convenience tags — see D-49 / I-35).
-    for (int32_t r = 0; r < recs.size(); ++r) {
-        const BlobRec rec = recs[r];
-        const RejectedValueBlobView view(gArena.resolve(rec.off), rec.len);
-
-        // Zero-copy per-record span: the loop's only mutating sink is the
-        // revival emission door, which mints nameMap + originInterner —
-        // never valueInterner — and the walked blob bytes are gen-arena
-        // copies, so valueInterner decodeView spans stay valid across the
-        // whole loop (I-3 different-interner rule).
-        const StrSpan rejectedStmt =
-            memoryBlock.valueInterner.decodeView(view.renamedExpressionId());
-
-        StrSpan markedArgs[ExecutionParameters::MAX_ARITY];
-        const int markedN = getArgsSpans(markedExpr, markedArgs,
-            ExecutionParameters::MAX_ARITY);
-        StrSpan rejectedArgs[ExecutionParameters::MAX_ARITY];
-        const int rejectedN = getArgsSpans(rejectedStmt, rejectedArgs,
-            ExecutionParameters::MAX_ARITY);
-
-        if (markedN != rejectedN) {
-            continue;
+    mb.mutatedThisBurst = true;
+    if (parameters.trackHistory) {
+        recordZoomInOrigin(mb, product, parkValidity, targetValidity);
+        for (int32_t i = 0; i < siblingCount; ++i) {
+            recordZoomInOrigin(mb, siblings[i], parkValidity, targetValidity);
         }
-
-        int markerIndex = -1;
-        for (int i = 0; i < markedN; ++i) {
-            if (equalSpans(markedArgs[i], StrSpan("marker", 6))) {
-                markerIndex = i;
-                break;
-            }
-        }
-        assert(markerIndex != -1);
-
-        bool argsIdentical = true;
-        for (int i = 0; i < markedN; ++i) {
-            if (i == markerIndex) continue;
-            if (!equalSpans(markedArgs[i], rejectedArgs[i])) {
-                argsIdentical = false;
-                break;
-            }
-        }
-        assert(argsIdentical && "Mismatch between marked and rejected args (other than marker)");
-        if (!argsIdentical) continue;
-
-        // [user-directed fix] control the PREPARED WITNESS that jumps into
-        // existence on revival. It sits at the marker slot of the rejected
-        // statement (rejectedArgs[markerIndex]); markedExpr only carries the
-        // "marker" placeholder, so the markedExpr-level guard above cannot see
-        // it. Skip revival when the witness's iteration depth exceeds
-        // parameters.maxIterationNumberVariable — strict >, aligned with the
-        // markedExpr-depth guard and the request-building gate: generations
-        // up to and including the cap revive.
-        if (extractMaxIterationNumber(rejectedArgs[markerIndex]) > parameters.maxIterationNumberVariable) {
-            continue;
-        }
-
-        // intStatementLevelsMap consistency check intentionally absent here —
-        // the record's levels are the authoritative deposit-time set: the
-        // park captured frame ∪ registry
-        // (D-327), so the run is empty only when
-        // the parking compound itself was non-derived ({-1} tier); the
-        // addStatement door re-stamps {-1} for that case.
-
-        // Deposit the stored cohort onto sameIterationInternalMail for absorb
-        // at the next hashburst. pre == post (no rewrite participated here);
-        // the equalities array is empty. The 64 cap mirrors the door's own
-        // OriginDep[64] bound; a firing assert is a gift (Rule 19).
-        const StrSpan valConcrete =
-            memoryBlock.valueInterner.decodeView(view.concreteConstituentId());
-        const int32_t sibN = view.siblingCount();
-        assert(sibN <= 64 && "revival sibling cohort exceeds 64");
-        StrSpan sibBuf[64];
-        for (int32_t i = 0; i < sibN; ++i) {
-            sibBuf[i] = memoryBlock.valueInterner.decodeView(view.siblingId(i));
-        }
-        const int32_t levelCount = view.levelCount();
-        int* levelRun = nullptr;
-        if (levelCount > 0) {
-            levelRun = reinterpret_cast<int*>(gArena.resolve(gArena.alloc(
-                levelCount * static_cast<int32_t>(sizeof(int)), alignof(int))));
-            view.copyLevels(levelRun);
-        }
-        this->emitIntegrationRevivalToInternalMailIn(
-            valConcrete, valConcrete,
-            sibBuf, sibN, sibBuf, sibN,
-            levelRun, levelCount,
-            validityName,
-            nullptr, 0,
-            memoryBlock);
     }
 
-    gArena.popTo(mark);
+    return true;
+}
 
-    {
-        int64_t donePk = 0;
-        const bool ok = lookupTemplateKey(memoryBlock.templateInterner,
-            memoryBlock.nameMap, markedExpr, validityName, donePk);
-        assert(ok); // inserted above — both halves are interned
-        memoryBlock.overallHashMemory.revisitInProgress.erase(donePk);
+void ExpressionAnalyzer::releaseAncestorRejected2(StrSpan key, Memory& mb, StrSpan validityName) {
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    ScratchScope stringFrame(strings);
+    const ScratchString ownedKey = ScratchString::copyFrom(strings, key.ptr, key.len);
+    const ScratchString ownedValidity = ScratchString::copyFrom(strings, validityName.ptr, validityName.len);
+    key = StrSpan(ownedKey); validityName = StrSpan(ownedValidity);
+    StrSpan scopes[ExecutionParameters::MAX_SCOPE_DEPTH];
+    const int32_t count = copyStrictAncestorSpans(mb, validityName, scopes, strings);
+    for (int32_t i = 0; i < count; ++i) {
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<int64_t> matches(&arena, &dirty);
+        matchingCanonicalTemplates(mb, mb.overallHashMemory.rejectedMap,
+            mb.lbMemory.canonicalUses.algebraParkMatches, key, mb.nameMap.lookup(scopes[i]),
+            mb.nameMap.lookup(validityName), matches, arena);
+        for (int32_t k = 0; k < matches.size(); ++k) {
+            const auto records = snapshotRejectedRun(mb.overallHashMemory.rejectedMap, matches[k], arena);
+            for (int32_t r = 0; r < records.count; ++r)
+                queueParkedExistence(mb, key, records.views[r], scopes[i], validityName, false);
+        }
     }
+
 }
 
 void ExpressionAnalyzer::resetParkedOrStatementRegistries(Memory& mb,
@@ -8713,7 +9848,10 @@ void ExpressionAnalyzer::resetParkedOrStatementRegistries(Memory& mb,
     const NameId origId = mb.nameMap.encode(original);
     const NameId valId = mb.nameMap.encode(validityName);
     mb.intStatementLevelsMap.eraseSet(packStatementKey(origId, valId));
-    mb.intKnownStatements.erase(StatementKey{ origId, valId });
+    const bool wasKnown =
+        mb.intKnownStatements.find(StatementKey{ origId, valId }) != nullptr;
+    eraseKnownStatementKey(mb, origId, valId);
+    this->clearNegationWatchFor(mb, origId, valId, wasKnown);
     // Stored rows are canonical-pipeline encodings, so the id pair is the
     // full identity; erase back to front to keep indices valid. The local
     // vectors are included — the parked statement is a LOCAL statement (the
@@ -8752,22 +9890,54 @@ void ExpressionAnalyzer::resetParkedOrStatementRegistries(Memory& mb,
     clearProcessedOr(mb, origId, valId);
 }
 
-/// @brief The or-uniqueness gate's probe — see the declaration's Doxygen
-///        block in `prover.hpp` for the full contract.
+/// @brief Orient the validated digit pair for OR processing identity.
 ///
-/// @details
-/// Implementation notes: the operator prefix (the bytes up to and
-/// including the first `[`) must match before any canonicalization is
-/// attempted — two different `or<N>` operators are never equi variants
-/// of each other; the recorded text's canonicalization rides a per-call
-/// string-tier scratch scope with a throwaway level run (the gate must
-/// not touch the deposit's own level run) and mints nothing, so every
-/// `decodeView` span held across the loop stays valid (I-3).
+/// @details Swaps argument positions, never all occurrences of their values.
+/// Other slots, including a repeated value in another slot, remain unchanged.
+/// The returned text uses caller-owned string scratch only when changed.
+/// @param expression Positive numbered OR instance.
+/// @param strings Caller-owned string arena.
+/// @return Input text or its lexicographically smaller validated orientation.
+/// @invariant No proof expression, definition or interner is changed.
+/// @see compileOrSymmetry; canonicalOrIdAtScope.
+StrSpan ExpressionAnalyzer::canonicalOrProcessingForm(StrSpan expression,
+    ScratchArena& strings) const {
+    assert(isOrCompactSpan(expression));
+    const auto* entity = compiledEntity(extractExpressionUniversalSpan(expression));
+    if (entity == nullptr || entity->symmetricDigitSlots[0] == 0) return expression;
+    StrSpan arguments[ExecutionParameters::MAX_ARITY];
+    const int32_t count = getArgsSpans(expression, arguments, ExecutionParameters::MAX_ARITY);
+    const int32_t a = entity->symmetricDigitSlots[0] - 1;
+    const int32_t b = entity->symmetricDigitSlots[1] - 1;
+    assert(a >= 0 && a < b && b < count);
+    if (compareSpans(arguments[a], arguments[b]) <= 0) return expression;
+    char* result = strings.allocBytes(expression.len);
+    int32_t at = 0;
+    const auto append = [&](const char* bytes, int32_t length) {
+        std::memcpy(result + at, bytes, length);
+        at += length;
+    };
+    append(expression.ptr, static_cast<int32_t>(arguments[a].ptr - expression.ptr));
+    append(arguments[b].ptr, arguments[b].len);
+    const char* middle = arguments[a].ptr + arguments[a].len;
+    append(middle, static_cast<int32_t>(arguments[b].ptr - middle));
+    append(arguments[a].ptr, arguments[a].len);
+    const char* suffix = arguments[b].ptr + arguments[b].len;
+    append(suffix, static_cast<int32_t>(expression.ptr + expression.len - suffix));
+    assert(at == expression.len);
+    return StrSpan(result, at);
+}
+
+/// @brief Compute an OR processing id under the scope's equality classes.
 ///
-/// @param mb           Owning LB.
-/// @param expr         The deposit's (door-canonical) or-compact text.
-/// @param validityName The deposit's scope.
-/// @return `true` when a recorded equi variant exists at the scope.
+/// @details Applies the existing equality chooser, then the compiled symmetric
+/// slot orientation. Only the resulting processing identity is interned.
+/// @param mb Owning block.
+/// @param origId Minted original OR id.
+/// @param validityName Scope whose existing equality bucket applies.
+/// @return Minted processing id; original proof text is retained separately.
+/// @invariant No proof history or known statement is rewritten.
+/// @see canonicalOrProcessingForm; recordProcessedOr.
 NameId ExpressionAnalyzer::canonicalOrIdAtScope(Memory& mb, NameId origId,
     StrSpan validityName)
 {
@@ -8785,10 +9955,8 @@ NameId ExpressionAnalyzer::canonicalOrIdAtScope(Memory& mb, NameId origId,
     int32_t lvN = 0;
     const CanonicalForm cf = canonicalFormAtScope(
         text, validityName, mb, strArena, lvBuf, lvN, 256);
-    if (!cf.changed) return origId;
-    // The one mint of the ledger path: `text` (a decodeView span) is dead
-    // from here on; `cf.text` rides the scratch scope and dies at return.
-    return mb.nameMap.encode(cf.text);
+    const StrSpan key = canonicalOrProcessingForm(cf.changed ? cf.text : text, strArena);
+    return mb.nameMap.encode(key);
 }
 
 bool ExpressionAnalyzer::orEquiRepresentativeRecorded(Memory& mb,
@@ -8802,14 +9970,17 @@ bool ExpressionAnalyzer::orEquiRepresentativeRecorded(Memory& mb,
     if (vid == 0) return false;   // fresh scope: nothing recorded there yet
     const int32_t row = mb.processedOrLedger.lookup(vid);
     if (row == 0) return false;
-    // Never interned here -> no recorded original and no re-keyed canonical
-    // text can equal it (both halves are minted ids of this NameMap).
     const NameId exprId = mb.nameMap.lookup(expr);
-    if (exprId == 0) return false;
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : scratchArenas().slotCount() - 1;
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope stringScope(strings);
+    const NameId processingId = mb.nameMap.lookup(canonicalOrProcessingForm(expr, strings));
+    if (exprId == 0 && processingId == 0) return false;
     const int32_t n = mb.processedOrLedger.runLen(row);
     for (int32_t j = 0; j < n; ++j) {
         const int64_t v = mb.processedOrLedger.valueAt(row, j);
-        if (ledgerCanonicalId(v) == exprId || ledgerOriginalId(v) == exprId)
+        if (ledgerCanonicalId(v) == processingId || ledgerOriginalId(v) == exprId)
             return true;
     }
     return false;
@@ -8826,6 +9997,10 @@ void ExpressionAnalyzer::recordProcessedOr(Memory& mb, NameId origId,
         canonicalOrIdAtScope(mb, origId, mb.nameMap.decodeView(valId));
     mb.processedOrLedger.insertSorted(valId, packInt32Pair(canonId, origId),
         [](int64_t a, int64_t b) { return a < b; });
+    const unsigned slot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    indexCanonicalOrMarker(mb, origId, canonId, valId, genScratchArenas().forSlot(slot));
+
 }
 
 void ExpressionAnalyzer::clearProcessedOr(Memory& mb, NameId origId,
@@ -8854,11 +10029,14 @@ void ExpressionAnalyzer::clearProcessedOr(Memory& mb, NameId origId,
         mb.processedOrLedger.assignSet(valId, keep, keepN);
     }
     gArena.popTo(mark);
+    mb.lbMemory.canonicalUses.processedOr.erase(packStatementKey(origId, valId), gArena);
+
 }
 
 void ExpressionAnalyzer::recanonicalizeProcessedOrLedger(Memory& mb,
-    NameId valId)
+    NameId valId, const PagedVector<NameId>* members)
 {
+    RT_SCOPE_HERE("CANONICAL_PROCESSED_OR_LEDGER");
     assert(valId != 0
         && "recanonicalizeProcessedOrLedger: the scope id must be minted");
     const int32_t row = mb.processedOrLedger.lookup(valId);
@@ -8871,6 +10049,16 @@ void ExpressionAnalyzer::recanonicalizeProcessedOrLedger(Memory& mb,
         : genScratchArenas().slotCount() - 1;
     ScratchArena& gArena = genScratchArenas().forSlot(slot);
     const ArenaOffset mark = gArena.cursor();
+    DirtyState selectionDirty = DirtyState::Clean;
+    TypedColdSet<NameId> selected(&gArena, &selectionDirty);
+    if (members != nullptr) {
+        ensureCanonicalOrMarkerUses(mb, gArena);
+        for (int32_t m = 0; m < members->size(); ++m)
+            mb.lbMemory.canonicalUses.processedOr.forEach(valId, mb.nameMap.decodeView((*members)[m]),
+                [&](int64_t key) { selected.mint(Codec<StatementKey>::decode(key).orig); });
+        if (selected.empty()) return;
+    }
+
     int64_t* next = reinterpret_cast<int64_t*>(gArena.resolve(gArena.alloc(
         n * static_cast<int32_t>(sizeof(int64_t)),
         static_cast<int32_t>(alignof(int64_t)))));
@@ -8889,9 +10077,13 @@ void ExpressionAnalyzer::recanonicalizeProcessedOrLedger(Memory& mb,
     for (int32_t j = 0; j < n; ++j) {
         const int64_t v = mb.processedOrLedger.valueAt(row, j);
         const NameId origId = ledgerOriginalId(v);
+        if (members != nullptr && selected.lookup(origId) == 0) { next[j] = v; continue; }
         const NameId canonId = canonicalOrIdAtScope(mb, origId, vName);
         next[j] = packInt32Pair(canonId, origId);
-        if (canonId != ledgerCanonicalId(v)) changed = true;
+        if (canonId != ledgerCanonicalId(v)) {
+            changed = true;
+            indexCanonicalOrMarker(mb, origId, canonId, valId, gArena);
+        }
     }
     if (changed) {
         std::sort(next, next + n);
@@ -8900,19 +10092,1222 @@ void ExpressionAnalyzer::recanonicalizeProcessedOrLedger(Memory& mb,
     gArena.popTo(mark);
 }
 
+/// @brief Compose a canonical form and its proof bridge at a visible scope.
+///
+/// @details
+/// One `canonicalFormAtScope` call reads the maintained complete target-scope
+/// bucket and writes the rewritten text on caller-owned string scratch.
+/// Applied equalities contribute levels and justifiers at their original
+/// citation scopes; the read does not build or merge class state.
+/// OR matching opts into equality views; ordinary watch behavior is unchanged.
+///
+/// @param mb      Owning LB.
+/// @param origId  The statement's original id.
+/// @param scopeId The scope whose visible classes apply.
+/// @param outArena String scratch owning the returned spans.
+/// @param out Canonical text and the applied equality bridge.
+/// @param lvRun Ascending level buffer, extended by applied equalities.
+/// @param lvN Current level count, updated in place.
+/// @param lvCap Level-buffer capacity.
+/// @param rewriteEqualities Include standalone equality and inequality views.
+/// @return Void.
+void ExpressionAnalyzer::canonicalWatchFormAt(Memory& mb, NameId origId,
+    NameId scopeId, ScratchArena& outArena, WatchBridge& out, int* lvRun,
+    int32_t& lvN, int32_t lvCap, bool rewriteEqualities)
+{
+    assert(origId != 0 && scopeId != 0
+        && "canonicalWatchFormAt: both ids must be minted");
+    out.changed = false;
+    out.localEquality = false;
+    out.eqN = 0;
+    const StrSpan origView = mb.nameMap.decodeView(origId);
+    const ScratchString original = ScratchString::copyFrom(outArena, origView.ptr, origView.len);
+    const StrSpan scopeView = mb.nameMap.decodeView(scopeId);
+    const ScratchString validity = ScratchString::copyFrom(outArena, scopeView.ptr, scopeView.len);
+    const CanonicalForm canonical = canonicalFormAtScope(StrSpan(original), StrSpan(validity),
+        mb, outArena, lvRun, lvN, lvCap, rewriteEqualities);
+    out.changed = canonical.changed;
+    const bool cite = parameters.trackHistory && !ceFilteringActive;
+    for (int32_t i = 0; i < canonical.eqN; ++i) {
+        assert(out.eqN < WatchBridge::CAP);
+        out.eqText[out.eqN] = canonical.eqJust[i];
+        out.localEquality = out.localEquality || canonical.eqLocal[i];
+        StrSpan scope = StrSpan(validity);
+        if (cite) scope = findEqualityCiteScope(mb, canonical.eqJust[i], StrSpan(validity));
+        out.eqScope[out.eqN] = StrSpan(ScratchString::copyFrom(outArena, scope.ptr, scope.len));
+        ++out.eqN;
+    }
+    const StrSpan cur = canonical.text;
+    out.text = cur;
+}
+
+/// @brief Return the canonical identifier without constructing proof metadata.
+///
+/// @details Uses the same scope-visible chooser and substitution walk as proof
+/// canonicalization. Only the resulting expression can mint a NameMap entry;
+/// supporting levels, equality justifiers and citation scopes are not requested.
+/// @param mb Owning block with initialized visible canonical classes.
+/// @param origId Minted original expression identifier.
+/// @param scopeId Minted effective scope identifier.
+/// @return Original identifier or the identifier of its canonical text.
+NameId ExpressionAnalyzer::canonicalWatchIdAt(Memory& mb, NameId origId,
+    NameId scopeId)
+{
+    assert(origId != 0 && scopeId != 0);
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(slot);
+    ScratchScope canonScope(strArena);
+    int32_t levelCount = 0;
+    const CanonicalForm canonical = canonicalFormAtScope(mb.nameMap.decodeView(origId),
+        mb.nameMap.decodeView(scopeId), mb, strArena, nullptr, levelCount, 0, false, false);
+    if (!canonical.changed) return origId;
+    return mb.nameMap.encode(canonical.text);
+}
+
+/// @brief The token a class member is rewritten to by canonical forms at a
+///        scope.
+/// @details Reads `canonicalMemberRepresentatives`, which the complete-view
+/// rebuild writes for every member of every class of the scope's view. No
+/// entry (the token is in no class there) and a zero normal representative
+/// (every member weak there) both leave the token unchanged, as
+/// `canonicalFormAtScope` does.
+/// @param mb Owning LB.
+/// @param member Minted token id.
+/// @param scopeId Minted scope id.
+/// @return The replacing token, or @p member when nothing replaces it.
+NameId ExpressionAnalyzer::canonicalRepresentativeAt(const Memory& mb,
+    NameId member, NameId scopeId)
+{
+    assert(member != 0 && scopeId != 0);
+    const int64_t* selected = mb.lbMemory.canonicalMemberRepresentatives.find(
+        packStatementKey(member, scopeId));
+    if (selected == nullptr) return member;
+    const NameId normal = static_cast<NameId>(static_cast<uint64_t>(*selected) >> 32);
+    return normal == 0 ? member : normal;
+}
+
+/// @brief Whether an expression has one canonical spelling at two scopes.
+/// @details Every bracket token (the tokens `canonicalFormAtScope` may
+/// replace) must have the same representative at both scopes; a token never
+/// interned is in no class. Reads only.
+/// @param mb Owning LB.
+/// @param origId Minted expression id.
+/// @param fromScope First scope.
+/// @param toScope Second scope.
+/// @return True when the representatives agree for every bracket token.
+bool ExpressionAnalyzer::sameCanonicalSpelling(const Memory& mb, NameId origId,
+    NameId fromScope, NameId toScope)
+{
+    assert(origId != 0 && fromScope != 0 && toScope != 0);
+    if (fromScope == toScope) return true;
+    bool same = true;
+    collectExprTokens(mb.nameMap.decodeView(origId), [&](StrSpan token) {
+        if (!same) return;
+        const NameId member = mb.nameMap.lookup(token);
+        if (member == 0) return;
+        same = canonicalRepresentativeAt(mb, member, fromScope)
+            == canonicalRepresentativeAt(mb, member, toScope);
+    });
+    return same;
+}
+
+/// @brief Canonical form of an expression at a scope through a pass cache.
+/// @details A new `canonicalUses.version` empties the cache. A miss whose
+/// representatives agree with @p anchorScope takes the anchor's form;
+/// otherwise one text-only `canonicalFormAtScope` call computes it and a
+/// changed text is interned in the cache's own table (never the NameMap).
+/// @param mb Owning LB.
+/// @param cache The pass's cache.
+/// @param origId Minted expression id.
+/// @param anchorScope The scope whose form is likely shared.
+/// @param scopeId The scope whose classes apply.
+/// @return 0 when already canonical, else the text id in `cache.texts`.
+int32_t ExpressionAnalyzer::canonicalFormCached(Memory& mb,
+    CanonicalFormCache& cache, NameId origId, NameId anchorScope, NameId scopeId)
+{
+    assert(origId != 0 && anchorScope != 0 && scopeId != 0);
+    const int32_t version = mb.lbMemory.canonicalUses.version;
+    if (cache.version != version) {
+        cache.forms.resetToFresh();
+        cache.texts.resetToFresh();
+        cache.version = version;
+    }
+    const int64_t key = packInt32Pair(origId, scopeId);
+    if (const int32_t* stored = cache.forms.find(key)) return *stored;
+    int32_t form = 0;
+    if (anchorScope != scopeId && sameCanonicalSpelling(mb, origId, anchorScope, scopeId)) {
+        form = canonicalFormCached(mb, cache, origId, anchorScope, anchorScope);
+    } else {
+        const unsigned slot = (g_currentCoreId >= 0)
+            ? static_cast<unsigned>(g_currentCoreId) : scratchArenas().slotCount() - 1;
+        ScratchArena& strings = scratchArenas().forSlot(slot);
+        ScratchScope frame(strings);
+        int32_t levelCount = 0;
+        const CanonicalForm canonical = canonicalFormAtScope(mb.nameMap.decodeView(origId),
+            mb.nameMap.decodeView(scopeId), mb, strings, nullptr, levelCount, 0, false, false);
+        if (canonical.changed) form = cache.texts.mint(canonical.text);
+    }
+    cache.forms.insert(key, form);
+    return form;
+}
+
+/// @brief Canonical text of an expression at a scope through a pass cache.
+/// @details The text (the expression itself when already canonical) is
+/// copied onto @p outArena; the span aliases neither the NameMap nor the cache.
+/// @param mb Owning LB.
+/// @param cache The pass's cache.
+/// @param origId Minted expression id.
+/// @param anchorScope The scope whose form is likely shared.
+/// @param scopeId The scope whose classes apply.
+/// @param outArena String-tier arena receiving the copy.
+/// @return The canonical text on @p outArena.
+StrSpan ExpressionAnalyzer::canonicalTextCached(Memory& mb, CanonicalFormCache& cache,
+    NameId origId, NameId anchorScope, NameId scopeId, ScratchArena& outArena)
+{
+    const int32_t form = canonicalFormCached(mb, cache, origId, anchorScope, scopeId);
+    const StrSpan text = form == 0 ? mb.nameMap.decodeView(origId) : cache.texts.view(form);
+    return StrSpan(ScratchString::copyFrom(outArena, text.ptr, text.len));
+}
+
+/// @brief Canonical id of an expression at a scope through a pass cache.
+/// @details A changed form is encoded in the NameMap from the cache's own
+/// table, so the name and the moment of its first mint match
+/// `canonicalWatchIdAt` for the same call sequence.
+/// @param mb Owning LB.
+/// @param cache The pass's cache.
+/// @param origId Minted expression id.
+/// @param anchorScope The scope whose form is likely shared.
+/// @param scopeId The scope whose classes apply.
+/// @return @p origId when nothing applies, else the canonical id.
+NameId ExpressionAnalyzer::canonicalIdCached(Memory& mb, CanonicalFormCache& cache,
+    NameId origId, NameId anchorScope, NameId scopeId)
+{
+    const int32_t form = canonicalFormCached(mb, cache, origId, anchorScope, scopeId);
+    if (form == 0) return origId;
+    return mb.nameMap.encode(cache.texts.view(form));
+}
+
+void ExpressionAnalyzer::stageWatchArrival(Memory& mb, const IntEncodedExpr& ie)
+{
+    stageOrFactChange(mb, packStatementKey(ie.originalId, ie.validityId));
+    stageSubproofArrival(mb, packStatementKey(ie.originalId, ie.validityId));
+    stageRootArrival(mb, packStatementKey(ie.originalId, ie.validityId));
+    if (!watchShaped(mb, ie)) return;
+    if (mb.phase3IgnoresScope(ie.validityId)) return;
+    mb.pendingWatchArrivals.push_back(
+        packStatementKey(ie.originalId, ie.validityId));
+}
+
+void ExpressionAnalyzer::importAncestorNegationsForClass(Memory& mb,
+    NameId scopeId, const PagedVector<NameId>& members, CanonicalFormCache* cache)
+{
+    RT_SCOPE_HERE("CANONICAL_ANCESTOR_NEGATIONS");
+    assert(scopeId != 0);
+    if (scopeId == NameMap::MAIN_ID || members.empty()) return;
+    const unsigned slot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    DirtyState dirty = DirtyState::Clean;
+    ensureCanonicalStatementUses(mb, arena);
+    ensureCanonicalWatchUses(mb);
+    TypedColdSet<int64_t> selected(&arena, &dirty);
+    for (NameId source = mb.nameMap.parentOf(scopeId); source != 0; source = mb.nameMap.parentOf(source))
+        for (int32_t m = 0; m < members.size(); ++m)
+            mb.lbMemory.canonicalUses.statements.forEach(source, mb.nameMap.decodeView(members[m]),
+                [&](int64_t key) {
+                    const auto original = Codec<StatementKey>::decode(key).orig;
+                    const StrSpan text = mb.nameMap.decodeView(original);
+                    if (text.empty() || text.ptr[0] != '!' || isNegatedEquality(text)) return;
+                    selected.mint(key);
+                });
+    // Existing entries were recanonicalized at this refresh boundary; they are
+    // dropped before the sort. An entry recorded by this loop itself is caught
+    // by the second presence test below.
+    PagedVector<int64_t> candidates(&arena, &dirty);
+    for (int32_t i = 1; i <= selected.count(); ++i) {
+        const int64_t key = selected.keyAt(i);
+        if (mb.lbMemory.canonicalUses.watches.contains(
+                packStatementKey(Codec<StatementKey>::decode(key).orig, scopeId))) continue;
+        candidates.push_back(key);
+    }
+    const auto less = [&](int32_t a, int32_t b) {
+        const auto left = Codec<StatementKey>::decode(candidates[a]);
+        const auto right = Codec<StatementKey>::decode(candidates[b]);
+        const int textOrder = compareSpans(mb.nameMap.decodeView(left.orig), mb.nameMap.decodeView(right.orig));
+        return textOrder != 0 ? textOrder < 0
+            : compareSpans(mb.nameMap.decodeView(left.validity), mb.nameMap.decodeView(right.validity)) < 0;
+    };
+    ChunkSortedOrdinals<decltype(less)> order(arena, candidates.size(), 0, less);
+    std::optional<CanonicalFormCache> ownForms;
+    if (cache == nullptr) cache = &ownForms.emplace(arena);
+    for (int32_t i = 0; i < candidates.size(); ++i) {
+        const auto source = Codec<StatementKey>::decode(candidates[order.next()]);
+        // Pending new arrivals still take the normal import path below.
+        if (mb.lbMemory.canonicalUses.watches.contains(packStatementKey(source.orig, scopeId))) continue;
+        const StrSpan text = mb.nameMap.decodeView(source.orig);
+        assert(!text.empty() && text.ptr[0] == '!' && !isNegatedEquality(text));
+        ScratchArena& strings=scratchArenas().forSlot(slot);
+        ScratchScope textFrame(strings);
+        const ScratchString expression=ScratchString::copyFrom(strings,text.ptr,text.len);
+        const StrSpan scopeView=mb.nameMap.decodeView(source.validity);
+        const ScratchString sourceScope=ScratchString::copyFrom(strings,scopeView.ptr,scopeView.len);
+        const IntEncodedExpr row=encodeExpression(StrSpan(expression),StrSpan(sourceScope),mb.nameMap);
+        if (row.isAnchor || !watchShaped(mb, row)) continue;
+        const NameId canonical = canonicalIdCached(mb, *cache, row.originalId, source.validity, scopeId);
+        const int64_t key = watchKey(scopeId, row.nameId);
+        const int64_t value = packInt32Pair(canonical, row.originalId);
+        mb.negationLedger.insertSorted(key, value, [](int64_t a, int64_t b) { return a < b; });
+        const int64_t dependencyKey=packStatementKey(row.originalId,scopeId);
+        indexCanonicalText(mb.lbMemory.canonicalUses.watches,dependencyKey,scopeId,mb.nameMap.decodeView(row.originalId));
+        indexCanonicalText(mb.lbMemory.canonicalUses.watches,dependencyKey,scopeId,mb.nameMap.decodeView(canonical));
+        mb.pendingWatchRechecks.push_back(packInt32Pair(scopeId, row.originalId));
+    }
+}
+
+void ExpressionAnalyzer::importNegationIntoDescendantClassScopes(Memory& mb,
+    const IntEncodedExpr& ie, CanonicalFormCache* cache)
+{
+    assert(ie.negation && "importNegationIntoDescendantClassScopes: negated rows only");
+    const int32_t vCount = mb.equivalenceClassesMap.count();
+    if (vCount == 0) return;
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    std::optional<CanonicalFormCache> ownForms;
+    if (cache == nullptr) cache = &ownForms.emplace(gArena);
+    for (int32_t kid = 1; kid <= vCount; ++kid) {
+        const NameId vid = mb.equivalenceClassesMap.keyAt(kid);
+        if (!mb.nameMap.isStrictAncestor(ie.validityId, vid)) continue;
+        if (mb.phase3IgnoresScope(vid)) continue;
+        if(mb.equivalenceClassesMap.runLen(kid)==0) continue;
+        initializeCanonicalScope(mb,vid);
+        const int32_t bucketId = mb.canonicalEquivalenceClassesMap.lookup(vid);
+        const int32_t cc = (bucketId == 0) ? 0
+            : mb.canonicalEquivalenceClassesMap.runLen(bucketId);
+        bool named = false;
+        for (int32_t ci = 0; ci < cc && !named; ++ci) {
+            ScratchScope viewScope(gArena);
+            int32_t blen = 0;
+            const char* bp = mb.canonicalEquivalenceClassesMap.peekRecordBytes(
+                bucketId, ci, blen, gArena);
+            const EquivalenceClassView view{ bp, blen };
+            const int32_t mc = view.memberCount();
+            for (int32_t m = 0; m < mc && !named; ++m) {
+                const NameId member = view.memberId(m);
+                for (int32_t a = 0; a < ie.arity; ++a)
+                    if (ie.argId[a] == member) { named = true; break; }
+            }
+        }
+        if (!named) continue;
+        const NameId canonical = canonicalIdCached(mb, *cache, ie.originalId, ie.validityId, vid);
+        if (watchRunContainsValue(mb.negationLedger, watchKey(vid, ie.nameId),
+                packInt32Pair(canonical, ie.originalId))) continue;
+        recordWatchCanonical(mb.negationLedger, mb, ie.originalId, vid, ie.nameId, canonical);
+        mb.pendingWatchRechecks.push_back(packInt32Pair(vid, ie.originalId));
+    }
+}
+
+IntEncodedExpr ExpressionAnalyzer::commitDerivedLocalRow(Memory& mb,
+    StrSpan text, NameId scopeId, const int* lv, int32_t lvN)
+{
+    assert(lvN > 0 && ((lvN == 1 && lv[0] == -1) || lv[0] >= 0)
+        && "derived-row commit: invalid statement level run");
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(slot);
+    ScratchScope scope(strArena);
+    const StrSpan tView = mb.nameMap.decodeView(scopeId);
+    const ScratchString tName =
+        ScratchString::copyFrom(strArena, tView.ptr, tView.len);
+    const NameId origId = mb.nameMap.encode(text);
+    const int64_t pk = packStatementKey(origId, scopeId);
+    assert(mb.intStatementLevelsMap.lookup(pk) == 0
+        && "derived-row commit: the row is already known");
+    mb.intStatementLevelsMap.assignSetRange(pk, lv, lv + lvN);
+    publishKnownStatementKey(mb, pk, /*local=*/true);
+    mb.intLocalEncodedStatementsSet.mint(pk);
+    const IntEncodedExpr ie = encodeExpression(text, StrSpan(tName), mb.nameMap);
+    this->recordNegationWatchFor(mb, ie);
+    mb.intEncodedStatements.push_back(ie);
+    mb.intLocalEncodedStatements.push_back(ie);
+    mb.intLocalEncodedStatementsDelta.push_back(ie);
+    return ie;
+}
+
+/// @brief Materialize a selected canonical fact with its equality proof bridge.
+/// @details Known twins and unchanged forms require no new row. A newly
+/// materialized twin is local, carries all applied equality levels, and enters
+/// the ordinary negation and OR fact notifications. OR callers can include
+/// equality and inequality refuters while other callers preserve their spelling.
+/// @param mb Owning block and known registries.
+/// @param srcOrigId Known source expression.
+/// @param srcScopeId Scope where the source is known.
+/// @param atScopeId Comparable scope where the twin is required.
+/// @param rewriteEqualities Include standalone equality and inequality views.
+/// @return True when a new canonical row is materialized.
+bool ExpressionAnalyzer::writeWatchTwinCanonical(Memory& mb, NameId srcOrigId,
+    NameId srcScopeId, NameId atScopeId, bool rewriteEqualities)
+{
+    assert(srcOrigId != 0 && srcScopeId != 0 && atScopeId != 0
+        && "writeWatchTwinCanonical: ids must be minted");
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(slot);
+    ScratchScope scope(strArena);
+    // Levels: the source row's own run seeds the union.
+    int lv[256];
+    int32_t lvN = 0;
+    {
+        const int32_t lvId = mb.intStatementLevelsMap.lookup(
+            packStatementKey(srcOrigId, srcScopeId));
+        assert(lvId != 0 && mb.intStatementLevelsMap.runLen(lvId) > 0
+            && "writeWatchTwinCanonical: known source without a levels row");
+        lvN = coldIntRunAt(mb.intStatementLevelsMap, lvId, lv, 256);
+    }
+    WatchBridge br;
+    canonicalWatchFormAt(mb, srcOrigId, atScopeId, strArena, br, lv, lvN, 256,
+        rewriteEqualities);
+    if (!br.changed) return false;   // the source is the canonical spelling
+    const NameId twinId = mb.nameMap.encode(br.text);
+    if (ancestorKnown(mb, twinId, atScopeId, /*includeSelf=*/true))
+        return false;                // exact twin already present (I-187)
+    if (lvN == 0) { lv[0] = -1; lvN = 1; }   // all-non-derived union re-enters as {-1}
+    const IntEncodedExpr twin =
+        commitDerivedLocalRow(mb, br.text, atScopeId, lv, lvN);
+    const StrSpan atView = mb.nameMap.decodeView(atScopeId);
+    const ScratchString atName =
+        ScratchString::copyFrom(strArena, atView.ptr, atView.len);
+    if (parameters.trackHistory && !ceFilteringActive
+        && !originRowExists(mb, br.text, StrSpan(atName))) {
+        const StrSpan srcView = mb.nameMap.decodeView(srcOrigId);
+        const ScratchString srcText =
+            ScratchString::copyFrom(strArena, srcView.ptr, srcView.len);
+        const StrSpan srcScopeView = mb.nameMap.decodeView(srcScopeId);
+        const ScratchString srcScope =
+            ScratchString::copyFrom(strArena, srcScopeView.ptr, srcScopeView.len);
+        OriginDep deps[1 + WatchBridge::CAP];
+        deps[0] = OriginDep{ StrSpan(srcText), StrSpan(srcScope) };
+        for (int32_t k = 0; k < br.eqN; ++k)
+            deps[1 + k] = OriginDep{ br.eqText[k], br.eqScope[k] };
+        const int cap = parameters.compressor_mode
+            ? parameters.compressor_max_origins_per_expr
+            : parameters.max_origin_per_expr;
+        addOriginEncoded(mb.exprOriginMap, mb.originInterner, br.text,
+            StrSpan(atName), OriginTag::equality1, deps, 1 + br.eqN, cap);
+    }
+    (void)twin;
+    this->ordisMerge(br.text, StrSpan(atName), lv, lvN, mb);
+    return true;
+}
+
+bool ExpressionAnalyzer::writeLiteralTwin(Memory& mb, NameId goalOrigId,
+    NameId goalScope)
+{
+    assert(goalOrigId != 0 && goalScope != 0
+        && "writeLiteralTwin: ids must be minted");
+    if (ancestorKnown(mb, goalOrigId, goalScope, /*includeSelf=*/true))
+        return false;                // the literal text is already known
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(slot);
+    ScratchScope scope(strArena);
+    int lv[256];
+    int32_t lvN = 0;
+    WatchBridge br;
+    canonicalWatchFormAt(mb, goalOrigId, goalScope, strArena, br, lv, lvN, 256);
+    if (!br.changed) return false;   // the goal IS canonical: its twin is the goal text
+    // The canonical row: known at the goal scope or an ancestor (the hit's
+    // peer or its canonical twin) — the source of the literal.
+    const NameId canonId = mb.nameMap.lookup(br.text);
+    assert(canonId != 0 && "writeLiteralTwin: canonical text never interned");
+    NameId srcScope = 0;
+    for (NameId s = goalScope; s != 0; s = mb.nameMap.parentOf(s)) {
+        if (mb.intKnownStatements.find(StatementKey{ canonId, s }) != nullptr) {
+            srcScope = s; break;
+        }
+        if (s == NameMap::MAIN_ID) break;
+    }
+    assert(srcScope != 0
+        && "writeLiteralTwin: the literal's canonical form is not known at its scope or an ancestor");
+    {
+        const int32_t lvId = mb.intStatementLevelsMap.lookup(
+            packStatementKey(canonId, srcScope));
+        assert(lvId != 0 && mb.intStatementLevelsMap.runLen(lvId) > 0
+            && "writeLiteralTwin: canonical row without a levels row");
+        int srcLv[256];
+        const int32_t srcN = coldIntRunAt(mb.intStatementLevelsMap, lvId, srcLv, 256);
+        for (int32_t j = 0; j < srcN; ++j) {
+            if (srcLv[j] < 0) continue;
+            lvN = insertLevelSorted(lv, lvN, srcLv[j], 256);
+        }
+        // Strip a leading non-derived marker the union may still carry.
+        int32_t lead = 0;
+        while (lead < lvN && lv[lead] < 0) ++lead;
+        if (lead > 0) { for (int32_t j = lead; j < lvN; ++j) lv[j - lead] = lv[j]; lvN -= lead; }
+        if (lvN == 0) { lv[0] = -1; lvN = 1; }
+    }
+    const StrSpan goalView = mb.nameMap.decodeView(goalOrigId);
+    const ScratchString goalText =
+        ScratchString::copyFrom(strArena, goalView.ptr, goalView.len);
+    const StrSpan gView = mb.nameMap.decodeView(goalScope);
+    const ScratchString gName = ScratchString::copyFrom(strArena, gView.ptr, gView.len);
+    const IntEncodedExpr twin =
+        commitDerivedLocalRow(mb, StrSpan(goalText), goalScope, lv, lvN);
+    (void)twin;
+    if (parameters.trackHistory && !ceFilteringActive
+        && !originRowExists(mb, StrSpan(goalText), StrSpan(gName))) {
+        const StrSpan sView = mb.nameMap.decodeView(srcScope);
+        const ScratchString srcScopeName =
+            ScratchString::copyFrom(strArena, sView.ptr, sView.len);
+        OriginDep deps[1 + WatchBridge::CAP];
+        deps[0] = OriginDep{ br.text, StrSpan(srcScopeName) };
+        for (int32_t k = 0; k < br.eqN; ++k) {
+            // Mirror `(=[member,canonical])` -> `(=[canonical,member])`:
+            // the literal is reached from the canonical row, so each
+            // differing position cites the reverse orientation
+            // (co-registered with every equality, I-180). Member names
+            // carry no comma or bracket, so the split is exact.
+            const StrSpan e = br.eqText[k];
+            assert(e.len > 5 && e.ptr[0] == '(' && e.ptr[1] == '=' && e.ptr[2] == '['
+                && e.ptr[e.len - 2] == ']' && e.ptr[e.len - 1] == ')'
+                && "writeLiteralTwin: justifier is not an equality text");
+            int32_t comma = -1;
+            for (int32_t i = 3; i < e.len - 2; ++i) if (e.ptr[i] == ',') { comma = i; break; }
+            assert(comma > 3 && "writeLiteralTwin: equality without two arguments");
+            const StrSpan a(e.ptr + 3, comma - 3);
+            const StrSpan b(e.ptr + comma + 1, e.len - 2 - (comma + 1));
+            char* buf = strArena.allocBytes(e.len);
+            int32_t at = 0;
+            buf[at++] = '('; buf[at++] = '='; buf[at++] = '[';
+            std::memcpy(buf + at, b.ptr, static_cast<std::size_t>(b.len)); at += b.len;
+            buf[at++] = ',';
+            std::memcpy(buf + at, a.ptr, static_cast<std::size_t>(a.len)); at += a.len;
+            buf[at++] = ']'; buf[at++] = ')';
+            assert(at == e.len);
+            const StrSpan mirror(buf, e.len);
+            const StrSpan cite = findEqualityCiteScope(mb, mirror, br.eqScope[k]);
+            const ScratchString citeOwned =
+                ScratchString::copyFrom(strArena, cite.ptr, cite.len);
+            deps[1 + k] = OriginDep{ mirror, StrSpan(citeOwned) };
+        }
+        const int cap = parameters.compressor_mode
+            ? parameters.compressor_max_origins_per_expr
+            : parameters.max_origin_per_expr;
+        addOriginEncoded(mb.exprOriginMap, mb.originInterner, StrSpan(goalText),
+            StrSpan(gName), OriginTag::equality1, deps, 1 + br.eqN, cap);
+    }
+    this->ordisMerge(StrSpan(goalText), StrSpan(gName), lv, lvN, mb);
+    return true;
+}
+
+/// @brief Book a branch conclusion justified by its visible equalities.
+///
+/// @details
+/// Retains the actual source and both canonicalization bridges without adding
+/// a target statement. The source and target must have the same canonical form
+/// at the live branch. Saved support and combined levels survive branch freeze;
+/// ordinary convergence publishes the parent conclusion and exact dependencies.
+///
+/// @param mb The resident owning logical block.
+/// @param targetId The fixed parent conclusion's expression identifier.
+/// @param branchId The live OR case scope.
+/// @param sourceId The actual supporting expression identifier.
+/// @param sourceScope Its known scope, at the case or an ancestor.
+/// @return Nothing; duplicate support preserves the first complete record.
+/// @invariant No target statement or sibling equality context is created.
+/// @see ordisMerge, materializeWatchHits, orBranchGoalsResolved.
+void ExpressionAnalyzer::bookOrEqualitySupport(Memory& mb, NameId targetId,
+    NameId branchId, NameId sourceId, NameId sourceScope)
+{
+    const StatementKey target{ targetId, branchId };
+    if (mb.lbMemory.orSupportFacts.lookup(target) != 0) return;
+    assert(mb.nameMap.ancContains(branchId, sourceScope));
+    assert(mb.intKnownStatements.find(StatementKey{ sourceId, sourceScope }) != nullptr);
+    assert(mb.frozenOrBranches.lookup(branchId) == 0);
+    assert(mb.intValidityNamesToFilter.lookup(branchId) == 0);
+    StrSpan signature, disjunct;
+    assert(classifyOrScopeView(mb.nameMap, branchId, signature, disjunct)
+        == OrScopeKind::Disintegration);
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId) : scratchArenas().slotCount() - 1;
+    ScratchArena& arena = scratchArenas().forSlot(slot);
+    ScratchScope scratch(arena);
+    WatchBridge source, conclusion;
+    int levels[256];
+    int32_t levelCount = 0;
+    canonicalWatchFormAt(mb, sourceId, branchId, arena, source, levels, levelCount, 256);
+    canonicalWatchFormAt(mb, targetId, branchId, arena, conclusion, levels, levelCount, 256);
+    assert(equalSpans(source.text, conclusion.text)
+        && "OR contribution requires equal branch-local canonical forms");
+    assert(source.eqN + conclusion.eqN > 0);
+    const int32_t sourceLevels = mb.intStatementLevelsMap.lookup(
+        StatementKey{ sourceId, sourceScope });
+    assert(sourceLevels != 0);
+    for (int32_t j = 0; j < mb.intStatementLevelsMap.runLen(sourceLevels); ++j) {
+        const int level = mb.intStatementLevelsMap.valueAt(sourceLevels, j);
+        if (level >= 0) levelCount = insertLevelSorted(levels, levelCount, level, 256);
+    }
+    if (levelCount == 0) levels[levelCount++] = -1;
+    mb.lbMemory.closedOrGoalLevels.assignSet(target, levels, levelCount);
+    mb.lbMemory.orSupportFacts.upsert(target, packStatementKey(sourceId, sourceScope));
+    constexpr int capacity = ExecutionParameters::MAX_ARITY;
+    StrSpan sourceArgs[capacity], targetArgs[capacity];
+    const int32_t arity = getArgsSpans(mb.nameMap.decodeView(sourceId), sourceArgs, capacity);
+    assert(arity == getArgsSpans(mb.nameMap.decodeView(targetId), targetArgs, capacity));
+    StrSpan changedArgs[2 * capacity];
+    int32_t changedCount = 0;
+    for (int32_t j = 0; j < arity; ++j) if (!equalSpans(sourceArgs[j], targetArgs[j])) {
+        changedArgs[changedCount++] = StrSpan(ScratchString::copyFrom(arena, sourceArgs[j].ptr, sourceArgs[j].len));
+        changedArgs[changedCount++] = StrSpan(ScratchString::copyFrom(arena, targetArgs[j].ptr, targetArgs[j].len));
+    }
+    assert(changedCount > 0);
+    const auto appendBridge = [&](const WatchBridge& bridge) {
+        for (int32_t j = 0; j < bridge.eqN; ++j) {
+            StrSpan pair[2];
+            assert(getArgsSpans(bridge.eqText[j], pair, 2) == 2);
+            bool relevant = false;
+            for (int32_t k = 0; k < changedCount; ++k)
+                relevant = relevant || equalSpans(pair[0], changedArgs[k]);
+            if (!relevant) continue;
+            const NameId equality = mb.nameMap.encode(bridge.eqText[j]);
+            const NameId scope = mb.nameMap.encode(bridge.eqScope[j]);
+            assert(mb.nameMap.ancContains(branchId, scope));
+            mb.lbMemory.orSupportEqualities.insertSorted(target,
+                packStatementKey(equality, scope), [&](int64_t a, int64_t b) {
+                    const StatementKey x = Codec<StatementKey>::decode(a);
+                    const StatementKey y = Codec<StatementKey>::decode(b);
+                    const int order = compareSpans(mb.nameMap.decodeView(x.orig), mb.nameMap.decodeView(y.orig));
+                    return order != 0 ? order < 0
+                        : compareSpans(mb.nameMap.decodeView(x.validity), mb.nameMap.decodeView(y.validity)) < 0;
+                });
+        }
+    };
+    appendBridge(source);
+    appendBridge(conclusion);
+    const StrSpan tv = mb.nameMap.decodeView(targetId);
+    const ScratchString text = ScratchString::copyFrom(arena, tv.ptr, tv.len);
+    const StrSpan bv = mb.nameMap.decodeView(branchId);
+    const ScratchString branch = ScratchString::copyFrom(arena, bv.ptr, bv.len);
+    ordisMerge(StrSpan(text), StrSpan(branch), levels, levelCount, mb);
+}
+
+void ExpressionAnalyzer::materializeWatchHits(Memory& mb, int coreId)
+{
+    if (parameters.skip_eq_classes) {
+        // No classes: canonical == original and the exact sweeps already see
+        // every pair (incubator mode, OPEN-CFG-1).
+        mb.pendingWatchArrivals.clear();
+        mb.pendingWatchRechecks.clear();
+        return;
+    }
+    if (mb.pendingWatchArrivals.size() == 0 && mb.pendingWatchRechecks.size() == 0
+        && mb.intToBeProved.count() == 0) return;
+    ensureGoalLedgerCurrent(mb);
+
+    const unsigned gSlot = (coreId >= 0)
+        ? static_cast<unsigned>(coreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    const unsigned sSlot = (coreId >= 0)
+        ? static_cast<unsigned>(coreId) : scratchArenas().slotCount() - 1;
+    ScratchArena& sArena = scratchArenas().forSlot(sSlot);
+
+    // kind 0: contradiction — `a` the positive side, `b` the negated side.
+    // kind 1: goal — `a` the peer row, `b` the goal.
+    struct Hit { NameId aOrig, aScope, bOrig, bScope, atScope; uint8_t kind; };
+    struct Req { NameId scope, core, canonId, entryOrig, entryScope; uint8_t sign, kind; };
+    DirtyState dirty = DirtyState::Clean;
+    PagedVector<Hit> hits(&gArena, &dirty);
+    PagedVector<Req> batch(&gArena, &dirty);
+    // Canonical forms of this drain. The probes and the sweep change no
+    // class; a scope first initialized by an arrival import renews it.
+    CanonicalFormCache forms(gArena);
+
+    // The scope a ledger entry's row lives at: the shallowest scope at or
+    // above `runScope` where it is known (an imported entry's row sits at
+    // an ancestor of its run scope; an erased row has none — dead entry).
+    const auto entryRowScope = [&](NameId origId, NameId runScope) -> NameId {
+        NameId found = 0;
+        for (NameId s = runScope; s != 0; s = mb.nameMap.parentOf(s)) {
+            if (mb.intKnownStatements.find(StatementKey{ origId, s }) != nullptr)
+                found = s;
+            if (s == NameMap::MAIN_ID) break;
+        }
+        return found;
+    };
+    const auto knownAtOrAbove = [&](NameId origId, NameId scope) -> NameId {
+        for (NameId s = scope; s != 0; s = mb.nameMap.parentOf(s)) {
+            if (mb.intKnownStatements.find(StatementKey{ origId, s }) != nullptr)
+                return s;
+            if (s == NameMap::MAIN_ID) break;
+        }
+        return 0;
+    };
+
+    // (a) a positive row at S against the negation runs at S and above.
+    const auto probePositive = [&](NameId origId, NameId S, NameId core) {
+        // No negation run for this core anywhere on the scope chain: no
+        // entry can match, so the canonicalization is skipped.
+        bool anyRun = false;
+        for (NameId T = S; T != 0 && !anyRun; T = mb.nameMap.parentOf(T)) {
+            anyRun = mb.negationLedger.lookup(watchKey(T, core)) != 0;
+            if (T == NameMap::MAIN_ID) break;
+        }
+        if (!anyRun) return;
+        ScratchScope sc(sArena);
+        const StrSpan negText = negateScratch(sArena,
+            canonicalTextCached(mb, forms, origId, S, S, sArena));
+        const NameId negId = mb.nameMap.lookup(negText);
+        if (negId == 0) return;   // never interned: no entry can carry it
+        for (NameId T = S; T != 0; T = mb.nameMap.parentOf(T)) {
+            NameId entryOrig = 0;
+            if (watchRunHasCanonical(mb.negationLedger, T, core, negId, &entryOrig)) {
+                const NameId eScope = entryRowScope(entryOrig, T);
+                if (eScope != 0)
+                    hits.push_back(Hit{ origId, S, entryOrig, eScope, S, 0 });
+            }
+            if (T == NameMap::MAIN_ID) break;
+        }
+    };
+    // (b)/(c) an entry (negated row or goal) against the rows of the
+    // opposite / same polarity at S and above. An entry copied into a
+    // descendant class scope usually keeps the spelling of its own scope;
+    // the cache then computes that form once for every copy.
+    const auto probeEntry = [&](NameId entryOrig, NameId entryScope, NameId S,
+                                NameId core, uint8_t kind) {
+        ScratchScope sc(sArena);
+        const StrSpan text = canonicalTextCached(mb, forms, entryOrig, entryScope, S, sArena);
+        StrSpan peerText = text;
+        uint8_t sign = (peerText.len > 0 && peerText.ptr[0] == '!') ? 1 : 0;
+        if (kind == 0) { peerText = negateScratch(sArena, text); sign = sign ? 0 : 1; }
+        if (usedAsPremiseCore(mb, core, sign)) {
+            const NameId peerId = mb.nameMap.lookup(peerText);
+            if (peerId == 0) return;
+            const NameId at = knownAtOrAbove(peerId, S);
+            if (at == 0) return;
+            hits.push_back(Hit{ peerId, at, entryOrig, entryScope, S, kind });
+            return;
+        }
+        // Not multiplied: the batch sweep canonicalizes the candidate rows.
+        batch.push_back(Req{ S, core, mb.nameMap.encode(peerText), entryOrig,
+                             entryScope, sign, kind });
+    };
+
+    // Arrivals.
+    for (int32_t i = 0; i < mb.pendingWatchArrivals.size(); ++i) {
+        const StatementKey sk = Codec<StatementKey>::decode(mb.pendingWatchArrivals[i]);
+        if (mb.intKnownStatements.find(StatementKey{ sk.orig, sk.validity }) == nullptr)
+            continue;   // erased since registration
+        ScratchScope sc(sArena);
+        const StrSpan tView = mb.nameMap.decodeView(sk.orig);
+        const ScratchString text = ScratchString::copyFrom(sArena, tView.ptr, tView.len);
+        const StrSpan vView = mb.nameMap.decodeView(sk.validity);
+        const ScratchString vName = ScratchString::copyFrom(sArena, vView.ptr, vView.len);
+        const IntEncodedExpr ie = encodeExpression(StrSpan(text), StrSpan(vName), mb.nameMap);
+        if (ie.negation) {
+            importNegationIntoDescendantClassScopes(mb, ie, &forms);
+            probeEntry(sk.orig, sk.validity, sk.validity, ie.nameId, 0);
+        } else {
+            probePositive(sk.orig, sk.validity, ie.nameId);
+        }
+    }
+    // Re-checks (moved or imported negation entries). The ledger keys every
+    // entry by its core name, read here without re-encoding the row.
+    for (int32_t i = 0; i < mb.pendingWatchRechecks.size(); ++i) {
+        const int64_t v = mb.pendingWatchRechecks[i];
+        const NameId runScope = static_cast<NameId>(static_cast<uint64_t>(v) >> 32);
+        const NameId entryOrig = static_cast<NameId>(static_cast<uint64_t>(v) & 0xffffffffu);
+        const NameId eScope = entryRowScope(entryOrig, runScope);
+        if (eScope == 0) continue;   // dead entry
+        const NameId core = mb.nameMap.lookup(
+            extractExpressionUniversalSpan(mb.nameMap.decodeView(entryOrig)));
+        assert(core != 0 && "watch re-check: a recorded negation's core is minted");
+        probeEntry(entryOrig, eScope, runScope, core, 0);
+    }
+    // Goals — every drain, every goal (few).
+    {
+        const int32_t keyN = mb.goalLedger.count();
+        for (int32_t id = 1; id <= keyN; ++id) {
+            const int64_t key = mb.goalLedger.decodeKey(id);
+            const NameId G = static_cast<NameId>(static_cast<uint64_t>(key) >> 32);
+            const NameId core = static_cast<NameId>(static_cast<uint64_t>(key) & 0xffffffffu);
+            if (mb.phase3IgnoresScope(G)) continue;
+            const int32_t n = mb.goalLedger.runLen(id);
+            for (int32_t j = 0; j < n; ++j) {
+                const NameId g = ledgerOriginalId(mb.goalLedger.valueAt(id, j));
+                probeEntry(g, G, G, core, 1);
+                for (int32_t bi = 1; bi <= mb.orLiveBranches.count(); ++bi) {
+                    const NameId branch = mb.orLiveBranches.decode(bi);
+                    if (!mb.nameMap.isStrictAncestor(G, branch)) continue;
+                    if (mb.frozenOrBranches.lookup(branch) != 0
+                        || mb.pendingDeadOrBranches.lookup(branch) != 0
+                        || mb.intValidityNamesToFilter.lookup(branch) != 0
+                        || mb.phase3IgnoresScope(branch)) continue;
+                    if (ancestorKnown(mb, g, branch, true)
+                        || mb.lbMemory.orSupportFacts.lookup(StatementKey{ g, branch }) != 0) continue;
+                    probeEntry(g, G, branch, core, 2);
+                }
+            }
+        }
+    }
+    // (d) one sweep for every batch request. The requests are grouped by
+    // (core, sign), each group in batch order, so a row visits only the
+    // requests it can match and hits keep their row-major, batch order.
+    if (batch.size() > 0) {
+        const int32_t reqN = batch.size();
+        const auto groupOf = [&](int32_t q) -> int64_t {
+            return packInt32Pair(batch[q].core, batch[q].sign);
+        };
+        int32_t* byGroup = reinterpret_cast<int32_t*>(gArena.resolve(gArena.alloc(
+            reqN * static_cast<int32_t>(sizeof(int32_t)), static_cast<int32_t>(alignof(int32_t)))));
+        for (int32_t q = 0; q < reqN; ++q) byGroup[q] = q;
+        std::sort(byGroup, byGroup + reqN, [&](int32_t a, int32_t b) {
+            const int64_t left = groupOf(a), right = groupOf(b);
+            return left != right ? left < right : a < b;
+        });
+        TypedColdMap<int64_t, int64_t> groups(&gArena, &dirty);
+        for (int32_t first = 0; first < reqN; ) {
+            int32_t end = first;
+            while (end < reqN && groupOf(byGroup[end]) == groupOf(byGroup[first])) ++end;
+            groups.insert(groupOf(byGroup[first]), packInt32Pair(first, end - first));
+            first = end;
+        }
+        const int32_t rowN = mb.intEncodedStatements.size();
+        for (int32_t r = 0; r < rowN; ++r) {
+            const IntEncodedExpr& row = mb.intEncodedStatements[r];
+            if (row.isAnchor) continue;
+            const int64_t* group = groups.find(packInt32Pair(row.nameId, row.negation ? 1 : 0));
+            if (group == nullptr) continue;
+            const int32_t first = static_cast<int32_t>(static_cast<uint64_t>(*group) >> 32);
+            const int32_t end = first + static_cast<int32_t>(static_cast<uint64_t>(*group) & 0xffffffffu);
+            for (int32_t k = first; k < end; ++k) {
+                const Req& req = batch[byGroup[k]];
+                if (row.validityId != req.scope
+                    && !mb.nameMap.isStrictAncestor(row.validityId, req.scope)) continue;
+                if (row.originalId == req.entryOrig && row.validityId == req.entryScope) continue;
+                if (canonicalIdCached(mb, forms, row.originalId, row.validityId, req.scope)
+                        != req.canonId) continue;
+                hits.push_back(Hit{ row.originalId, row.validityId, req.entryOrig,
+                                    req.entryScope, req.scope, req.kind });
+            }
+        }
+    }
+    // (e) twins.
+    for (int32_t h = 0; h < hits.size(); ++h) {
+        const Hit hit = hits[h];
+        if (!mb.isActive) break;   // a sweep-independent discharge already closed the LB
+        if (hit.kind == 2) {
+            bookOrEqualitySupport(mb, hit.bOrig, hit.atScope, hit.aOrig, hit.aScope);
+        } else if (hit.kind == 0) {
+            writeWatchTwinCanonical(mb, hit.aOrig, hit.aScope, hit.atScope);
+            writeWatchTwinCanonical(mb, hit.bOrig, hit.bScope, hit.atScope);
+        } else {
+            writeWatchTwinCanonical(mb, hit.aOrig, hit.aScope, hit.atScope);
+            writeLiteralTwin(mb, hit.bOrig, hit.bScope);
+        }
+    }
+    // (f) live or-branches: an assumption refuted only up to canonical
+    // equality gets its exact negation at the branch.
+    {
+        const int32_t liveN = mb.orLiveBranches.count();
+        for (int32_t li = 1; li <= liveN && mb.isActive; ++li) {
+            const NameId B = mb.orLiveBranches.decode(li);
+            if (mb.intValidityNamesToFilter.lookup(B) != 0) continue;
+            if (mb.frozenOrBranches.lookup(B) != 0) continue;
+            if (mb.pendingDeadOrBranches.lookup(B) != 0) continue;
+            if (mb.phase3IgnoresScope(B)) continue;
+            StrSpan orSigV, bodyV;
+            if (classifyOrScopeView(mb.nameMap, B, orSigV, bodyV)
+                    != OrScopeKind::Disintegration) continue;
+            assert(bodyV.len >= 2 && bodyV.ptr[0] == '(' && bodyV.ptr[bodyV.len - 1] == ')'
+                && "watch drain: ordis branch payload must be a wrapped (disjunct)");
+            ScratchScope sc(sArena);
+            const StrSpan assumptionV(bodyV.ptr + 1, bodyV.len - 2);
+            const ScratchString assumption =
+                ScratchString::copyFrom(sArena, assumptionV.ptr, assumptionV.len);
+            const StrSpan negText = negateScratch(sArena, StrSpan(assumption));
+            {
+                const NameId exact = mb.nameMap.lookup(negText);
+                if (exact != 0 && knownAtOrAbove(exact, B) != 0) continue;   // exact probes see it
+            }
+            const StrSpan bView = mb.nameMap.decodeView(B);
+            const ScratchString bName = ScratchString::copyFrom(sArena, bView.ptr, bView.len);
+            const IntEncodedExpr negIe =
+                encodeExpression(negText, StrSpan(bName), mb.nameMap);
+            if (!watchShaped(mb, negIe)) continue;
+            // `negIe.originalId` is now minted: the literal negation's id.
+            const NameId canon = canonicalWatchIdAt(mb, negIe.originalId, B);
+            NameId entryOrig = 0;
+            NameId entryRun = 0;
+            for (NameId T = B; T != 0; T = mb.nameMap.parentOf(T)) {
+                if (watchRunHasCanonical(mb.negationLedger, T, negIe.nameId, canon, &entryOrig)) {
+                    entryRun = T; break;
+                }
+                if (T == NameMap::MAIN_ID) break;
+            }
+            if (entryRun == 0) continue;
+            const NameId eScope = entryRowScope(entryOrig, entryRun);
+            if (eScope == 0) continue;   // dead entry
+            writeWatchTwinCanonical(mb, entryOrig, eScope, B);
+            writeLiteralTwin(mb, negIe.originalId, B);
+        }
+    }
+    mb.pendingWatchArrivals.clear();
+    mb.pendingWatchRechecks.clear();
+    gArena.popTo(gMark);
+}
+
+void ExpressionAnalyzer::recordWatch(WatchLedger& ledger, Memory& mb,
+    NameId origId, NameId scopeId, NameId coreId)
+{
+    assert(origId != 0 && scopeId != 0 && coreId != 0
+        && "recordWatch: every id must be minted by the door path");
+    recordWatchCanonical(ledger, mb, origId, scopeId, coreId,
+        canonicalWatchIdAt(mb, origId, scopeId));
+}
+
+/// @brief Record a statement whose canonical id is already known in a watch
+///        ledger.
+/// @details Inserts `packInt32Pair(canonId, origId)` into the sorted-unique
+/// run of `watchKey(scopeId, coreId)` (a duplicate is a no-op) and, for the
+/// negation ledger, indexes the original and canonical texts.
+/// @param ledger `mb.negationLedger` or `mb.goalLedger`.
+/// @param mb Owning LB.
+/// @param origId The statement's original id.
+/// @param scopeId Its scope id.
+/// @param coreId Its unsigned core name id.
+/// @param canonId Its canonical id at @p scopeId.
+/// @return (void)
+void ExpressionAnalyzer::recordWatchCanonical(WatchLedger& ledger, Memory& mb,
+    NameId origId, NameId scopeId, NameId coreId, NameId canonId)
+{
+    assert(origId != 0 && scopeId != 0 && coreId != 0 && canonId != 0
+        && "recordWatchCanonical: every id must be minted");
+    ledger.insertSorted(watchKey(scopeId, coreId),
+        packInt32Pair(canonId, origId),
+        [](int64_t a, int64_t b) { return a < b; });
+    if (&ledger == &mb.negationLedger) {
+        const int64_t key = packStatementKey(origId,scopeId);
+        indexCanonicalText(mb.lbMemory.canonicalUses.watches,key,scopeId,mb.nameMap.decodeView(origId));
+        indexCanonicalText(mb.lbMemory.canonicalUses.watches,key,scopeId,mb.nameMap.decodeView(canonId));
+    }
+}
+
+/// @brief Whether a watch run holds an exact packed entry.
+/// @details Binary search over the ascending, sorted-unique run.
+/// @param ledger `mb.negationLedger` or `mb.goalLedger`.
+/// @param key `watchKey(scope, core)`.
+/// @param value `packInt32Pair(canonicalId, originalId)`.
+/// @return True when the run of @p key contains @p value.
+bool ExpressionAnalyzer::watchRunContainsValue(const WatchLedger& ledger,
+    int64_t key, int64_t value)
+{
+    const int32_t run = ledger.lookup(key);
+    if (run == 0) return false;
+    int32_t lo = 0, hi = ledger.runLen(run);
+    while (lo < hi) {
+        const int32_t mid = lo + (hi - lo) / 2;
+        if (ledger.valueAt(run, mid) < value) lo = mid + 1; else hi = mid;
+    }
+    return lo < ledger.runLen(run) && ledger.valueAt(run, lo) == value;
+}
+
+bool ExpressionAnalyzer::clearWatch(WatchLedger& ledger, Memory& mb,
+    NameId origId, NameId scopeId, NameId coreId)
+{
+    assert(origId != 0 && scopeId != 0 && coreId != 0
+        && "clearWatch: every id must be minted");
+    const int64_t key = watchKey(scopeId, coreId);
+    const int32_t row = ledger.lookup(key);
+    if (row == 0) return false;   // no run at this (scope, core)
+    const int32_t n = ledger.runLen(row);
+
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(slot);
+    const ArenaOffset mark = gArena.cursor();
+    int64_t* keep = reinterpret_cast<int64_t*>(gArena.resolve(gArena.alloc(
+        (n > 0 ? n : 1) * static_cast<int32_t>(sizeof(int64_t)),
+        static_cast<int32_t>(alignof(int64_t)))));
+    int32_t keepN = 0;
+    for (int32_t j = 0; j < n; ++j) {
+        const int64_t v = ledger.valueAt(row, j);
+        if (ledgerOriginalId(v) != origId) keep[keepN++] = v;
+    }
+    const bool removed = keepN != n;
+    if (removed) ledger.assignSet(key, keep, keepN);
+    if (removed && &ledger == &mb.negationLedger)
+        mb.lbMemory.canonicalUses.watches.erase(packStatementKey(origId,scopeId),gArena);
+    gArena.popTo(mark);
+    return removed;
+}
+
+bool ExpressionAnalyzer::watchRunHasCanonical(const WatchLedger& ledger,
+    NameId scopeId, NameId coreId, NameId canonId, NameId* origOut)
+{
+    assert(origOut != nullptr && "watchRunHasCanonical: origOut required");
+    if (scopeId == 0 || coreId == 0 || canonId == 0) return false;
+    const int32_t row = ledger.lookup(watchKey(scopeId, coreId));
+    if (row == 0) return false;
+    const int32_t n = ledger.runLen(row);
+    // Lower bound of the contiguous block for canonId (original half 0 is
+    // below every minted original).
+    const int64_t probe = packInt32Pair(canonId, 0);
+    int32_t lo = 0, hi = n;
+    while (lo < hi) {
+        const int32_t mid = lo + (hi - lo) / 2;
+        if (ledger.valueAt(row, mid) < probe) lo = mid + 1; else hi = mid;
+    }
+    if (lo >= n) return false;
+    const int64_t v = ledger.valueAt(row, lo);
+    if (ledgerCanonicalId(v) != canonId) return false;
+    *origOut = ledgerOriginalId(v);
+    return true;
+}
+
+void ExpressionAnalyzer::recordNegationWatchFor(Memory& mb,
+    const IntEncodedExpr& ie)
+{
+    if (!ie.negation || !watchShaped(mb, ie)) return;   // not watched by shape
+    recordWatch(mb.negationLedger, mb, ie.originalId, ie.validityId, ie.nameId);
+}
+
+void ExpressionAnalyzer::clearNegationWatchFor(Memory& mb, NameId origId,
+    NameId valId, bool wasKnown)
+{
+    if (!wasKnown) return;   // never registered: nothing was recorded
+    assert(origId != 0 && valId != 0
+        && "clearNegationWatchFor: both ids must be minted");
+    // Owned scratch copies: encodeExpression re-interns already-minted
+    // names only, but a decodeView span must never be held across a NameMap
+    // call (I-3).
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(slot);
+    ScratchScope scope(strArena);
+    const StrSpan tView = mb.nameMap.decodeView(origId);
+    const ScratchString text = ScratchString::copyFrom(strArena, tView.ptr, tView.len);
+    const StrSpan vView = mb.nameMap.decodeView(valId);
+    const ScratchString vName = ScratchString::copyFrom(strArena, vView.ptr, vView.len);
+    const IntEncodedExpr ie =
+        encodeExpression(StrSpan(text), StrSpan(vName), mb.nameMap);
+    if (!ie.negation || !watchShaped(mb, ie)) return;
+    const bool removed =
+        clearWatch(mb.negationLedger, mb, origId, valId, ie.nameId);
+    assert(removed
+        && "clearNegationWatchFor: known negated row without a ledger entry");
+    (void)removed;
+}
+
+void ExpressionAnalyzer::ensureGoalLedgerCurrent(Memory& mb)
+{
+    const uint32_t epoch = mb.intToBeProved.inner().insertEpoch();
+    const int32_t count = mb.intToBeProved.count();
+    if (!mb.goalLedgerStale && epoch == mb.goalLedgerEpoch
+        && count == mb.goalLedgerCount) return;   // current: defined no-op
+    mb.goalLedger.resetToFresh();
+    for (int32_t id = 1; id <= count; ++id) {
+        const StatementKey sk =
+            Codec<StatementKey>::decode(mb.intToBeProved.keyAt(id));
+        // Owned scratch copies across the NameMap calls below (I-3).
+        const unsigned slot = (g_currentCoreId >= 0)
+            ? static_cast<unsigned>(g_currentCoreId)
+            : scratchArenas().slotCount() - 1;
+        ScratchArena& strArena = scratchArenas().forSlot(slot);
+        ScratchScope scope(strArena);
+        const StrSpan tView = mb.nameMap.decodeView(sk.orig);
+        const ScratchString text =
+            ScratchString::copyFrom(strArena, tView.ptr, tView.len);
+        const StrSpan vView = mb.nameMap.decodeView(sk.validity);
+        const ScratchString vName =
+            ScratchString::copyFrom(strArena, vView.ptr, vView.len);
+        const IntEncodedExpr ie =
+            encodeExpression(StrSpan(text), StrSpan(vName), mb.nameMap);
+        if (!watchShaped(mb, ie)) continue;
+        recordWatch(mb.goalLedger, mb, sk.orig, sk.validity, ie.nameId);
+    }
+    mb.goalLedgerEpoch = epoch;
+    mb.goalLedgerCount = count;
+    mb.goalLedgerStale = false;
+}
+
+int32_t ExpressionAnalyzer::recanonicalizeWatchLedgers(Memory& mb,
+    NameId scopeId, const PagedVector<NameId>& members, bool exactScope)
+{
+    RT_SCOPE_HERE("CANONICAL_WATCH_LEDGERS");
+    assert(scopeId != 0
+        && "recanonicalizeWatchLedgers: the scope id must be minted");
+    // Goal keys share the same effective-scope dependency rule.
+    const unsigned slot0 = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& goalArena = genScratchArenas().forSlot(slot0);
+    auto& goalUses = mb.lbMemory.canonicalUses.goals;
+    goalUses.synchronize(mb.intToBeProved, goalArena, [&](int64_t key) {
+        const auto goal = Codec<StatementKey>::decode(key);
+        indexCanonicalText(goalUses, key, goal.validity, mb.nameMap.decodeView(goal.orig));
+    });
+    const auto invalidateGoalsAt = [&](NameId scope) {
+        for (int32_t i = 0; i < members.size(); ++i)
+            goalUses.forEach(scope, mb.nameMap.decodeView(members[i]), [&](int64_t) { mb.goalLedgerStale = true; });
+    };
+    invalidateGoalsAt(scopeId);
+    if (!exactScope) {
+        for (int32_t i=1;i<=mb.canonicalEquivalenceClassesMap.count();++i) {
+            const NameId scope=mb.canonicalEquivalenceClassesMap.keyAt(i);
+            if (mb.nameMap.isStrictAncestor(scopeId,scope)) invalidateGoalsAt(scope);
+        }
+    }
+    const int32_t memberN = members.size();
+    if (memberN == 0) return 0;
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(slot);
+    const ArenaOffset mark = gArena.cursor();
+    DirtyState dirty = DirtyState::Clean;
+
+    // Select each affected logical record once, independently of core count.
+    // The index is maintained by every negation-ledger writer and scope wipe.
+    ensureCanonicalWatchUses(mb);
+    auto& watchUses = mb.lbMemory.canonicalUses.watches;
+    TypedColdSet<int64_t> selected(&gArena, &dirty);
+    const auto selectScope = [&](NameId scope) {
+        for (int32_t m = 0; m < memberN; ++m)
+            watchUses.forEach(scope, mb.nameMap.decodeView(members[m]),
+                [&](int64_t key) { selected.mint(key); });
+    };
+    selectScope(scopeId);
+    if (!exactScope) {
+        TypedColdSet<NameId> descendants(&gArena, &dirty);
+        for (int32_t id = 1; id <= mb.negationLedger.count(); ++id) {
+            const NameId scope = static_cast<NameId>(uint64_t(mb.negationLedger.decodeKey(id)) >> 32);
+            if (mb.nameMap.isStrictAncestor(scopeId, scope)) descendants.mint(scope);
+        }
+        for (int32_t i = 1; i <= descendants.count(); ++i) selectScope(descendants.keyAt(i));
+    }
+    struct SelectedRow { int32_t keyId; NameId scope; NameId original; };
+    PagedVector<SelectedRow> rows(&gArena, &dirty);
+    for (int32_t i = 1; i <= selected.count(); ++i) {
+        const int64_t key = selected.keyAt(i);
+        assert(watchUses.contains(key));
+        const auto row = Codec<StatementKey>::decode(key);
+        const StrSpan text = mb.nameMap.decodeView(row.orig);
+        assert(!text.empty() && text[0] == '!' && !isNegatedEquality(text));
+        const NameId core = mb.nameMap.lookup(extractExpressionUniversalSpan(text));
+        assert(core != 0);
+        const int32_t run = mb.negationLedger.lookup(watchKey(row.validity, core));
+        assert(run != 0 && mb.negationLedger.runLen(run) != 0);
+        rows.push_back(SelectedRow{run, row.validity, row.orig});
+    }
+    // Reproduce the prior ledger-key order and decoded lexical row order,
+    // including the order in which canonical text identifiers are minted.
+    const auto less = [&](int32_t a, int32_t b) {
+        const auto left = rows[a], right = rows[b];
+        return left.keyId != right.keyId ? left.keyId < right.keyId
+            : compareSpans(mb.nameMap.decodeView(left.original), mb.nameMap.decodeView(right.original)) < 0;
+    };
+    ChunkSortedOrdinals<decltype(less)> order(gArena, rows.size(), 0, less);
+    struct RunRef { int32_t keyId; NameId scope; };
+    struct Change { int32_t runIdx; NameId orig; NameId canon; };
+    PagedVector<RunRef> runs(&gArena, &dirty);
+    PagedVector<Change> changes(&gArena, &dirty);
+    for (int32_t i = 0; i < rows.size(); ++i) {
+        const auto row = rows[order.next()];
+        if (runs.empty() || runs[runs.size() - 1].keyId != row.keyId)
+            runs.push_back(RunRef{row.keyId, row.scope});
+        changes.push_back(Change{runs.size() - 1, row.original,
+            canonicalWatchIdAt(mb, row.original, row.scope)});
+    }
+    int32_t changedTotal = 0;
+    if (changes.size() > 0) {
+        // (3) One rebuild per touched run: the run's values are replaced
+        //     through a sorted (orig -> canon) lookup of its change group.
+        const int32_t cN = changes.size();
+        Change* cs = reinterpret_cast<Change*>(gArena.resolve(gArena.alloc(
+            cN * static_cast<int32_t>(sizeof(Change)), static_cast<int32_t>(alignof(Change)))));
+        for (int32_t i = 0; i < cN; ++i) cs[i] = changes[i];
+        std::sort(cs, cs + cN, [](const Change& a, const Change& b) {
+            return a.runIdx != b.runIdx ? a.runIdx < b.runIdx : a.orig < b.orig; });
+        for (int32_t g = 0; g < cN; ) {
+            int32_t h = g;
+            while (h < cN && cs[h].runIdx == cs[g].runIdx) ++h;
+            const RunRef& ref = runs[cs[g].runIdx];
+            const int32_t n = mb.negationLedger.runLen(ref.keyId);
+            const ArenaOffset runMark = gArena.cursor();
+            int64_t* next = reinterpret_cast<int64_t*>(gArena.resolve(gArena.alloc(
+                n * static_cast<int32_t>(sizeof(int64_t)), static_cast<int32_t>(alignof(int64_t)))));
+            bool changed = false;
+            for (int32_t j = 0; j < n; ++j) {
+                const int64_t v = mb.negationLedger.valueAt(ref.keyId, j);
+                const NameId orig = ledgerOriginalId(v);
+                // binary search the group [g, h) by orig
+                int32_t lo = g, hi = h;
+                while (lo < hi) {
+                    const int32_t mid = lo + (hi - lo) / 2;
+                    if (cs[mid].orig < orig) lo = mid + 1; else hi = mid;
+                }
+                if (lo < h && cs[lo].orig == orig && cs[lo].canon != ledgerCanonicalId(v)) {
+                    next[j] = packInt32Pair(cs[lo].canon, orig);
+                    const int64_t dependencyKey = packStatementKey(orig,ref.scope);
+                    mb.lbMemory.canonicalUses.watches.erase(dependencyKey,gArena);
+                    indexCanonicalText(mb.lbMemory.canonicalUses.watches,dependencyKey,ref.scope,mb.nameMap.decodeView(orig));
+                    indexCanonicalText(mb.lbMemory.canonicalUses.watches,dependencyKey,ref.scope,mb.nameMap.decodeView(cs[lo].canon));
+                    changed = true; ++changedTotal;
+                    mb.pendingWatchRechecks.push_back(packInt32Pair(ref.scope, orig));
+                } else {
+                    next[j] = v;
+                }
+            }
+            if (changed) {
+                std::sort(next, next + n);
+                const int32_t unique = static_cast<int32_t>(std::unique(next, next + n) - next);
+                mb.negationLedger.assignSet(mb.negationLedger.decodeKey(ref.keyId), next, unique);
+            }
+            gArena.popTo(runMark);
+            g = h;
+        }
+    }
+    gArena.popTo(mark);
+    return changedTotal;
+}
+
 void ExpressionAnalyzer::revisitRejectedOrdis(StrSpan markedExpr,
     Memory& memoryBlock,
-    StrSpan validityName)
+    StrSpan validityName, int64_t selectedKey)
 {
+    if (selectedKey==0 && queueCanonicalWake(memoryBlock,markedExpr,validityName,4)) return;
     auto& rmo = memoryBlock.overallHashMemory.rejectedMapOrdis;
 
     // Non-minting probe — a never-interned template was never parked; a
     // key without a parked run is a defined miss.
-    int64_t revisitPk = 0;
-    if (!lookupTemplateKey(memoryBlock.templateInterner,
-            memoryBlock.nameMap, markedExpr, validityName, revisitPk)) {
+    if (selectedKey == 0) {
+        const unsigned slot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+            : genScratchArenas().slotCount() - 1;
+        ScratchArena& arena = genScratchArenas().forSlot(slot);
+        ScratchArena& strings = scratchArenas().forSlot(slot);
+        ScratchScope frame(arena), textFrame(strings);
+        const ScratchString text = ScratchString::copyFrom(strings, markedExpr.ptr, markedExpr.len);
+        const ScratchString scope = ScratchString::copyFrom(strings, validityName.ptr, validityName.len);
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<int64_t> matches(&arena, &dirty);
+        const NameId scopeId = memoryBlock.nameMap.lookup(validityName);
+        assert(scopeId != 0);
+        matchingCanonicalTemplates(memoryBlock, memoryBlock.overallHashMemory.rejectedMapOrdis,
+            memoryBlock.lbMemory.canonicalUses.ordisParkMatches, StrSpan(text), scopeId, scopeId, matches, arena);
+        for (int32_t i = 0; i < matches.size(); ++i)
+            revisitRejectedOrdis(StrSpan(text), memoryBlock, StrSpan(scope), matches[i]);
         return;
     }
+    const int64_t revisitPk = selectedKey;
     if (rmo.lookup(revisitPk) == 0) {
         return;
     }
@@ -8985,18 +11380,33 @@ void ExpressionAnalyzer::revisitRejectedOrdis(StrSpan markedExpr,
 
 void ExpressionAnalyzer::revisitRejectedOrdis2(StrSpan groundText,
     Memory& memoryBlock,
-    StrSpan validityName)
+    StrSpan validityName, int64_t selectedKey)
 {
+    if (selectedKey==0 && queueCanonicalWake(memoryBlock,groundText,validityName,8)) return;
     auto& rmo2 = memoryBlock.overallHashMemory.rejectedMapOrdis2;
 
     // Non-minting probe — a never-interned ground text was never filed; a
     // key without a parked run is a defined miss (a demand with no supply
     // waits in admissionMapOrdis2 for a later deposit's route-(c) probe).
-    int64_t revisitPk = 0;
-    if (!lookupTemplateKey(memoryBlock.templateInterner,
-            memoryBlock.nameMap, groundText, validityName, revisitPk)) {
+    if (selectedKey == 0) {
+        const unsigned slot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+            : genScratchArenas().slotCount() - 1;
+        ScratchArena& arena = genScratchArenas().forSlot(slot);
+        ScratchArena& strings = scratchArenas().forSlot(slot);
+        ScratchScope frame(arena), textFrame(strings);
+        const ScratchString text = ScratchString::copyFrom(strings, groundText.ptr, groundText.len);
+        const ScratchString scope = ScratchString::copyFrom(strings, validityName.ptr, validityName.len);
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<int64_t> matches(&arena, &dirty);
+        const NameId scopeId = memoryBlock.nameMap.lookup(validityName);
+        assert(scopeId != 0);
+        matchingCanonicalTemplates(memoryBlock, memoryBlock.overallHashMemory.rejectedMapOrdis2,
+            memoryBlock.lbMemory.canonicalUses.ordis2ParkMatches, StrSpan(text), scopeId, scopeId, matches, arena);
+        for (int32_t i = 0; i < matches.size(); ++i)
+            revisitRejectedOrdis2(StrSpan(text), memoryBlock, StrSpan(scope), matches[i]);
         return;
     }
+    const int64_t revisitPk = selectedKey;
     if (rmo2.lookup(revisitPk) == 0) {
         return;
     }
@@ -9066,8 +11476,8 @@ void ExpressionAnalyzer::revisitRejectedOrdis2(StrSpan groundText,
     gArena.popTo(mark);
 
     memoryBlock.overallHashMemory.ordis2RevisitInProgress.erase(revisitPk);
-    // Demand consumption happens only at the route-(c) open (D-267),
-    // never here.
+    // The shared demand stays available for every queued source.
+    // A route-(c) probe removes it only after the fact becomes known.
 }
 
 
@@ -9080,83 +11490,63 @@ void ExpressionAnalyzer::revisitRejectedOrdis2(StrSpan groundText,
 //   * no revisitInProgress guard (no re-entry through addStatement).
 // The rejectedMapIntegration entry itself IS erased — the rejection is
 // resolved (the constituents have been handed to the revival channel).
-void ExpressionAnalyzer::revisitRejectedIntegration2(StrSpan markedKey,
-    Memory& memoryBlock,
-    StrSpan validityName) {
-
-    auto& rmi = memoryBlock.overallHashMemory.rejectedMapIntegration;
-    // Non-minting probe — a never-interned template has no rejection cohort.
-    int64_t markedPk = 0;
-    if (!lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
-                           markedKey, validityName, markedPk)) {
-        return;
+// A cohort parked at a strict ANCESTOR of validityName is released into
+// validityName and KEPT (releaseAncestorRejectedIntegration2) — the same
+// two-path shape as revisitRejected2.
+void ExpressionAnalyzer::revisitRejectedIntegration2(StrSpan key, Memory& mb, StrSpan validityName) {
+    if (queueCanonicalWake(mb,key,validityName,2)) return;
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    ScratchScope stringFrame(strings);
+    const ScratchString ownedKey = ScratchString::copyFrom(strings, key.ptr, key.len);
+    const ScratchString ownedValidity = ScratchString::copyFrom(strings, validityName.ptr, validityName.len);
+    key = StrSpan(ownedKey); validityName = StrSpan(ownedValidity);
+    if (!hasPotentialParkedDemand(mb, key, validityName, true)) return;
+    StrSpan scopes[ExecutionParameters::MAX_SCOPE_DEPTH];
+    scopes[0] = validityName; const int32_t count = 1;
+    for (int32_t i = 0; i < count; ++i) {
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<int64_t> matches(&arena, &dirty);
+        matchingCanonicalTemplates(mb, mb.overallHashMemory.rejectedMapIntegration,
+            mb.lbMemory.canonicalUses.integrationParkMatches, key, mb.nameMap.lookup(scopes[i]),
+            mb.nameMap.lookup(validityName), matches, arena);
+        for (int32_t k = 0; k < matches.size(); ++k) {
+            const auto records = snapshotRejectedIntegrationRun(mb.overallHashMemory.rejectedMapIntegration, matches[k], arena);
+            for (int32_t r = 0; r < records.count; ++r)
+                queueParkedExistence(mb, key, records.views[r], scopes[i], validityName, true);
+        }
     }
-    // Non-minting presence probe — 0 means no rejection cohort.
-    if (rmi.lookup(markedPk) == 0) return;
+    releaseAncestorRejectedIntegration2(key, mb, validityName);
+}
 
-    // Snapshot the rejected-integration cohort as VERBATIM blob copies + views
-    // on the gen-scratch arena — copy BEFORE erase: eraseBlobIf restructures the
-    // blob pool so peeked pointers into `rmi` dangle past it. The cold run is
-    // stored canonical under DecodedRejectedIntegrationValueLess (the
-    // insertRejectedIntegrationValue RMW contract), so walking the views in run
-    // order IS walking the former RejectedIntegrationValueSet snapshot — the
-    // set's dedup is a no-op on a canonical run. The revisitRejected2 shape:
-    // snapshot -> erase -> process -> popTo. The emission loop below never reads
-    // rmi (it deposits onto sameIterationInternalMail), so erasing before the
-    // loop is behaviour-identical to the former erase-after order.
-    const unsigned slot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : genScratchArenas().slotCount() - 1;
-    ScratchArena& gArena = genScratchArenas().forSlot(slot);
-    const ArenaOffset mark = gArena.cursor();
-    const RejectedIntegrationRunSnapshot snap =
-        snapshotRejectedIntegrationRun(rmi, markedPk, gArena);
-
-    rmi.eraseBlobIf([markedPk](int64_t k) { return k == markedPk; });
-
-    for (int32_t vi = 0; vi < snap.count; ++vi) {
-        const RejectedIntegrationValueBlobView& val = snap.views[vi];
-        // Zero-copy per-record spans: the loop's only mutating sink is the
-        // revival emission door, which mints nameMap + originInterner —
-        // never valueInterner — and the walked blob bytes are gen-arena
-        // copies, so valueInterner decodeView spans stay valid across the
-        // whole loop (I-3 different-interner rule; the revisitRejected2
-        // precedent).
-        const StrSpan valConcrete =
-            memoryBlock.valueInterner.decodeView(val.concreteConstituentId());
-        const int32_t sibN = val.siblingCount();
-        assert(sibN <= 64 && "integration revival sibling cohort exceeds 64");
-        StrSpan sibBuf[64];
-        for (int32_t i = 0; i < sibN; ++i)
-            sibBuf[i] = memoryBlock.valueInterner.decodeView(val.siblingId(i));
-
-        // Caller-owned stack copy of the compound's level run — never a
-        // pointer into the cold value column (I-136).
-        const StrSpan valCompound =
-            memoryBlock.valueInterner.decodeView(val.compoundExpressionId());
-        int lvRun[256];
-        int32_t lvN = 0;
-        const int32_t compoundLvlsId = lookupStatementLevels(
-            memoryBlock.intStatementLevelsMap, memoryBlock.nameMap,
-            valCompound, validityName);
-        if (compoundLvlsId)
-            lvN = coldIntRunAt(memoryBlock.intStatementLevelsMap,
-                               compoundLvlsId, lvRun, 256);
-
-        // Direct-revisit path: no rewrite happened, so pre == post. For
-        // equality1 origin, origin.second[0] still needs to be a sensible
-        // source — passing the constituent itself lets the verifier walk
-        // it as both source and result (with an empty equalities list).
-        this->emitIntegrationRevivalToInternalMailIn(
-            valConcrete, valConcrete,
-            sibBuf, sibN, sibBuf, sibN,
-            lvRun, lvN,
-            validityName,
-            nullptr, 0,
-            memoryBlock);
+void ExpressionAnalyzer::releaseAncestorRejectedIntegration2(StrSpan key, Memory& mb, StrSpan validityName) {
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(arena);
+    ScratchScope stringFrame(strings);
+    const ScratchString ownedKey = ScratchString::copyFrom(strings, key.ptr, key.len);
+    const ScratchString ownedValidity = ScratchString::copyFrom(strings, validityName.ptr, validityName.len);
+    key = StrSpan(ownedKey); validityName = StrSpan(ownedValidity);
+    StrSpan scopes[ExecutionParameters::MAX_SCOPE_DEPTH];
+    const int32_t count = copyStrictAncestorSpans(mb, validityName, scopes, strings);
+    for (int32_t i = 0; i < count; ++i) {
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<int64_t> matches(&arena, &dirty);
+        matchingCanonicalTemplates(mb, mb.overallHashMemory.rejectedMapIntegration,
+            mb.lbMemory.canonicalUses.integrationParkMatches, key, mb.nameMap.lookup(scopes[i]),
+            mb.nameMap.lookup(validityName), matches, arena);
+        for (int32_t k = 0; k < matches.size(); ++k) {
+            const auto records = snapshotRejectedIntegrationRun(mb.overallHashMemory.rejectedMapIntegration, matches[k], arena);
+            for (int32_t r = 0; r < records.count; ++r)
+                queueParkedExistence(mb, key, records.views[r], scopes[i], validityName, true);
+        }
     }
 
-    gArena.popTo(mark);
 }
 
 
@@ -9182,66 +11572,140 @@ std::string ExpressionAnalyzer::replaceUSubstrings(const std::string& s) {
 
 void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
     Memory& mb,
-    StrSpan validityName)
+    StrSpan validityName, bool inductionAllowed, int64_t selectedKey, int32_t boundSlot)
 {
-    // 1. Initial Guard Clauses: Check Operator. The core name is a StrSpan slice
-    // of `expression` (extractExpressionSpan is the byte-exact twin of
-    // ce::extractExpression) — it keys `operators`
-    // (std::set<std::string, std::less<>>, transparent) and the
-    // compiled-definition layer through the coreConfig reader fence, so no
-    // std::string is materialized on this path at all
+    assert((selectedKey == 0) == (boundSlot < 0)
+        && "updateAdmissionMapRecursion: a matched template carries its marked argument slot");
+    const unsigned canonicalSlot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& canonicalStrings = scratchArenas().forSlot(canonicalSlot);
+    ScratchScope canonicalFrame(canonicalStrings);
+    const ScratchString ownedValidity = ScratchString::copyFrom(canonicalStrings,validityName.ptr,validityName.len);
+    validityName=StrSpan(ownedValidity);
+    const NameId canonicalScope=mb.nameMap.lookup(validityName);
+    assert(canonicalScope!=0);
+    const ScratchString originalInput = ScratchString::copyFrom(canonicalStrings, expression.ptr, expression.len);
+    expression = StrSpan(originalInput);
+    // 1. Recursion participants (D-413):
+    // an operator (either polarity) binds only its output; a positive
+    // config-backed compound that is not a relation binds any argument.
+    // Relations (two configured inputs, no output: preorder, strictOrder),
+    // atomic cores (`in`, `=`), config-less compounds and negated compounds
+    // are defined non-participants. The core name is a StrSpan slice
+    // (extractExpressionSpan is the byte-exact twin of ce::extractExpression)
+    // keying `operators` (std::set<std::string, std::less<>>, transparent)
+    // and the compiled-definition layer through the coreConfig /
+    // compiledEntity reader fences, so no std::string is materialized
     // (I-137).
-    const StrSpan coreSpan = extractExpressionSpan(expression);
-    if (this->operators.find(std::string_view(coreSpan.ptr,
-            static_cast<std::size_t>(coreSpan.len))) == this->operators.end()) {
+    enum class Participant { none, operatorElement, compoundElement };
+    const auto participantOf = [this](StrSpan element) -> Participant {
+        const StrSpan core = extractExpressionSpan(element);
+        if (this->operators.find(std::string_view(core.ptr,
+                static_cast<std::size_t>(core.len))) != this->operators.end())
+            return Participant::operatorElement;
+        if (element.len == 0 || element.ptr[0] == '!') return Participant::none;
+        const LogicalEntity* entity = compiledEntity(core);
+        if (entity == nullptr || equalSpans(StrSpan(entity->category), StrSpan("atomic", 6)))
+            return Participant::none;
+        const ce::CoreExpressionConfig* cfg = coreConfig(core);
+        if (cfg == nullptr) return Participant::none;
+        if (cfg->inputIndices.size() == 2 && cfg->outputIndices.empty()) return Participant::none;
+        return Participant::compoundElement;
+    };
+    const auto outputSlotOf = [this](StrSpan element) -> int32_t {
+        const ce::CoreExpressionConfig* cfg = coreConfig(extractExpressionSpan(element));
+        assert(cfg && "updateAdmissionMapRecursion: operator core must be compiled");
+        assert(!cfg->outputIndices.empty());
+        return cfg->outputIndices[0];
+    };
+    const Participant arriving = participantOf(expression);
+    if (arriving == Participant::none) {
         return;
     }
 
-    const ce::CoreExpressionConfig* cfg = coreConfig(coreSpan);
-    assert(cfg && "updateAdmissionMapRecursion: operator core must be compiled");
-    assert(!cfg->outputIndices.empty());
-
-    // 2. Identify Output Argument. The statement arg-parse rides the span twin
-    // (getArgsSpans == ce::getArgs, byte-identical); the one output arg is a
-    // StrSpan slice of `expression` (a caller-stable buffer disjoint from the
-    // value / template / NameMap interners minted below, so it survives every
-    // mint — I-3). It feeds the replacementMap substitution + newRemainingArgs
+    // 2. The statement arg-parse rides the span twin (getArgsSpans ==
+    // ce::getArgs, byte-identical); every argument is a StrSpan slice of
+    // `expression` (a caller-stable buffer disjoint from the value / template
+    // / NameMap interners minted below, so it survives every mint — I-3). The
+    // bound argument feeds the replacementMap substitution + newRemainingArgs
     // membership/encode as spans, no heap std::string (row 41/50,
     // I-138 L9 Item 2).
     StrSpan argSpans[ExecutionParameters::MAX_ARITY];
     const int32_t argN = getArgsSpans(expression, argSpans,
                                       ExecutionParameters::MAX_ARITY);
-    int outIdx = cfg->outputIndices[0];
 
-    assert(outIdx >= 0 && outIdx < argN);
-
-    const StrSpan inputOutputArg = argSpans[outIdx];
-
-    // 3. Prepare Lookup. The marker-form template key rides the per-slot
-    // BYTE-scratch arena — replaceKeysScratch is the byte-exact twin of
-    // ce::replaceKeysInString (greedy-longest, token-boundary), so markedExpr's
-    // bytes reproduce the former heap std::string. The ScratchScope spans to
-    // function end because the convergence compare (testExpr vs markedExpr) reads
-    // it deep in the value loop; the arena is disjoint from the template / NameMap
-    // / value interners minted below, and nested callee scratch scopes rewind LIFO
-    // above it, so markedExpr stays valid to its last use.
+    // The marker forms ride the per-slot BYTE-scratch arena, disjoint from the
+    // template / NameMap / value interners minted below; nested callee scratch
+    // scopes rewind LIFO above this function's scopes.
     const unsigned strSlot = (g_currentCoreId >= 0)
         ? static_cast<unsigned>(g_currentCoreId)
         : scratchArenas().slotCount() - 1;
     ScratchArena& strArena = scratchArenas().forSlot(strSlot);
     ScratchScope markedScope(strArena);
-    StrReplacement markerPair[1];
-    markerPair[0].key = inputOutputArg;
-    markerPair[0].value = StrSpan("marker", 6);
-    const ScratchString markedExpr =
-        replaceKeysScratch(strArena, expression, markerPair, 1);
 
-    // The historical EWV map created a default-false status entry on this probe
-    // and the dump's status section counts it — the cold map reproduces that
-    // byte-for-byte: a miss inserts the default-false entry, then returns
-    // (D-172).
-    const int64_t markedPk = mintTemplateKey(mb.templateInterner, mb.nameMap,
-                                             StrSpan(markedExpr), validityName);
+    // 3. The door: an operator statement is tried with its output marked; a
+    // compound statement with every distinct argument marked, since its
+    // demand marks the one argument its premise lacks, wherever it stands.
+    // Each matching template is walked by the per-match call with that
+    // argument's slot. The historical EWV map created a default-false status
+    // entry on the operator's output probe and the dump's status section
+    // counts it — the cold map reproduces that byte-for-byte: an unmatched
+    // output probe mints the template and inserts the default-false entry
+    // (D-172). A compound probe is a pure lookup.
+    if (selectedKey == 0) {
+        const bool arrivingOperator = arriving == Participant::operatorElement;
+        const int32_t outputSlot = arrivingOperator ? outputSlotOf(expression) : -1;
+        assert(!arrivingOperator || (outputSlot >= 0 && outputSlot < argN));
+        const unsigned slot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+            : genScratchArenas().slotCount() - 1;
+        ScratchArena& arena=genScratchArenas().forSlot(slot);
+        for (int32_t probe = 0; probe < argN; ++probe) {
+            if (arrivingOperator && probe != outputSlot) continue;
+            bool repeated = false;
+            for (int32_t prior = 0; prior < probe && !repeated; ++prior)
+                repeated = equalSpans(argSpans[prior], argSpans[probe]);
+            if (repeated && !arrivingOperator) continue;
+            ScratchScope probeStrings(strArena);
+            StrReplacement probePair[1];
+            probePair[0].key = argSpans[probe];
+            probePair[0].value = StrSpan("marker", 6);
+            const ScratchString probeOriginal = replaceKeysScratch(strArena, expression, probePair, 1);
+            const ScratchString probeMarked = canonicalAdmissionText(mb, StrSpan(probeOriginal), canonicalScope, strArena);
+            ScratchScope frame(arena);
+            DirtyState dirty=DirtyState::Clean;
+            PagedVector<int64_t> matches(&arena,&dirty);
+            matchingCanonicalTemplates(mb,mb.overallHashMemory.admissionMap,mb.lbMemory.canonicalUses.algebraMatches,
+                StrSpan(probeMarked),canonicalScope,canonicalScope,matches,arena);
+            for (int32_t i=0;i<matches.size();++i)
+                updateAdmissionMapRecursion(expression,mb,validityName,inductionAllowed,matches[i],probe);
+            if (matches.empty() && arrivingOperator) {
+                const int64_t missPk=mintTemplateKey(mb.templateInterner,mb.nameMap,StrSpan(probeMarked),validityName);
+                if (mb.overallHashMemory.admissionStatusMap.find(missPk) == nullptr) {
+                    mb.overallHashMemory.admissionStatusMap.upsert(missPk, static_cast<uint8_t>(0));
+                }
+            }
+        }
+        return;
+    }
+
+    // 4. The per-match walk: `selectedKey` is a template the door matched with
+    // argument `boundSlot` marked. The marker-form template key rides the
+    // per-slot BYTE-scratch arena — replaceKeysScratch is the byte-exact twin
+    // of ce::replaceKeysInString (greedy-longest, token-boundary). The
+    // ScratchScope spans to function end because the convergence compare
+    // (testExpr vs markedExpr) reads it deep in the value loop; the arena is
+    // disjoint from the template / NameMap / value interners minted below,
+    // and nested callee scratch scopes rewind LIFO above it, so markedExpr
+    // stays valid to its last use.
+    assert(boundSlot < argN);
+    const StrSpan rawBoundArg = argSpans[boundSlot];
+    const StrSpan boundArg = StrSpan(canonicalAdmissionText(mb, rawBoundArg, canonicalScope, canonicalStrings));
+    StrReplacement markerPair[1];
+    markerPair[0].key = rawBoundArg;
+    markerPair[0].value = StrSpan("marker", 6);
+    const ScratchString originalMarked = replaceKeysScratch(strArena, expression, markerPair, 1);
+    const ScratchString markedExpr = canonicalAdmissionText(mb, StrSpan(originalMarked), canonicalScope, strArena);
+    const int64_t markedPk=selectedKey;
 
     {
         const uint8_t* stProbe =
@@ -9254,10 +11718,23 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
         if (*stProbe == 0) {
             return;
         }
+        // A recursion-owned template serves a disintegration product only
+        // when the disintegrated original has numbers as its only arguments
+        // (I-285).
+        if (!inductionAllowed) {
+            return;
+        }
+        // Nor does it accept a construction of the induction hypothesis'
+        // own head: no derived demand, enrollment, preparation or revisit
+        // (I-286).
+        if (mb.recursionHeadWitnesses.lookup(rawBoundArg) != 0) {
+            return;
+        }
     }
 
     // 4. Lookup in Admission Map
     const int32_t admPropId = mb.overallHashMemory.admissionMap.lookup(markedPk);
+
 
     // Guard: Return if not found
     if (admPropId == 0) {
@@ -9309,7 +11786,7 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                   static_cast<int32_t>(alignof(StrSpan)))));
         for (int32_t e = 0; e < valKeyN; ++e) {
             const StrSpan dv = mb.valueInterner.decodeView(val.keyId(e));
-            valKeySpans[e] = StrSpan(ScratchString::copyFrom(strArena, dv.ptr, dv.len));
+            valKeySpans[e] = StrSpan(ScratchString::copyFrom(strArena,dv.ptr,dv.len));
         }
 
         // valRemaining: the former std::set<std::string> becomes a sorted-unique
@@ -9324,77 +11801,86 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                   static_cast<int32_t>(alignof(StrSpan)))));
         for (int32_t r = 0; r < valRemRawN; ++r) {
             const StrSpan dv = mb.valueInterner.decodeView(val.remId(r));
-            valRemaining[r] = StrSpan(ScratchString::copyFrom(strArena, dv.ptr, dv.len));
+            valRemaining[r] = StrSpan(ScratchString::copyFrom(strArena,dv.ptr,dv.len));
         }
-        std::sort(valRemaining, valRemaining + valRemRawN,
-            [](const StrSpan& a, const StrSpan& b) { return compareSpans(a, b) < 0; });
-        int32_t valRemN = 0;
-        for (int32_t r = 0; r < valRemRawN; ++r) {
-            if (valRemN == 0
-                || !equalSpans(valRemaining[valRemN - 1], valRemaining[r]))
-                valRemaining[valRemN++] = valRemaining[r];
-        }
+        bool excludedAnchor = false;
+        const int32_t valRemN = canonicalAdmissionChain(mb, valKeySpans, valKeyN,
+            valRemaining, valRemRawN, canonicalScope, strArena, valKeySpans, valRemaining, excludedAnchor);
+
 
         for (int32_t keIx = 0; keIx < valKeyN; ++keIx) {
             const StrSpan keyElem = valKeySpans[keIx];
 
             // --- Flattened Logic Start ---
 
-            const StrSpan kCoreSpan = extractExpressionSpan(keyElem);
-
-            // Skip non-operators
-            if (this->operators.find(std::string_view(kCoreSpan.ptr,
-                    static_cast<std::size_t>(kCoreSpan.len))) == this->operators.end()) continue;
-
-            const ce::CoreExpressionConfig* kCfg = coreConfig(kCoreSpan);
-            assert(kCfg && "updateAdmissionMapRecursion: key operator core must be compiled");
-            assert(!kCfg->outputIndices.empty());
+            // Skip non-participants (the participantOf classes above).
+            const Participant kRole = participantOf(keyElem);
+            if (kRole == Participant::none) {
+                continue;
+            }
 
             StrSpan kArgs[ExecutionParameters::MAX_ARITY];
             const int32_t kArgsN = getArgsSpans(keyElem, kArgs,
                                                 ExecutionParameters::MAX_ARITY);
-            int kOutIdx = kCfg->outputIndices[0];
+            const int32_t kOutputSlot = kRole == Participant::operatorElement ? outputSlotOf(keyElem) : -1;
+            assert(kRole != Participant::operatorElement || (kOutputSlot >= 0 && kOutputSlot < kArgsN));
 
-            assert(kOutIdx >= 0 && kOutIdx < kArgsN);
-
-            // kOutputArg is a slice of keyElem (a stable string-arena copy).
-            const StrSpan kOutputArg = kArgs[kOutIdx];
-
-            // Condition: Output arg must NOT be in remaining args (binary_search
-            // over the sorted-unique run == the former std::set membership).
-            if (std::binary_search(valRemaining, valRemaining + valRemN, kOutputArg,
-                    [](const StrSpan& a, const StrSpan& b) {
-                        return compareSpans(a, b) < 0;
-                    })) continue;
-
-            // Per-keyElem string window: testExpr and (on a match) the newKey
-            // rewrites + newMarkedExpr live here, freed at keyElem end.
+            // Per-keyElem string window: the testExpr candidates and (on a
+            // match) the newKey rewrites + newMarkedExpr live here, freed at
+            // keyElem end.
             ScratchScope keScope(strArena);
 
-            // Check for Match. Single-key marker map -> StrReplacement[1];
-            // replaceKeysScratch is the byte-exact twin of ce::replaceKeysInString
-            // (greedy-longest, token-boundary), so testExpr is byte-identical.
-            StrReplacement kMarkerPair[1];
-            kMarkerPair[0].key = kOutputArg;
-            kMarkerPair[0].value = StrSpan("marker", 6);
-            const ScratchString testExpr =
-                replaceKeysScratch(strArena, keyElem, kMarkerPair, 1);
+            // Check for Match: the element's free argument (not in remaining
+            // args — binary_search over the sorted-unique run == the former
+            // std::set membership; an operator's output only) whose marker
+            // form is the statement's marked form. Single-key marker map ->
+            // StrReplacement[1]; replaceKeysScratch is the byte-exact twin of
+            // ce::replaceKeysInString (greedy-longest, token-boundary), so each
+            // testExpr is byte-identical. kBoundArg is a slice of keyElem (a
+            // stable string-arena copy).
+            bool matched = false;
+            StrSpan kBoundArg;
+            for (int32_t a = 0; a < kArgsN && !matched; ++a) {
+                if (kRole == Participant::operatorElement && a != kOutputSlot) continue;
+                bool repeated = false;
+                for (int32_t prior = 0; prior < a && !repeated; ++prior)
+                    repeated = equalSpans(kArgs[prior], kArgs[a]);
+                if (repeated && kRole != Participant::operatorElement) continue;
+                if (std::binary_search(valRemaining, valRemaining + valRemN, kArgs[a],
+                        [](const StrSpan& x, const StrSpan& y) {
+                            return compareSpans(x, y) < 0;
+                        })) {
+                    continue;
+                }
+                ScratchScope testScope(strArena);
+                StrReplacement kMarkerPair[1];
+                kMarkerPair[0].key = kArgs[a];
+                kMarkerPair[0].value = StrSpan("marker", 6);
+                const ScratchString testExpr =
+                    replaceKeysScratch(strArena, keyElem, kMarkerPair, 1);
+                if (equalSpans(StrSpan(testExpr), StrSpan(markedExpr))) {
+                    matched = true;
+                    kBoundArg = kArgs[a];
+                }
+            }
 
-            if (!equalSpans(StrSpan(testExpr), StrSpan(markedExpr))) continue;
+            if (!matched) {
+                continue;
+            }
 
             // --- Match Found ---
 
-            mb.overallHashMemory.productsOfRecursionIds.mint(mb.nameMap.encode(inputOutputArg));
+            mb.overallHashMemory.productsOfRecursionIds.mint(mb.nameMap.encode(boundArg));
 
             // 6. Construct New Admission Entry.
-            // replacementMap {kOutputArg -> inputOutputArg} as a stack
+            // replacementMap {kBoundArg -> boundArg} as a stack
             // StrReplacement[1]; replaceKeysScratch is the byte-exact twin of
             // ce::replaceKeysInString (single key, greedy-longest, token-boundary).
             // newKey is a StrSpan run over per-element rewrites on the string
             // arena; each element is valueInterner.encode'd at the insert below.
             StrReplacement replPair[1];
-            replPair[0].key = kOutputArg;
-            replPair[0].value = inputOutputArg;
+            replPair[0].key = kBoundArg;
+            replPair[0].value = boundArg;
 
             // Match-level gen-tier window: the newKey / newRemaining span arrays.
             ScratchScope matchGenScope(genArena);
@@ -9407,11 +11893,11 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                     replaceKeysScratch(strArena, valKeySpans[k], replPair, 1));
             const int32_t newKeyN = valKeyN;
 
-            // newRemainingArgs = distinct(valRemaining ∪ {inputOutputArg}) as a
+            // newRemainingArgs = distinct(valRemaining ∪ {boundArg}) as a
             // sorted StrSpan run on the byte-bump gen-scratch tier (the
             // createAuxyImplication untouchables recipe, row 41). Spans alias the
-            // valRemaining string-arena copies + inputOutputArg (a slice of the
-            // caller-stable `expression`), both alive to the match's end and
+            // valRemaining string-arena copies + boundArg (a canonical copy on
+            // the function-level string frame), both alive to the match's end and
             // disjoint from the value interner minted below (I-3). Membership rides
             // std::binary_search(compareSpans); the sorted-encode is a direct
             // in-order valueInterner.encode loop at the insert site below,
@@ -9425,7 +11911,7 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
             int32_t newRemainingN = 0;
             for (int32_t r = 0; r < valRemN; ++r)
                 newRemaining[newRemainingN++] = valRemaining[r];
-            newRemaining[newRemainingN++] = inputOutputArg;
+            newRemaining[newRemainingN++] = boundArg;
             std::sort(newRemaining, newRemaining + newRemainingN,
                 [](const StrSpan& a, const StrSpan& b) {
                     return compareSpans(a, b) < 0;
@@ -9441,59 +11927,60 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                 newRemainingN = w;
             }
 
-            // 7. Validate New Key Candidates
+            // 7. Validate New Key Candidates. A derived key is the demand for
+            // the one argument a participant still lacks (binary_search over
+            // the sorted StrSpan run == the former std::set membership): an
+            // operator whose output is outside the new remaining args while
+            // every other argument is inside; a compound element (the
+            // participantOf classes above) with exactly one distinct argument
+            // outside.
             for (int32_t nkIx = 0; nkIx < newKeyN; ++nkIx) {
                 const StrSpan newKeyElem = newKeySpans[nkIx];
-                const StrSpan newCoreSpan = extractExpressionSpan(newKeyElem);
 
-                if (this->operators.find(std::string_view(newCoreSpan.ptr,
-                        static_cast<std::size_t>(newCoreSpan.len))) == this->operators.end()) continue;
-
-                const ce::CoreExpressionConfig* newCfg = coreConfig(newCoreSpan);
-                assert(newCfg && "updateAdmissionMapRecursion: new key operator core must be compiled");
-                assert(!newCfg->outputIndices.empty());
+                const Participant nRole = participantOf(newKeyElem);
+                if (nRole == Participant::none) {
+                    continue;
+                }
 
                 StrSpan newKArgs[ExecutionParameters::MAX_ARITY];
                 const int32_t newKArgsN = getArgsSpans(newKeyElem, newKArgs,
                                                        ExecutionParameters::MAX_ARITY);
-                int newOutIdx = newCfg->outputIndices[0];
-
-                assert(newOutIdx >= 0 && newOutIdx < newKArgsN);
-
-                const StrSpan newOutputArg = newKArgs[newOutIdx];
-
-                // Condition: New output NOT in new remaining args (binary_search
-                // over the sorted StrSpan run == the former std::set membership).
-                if (std::binary_search(newRemaining, newRemaining + newRemainingN,
-                        newOutputArg,
-                        [](const StrSpan& a, const StrSpan& b) {
-                            return compareSpans(a, b) < 0;
-                        })) {
-                    continue;
-                }
-
-                // Condition: All other inputs MUST be in new remaining args.
-                bool allInputsPresent = true;
-                for (int i = 0; i < newKArgsN; ++i) {
-                    if (i == newOutIdx) continue;
-                    if (!std::binary_search(newRemaining,
-                            newRemaining + newRemainingN, newKArgs[i],
-                            [](const StrSpan& a, const StrSpan& b) {
-                                return compareSpans(a, b) < 0;
-                            })) {
-                        allInputsPresent = false;
-                        break;
+                const auto inNewRemaining = [&](const StrSpan& arg) -> bool {
+                    return std::binary_search(newRemaining, newRemaining + newRemainingN, arg,
+                        [](const StrSpan& x, const StrSpan& y) {
+                            return compareSpans(x, y) < 0;
+                        });
+                };
+                StrSpan newBoundArg;
+                bool demanded = false;
+                if (nRole == Participant::operatorElement) {
+                    const int32_t newOutIdx = outputSlotOf(newKeyElem);
+                    assert(newOutIdx >= 0 && newOutIdx < newKArgsN);
+                    newBoundArg = newKArgs[newOutIdx];
+                    demanded = !inNewRemaining(newBoundArg);
+                    for (int32_t i = 0; i < newKArgsN && demanded; ++i)
+                        if (i != newOutIdx && !inNewRemaining(newKArgs[i])) demanded = false;
+                } else {
+                    int32_t freeN = 0;
+                    for (int32_t a = 0; a < newKArgsN; ++a) {
+                        bool repeated = false;
+                        for (int32_t prior = 0; prior < a && !repeated; ++prior)
+                            repeated = equalSpans(newKArgs[prior], newKArgs[a]);
+                        if (repeated || inNewRemaining(newKArgs[a])) continue;
+                        if (freeN == 0) newBoundArg = newKArgs[a];
+                        ++freeN;
                     }
+                    demanded = freeN == 1;
                 }
 
-                if (!allInputsPresent) {
+                if (!demanded) {
                     continue;
                 }
 
                 // 8. Insert New Rule. Single-key marker map -> StrReplacement[1]
                 // (replaceKeysScratch byte-exact twin of ce::replaceKeysInString).
                 StrReplacement newMarkerPair[1];
-                newMarkerPair[0].key = newOutputArg;
+                newMarkerPair[0].key = newBoundArg;
                 newMarkerPair[0].value = StrSpan("marker", 6);
                 const ScratchString newMarkedExpr =
                     replaceKeysScratch(strArena, newKeyElem, newMarkerPair, 1);
@@ -9521,11 +12008,21 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
 
                 const int64_t newMarkedPk = mintTemplateKey(mb.templateInterner,
                     mb.nameMap, StrSpan(newMarkedExpr), validityName);
+                const int32_t previousDemandId = mb.overallHashMemory.admissionMap.lookup(newMarkedPk);
+                const int32_t previousDemandCount = previousDemandId == 0 ? 0 : mb.overallHashMemory.admissionMap.runLen(previousDemandId);
                 insertAdmissionIdsBlob(mb.overallHashMemory.admissionMap,
                                        newMarkedPk, val.depth(),
                                        val.sec(), val.flagByte() != 0,
                                        bKeyIds, bKeyCount, bRemIds, newRemainingN,
                                        mb.valueInterner, genArena);
+                // The derived demand continues the source demand: it belongs
+                // to the source key's task (I-284).
+                const int64_t sourceTask =
+                    mb.lbMemory.algebraKeyOwners.findOr(markedPk, int64_t{0});
+                recordIntegrationOwner(mb, mb.lbMemory.algebraKeyOwners, newMarkedPk, sourceTask,
+                    previousDemandId != 0);
+                if (mb.overallHashMemory.admissionMap.runLen(mb.overallHashMemory.admissionMap.lookup(newMarkedPk)) != previousDemandCount)
+                    mb.lbMemory.canonicalUses.algebraDemands.changed(newMarkedPk);
                 genArena.popTo(bMark);
                 const uint8_t srcStatusVal =
                     mb.overallHashMemory.admissionStatusMap.findOr(
@@ -9541,6 +12038,22 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                     if (!equalSpans(nmArgs[a], StrSpan("marker", 6))) {
                         mb.overallHashMemory.varsInAdmissionMapKeys.mint(mb.templateInterner.encode(nmArgs[a]));
                     }
+                }
+
+                // Integration demand for the derived key
+                // (D-413): the induction
+                // chain needs its one missing argument constructed, not only
+                // admitted, so the marker form's integration is prepared as
+                // updateAdmissionMap's marker branch prepares it at install.
+                // It runs after the entry and its status exist, so a statement
+                // the preparation deposits finds the key. Positive elements
+                // only: a negated marker form would take the contradiction
+                // route and seed a statement carrying the marker.
+                if (newKeyElem.ptr[0] != '!') {
+                    RT_SCOPE_HERE("UAMR_PREPARE_INTEGRATION");
+                    IntegrationTaskScope taskScope(mb, sourceTask);
+                    prepareIntegration(StrSpan(newMarkedExpr), newRemaining, newRemainingN,
+                        mb, validityName, StrSpan());
                 }
 
                 // revisitRejected2 now takes StrSpan validityName; pass the span
@@ -9608,7 +12121,7 @@ void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
 /// Cross-LB state mutations are forbidden during the worker phase per
 /// [I-28](../../docs/agentic_swdd/30_invariants.md#i-28); each worker writes only
 /// to its own LB's local state and to the per-thread collectors
-/// (`updateGlobalTuples`, the `updateGlobalDirectPages` sealed set, the
+/// (`updateGlobalTuples`, the `updateGlobalSingleChapterPages` sealed set, the
 /// per-core-slot mail outboxes).
 ///
 /// After `pool.join()`, the post-parallel collector phase runs:
@@ -9617,7 +12130,7 @@ void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
 ///    at the next iteration's phase 1; the per-item validity assert per
 ///    [I-26](../../docs/agentic_swdd/30_invariants.md#i-26) runs at the
 ///    receiver-side absorb.
-/// 2. `updateGlobal` / `updateGlobalDirect` — drains the per-thread
+/// 2. `updateGlobal` / `updateGlobalSingleChapter` — drains the per-thread
 ///    tuple queues into the global theorem list / dependencies.
 /// 3. Equivalence-class merger pass — folds any new equalities
 ///    discovered this iteration.
@@ -9637,6 +12150,20 @@ void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
 void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 
     if (bodies.empty()) return;
+
+    // Every deactivateUnnecessary walk runs in this kernel's theorem drains
+    // and is settled there; an owed sweep at entry means a walk ran outside
+    // them, and its prune would miss the barrier discharge
+    // (D-451).
+    assert(!deactivationSweepOwed
+        && "proveKernel entry: a deactivateUnnecessary walk outside the theorem drains left its sweep unsettled");
+
+    // The reserved single-threaded slot serves the seams between iterations;
+    // no scope on it is open here, so its blocks go back to the pool before
+    // this iteration's phases draw from it.
+    const unsigned seamScratchSlot = genScratchArenas().slotCount() - 1;
+    releaseSlotScratch(scratchArenas(), genScratchArenas(), ruleStagings(),
+                       seamScratchSlot);
 
 #if MEM_MEASUREMENT
     // One iteration, one memory sample. Zeroing here (single-threaded, before
@@ -9676,6 +12203,10 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // doctrine. A skipped LB stays isActive and keeps its claim/pager state
     // untouched: it is unswept this round, not deactivated, so the pager's sweep
     // window never includes it and it evicts and stays evicted at 4 GiB.
+    // One burst stamp for the Phase 2 measurements recorded in this call's
+    // phase 1 (recordPhase2Measurement).
+    ++phase2MeasurementEpoch;
+
     const bool skipEnabled = parameters.enable_quiesce_skip
         && !parameters.compressor_mode && !ceFilteringActive && !warmUpPhase;
     int skipped = 0;
@@ -9732,14 +12263,14 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     deferredAncestorPages.emplace();
     deferredAncestorPages->bind(&staticMemory());
 
-    // Fresh per-iteration staging page set for proven direct theorems (Part B of
+    // Fresh per-iteration staging page set for proven single-chapter theorems (Part B of
     // the row-338 statification): dischargeToBeProved / dischargeContradiction
     // seal each theorem's bytes here so they cross the parallel -> join boundary
     // verbatim (the LB deloads after its burst); drained by
-    // drainUpdateGlobalDirect below. Non-movable in a std::optional -> stable
+    // drainUpdateGlobalSingleChapter below. Non-movable in a std::optional -> stable
     // address for its SealedString views.
-    updateGlobalDirectPages.emplace();
-    updateGlobalDirectPages->bind(&staticMemory());
+    updateGlobalSingleChapterPages.emplace();
+    updateGlobalSingleChapterPages->bind(&staticMemory());
 
     // Barriered phase model: phase 1 for ALL LBs, join, phase 2 for ALL, join,
     // phase 3 for ALL, join. Each phase is its own work-stealing sweep over the
@@ -9857,12 +12388,17 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         phase13TimingRows = phase1DetailRows.data();
         phase13TimingWorkers = workers;
 #endif
+        gl::memory_census::markPhase(gl::PoolPhase::Phase1);
         steward->beginPhaseWindow(/*phase=*/1, &phase1Cursor, &active, workers,
                                   lbdeload::kDeloadDirectory);
         runPhase(phase1Cursor, [this](Memory& b, unsigned cid) {
             g_inParallelWorkerPhase = true;
             this->performElemPhase1(b, cid);
             g_inParallelWorkerPhase = false;
+            // The task is over and every scratch-backed local of the body is
+            // destroyed: hand this slot's scratch blocks back to the pool.
+            releaseSlotScratch(scratchArenas(), genScratchArenas(),
+                               ruleStagings(), cid);
         }
 #if RT_MEASUREMENT
         , trapPh1Ns.data()
@@ -9881,6 +12417,26 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // stops before phase 3. It includes scheduler setup, processor or CUDA
     // execution, projection/transfers, sealing, finalization, and split stats.
     const auto phase2Started = std::chrono::steady_clock::now();
+    static std::atomic<uint64_t> phase2TraceSequence{0};
+    const uint64_t phase2TraceCall = gl::phase2TraceEnabled()
+        ? phase2TraceSequence.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+    gl::Phase2TraceScope phase2Trace("GL.Phase2", phase2TraceCall, gl::phase2TraceEnabled(), true);
+    if (gl::phase2TraceEnabled()) {
+        diagnosticsLog() << "[PHASE2-IDENTITY] call=" << phase2TraceCall
+            << " anchor=" << anchorID_ << " ce_filter=" << ceFilteringActive
+            << " measured_iteration=" << phase2MeasuredIterations + 1 << '\n';
+        for (std::size_t li = 0; li < active.size(); ++li) {
+            diagnosticsLog() << "[PHASE2-LB] call=" << phase2TraceCall
+                << " li=" << li << " chain=";
+            for (const Memory* p = active[li]; p != nullptr; p = p->parentMemory) {
+                if (p != active[li]) diagnosticsLog() << " <- ";
+                const std::string key = p->exprKey();
+                diagnosticsLog() << (key.empty() ? "(root)" : key);
+            }
+            diagnosticsLog() << '\n';
+        }
+    }
+
 
     // Phase 2 opens TWO working-set windows PER PASS
     // (D-196): an EXECUTOR window over the real dispatch
@@ -10081,9 +12637,21 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     int passNo = 0;
     for (;;) {
         ++passNo;
-        // Round 1: producers + unsplit bursts. Round 2: the producers' buckets.
+        gl::Phase2TraceScope phase2PassTrace("GL.Phase2.Pass", passNo);
+        if (gl::phase2TraceEnabled()) {
+            for (std::size_t task = 0; task < tasks.size(); ++task)
+                diagnosticsLog() << "[PHASE2-TASK] call=" << phase2TraceCall
+                    << " pass=" << passNo << " task=" << task << " li=" << tasks[task].li
+                    << " parts=" << tasks[task].partCount
+                    << " producer=" << tasks[task].produceOnly << '\n';
+        }
+
+        // Round 1: producers + unsplit bursts. Round 2 (processor route): the
+        // producers' buckets; the CUDA route runs them in round 1.
         assert(passNo <= 2
             && "phase-2 pass loop exceeded two rounds - a bucket part requeued");
+        assert((passNo == 1 || phase2Backend == Phase2Backend::cpu)
+            && "the CUDA route runs its producers' buckets in round 1");
 
         for (std::size_t li = 0; li < M; ++li) {
             doomLines[li].store(kNoDoomLine, std::memory_order_relaxed);
@@ -10127,6 +12695,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             // EXECUTOR window: the pool's real dispatch atomic is the pager cursor,
             // so the steward prefetches upcoming tasks' LBs and evicts behind the
             // executor sweep in real time.
+            gl::memory_census::markPhase(gl::PoolPhase::Phase2Execute);
             steward->beginPhaseWindow(/*phase=*/2, &next, &execOrder, workers,
                                       lbdeload::kDeloadDirectory);
             auto worker = [this, &tasks, &pageStore, base, &stumpPages, &stumpBound,
@@ -10151,7 +12720,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                            &taskNs,
 #endif
                            &next, workers,
-                           mainPath](unsigned coreId) {
+                           mainPath, phase2TraceCall](unsigned coreId) {
                 const unsigned cid = workers ? (coreId % workers) : 0U;
                 // The phase-2 executor pool runs in parallel like phases 1/3, so
                 // publish this worker's slot. Every g_currentCoreId-resolved per-slot
@@ -10159,12 +12728,14 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 // slot, not the single reserved slot every unpublished worker would
                 // share (that slot is single-threaded-only).
                 g_currentCoreId = static_cast<int>(cid);
+                gl::Phase2TraceScope phase2WorkerTrace("GL.Phase2.CpuWorker", phase2TraceCall, gl::phase2TraceEnabled(), true);
                 for (;;) {
                     std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
                     if (i >= tasks.size()) break;
                     const ExecTask& t = tasks[i];
                     if (this->phase2Backend == Phase2Backend::cuda
                         && !t.produceOnly) continue;
+                    gl::Phase2TraceScope phase2CpuTaskTrace("GL.Phase2.CpuTask", i);
                     // Unified working-set handshake: claim this LB so the steward
                     // will not deload it under us, reloading if it is cold. A split
                     // sibling that already owns it returns immediately (resident).
@@ -10173,7 +12744,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     if (projectionCounted[t.li].exchange(
                             1, std::memory_order_relaxed) == 0) {
                         const gpu::Phase2ProjectionUsage projectionUsage =
-                            gpu::measurePhase2ProjectionUsage(*t.lb, *this);
+                            gpu::measurePhase2ProjectionUsage(*t.lb, *this, 0x0fu, true);
                         const uint64_t statementCount =
                             projectionUsage.statements;
                         const uint64_t nameRecordCount =
@@ -10395,6 +12966,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     }
                 }
                 };
+            gl::Phase2TraceScope phase2CpuPoolTrace("GL.Phase2.CpuPool", passNo);
             std::vector<std::thread> pool;
             pool.reserve(workers);
             for (unsigned t = 0; t < workers; ++t) pool.emplace_back(worker, t);
@@ -10404,221 +12976,127 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             steward->endPhaseWindow();
         }
 
+        // Deal producer i's stumps into logicalCores expression buckets and append
+        // one bucket part each to `parts`.
+        const auto dealProducerStumps = [&](std::size_t i, std::vector<ExecTask>& parts) {
+            assert(tasks[i].produceOnly);
+            Memory* const lb = tasks[i].lb;
+            const std::size_t li = tasks[i].li;
+            if (taskStumps[i] == 0) {
+                // No statement survives the filter -> the LB's real burst would
+                // generate nothing either. Run it once, unsplit, this iteration
+                // (guarantees the burst happens; its work then feeds the stats).
+                parts.push_back(ExecTask{ lb, li,
+                    /*partCount=*/1, /*produceOnly=*/false,
+                    SplitStumpRef{}, &doomLines[li], &partsRemaining[li] });
+                return;
+            }
+            stumpStore.emplace_back();
+            std::vector<ExpressionStump>& run = stumpStore.back();
+            run.reserve(static_cast<std::size_t>(taskStumps[i]));
+            stumpPages[i].forEachRecord<ExpressionStump>(
+                [&run](const ExpressionStump& s) { run.push_back(s); });
+            assert(static_cast<int32_t>(run.size()) == taskStumps[i]
+                && "stump record chain disagrees with the producer's count");
+
+            // Deal the regular and terminal pre-stumps into BUCKETS, one part
+            // per bucket. Round-robin, so
+            // a bucket draws stumps from across the name-sorted list rather than
+            // one contiguous slice; the stumps are permuted into bucket order so
+            // each bucket is a contiguous run. Grown to a multiple of buckets
+            // (kStumpsPerBucketTarget), so the deal evens out the buckets'
+            // grow-tree sizes; fewer stumps than buckets means the LB could not
+            // fan wider. The generator builds the filter once per bucket and the
+            // emitter's seen-set collapses a request two of a bucket's stumps
+            // both reach (I-158).
+            const int32_t nStumps = static_cast<int32_t>(run.size());
+            lbStumps[li] = nStumps;
+            const NameId buckets = static_cast<NameId>(
+                std::min<int32_t>(nStumps, static_cast<int32_t>(logicalCores)));
+            lbBuckets[li] = buckets;
+            std::vector<ExpressionStump> dealt;
+            dealt.reserve(run.size());
+            std::vector<int32_t> bucketStart(
+                static_cast<std::size_t>(buckets) + 1, 0);
+            for (NameId k = 0; k < buckets; ++k) {
+                bucketStart[static_cast<std::size_t>(k)] =
+                    static_cast<int32_t>(dealt.size());
+                for (int32_t j = k; j < nStumps; j += buckets)
+                    dealt.push_back(run[static_cast<std::size_t>(j)]);
+            }
+            bucketStart[static_cast<std::size_t>(buckets)] =
+                static_cast<int32_t>(dealt.size());
+            run.swap(dealt);
+            for (NameId k = 0; k < buckets; ++k) {
+                const int32_t lo = bucketStart[static_cast<std::size_t>(k)];
+                const int32_t hi = bucketStart[static_cast<std::size_t>(k) + 1];
+                parts.push_back(ExecTask{ lb, li,
+                    /*partCount=*/buckets, /*produceOnly=*/false,
+                    SplitStumpRef{ run.data() + lo,
+                                   static_cast<NameId>(hi - lo), k, buckets },
+                    &doomLines[li], &partsRemaining[li] });
+            }
+        };
+
+        // CUDA route: the producers' bucket parts join THIS pass, so a straggler's
+        // parts share the pass's device chunk with the unsplit LBs -- one
+        // projection, one device route and one finalize sweep per iteration
+        // (D-442). Parts own their page sets after the
+        // pass's tasks; the processor route keeps round 2 (its parts are threads
+        // that need the producers' stumps before they start).
+        if (phase2Backend == Phase2Backend::cuda) {
+            std::vector<ExecTask> dealtParts;
+            for (std::size_t i = 0; i < tasks.size(); ++i)
+                if (tasks[i].produceOnly) dealProducerStumps(i, dealtParts);
+            for (const ExecTask& part : dealtParts) {
+                if (gl::phase2TraceEnabled())
+                    diagnosticsLog() << "[PHASE2-TASK] call=" << phase2TraceCall
+                        << " pass=" << passNo << " task=" << tasks.size() << " li=" << part.li
+                        << " parts=" << part.partCount << " producer=0\n";
+                tasks.push_back(part);
+                pageStore.emplace_back();
+            }
+            stumpBound.resize(tasks.size(), 0);
+            taskStumps.resize(tasks.size(), 0);
+            taskSubMatches.resize(tasks.size(), 0);
+            gpuTaskIndices.resize(tasks.size(), -1);
+            gpuOutputOwners.resize(tasks.size(), 0);
+#if RT_MEASUREMENT
+            taskNs.resize(tasks.size(), 0);
+#endif
+        }
+
 #ifdef GL_CUDA
         if (phase2Backend == Phase2Backend::cuda) {
-            // Named audited capacity profiles (gpu/phase2_projection.hpp,
-            // gpu/phase2_cuda.hpp) replace direct numeric assignments here.
-            // The FTA shortcut keeps its compact measured image; every other
-            // anchor runs the broad full-run image. One process owns exactly
-            // one profile because the device owners below are static.
-            const bool mainRunCapacity = anchorInfo.name != "AnchorFTA";
-            const gpu::Phase2ProjectionProfile projectionProfile =
-                mainRunCapacity
-                    ? gpu::Phase2ProjectionProfile::fullRun
-                    : gpu::Phase2ProjectionProfile::ftaShortcut;
-            const gpu::Phase2ProjectionCapacity projectionCapacity =
-                gpu::phase2ProjectionCapacityFor(projectionProfile);
-            gpu::Phase2ProjectionCapacity projectionShardCapacity =
-                gpu::phase2ProjectionCapacityFor(
-                    gpu::Phase2ProjectionProfile::ftaShortcut);
-            if (mainRunCapacity) {
-                // Twelve construction workers share a dynamically claimed
-                // chunk. Each shard owns two average shares of every resident
-                // column so one data-heavy logical block cannot overflow its
-                // worker while the complete merged chunk still fits the device.
-                const auto constructionShardCeiling = [](uint32_t original,
-                    uint32_t complete) {
-                    return std::max(original,
-                        complete
-                                / gpu::kPhase2ProjectionConstructionShardShareDivisor
-                            + static_cast<uint32_t>(static_cast<bool>(complete
-                                % gpu::kPhase2ProjectionConstructionShardShareDivisor)));
-                };
-                projectionShardCapacity.logicalBlocks =
-                    constructionShardCeiling(
-                        projectionShardCapacity.logicalBlocks,
-                        projectionCapacity.logicalBlocks);
-                projectionShardCapacity.statements = constructionShardCeiling(
-                    projectionShardCapacity.statements,
-                    projectionCapacity.statements);
-                projectionShardCapacity.nameRecords = constructionShardCeiling(
-                    projectionShardCapacity.nameRecords,
-                    projectionCapacity.nameRecords);
-                projectionShardCapacity.nameBytes = constructionShardCeiling(
-                    projectionShardCapacity.nameBytes,
-                    projectionCapacity.nameBytes);
-                projectionShardCapacity.nameSlots = constructionShardCeiling(
-                    projectionShardCapacity.nameSlots,
-                    projectionCapacity.nameSlots);
-                projectionShardCapacity.ruleStringRecords =
-                    constructionShardCeiling(
-                        projectionShardCapacity.ruleStringRecords,
-                        projectionCapacity.ruleStringRecords);
-                projectionShardCapacity.ruleStringBytes =
-                    constructionShardCeiling(
-                        projectionShardCapacity.ruleStringBytes,
-                        projectionCapacity.ruleStringBytes);
-                projectionShardCapacity.byteMapViews =
-                    constructionShardCeiling(
-                        projectionShardCapacity.byteMapViews,
-                        projectionCapacity.byteMapViews);
-                projectionShardCapacity.byteMapEntries =
-                    constructionShardCeiling(
-                        projectionShardCapacity.byteMapEntries,
-                        projectionCapacity.byteMapEntries);
-                projectionShardCapacity.byteMapSlots =
-                    constructionShardCeiling(
-                        projectionShardCapacity.byteMapSlots,
-                        projectionCapacity.byteMapSlots);
-                projectionShardCapacity.byteKeyBytes =
-                    constructionShardCeiling(
-                        projectionShardCapacity.byteKeyBytes,
-                        projectionCapacity.byteKeyBytes);
-                projectionShardCapacity.blobRecords = constructionShardCeiling(
-                    projectionShardCapacity.blobRecords,
-                    projectionCapacity.blobRecords);
-                projectionShardCapacity.blobBytes = constructionShardCeiling(
-                    projectionShardCapacity.blobBytes,
-                    projectionCapacity.blobBytes);
-                projectionShardCapacity.reverseMapViews =
-                    constructionShardCeiling(
-                        projectionShardCapacity.reverseMapViews,
-                        projectionCapacity.reverseMapViews);
-                projectionShardCapacity.reverseMapEntries =
-                    constructionShardCeiling(
-                        projectionShardCapacity.reverseMapEntries,
-                        projectionCapacity.reverseMapEntries);
-                projectionShardCapacity.reverseMapSlots =
-                    constructionShardCeiling(
-                        projectionShardCapacity.reverseMapSlots,
-                        projectionCapacity.reverseMapSlots);
-                projectionShardCapacity.reverseKeyBytes =
-                    constructionShardCeiling(
-                        projectionShardCapacity.reverseKeyBytes,
-                        projectionCapacity.reverseKeyBytes);
-                projectionShardCapacity.reverseOwners =
-                    constructionShardCeiling(
-                        projectionShardCapacity.reverseOwners,
-                        projectionCapacity.reverseOwners);
-                projectionShardCapacity.podMapViews = constructionShardCeiling(
-                    projectionShardCapacity.podMapViews,
-                    projectionCapacity.podMapViews);
-                projectionShardCapacity.podMapEntries =
-                    constructionShardCeiling(
-                        projectionShardCapacity.podMapEntries,
-                        projectionCapacity.podMapEntries);
-                projectionShardCapacity.podMapSlots = constructionShardCeiling(
-                    projectionShardCapacity.podMapSlots,
-                    projectionCapacity.podMapSlots);
-                projectionShardCapacity.podRunValues =
-                    constructionShardCeiling(
-                        projectionShardCapacity.podRunValues,
-                        projectionCapacity.podRunValues);
-                projectionShardCapacity.mandatoryStatementKeys =
-                    constructionShardCeiling(
-                        projectionShardCapacity.mandatoryStatementKeys,
-                        projectionCapacity.mandatoryStatementKeys);
-                projectionShardCapacity.metadataBytes =
-                    constructionShardCeiling(
-                        projectionShardCapacity.metadataBytes,
-                        projectionCapacity.metadataBytes);
-            }
-
-            const gpu::Phase2TaskProjectionCapacity taskCapacity =
-                gpu::kPhase2TaskProjectionCapacity;
-            const gpu::Phase2FilterScheduleCapacity filterCapacity =
-                gpu::kPhase2FilterScheduleCapacity;
-            // A single split Gauss task family owns more than one million live
-            // breadth-frontier nodes. Growth and ordering therefore share one
-            // named accepted-event ceiling for the indivisible family.
-            const gpu::Phase2GrowthCapacity growthCapacity = mainRunCapacity
-                ? gpu::kFullRunPhase2GrowthCapacity
-                : gpu::kFtaShortcutPhase2GrowthCapacity;
-            const gpu::Phase2OrderingCapacity orderingCapacity = mainRunCapacity
-                ? gpu::kFullRunPhase2OrderingCapacity
-                : gpu::kFtaShortcutPhase2OrderingCapacity;
-            // Full-run incubator bursts materialize marker work at request scale;
-            // the shortcut profile retains its independently audited columns.
-            const gpu::Phase2EvaluationCapacity evaluationCapacity =
-                mainRunCapacity
-                    ? gpu::kFullRunPhase2EvaluationCapacity
-                    : gpu::kFtaShortcutPhase2EvaluationCapacity;
-
-            // High-volume gate counters remain isolated from proof flow and are
-            // disabled after fixing the production capacities from the census.
-            constexpr bool kCollectPhase2GrowthCensus = false;
-
-            // These owners initialize only on the first selected CUDA pass and
-            // retain every host and device allocation until process exit.
-            static const gpu::Phase2ProjectionProfile fixedProjectionProfile =
-                projectionProfile;
-            assert(fixedProjectionProfile == projectionProfile
-                && "CUDA Phase 2 static owners require one capacity profile "
-                   "per process");
+            static gpu::CudaPhase2BlockPool devicePool([]() -> uint64_t {
+#ifdef _WIN32
+                char budgetText[32]{};
+                std::size_t required = 0;
+                const errno_t environmentResult = getenv_s(&required, budgetText,
+                    sizeof(budgetText), "GL_GPU_BUDGET_MIB");
+                assert(environmentResult == 0);
+                if (required == 0) return 0;
+                const char* text = budgetText;
+#else
+                const char* text = std::getenv("GL_GPU_BUDGET_MIB");
+                if (text == nullptr) return 0;
+#endif
+                assert(*text != '\0');
+                uint64_t value = 0;
+                for (; *text != '\0'; ++text) {
+                    assert(*text >= '0' && *text <= '9');
+                    const uint64_t digit = static_cast<uint64_t>(*text - '0');
+                    assert(value <= (UINT64_MAX - digit) / 10);
+                    value = value * 10 + digit;
+                }
+                assert(value > 0 && value <= UINT64_MAX / (1024 * 1024));
+                return value * 1024 * 1024;
+            }());
+            gl::memory_census::noteGpuDevice(devicePool.deviceTotalBytes(),
+                devicePool.deviceFreeBeforePoolBytes(), devicePool.budget().bytes);
+            static gpu::Phase2WorkDemand workDemand = gpu::initialPhase2WorkDemand();
             constexpr std::size_t kGpuProjectionShardCount =
                 gpu::kPhase2ProjectionConstructionShardCount;
-            static gpu::Phase2ProjectionArena hostProjection(
-                projectionCapacity);
-            static std::array<gpu::Phase2ProjectionArena,
-                kGpuProjectionShardCount> projectionShards{
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity),
-                    gpu::Phase2ProjectionArena(projectionShardCapacity) };
-            static gpu::CudaPhase2ProjectionBuffer deviceProjection(
-                projectionCapacity);
-            static gpu::Phase2TaskProjectionArena hostTasks(taskCapacity);
-            static gpu::CudaPhase2TaskBuffer deviceTasks(taskCapacity);
-            static gpu::Phase2FilterScheduleArena filterSchedule(
-                filterCapacity);
-            static gpu::CudaPhase2FilterSortBuffer deviceFilter(
-                filterCapacity);
-            static gpu::Phase2GrowthScheduleArena growthSchedule(
-                growthCapacity.calls);
-            static gpu::CudaPhase2GrowthBuffer deviceGrowth(growthCapacity);
-            static gpu::CudaPhase2OrderingBuffer deviceOrdering(
-                orderingCapacity);
-            static gpu::CudaPhase2EvaluationBuffer deviceEvaluation(
-                evaluationCapacity);
-            static gpu::Phase2SealingArena sealing(evaluationCapacity);
-
-            static const bool fixedDeviceOwnershipReported = [&]() {
-                const uint64_t projectionBytes =
-                    deviceProjection.fixedAllocationBytes();
-                const uint64_t taskBytes = deviceTasks.fixedAllocationBytes();
-                const uint64_t filterBytes = deviceFilter.fixedAllocationBytes();
-                const uint64_t growthBytes = deviceGrowth.fixedAllocationBytes();
-                const uint64_t orderingBytes =
-                    deviceOrdering.fixedAllocationBytes();
-                const uint64_t evaluationBytes =
-                    deviceEvaluation.fixedAllocationBytes();
-                const uint64_t totalBytes = projectionBytes + taskBytes
-                    + filterBytes + growthBytes + orderingBytes
-                    + evaluationBytes;
-                diagnosticsLog() << "[GPU-PHASE2-MEMORY] projection_bytes="
-                    << projectionBytes
-                    << " task_bytes=" << taskBytes
-                    << " filter_bytes=" << filterBytes
-                    << " growth_bytes=" << growthBytes
-                    << " ordering_bytes=" << orderingBytes
-                    << " evaluation_bytes=" << evaluationBytes
-                    << " total_fixed_device_bytes=" << totalBytes << std::endl;
-                return true;
-            }();
-            static_cast<void>(fixedDeviceOwnershipReported);
-
-            // A full run can expose more state than shortcut's one projection.
-            // Keep every split LB's task family together and greedily fill a
-            // deterministic chunk against every fixed projection/task column.
-            // No projected state survives a chunk boundary.
             const auto addProjectionUsage = [](
                 gpu::Phase2ProjectionUsage& total,
                 const gpu::Phase2ProjectionUsage& add) {
@@ -10647,59 +13125,6 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 total.mandatoryStatementKeys += add.mandatoryStatementKeys;
                 total.metadataBytes += add.metadataBytes;
             };
-            const auto projectionFits = [&projectionCapacity](
-                const gpu::Phase2ProjectionUsage& total,
-                const gpu::Phase2ProjectionUsage& add) {
-                return total.logicalBlocks + add.logicalBlocks
-                           <= projectionCapacity.logicalBlocks
-                    && total.statements + add.statements
-                           <= projectionCapacity.statements
-                    && total.nameRecords + add.nameRecords
-                           <= projectionCapacity.nameRecords
-                    && total.nameBytes + add.nameBytes
-                           <= projectionCapacity.nameBytes
-                    && total.nameSlots + add.nameSlots
-                           <= projectionCapacity.nameSlots
-                    && total.ruleStringRecords + add.ruleStringRecords
-                           <= projectionCapacity.ruleStringRecords
-                    && total.ruleStringBytes + add.ruleStringBytes
-                           <= projectionCapacity.ruleStringBytes
-                    && total.byteMapViews + add.byteMapViews
-                           <= projectionCapacity.byteMapViews
-                    && total.byteMapEntries + add.byteMapEntries
-                           <= projectionCapacity.byteMapEntries
-                    && total.byteMapSlots + add.byteMapSlots
-                           <= projectionCapacity.byteMapSlots
-                    && total.byteKeyBytes + add.byteKeyBytes
-                           <= projectionCapacity.byteKeyBytes
-                    && total.blobRecords + add.blobRecords
-                           <= projectionCapacity.blobRecords
-                    && total.blobBytes + add.blobBytes
-                           <= projectionCapacity.blobBytes
-                    && total.reverseMapViews + add.reverseMapViews
-                           <= projectionCapacity.reverseMapViews
-                    && total.reverseMapEntries + add.reverseMapEntries
-                           <= projectionCapacity.reverseMapEntries
-                    && total.reverseMapSlots + add.reverseMapSlots
-                           <= projectionCapacity.reverseMapSlots
-                    && total.reverseKeyBytes + add.reverseKeyBytes
-                           <= projectionCapacity.reverseKeyBytes
-                    && total.reverseOwners + add.reverseOwners
-                           <= projectionCapacity.reverseOwners
-                    && total.podMapViews + add.podMapViews
-                           <= projectionCapacity.podMapViews
-                    && total.podMapEntries + add.podMapEntries
-                           <= projectionCapacity.podMapEntries
-                    && total.podMapSlots + add.podMapSlots
-                           <= projectionCapacity.podMapSlots
-                    && total.podRunValues + add.podRunValues
-                           <= projectionCapacity.podRunValues
-                    && total.mandatoryStatementKeys
-                           + add.mandatoryStatementKeys
-                           <= projectionCapacity.mandatoryStatementKeys
-                    && total.metadataBytes + add.metadataBytes
-                           <= projectionCapacity.metadataBytes;
-            };
             const auto addTaskUsage = [](
                 gpu::Phase2TaskProjectionUsage& total,
                 const gpu::Phase2TaskProjectionUsage& add) {
@@ -10708,124 +13133,136 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 total.terms += add.terms;
                 total.stumps += add.stumps;
             };
-            const auto taskFits = [&taskCapacity](
-                const gpu::Phase2TaskProjectionUsage& total,
-                const gpu::Phase2TaskProjectionUsage& add) {
-                return total.tasks + add.tasks <= taskCapacity.tasks
-                    && total.batches + add.batches <= taskCapacity.batches
-                    && total.terms + add.terms <= taskCapacity.terms
-                    && total.stumps + add.stumps <= taskCapacity.stumps;
-            };
             const auto hashMemoryBit = [](gpu::DeviceHashMemoryKind memory) {
                 return 1u << static_cast<uint32_t>(memory);
             };
-            const auto selectedHashMemoriesFor = [this, &hashMemoryBit](
-                const Memory& body) {
-                if (ceFilteringActive) {
-                    return hashMemoryBit(
-                        gpu::DeviceHashMemoryKind::overall);
-                }
-                uint32_t selected = 0;
-                if (!body.workingMemory.encodedMap.empty()
-                    && !body.intLocalEncodedStatements.empty()) {
-                    selected |= hashMemoryBit(
-                        gpu::DeviceHashMemoryKind::working);
-                }
-                if (!body.intLocalEncodedStatementsDelta.empty()
-                    || (!body.intExternalStatements.empty()
-                        && !body.intLocalEncodedStatements.empty())) {
-                    selected |= hashMemoryBit(
-                        gpu::DeviceHashMemoryKind::overall);
-                }
-                if (!body.localHashMemory.encodedMap.empty()
-                    && !body.intExternalStatements.empty()) {
-                    selected |= hashMemoryBit(
-                        gpu::DeviceHashMemoryKind::local);
-                }
-                if (!body.localHashMemoryDelta.encodedMap.empty()) {
-                    selected |= hashMemoryBit(
-                        gpu::DeviceHashMemoryKind::localDelta);
-                }
-                return selected;
+            const auto inputFor = gpu::makePhase2BufferPlanInput;
+            const auto representable = [](const gpu::Phase2ProjectionUsage& usage,
+                const gpu::Phase2TaskProjectionUsage& tasks, uint64_t retainedRows) {
+                return retainedRows <= INT32_MAX
+                    && usage.logicalBlocks <= INT32_MAX
+                    && usage.statements <= INT32_MAX
+                    && usage.nameRecords <= INT32_MAX
+                    && usage.nameBytes <= INT32_MAX
+                    && usage.nameSlots <= INT32_MAX
+                    && usage.ruleStringRecords <= INT32_MAX
+                    && usage.ruleStringBytes <= INT32_MAX
+                    && usage.byteMapViews <= INT32_MAX
+                    && usage.byteMapEntries <= INT32_MAX
+                    && usage.byteMapSlots <= INT32_MAX
+                    && usage.byteKeyBytes <= INT32_MAX
+                    && usage.blobRecords <= INT32_MAX
+                    && usage.blobBytes <= INT32_MAX
+                    && usage.reverseMapViews <= INT32_MAX
+                    && usage.reverseMapEntries <= INT32_MAX
+                    && usage.reverseMapSlots <= INT32_MAX
+                    && usage.reverseKeyBytes <= INT32_MAX
+                    && usage.reverseOwners <= INT32_MAX
+                    && usage.podMapViews <= INT32_MAX
+                    && usage.podMapEntries <= INT32_MAX
+                    && usage.podMapSlots <= INT32_MAX
+                    && usage.podRunValues <= INT32_MAX
+                    && usage.mandatoryStatementKeys <= INT32_MAX
+                    && usage.metadataBytes <= INT32_MAX
+                    && tasks.tasks <= INT32_MAX && tasks.batches <= INT32_MAX
+                    && tasks.terms <= INT32_MAX && tasks.stumps <= INT32_MAX;
             };
+            gl::Phase2TraceScope phase2PackingTrace("GL.Phase2.Packing", passNo);
             std::vector<std::vector<std::size_t>> tasksByLogicalBlock(M);
             std::vector<gpu::Phase2TaskProjectionUsage> cudaTaskUsages(
                 tasks.size());
             std::vector<uint32_t> selectedHashMemoriesByLi(M, 0);
+            std::vector<gpu::Phase2ProjectionUsage> projectionUsageByLi(M);
+            // Every CUDA task's usage, its logical block's hash-memory selection
+            // and projection usage come from the measurement the block recorded
+            // at the end of this burst's phase 1 (recordPhase2Measurement): the
+            // packing reads no LB content, so it never reloads a deloaded LB. The
+            // block has been read-only since that phase 1, so the record is exact.
             for (std::size_t taskPosition = 0;
                  taskPosition < tasks.size(); ++taskPosition) {
                 const ExecTask& task = tasks[taskPosition];
                 if (task.produceOnly) continue;
-                cudaTaskUsages[taskPosition] =
-                    gpu::measurePhase2TaskProjectionUsage(
-                        *task.lb,
-                        static_cast<uint32_t>(task.stump.count),
-                        ceFilteringActive);
-                if (cudaTaskUsages[taskPosition].tasks != 0) {
-                    const uint32_t selected =
-                        selectedHashMemoriesFor(*task.lb);
-                    assert(selected != 0);
-                    if (selectedHashMemoriesByLi[task.li] == 0)
-                        selectedHashMemoriesByLi[task.li] = selected;
-                    else
-                        assert(selectedHashMemoriesByLi[task.li] == selected);
-                    tasksByLogicalBlock[task.li].push_back(taskPosition);
-                }
+                const Memory& recorded = *task.lb;
+                assert(recorded.phase2MeasurementEpoch == phase2MeasurementEpoch
+                    && "CUDA packing read a Phase 2 measurement not recorded in "
+                       "this burst's phase 1");
+                cudaTaskUsages[taskPosition] = gpu::phase2TaskUsageWithStumps(
+                    recorded.phase2TaskUsage,
+                    static_cast<uint32_t>(task.stump.count), ceFilteringActive);
+                if (cudaTaskUsages[taskPosition].tasks == 0) continue;
+                assert(recorded.phase2SelectedHashMemories != 0);
+                selectedHashMemoriesByLi[task.li] =
+                    recorded.phase2SelectedHashMemories;
+                projectionUsageByLi[task.li] = recorded.phase2ProjectionUsage;
+                tasksByLogicalBlock[task.li].push_back(taskPosition);
             }
-            std::vector<std::vector<std::size_t>> cudaTaskChunks;
-            std::vector<std::size_t> cudaTaskChunk;
-            cudaTaskChunk.reserve(taskCapacity.tasks);
+            struct PackedChunk {
+                std::vector<std::size_t> positions;
+                gpu::Phase2BufferPlanInput input{};
+            };
+            std::vector<PackedChunk> cudaTaskChunks;
+            PackedChunk chunk;
             gpu::Phase2ProjectionUsage chunkProjectionUsage{};
             gpu::Phase2TaskProjectionUsage chunkTaskUsage{};
             gpu::Phase2ProjectionUsage passProjectionUsage{};
             gpu::Phase2TaskProjectionUsage passTaskUsage{};
-            for (std::size_t taskPosition = 0;
-                 taskPosition < tasks.size(); ++taskPosition) {
+            uint64_t chunkExaminedRows = 0, chunkRetainedRows = 0, chunkMaximumRows = 0;
+            for (std::size_t taskPosition = 0; taskPosition < tasks.size(); ++taskPosition) {
                 const ExecTask& task = tasks[taskPosition];
                 if (task.produceOnly) continue;
-                std::vector<std::size_t>& family =
-                    tasksByLogicalBlock[task.li];
+                auto& family = tasksByLogicalBlock[task.li];
                 if (family.empty()) continue;
-                assert(task.lb->lbMemory.manager.resident()
-                    && "CUDA projection packing requires resident state");
-                const uint32_t selectedHashMemories =
-                    selectedHashMemoriesByLi[task.li];
-                assert(selectedHashMemories != 0);
-                const gpu::Phase2ProjectionUsage familyProjectionUsage =
-                    gpu::measurePhase2ProjectionUsage(
-                        *task.lb, *this, selectedHashMemories);
-                gpu::Phase2TaskProjectionUsage familyTaskUsage{};
-                for (const std::size_t familyTaskPosition : family) {
-                    addTaskUsage(familyTaskUsage,
-                        cudaTaskUsages[familyTaskPosition]);
+                const uint32_t selected = selectedHashMemoriesByLi[task.li];
+                assert(selected != 0);
+                const gpu::Phase2ProjectionUsage familyProjection =
+                    projectionUsageByLi[task.li];
+                gpu::Phase2TaskProjectionUsage familyTasks{};
+                for (const auto position : family) addTaskUsage(familyTasks, cudaTaskUsages[position]);
+                uint64_t classes = 0;
+                for (uint32_t kind = 0; kind < 4; ++kind) classes += (selected >> kind) & 1u;
+                const uint64_t familyExamined = familyTasks.batches * familyProjection.statements;
+                const uint64_t familyRetained = classes * std::min(static_cast<uint64_t>(parameters.maxNumberFilteredStatements), familyProjection.statements);
+                auto candidateProjection = chunkProjectionUsage;
+                auto candidateTasks = chunkTaskUsage;
+                addProjectionUsage(candidateProjection, familyProjection);
+                addTaskUsage(candidateTasks, familyTasks);
+                const auto fits = [&](const gpu::Phase2ProjectionUsage& projected,
+                    const gpu::Phase2TaskProjectionUsage& scheduled, uint64_t examined,
+                    uint64_t retained, uint64_t maximum) {
+                    if (!representable(projected, scheduled, retained)) return false;
+                    return gpu::planPhase2Buffers(inputFor(projected, scheduled,
+                        examined, retained, maximum), devicePool.budget().blocks,
+                        workDemand, {}, true).state == gpu::Phase2BufferPlanState::fits;
+                };
+                if (!chunk.positions.empty() && !fits(candidateProjection, candidateTasks,
+                    chunkExaminedRows + familyExamined, chunkRetainedRows + familyRetained,
+                    std::max(chunkMaximumRows, familyProjection.statements))) {
+                    cudaTaskChunks.push_back(std::move(chunk));
+                    chunk = PackedChunk{};
+                    chunkProjectionUsage = {};
+                    chunkTaskUsage = {};
+                    chunkExaminedRows = chunkRetainedRows = chunkMaximumRows = 0;
+                    candidateProjection = familyProjection;
+                    candidateTasks = familyTasks;
                 }
-                if (!cudaTaskChunk.empty()
-                    && (!projectionFits(
-                            chunkProjectionUsage, familyProjectionUsage)
-                        || !taskFits(chunkTaskUsage, familyTaskUsage))) {
-                    cudaTaskChunks.push_back(std::move(cudaTaskChunk));
-                    cudaTaskChunk.clear();
-                    cudaTaskChunk.reserve(taskCapacity.tasks);
-                    chunkProjectionUsage = gpu::Phase2ProjectionUsage{};
-                    chunkTaskUsage = gpu::Phase2TaskProjectionUsage{};
-                }
-                assert(projectionFits(
-                           chunkProjectionUsage, familyProjectionUsage)
-                    && "one logical block's CUDA projection exceeds capacity");
-                assert(taskFits(chunkTaskUsage, familyTaskUsage)
-                    && "one logical block's CUDA task family exceeds capacity");
-                cudaTaskChunk.insert(
-                    cudaTaskChunk.end(), family.begin(), family.end());
-                addProjectionUsage(
-                    chunkProjectionUsage, familyProjectionUsage);
-                addTaskUsage(chunkTaskUsage, familyTaskUsage);
-                addProjectionUsage(
-                    passProjectionUsage, familyProjectionUsage);
-                addTaskUsage(passTaskUsage, familyTaskUsage);
+                assert(fits(candidateProjection, candidateTasks,
+                    chunkExaminedRows + familyExamined, chunkRetainedRows + familyRetained,
+                    std::max(chunkMaximumRows, familyProjection.statements))
+                    && "one LB input snapshot and minimum execution scratch must fit usable VRAM");
+                chunk.positions.insert(chunk.positions.end(), family.begin(), family.end());
+                chunkProjectionUsage = candidateProjection;
+                chunkTaskUsage = candidateTasks;
+                chunkExaminedRows += familyExamined;
+                chunkRetainedRows += familyRetained;
+                chunkMaximumRows = std::max(chunkMaximumRows, familyProjection.statements);
+                chunk.input = inputFor(chunkProjectionUsage, chunkTaskUsage,
+                    chunkExaminedRows, chunkRetainedRows, chunkMaximumRows);
+                addProjectionUsage(passProjectionUsage, familyProjection);
+                addTaskUsage(passTaskUsage, familyTasks);
                 family.clear();
             }
-            if (!cudaTaskChunk.empty())
-                cudaTaskChunks.push_back(std::move(cudaTaskChunk));
+            if (!chunk.positions.empty()) cudaTaskChunks.push_back(std::move(chunk));
+            phase2PackingTrace.finish();
 
             diagnosticsLog() << "[GPU-PACKING] pass=" << passNo
                       << " chunks=" << cudaTaskChunks.size()
@@ -10878,22 +13315,30 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                       << " stumps=" << passTaskUsage.stumps
                       << std::endl;
 
-            for (const std::vector<std::size_t>& cudaTaskPositions
-                 : cudaTaskChunks) {
-            const auto gpuPassStarted = std::chrono::steady_clock::now();
-            hostProjection.clear();
-            for (gpu::Phase2ProjectionArena& shard : projectionShards)
-                shard.clear();
-            hostTasks.clear();
-            filterSchedule.clear();
-            growthSchedule.clear();
+            uint64_t phase2TraceChunk = 0;
+            for (const PackedChunk& packedChunk : cudaTaskChunks) {
+            gl::Phase2TraceScope phase2ChunkTrace("GL.Phase2.Chunk", ++phase2TraceChunk);
+            gl::Phase2TraceScope phase2ChunkSetupTrace("GL.Phase2.ChunkSetup", phase2TraceChunk);
 
+            const auto& cudaTaskPositions = packedChunk.positions;
+            const auto& projectionCapacity = packedChunk.input.projection;
+            const auto& taskCapacity = packedChunk.input.tasks;
+            const auto& filterCapacity = packedChunk.input.filter;
+            const auto plan = gpu::planPhase2Buffers(packedChunk.input,
+                devicePool.budget().blocks, workDemand);
+            assert(plan.state == gpu::Phase2BufferPlanState::fits);
+            assert(devicePool.availableBlocks() == devicePool.budget().blocks);
+            gpu::CudaPhase2Arena projectionArena(devicePool, plan.blocks[0]);
+            gpu::CudaPhase2Arena taskArena(devicePool, plan.blocks[1]);
+            gpu::CudaPhase2Arena filterArena(devicePool, plan.blocks[2]);
+            gpu::CudaPhase2Arena growthArena(devicePool, plan.blocks[3]);
+            gpu::CudaPhase2Arena orderingArena(devicePool, plan.blocks[4]);
+            gpu::CudaPhase2Arena evaluationArena(devicePool, plan.blocks[5]);
             std::vector<char> projectionSeen(M, 0);
             std::vector<std::size_t> projectionLis;
             std::vector<Memory*> projectionOrder;
             std::vector<uint32_t> projectionSelectedHashMemories;
-            std::array<std::size_t, gpu::kMaxProjectedBlocksPerChunk>
-                outputTaskByBlock{};
+            std::vector<std::size_t> outputTaskByBlock(projectionCapacity.logicalBlocks);
             for (const std::size_t taskPosition : cudaTaskPositions) {
                 const ExecTask& task = tasks[taskPosition];
                 if (projectionSeen[task.li] != 0) continue;
@@ -10909,111 +13354,179 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 gpuOutputOwners[taskPosition] = 1;
             }
 
+            gpu::Phase2ProjectionArena hostProjection(projectionCapacity,
+                gpu::Phase2ProjectionArena::SealingOnly{});
+            uint64_t peakHostProjectionBytes = hostProjection.hostBytes();
+            uint64_t projectionShardHostBytes = 0;
+            gpu::Phase2TaskProjectionArena hostTasks(taskCapacity);
+            gpu::Phase2FilterScheduleArena filterSchedule(filterCapacity);
+            gpu::Phase2GrowthScheduleArena growthSchedule(plan.growth.calls);
+            gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionCapacity, &projectionArena);
+            gpu::CudaPhase2TaskBuffer deviceTasks(taskCapacity, &taskArena);
+            gpu::CudaPhase2FilterSortBuffer deviceFilter(filterCapacity, &filterArena);
+            gpu::CudaPhase2GrowthBuffer deviceGrowth(plan.growth, &growthArena);
+            gpu::CudaPhase2OrderingBuffer deviceOrdering(plan.ordering, &orderingArena);
+            gpu::CudaPhase2EvaluationBuffer deviceEvaluation(plan.evaluation, &evaluationArena);
+            gpu::Phase2SealingArena sealing(plan.evaluation);
+            diagnosticsLog() << "[GPU-PHASE2-MEMORY] budget_bytes=" << devicePool.budget().bytes
+                << " reserved_blocks=" << plan.totalBlocks << " input_blocks="
+                << plan.blocks[0] + plan.blocks[1] + plan.blocks[2]
+                << std::endl;
+            phase2ChunkSetupTrace.finish();
+            const auto gpuPassStarted = std::chrono::steady_clock::now();
+
             if (!projectionOrder.empty()) {
                 std::vector<int32_t> projectedBlockByLi(M, -1);
-                std::atomic<std::size_t> projectionCursor{ 0 };
-                steward->beginPhaseWindow(
-                    /*phase=*/2, &projectionCursor, &projectionOrder,
-                    static_cast<unsigned>(kGpuProjectionShardCount),
-                    lbdeload::kDeloadDirectory);
-                std::array<std::array<uint32_t,
-                        gpu::kMaxProjectedBlocksPerChunk>,
-                    kGpuProjectionShardCount> shardBlockIndices{};
-                std::array<uint32_t, kGpuProjectionShardCount>
-                    shardBlockCounts{};
-                const auto projectionWorker = [this, &projectionCursor,
-                    &projectionOrder, &projectionSelectedHashMemories,
-                    &shardBlockIndices,
-                    &shardBlockCounts](std::size_t shardIndex) {
-                    gpu::Phase2ProjectionArena& shard =
-                        projectionShards[shardIndex];
-                    for (;;) {
-                        const std::size_t blockIndex = projectionCursor.fetch_add(
-                            1, std::memory_order_relaxed);
-                        if (blockIndex >= projectionOrder.size()) break;
-                        Memory* logicalBlock = projectionOrder[blockIndex];
-                        this->steward->claimAndLoadForWork(
-                            *logicalBlock, /*phase=*/2,
-                            lbdeload::kDeloadDirectory);
-                        const uint32_t localBlockIndex =
-                            static_cast<uint32_t>(shard.logicalBlocks.size());
-                        assert(localBlockIndex < shardBlockIndices[shardIndex].size());
-                        const gpu::DeviceLogicalBlockProjection projected =
-                            shard.appendLogicalBlock(
-                                *logicalBlock, *this,
-                                projectionSelectedHashMemories[blockIndex]);
-                        assert(projected.statementCount
-                            == static_cast<uint32_t>(
-                                logicalBlock->intEncodedStatements.size()));
-                        shardBlockIndices[shardIndex][localBlockIndex] =
-                            static_cast<uint32_t>(blockIndex);
-                        assert(logicalBlock->stewardClaim.load(
-                                   std::memory_order_relaxed)
-                               == static_cast<uint8_t>(
-                                      Memory::StewardClaim::WorkerOwned));
-                        logicalBlock->stewardClaim.store(
-                            static_cast<uint8_t>(Memory::StewardClaim::Idle),
-                            std::memory_order_release);
+                // Two windows are alive while one uploads and the next is built, so
+                // each targets half of the single-window bound of D-436.
+                constexpr uint64_t hostWindowTargetBytes = 128ull * 1024 * 1024;
+                std::vector<std::size_t> windowEnds;
+                std::size_t windowBegin = 0;
+                gpu::Phase2ProjectionUsage windowUsage{};
+                for (std::size_t block = 0; block < projectionOrder.size(); ++block) {
+                    auto candidate = windowUsage;
+                    addProjectionUsage(candidate, projectionUsageByLi[projectionLis[block]]);
+                    const auto candidateCapacity = inputFor(candidate, {}, 0, 0, 0).projection;
+                    if (block > windowBegin
+                        && gpu::phase2ProjectionHostBytes(candidateCapacity) > hostWindowTargetBytes) {
+                        windowEnds.push_back(block);
+                        windowBegin = block;
+                        windowUsage = {};
                     }
-                    shardBlockCounts[shardIndex] =
-                        static_cast<uint32_t>(shard.logicalBlocks.size());
-                };
-                std::array<std::thread, kGpuProjectionShardCount>
-                    projectionThreads;
-                for (std::size_t shardIndex = 0;
-                     shardIndex < kGpuProjectionShardCount; ++shardIndex) {
-                    projectionThreads[shardIndex] = std::thread(
-                        projectionWorker, shardIndex);
+                    addProjectionUsage(windowUsage, projectionUsageByLi[projectionLis[block]]);
                 }
-                for (std::thread& thread : projectionThreads) thread.join();
-                steward->endPhaseWindow();
-
-                std::array<gpu::DeviceLogicalBlockProjection,
-                    gpu::kMaxProjectedBlocksPerChunk>
-                    canonicalDescriptors{};
-                std::array<uint8_t, gpu::kMaxProjectedBlocksPerChunk>
-                    canonicalDescriptorSeen{};
-                std::size_t mergedBlockCount = 0;
-                for (std::size_t shardIndex = 0;
-                     shardIndex < kGpuProjectionShardCount; ++shardIndex) {
-                    const uint32_t destinationBlockOffset =
-                        hostProjection.appendShard(projectionShards[shardIndex]);
-                    assert(destinationBlockOffset == mergedBlockCount);
-                    for (uint32_t localBlockIndex = 0;
-                         localBlockIndex < shardBlockCounts[shardIndex];
-                         ++localBlockIndex) {
-                        const uint32_t blockIndex =
-                            shardBlockIndices[shardIndex][localBlockIndex];
-                        assert(blockIndex < projectionOrder.size());
-                        assert(canonicalDescriptorSeen[blockIndex] == 0);
-                        canonicalDescriptorSeen[blockIndex] = 1;
-                        canonicalDescriptors[blockIndex] =
-                            hostProjection.logicalBlocks[
-                                destinationBlockOffset + localBlockIndex];
+                windowEnds.push_back(projectionOrder.size());
+                windowBegin = 0;
+                gpu::Phase2ProjectionArena::ShardBases uploadedEnds{};
+                deviceProjection.beginStreamedUpload();
+                // One set of construction threads serves every window of the
+                // chunk, and the upload thread copies window k while window k + 1
+                // is built, so at most two windows are alive
+                // (D-447).
+                gpu::Phase2ProjectionWorkers projectionWorkers(
+                    static_cast<uint32_t>(kGpuProjectionShardCount));
+                gpu::Phase2WindowUploader windowUploader(deviceProjection, hostProjection);
+                uint64_t inFlightWindowBytes = 0;
+                for (const std::size_t windowEnd : windowEnds) {
+                    // One oversized logical block owns its exact measured window;
+                    // host staging never truncates or repartitions device work.
+                    gl::Phase2TraceScope phase2ProjectionWindowTrace("GL.Phase2.Projection.Window",
+                        windowEnd - windowBegin);
+                    gl::Phase2TraceScope phase2WindowSetupTrace("GL.Phase2.Projection.Setup");
+                    std::array<gpu::Phase2ProjectionCapacity, kGpuProjectionShardCount> shardCapacities{};
+                    gpu::Phase2ProjectionCapacity windowStorage{};
+                    gpu::Phase2ProjectionUsage totalUsage{};
+                    for (std::size_t shard = 0; shard < kGpuProjectionShardCount; ++shard) {
+                        gpu::Phase2ProjectionUsage usage{};
+                        for (std::size_t block = windowBegin + shard; block < windowEnd;
+                             block += kGpuProjectionShardCount)
+                            addProjectionUsage(usage, projectionUsageByLi[projectionLis[block]]);
+                        addProjectionUsage(totalUsage, usage);
+                        shardCapacities[shard] = inputFor(usage, {}, 0, 0, 0).projection;
+                        windowStorage = gpu::addProjectionCapacity(windowStorage, shardCapacities[shard]);
                     }
-                    mergedBlockCount += shardBlockCounts[shardIndex];
+                    const auto windowCapacity = inputFor(totalUsage, {}, 0, 0, 0).projection;
+                    auto window = std::make_unique<gpu::Phase2ProjectionArena>(
+                        windowCapacity, windowStorage);
+                    peakHostProjectionBytes = std::max(peakHostProjectionBytes,
+                        hostProjection.hostBytes() + inFlightWindowBytes + window->hostBytes());
+                    std::vector<gpu::DeviceLogicalBlockProjection> canonicalDescriptors(windowEnd - windowBegin);
+                    std::vector<uint8_t> descriptorSeen(windowEnd - windowBegin, 0);
+                    std::array<std::unique_ptr<gpu::Phase2ProjectionArena>, kGpuProjectionShardCount> projectionShards;
+                    gpu::Phase2ProjectionCapacity sliceStart{};
+                    for (std::size_t shard = 0; shard < kGpuProjectionShardCount; ++shard) {
+                        projectionShards[shard] = std::make_unique<gpu::Phase2ProjectionArena>(
+                            shardCapacities[shard], *window, sliceStart);
+                        sliceStart = gpu::addProjectionCapacity(sliceStart, shardCapacities[shard]);
+                    }
+                    phase2WindowSetupTrace.finish();
+                    gl::Phase2TraceScope phase2WorkersTrace("GL.Phase2.Projection.Workers");
+                    std::atomic<std::size_t> projectionCursor{windowBegin};
+                    gl::memory_census::markPhase(gl::PoolPhase::Phase2Projection);
+                    steward->beginPhaseWindow(2, &projectionCursor, &projectionOrder,
+                        static_cast<unsigned>(kGpuProjectionShardCount), lbdeload::kDeloadDirectory);
+                    auto projectionJob = [this, &projectionCursor, &projectionOrder,
+                        &projectionSelectedHashMemories, &projectionShards, windowBegin, windowEnd]
+                        (uint32_t shard) {
+                        gl::Phase2TraceScope projectionCpuTrace("GL.Phase2.ProjectionWorker",
+                            shard, gl::phase2TraceEnabled(), true);
+                        auto& image = *projectionShards[shard];
+                        for (std::size_t block = windowBegin + shard; block < windowEnd;
+                             block += kGpuProjectionShardCount) {
+                            Memory* logicalBlock = projectionOrder[block];
+                            this->steward->claimAndLoadForWork(*logicalBlock, 2, lbdeload::kDeloadDirectory);
+                            image.appendLogicalBlock(*logicalBlock, *this,
+                                projectionSelectedHashMemories[block], true);
+                            assert(logicalBlock->stewardClaim.load(std::memory_order_relaxed)
+                                == static_cast<uint8_t>(Memory::StewardClaim::WorkerOwned));
+                            logicalBlock->stewardClaim.store(static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                                std::memory_order_release);
+                            projectionCursor.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    };
+                    projectionWorkers.run(static_cast<uint32_t>(kGpuProjectionShardCount), projectionJob);
+                    steward->endPhaseWindow();
+                    phase2WorkersTrace.finish();
+                    gl::Phase2TraceScope phase2AdoptTrace("GL.Phase2.Projection.Adopt");
+                    std::array<gpu::Phase2ProjectionArena*, kGpuProjectionShardCount> shardSources{};
+                    std::array<uint32_t, kGpuProjectionShardCount> shardFirstBlocks{};
+                    for (std::size_t shard = 0; shard < kGpuProjectionShardCount; ++shard)
+                        shardSources[shard] = projectionShards[shard].get();
+                    gl::memory_census::sampleNow();
+                    // Adoption adds the uploaded column ends, so every reference
+                    // already addresses its complete-image offset.
+                    window->adoptShards(shardSources.data(),
+                        static_cast<uint32_t>(kGpuProjectionShardCount), shardFirstBlocks.data(),
+                        uploadedEnds, projectionWorkers);
+                    for (std::size_t shard = 0; shard < kGpuProjectionShardCount; ++shard) {
+                        uint32_t local = 0;
+                        for (std::size_t block = windowBegin + shard; block < windowEnd;
+                             block += kGpuProjectionShardCount) {
+                            const auto position = block - windowBegin;
+                            assert(descriptorSeen[position] == 0);
+                            descriptorSeen[position] = 1;
+                            canonicalDescriptors[position] =
+                                window->logicalBlocks[shardFirstBlocks[shard] + local++];
+                        }
+                        projectionShards[shard].reset();
+                    }
+                    assert(window->logicalBlocks.size() == windowEnd - windowBegin);
+                    for (std::size_t block = windowBegin; block < windowEnd; ++block) {
+                        assert(descriptorSeen[block - windowBegin] == 1);
+                        window->logicalBlocks[block - windowBegin] =
+                            canonicalDescriptors[block - windowBegin];
+                        assert(projectedBlockByLi[projectionLis[block]] < 0);
+                        projectedBlockByLi[projectionLis[block]] = static_cast<int32_t>(block);
+                    }
+                    phase2AdoptTrace.finish();
+                    const auto nextEnds = window->streamedEnd(uploadedEnds);
+                    inFlightWindowBytes = window->hostBytes();
+                    windowUploader.submit(std::move(window), uploadedEnds);
+                    uploadedEnds = nextEnds;
+                    gl::Phase2TraceScope phase2CensusTrace("GL.Phase2.Projection.Census");
+                    gl::memory_census::sampleNow();
+                    phase2CensusTrace.finish();
+                    windowBegin = windowEnd;
                 }
-                assert(mergedBlockCount == projectionOrder.size());
-                assert(hostProjection.logicalBlocks.size()
-                    == projectionOrder.size());
-                for (std::size_t blockIndex = 0;
-                     blockIndex < projectionOrder.size(); ++blockIndex) {
-                    assert(canonicalDescriptorSeen[blockIndex] == 1);
-                    hostProjection.logicalBlocks[blockIndex] =
-                        canonicalDescriptors[blockIndex];
-                    assert(projectedBlockByLi[projectionLis[blockIndex]] < 0);
-                    projectedBlockByLi[projectionLis[blockIndex]] =
-                        static_cast<int32_t>(blockIndex);
+                windowUploader.finish();
+#ifdef USE_MIMALLOC
+                // The chunk's released construction windows have no remaining
+                // readers: return their freed heap once, before the device route.
+                {
+                    gl::Phase2TraceScope phase2CollectTrace("GL.Phase2.Projection.Collect");
+                    mi_collect(true);
                 }
-                const auto gpuProjectionFinished =
-                    std::chrono::steady_clock::now();
-                deviceProjection.beginPhase2Upload(hostProjection);
+#endif
+                assert(hostProjection.logicalBlocks.size() == projectionOrder.size());
+                const auto gpuProjectionFinished = std::chrono::steady_clock::now();
 
+                gl::Phase2TraceScope phase2ScheduleTrace("GL.Phase2.Schedule");
                 std::vector<Memory*> scheduleOrder;
                 scheduleOrder.reserve(cudaTaskPositions.size());
                 for (const std::size_t taskPosition : cudaTaskPositions)
                     scheduleOrder.push_back(tasks[taskPosition].lb);
                 std::atomic<std::size_t> scheduleCursor{ 0 };
+                gl::memory_census::markPhase(gl::PoolPhase::Phase2Device);
                 steward->beginPhaseWindow(
                     /*phase=*/2, &scheduleCursor, &scheduleOrder, 1,
                     lbdeload::kDeloadDirectory);
@@ -11126,13 +13639,19 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                         static_cast<uint32_t>(hostTasks.tasks.size());
                     const uint32_t batchOffset =
                         static_cast<uint32_t>(hostTasks.batches.size());
-                    hostTasks.appendTask(
+                    const gpu::DevicePhase2Task projectedTask = hostTasks.appendTask(
                         blockIndex, batches.data(), batchCount,
                         task.stump.stumps,
                         static_cast<uint32_t>(task.stump.count),
                         task.stump.ordinal, task.stump.total,
                         parameters.maxIterationNumberVariable,
                         ceFilteringActive ? 1u : 0u);
+                    for (uint32_t si = 0; si < projectedTask.stumpCount; ++si) {
+                        auto& stump = hostTasks.stumps[projectedTask.stumpOffset + si];
+                        for (NameId pi = 0; pi < stump.count; ++pi)
+                            stump.statementIndices[pi] = hostProjection.projectedStatementIndex(
+                                blockIndex, stump.statementIndices[pi]);
+                    }
                     gpuTaskIndices[taskPosition] =
                         static_cast<int32_t>(gpuTaskIndex);
 
@@ -11145,7 +13664,8 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                         filterSchedule.appendCall(
                             blockIndex, batches[localBatch].memory,
                             parameters.maxIterationNumberVariable,
-                            /*alsoAcceptFullKeys=*/1, statementCount);
+                            /*alsoAcceptFullKeys=*/1, statementCount,
+                            static_cast<uint32_t>(parameters.maxNumberFilteredStatements));
                         growthSchedule.appendCall(
                             gpuTaskIndex, batchOffset + localBatch,
                             filterCallIndex);
@@ -11163,7 +13683,28 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 }
                 assert(scheduleIndex == scheduleOrder.size());
                 steward->endPhaseWindow();
+                phase2ScheduleTrace.finish();
 
+                if (gl::phase2TraceEnabled()) {
+                    for (uint32_t task = 0; task < hostTasks.tasks.size(); ++task) {
+                        const auto& image = hostTasks.tasks[task];
+                        diagnosticsLog() << "[PHASE2-GPU-TASK] call=" << phase2TraceCall
+                            << " pass=" << passNo << " chunk=" << phase2TraceChunk
+                            << " gpu_task=" << task << " gpu_lb=" << image.logicalBlockIndex
+                            << " li=" << projectionLis[image.logicalBlockIndex]
+                            << " stump_ordinal=" << image.stumpOrdinal << " stump_total=" << image.stumpTotal
+                            << " stumps=" << image.stumpCount << " batches=" << image.batchCount << '\n';
+                        for (uint32_t offset = 0; offset < image.batchCount; ++offset) {
+                            const auto& batch = hostTasks.batches[image.batchOffset + offset];
+                            diagnosticsLog() << "[PHASE2-GPU-REQUEST-KIND] call=" << phase2TraceCall
+                                << " pass=" << passNo << " chunk=" << phase2TraceChunk
+                                << " gpu_task=" << task << " batch=" << image.batchOffset + offset
+                                << " kind=" << static_cast<uint32_t>(batch.kind)
+                                << " memory=" << static_cast<uint32_t>(batch.memory)
+                                << " terms=" << batch.termCount << '\n';
+                        }
+                    }
+                }
                 const auto gpuDeviceRouteStarted =
                     std::chrono::steady_clock::now();
                 const double gpuPreparationSeconds =
@@ -11178,10 +13719,9 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 const gpu::Phase2FilterClassCensus filterClassCensus =
                     filterSchedule.measureClassReuse();
 
-                // Process-owned CUDA events measure the task upload, the deferred
-                // projection-upload join, and every semantic kernel through
-                // doom-prefix selection. The projection upload starts before host
-                // scheduling so complete Phase 2 timing captures their overlap.
+                // CUDA event time covers the stream, including host drain gaps.
+                // Separate host transfer and complete route measurements retain
+                // those costs instead of attributing them to individual kernels.
                 static gpu::CudaPhase2DeviceTimer gpuDeviceTimer;
                 gpuDeviceTimer.start();
 
@@ -11189,77 +13729,92 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 deviceProjection.finishPhase2Upload();
                 const uint32_t retainedRows = deviceFilter.filterAndSort(
                     deviceProjection, filterSchedule);
-                const gpu::Phase2GrowthResult growthResult =
-                    deviceGrowth.runRequestGrowth(
-                        deviceProjection, deviceTasks, deviceFilter,
-                        growthSchedule,
-                        gpu::DevicePhase2GrowthParameters{
-                            parameters.maxLenHypoKey,
-                            parameters.maxNumberSecondaryVariables,
-                            parameters.maxNumberSecondaryVariablesOrint,
-                            gpu::kDeviceGrowthProductionCooperativeSpan,
-                            kCollectPhase2GrowthCensus ? 2u : 0u });
-                const gpu::Phase2OrderingResult orderingResult =
-                    deviceOrdering.orderAndDeduplicate(
-                        deviceProjection, deviceTasks, deviceGrowth);
-                const gpu::Phase2EvaluationResult evaluationResult =
-                    deviceEvaluation.expandEvaluationWork(
-                        deviceProjection, deviceTasks, deviceGrowth,
-                        deviceOrdering);
-                const gpu::Phase2FiringExpressionResult firingResult =
-                    deviceEvaluation.materializeFiringExpressions(
-                        deviceProjection, deviceTasks, deviceGrowth,
-                        deviceOrdering);
-                assert(deviceEvaluation.orderFiringRecords(deviceProjection)
-                    == firingResult.firingRecordCount);
-                const uint32_t retainedFiringCount =
-                    deviceEvaluation.selectDoomPrefixes(deviceProjection);
-
-                const double gpuDeviceSeconds = gpuDeviceTimer.stopSeconds();
-                const auto gpuFinalizeStarted =
-                    std::chrono::steady_clock::now();
-                const double gpuDeviceRouteSeconds =
-                    std::chrono::duration<double>(
-                        gpuFinalizeStarted - gpuDeviceRouteStarted).count();
-
-                std::array<uint32_t, gpu::kMaxPhase2TasksPerChunk>
-                    taskSubkeyCounts{};
-                assert(deviceGrowth.downloadTaskSubkeyCounts(
-                           taskSubkeyCounts.data(),
-                           static_cast<uint32_t>(taskSubkeyCounts.size()))
-                       == hostTasks.tasks.size());
-                for (const std::size_t taskPosition : cudaTaskPositions) {
-                    assert(gpuTaskIndices[taskPosition] >= 0);
-                    taskSubMatches[taskPosition] = taskSubkeyCounts[
-                        static_cast<uint32_t>(gpuTaskIndices[taskPosition])];
-                }
-
-                std::array<int64_t, gpu::kMaxProjectedBlocksPerChunk>
-                    deviceDoomLines{};
-                assert(deviceEvaluation.downloadDoomLines(
-                           deviceDoomLines.data(),
-                           static_cast<uint32_t>(deviceDoomLines.size()))
-                       == projectionOrder.size());
-                std::array<SealedPageSet*, gpu::kMaxProjectedBlocksPerChunk>
-                    outputs{};
-                for (std::size_t blockIndex = 0;
-                     blockIndex < projectionOrder.size(); ++blockIndex) {
-                    const std::size_t taskPosition =
-                        outputTaskByBlock[blockIndex];
-                    SealedPageSet& pages = pageStore[base + taskPosition];
+                std::vector<uint64_t> taskSubkeyCounts(hostTasks.tasks.size(), 0);
+                std::vector<SealedPageSet*> outputs(projectionOrder.size());
+                for (std::size_t block = 0; block < projectionOrder.size(); ++block) {
+                    auto& pages = pageStore[base + outputTaskByBlock[block]];
                     pages.bind(&staticMemory());
-                    outputs[blockIndex] = &pages;
-                    const std::size_t li = projectionLis[blockIndex];
-                    doomLines[li].store(
-                        deviceDoomLines[blockIndex],
-                        std::memory_order_relaxed);
-                    lbFiringRecordsCanonical[li] = 1;
+                    outputs[block] = &pages;
+                    assert(doomLines[projectionLis[block]].load(std::memory_order_relaxed) == kNoDoomLine);
+                    lbFiringRecordsCanonical[projectionLis[block]] = 0;
                 }
-                assert(sealing.downloadAndSeal(
-                           deviceEvaluation, hostProjection, firingResult,
-                           retainedFiringCount, outputs.data(),
-                           static_cast<uint32_t>(projectionOrder.size()))
-                       == retainedFiringCount);
+                gpu::Phase2StreamBuffers buffers{deviceProjection, deviceTasks, deviceFilter,
+                    deviceGrowth, deviceOrdering, deviceEvaluation};
+                std::vector<int64_t> gpuDoomLines(outputs.size(), kNoDoomLine);
+                // Device window: the device reads only the uploaded projection
+                // and the sealing writes pool pages owned by no logic block, so
+                // every logic block is Idle here. The open window lets the
+                // working-set steward keep its reserve by evicting logic blocks
+                // while the sealed output and the growth backing grow the pool;
+                // its cursor stays at the head of the active order, which the
+                // finalize sweep reads first.
+                std::atomic<std::size_t> deviceCursor{ 0 };
+                steward->beginPhaseWindow(/*phase=*/2, &deviceCursor, &active,
+                    workers, lbdeload::kDeloadDirectory);
+                const auto streamed = sealing.runWindows(buffers, hostProjection, hostTasks,
+                    growthSchedule, gpu::DevicePhase2GrowthParameters{parameters.maxLenHypoKey,
+                        parameters.maxNumberSecondaryVariables, parameters.maxNumberSecondaryVariablesOrint,
+                        gpu::kDeviceGrowthProductionCooperativeSpan, 0}, plan, outputs.data(),
+                    static_cast<uint32_t>(outputs.size()), taskSubkeyCounts.data(),
+                    static_cast<uint32_t>(taskSubkeyCounts.size()), gpuDoomLines.data());
+                steward->endPhaseWindow();
+                gl::Phase2TraceScope phase2RouteReportTrace("GL.Phase2.RouteReport");
+                for (std::size_t block = 0; block < projectionLis.size(); ++block)
+                    doomLines[projectionLis[block]].store(gpuDoomLines[block], std::memory_order_relaxed);
+                // The projection measurement captures its largest construction
+                // window plus retained sealing data while that window was live.
+                gl::memory_census::noteGpuChunk({ peakHostProjectionBytes,
+                    projectionShardHostBytes, hostTasks.hostBytes(),
+                    filterSchedule.hostBytes(), growthSchedule.hostBytes(),
+                    sealing.hostBytes(), deviceProjection.pinnedHostBytes() });
+                gl::memory_census::sampleNow();
+                const auto& growthResult = streamed.growth;
+                for (const auto taskPosition : cudaTaskPositions) {
+                    assert(gpuTaskIndices[taskPosition] >= 0);
+                    const uint64_t subkeys = taskSubkeyCounts[gpuTaskIndices[taskPosition]];
+                    assert(subkeys <= INT64_MAX);
+                    taskSubMatches[taskPosition] = static_cast<int64_t>(subkeys);
+                    if (gl::phase2TraceEnabled())
+                        diagnosticsLog() << "[PHASE2-TASK-WORK] call=" << phase2TraceCall
+                            << " pass=" << passNo << " chunk=" << phase2TraceChunk
+                            << " task=" << taskPosition << " li=" << tasks[taskPosition].li
+                            << " gpu_task=" << gpuTaskIndices[taskPosition] << " subkeys=" << subkeys << '\n';
+
+                }
+                gpu::observePhase2WorkDemand(workDemand, streamed.feedback);
+                const double gpuDeviceSeconds = gpuDeviceTimer.stopSeconds();
+                const auto gpuFinalizeStarted = std::chrono::steady_clock::now();
+                const double gpuDeviceRouteSeconds = std::chrono::duration<double>(
+                    gpuFinalizeStarted - gpuDeviceRouteStarted).count();
+                diagnosticsLog() << "[GPU-STREAM] requests=" << streamed.evaluatedRequests
+                    << " sealed_records=" << streamed.sealedRecords
+                    << " event_capacity=" << plan.growth.acceptedEvents
+                    << " request_capacity=" << plan.growth.rawRequests
+                    << " cutoff_drains=" << growthResult.cutoffDrainCount
+                    << " pruned_frontier_nodes=" << growthResult.prunedFrontierNodes
+                    << " candidate_node_window_queries=" << growthResult.candidateNodeWindowQueries
+                    << " unsliced_gate_nodes=" << growthResult.unslicedGateNodes
+                    << " scheduled_gate_nodes=" << growthResult.scheduledGateNodes
+                    << " candidate_positions_before_prefilter=" << growthResult.candidatePositionsBeforePrefilter
+                    << " candidate_positions_after_prefilter=" << growthResult.candidatePositionsAfterPrefilter
+                    << " frontier_transfer_calls=" << growthResult.frontierTransferCalls
+                    << " frontier_copy_capacity=" << growthResult.frontierTransferRows
+                    << " frontier_capacity=" << plan.growth.frontierRecords
+                    << " frontier_store=" << plan.growth.frontierStoreRecords
+                    << " frontier_spills=" << growthResult.frontierSpills
+                    << " probe_windows=" << growthResult.probeWindows
+                    << " exact_count_reads=" << growthResult.exactCountReads
+                    << " candidate_capacity=" << plan.growth.candidateWindowRecords
+                    << " value_capacity=" << plan.evaluation.localValues
+                    << " firing_capacity=" << plan.evaluation.firingRecords
+                    << " generation_and_drain_seconds=" << streamed.generationAndDrainSeconds
+                    << " sealing_seconds=" << streamed.sealingSeconds
+                    << " firings=" << streamed.firingRecords << " request_drains=" << growthResult.drainCount
+                    << " downloads=" << streamed.outputDownloads << " output_transfer_bytes=" << streamed.outputTransferBytes
+                    << " frontier_upload_bytes=" << growthResult.uploadedFrontierBytes
+                    << " frontier_download_bytes=" << growthResult.downloadedFrontierBytes
+                    << " frontier_host_bytes=" << growthResult.maximumHostBackingBytes
+                    << std::endl;
 
                 const auto gpuPassFinished = std::chrono::steady_clock::now();
                 const double gpuFinalizeSeconds = std::chrono::duration<double>(
@@ -11286,6 +13841,10 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     projectionTiming.mergeNanoseconds) / kNanosecondsPerSecond;
                 diagnosticsLog() << "[GPU-PHASE2] pass=" << passNo
                           << " logical_blocks=" << projectionOrder.size()
+                          << " construction_workers=" << kGpuProjectionShardCount
+                          << " source_statement_rows=" << projectionTiming.sourceStatementRows
+                          << " uploaded_statement_rows=" << projectionTiming.retainedStatementRows
+                          << " uploaded_statement_bytes=" << projectionTiming.retainedStatementRows * sizeof(IntEncodedExpr)
                           << " tasks=" << hostTasks.tasks.size()
                           << " batches=" << hostTasks.batches.size()
                           << " filter_calls="
@@ -11305,76 +13864,15 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                           << growthResult.maximumFrontierCount
                           << " accepted_events="
                           << growthResult.acceptedEventCount
-                          << " unique_requests="
-                          << orderingResult.uniqueRequestCount
-                          << " dependency_pass_requests="
-                          << evaluationResult.dependencyPassCount
-                          << " reverse_owners="
-                          << evaluationResult.reverseOwnerCount
-                          << " candidate_owners="
-                          << evaluationResult.candidateOwnerCount
-                          << " encoded_hits="
-                          << evaluationResult.encodedHitCount
-                          << " local_values="
-                          << evaluationResult.localValueCount
-                          << " firing_records="
-                          << firingResult.firingRecordCount
-                          << " retained_firing_records="
-                          << retainedFiringCount
-                          << " generated_bytes="
-                          << firingResult.generatedByteCount
-                          << " level_values="
-                          << firingResult.levelValueCount
-                          << " provenance_dependencies="
-                          << firingResult.originDependencyCount
-                          << " cooperative_nodes_peak="
-                          << growthResult.maximumCooperativeNodeCount
-                          << " growth_prefix_payload_peak="
-                          << growthResult.maximumPrefixPayloadValues
-                          << " growth_prefix_variables_peak="
-                          << growthResult.maximumPrefixVariableValues
-                          << " growth_prefix_secondary_peak="
-                          << growthResult.maximumPrefixSecondaryValues
-                          << " marker_keys=" << firingResult.markerKeyCount
-                          << " marker_remaining_args="
-                          << firingResult.markerRemainingArgCount
-                          << " marker_args=" << firingResult.markerArgCount;
-                for (uint32_t bucket = 0;
-                     bucket < gpu::kDeviceGrowthSpanBucketCount; ++bucket) {
-                    diagnosticsLog() << " growth_span_nodes_b" << bucket << "="
-                              << growthResult.spanNodeCounts[bucket]
-                              << " growth_span_candidates_b" << bucket << "="
-                              << growthResult.spanCandidateCounts[bucket];
-                }
-                for (uint32_t depth = 1;
-                     depth < gpu::kDeviceGrowthCensusDepthCount; ++depth) {
-                    const gpu::Phase2GrowthGateCensus& census =
-                        growthResult.gateDepthCounts[depth];
-                    diagnosticsLog() << " growth_d" << depth << "_attempts="
-                              << census.candidateAttempts
-                              << " growth_d" << depth << "_mandatory="
-                              << census.mandatoryReachable
-                              << " growth_d" << depth << "_validity="
-                              << census.validityComparable
-                              << " growth_d" << depth << "_hypothesis="
-                              << census.hypothesisCompatible
-                              << " growth_d" << depth << "_secondary="
-                              << census.secondaryCompatible
-                              << " growth_d" << depth << "_key_length="
-                              << census.keyLengthAllowed
-                              << " growth_d" << depth << "_subkey_present="
-                              << census.subkeyPresent
-                              << " growth_d" << depth << "_owner="
-                              << census.ownerSatisfied
-                              << " growth_d" << depth << "_whole="
-                              << census.wholeKeyPresent
-                              << " growth_d" << depth << "_terms="
-                              << census.termsSatisfied
-                              << " growth_d" << depth << "_events="
-                              << census.acceptedEvents
-                              << " growth_d" << depth << "_children="
-                              << census.children;
-                }
+                          << " raw_requests=" << growthResult.rawRequestCount
+                          << " evaluated_requests=" << streamed.evaluatedRequests
+                          << " firing_records=" << streamed.firingRecords
+                          << " generated_bytes=" << streamed.outputColumns[1]
+                          << " level_values=" << streamed.outputColumns[2]
+                          << " provenance_dependencies=" << streamed.outputColumns[3]
+                          << " marker_keys=" << streamed.outputColumns[4]
+                          << " marker_remaining_args=" << streamed.outputColumns[5]
+                          << " marker_args=" << streamed.outputColumns[6];
                 diagnosticsLog() << " prepare_seconds=" << gpuPreparationSeconds
                           << " projection_seconds=" << gpuProjectionSeconds
                           << " projection_worker_cpu_seconds="
@@ -11417,6 +13915,12 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                           << static_cast<double>(
                                  projectionTiming.byteMapNanoseconds)
                                  / kNanosecondsPerSecond
+                          << " projection_prefix_filter_seconds="
+                          << static_cast<double>(projectionTiming.prefixFilterNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_prefix_filter_keys=" << projectionTiming.prefixFilterKeys
+                          << " projection_prefix_filter_predicates=" << projectionTiming.prefixFilterPredicates
+                          << " projection_prefix_filter_bytes=" << projectionTiming.prefixFilterBytes
                           << " projection_reverse_map_seconds="
                           << static_cast<double>(
                                  projectionTiming.reverseMapNanoseconds)
@@ -11451,6 +13955,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 
         // ---- Classify every part, single-threaded: deal a producer's stumps into
         // buckets (requeue for round 2), or keep a burst part ----
+        gl::Phase2TraceScope phase2PassOutputsTrace("GL.Phase2.PassOutputs", passNo);
         std::vector<ExecTask> nextTasks;
         for (std::size_t i = 0; i < tasks.size(); ++i) {
             const ExecTask& t = tasks[i];
@@ -11461,64 +13966,13 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 #endif
             SealedPageSet& ps = pageStore[base + i];
 
-            // A round-1 PRODUCER. It fired nothing (ps is empty). Deal its stumps
-            // into logicalCores expression buckets and requeue one bucket part each.
+            // A round-1 PRODUCER. It fired nothing (ps is empty). The processor
+            // route deals its stumps here and requeues the parts for round 2; the
+            // CUDA route dealt them into this pass right after the producers ran.
             if (t.produceOnly) {
                 ps.freePages();
-                if (taskStumps[i] == 0) {
-                    // No statement survives the filter -> the LB's real burst would
-                    // generate nothing either. Run it once, unsplit, this iteration
-                    // (guarantees the burst happens; its work then feeds the stats).
-                    nextTasks.push_back(ExecTask{ t.lb, li,
-                        /*partCount=*/1, /*produceOnly=*/false,
-                        SplitStumpRef{}, &doomLines[li], &partsRemaining[li] });
-                    continue;
-                }
-                stumpStore.emplace_back();
-                std::vector<ExpressionStump>& run = stumpStore.back();
-                run.reserve(static_cast<std::size_t>(taskStumps[i]));
-                stumpPages[i].forEachRecord<ExpressionStump>(
-                    [&run](const ExpressionStump& s) { run.push_back(s); });
-                assert(static_cast<int32_t>(run.size()) == taskStumps[i]
-                    && "stump record chain disagrees with the producer's count");
-
-                // Deal the regular and terminal pre-stumps into BUCKETS, one part
-                // per bucket. Round-robin, so
-                // a bucket draws stumps from across the name-sorted list rather than
-                // one contiguous slice; the stumps are permuted into bucket order so
-                // each bucket is a contiguous run. Grown to a multiple of buckets
-                // (kStumpsPerBucketTarget), so the deal evens out the buckets'
-                // grow-tree sizes; fewer stumps than buckets means the LB could not
-                // fan wider. The generator builds the filter once per bucket and the
-                // emitter's seen-set collapses a request two of a bucket's stumps
-                // both reach (I-158).
-                const int32_t nStumps = static_cast<int32_t>(run.size());
-                lbStumps[li] = nStumps;
-                const NameId buckets = static_cast<NameId>(
-                    std::min<int32_t>(nStumps, static_cast<int32_t>(logicalCores)));
-                lbBuckets[li] = buckets;
-                std::vector<ExpressionStump> dealt;
-                dealt.reserve(run.size());
-                std::vector<int32_t> bucketStart(
-                    static_cast<std::size_t>(buckets) + 1, 0);
-                for (NameId k = 0; k < buckets; ++k) {
-                    bucketStart[static_cast<std::size_t>(k)] =
-                        static_cast<int32_t>(dealt.size());
-                    for (int32_t j = k; j < nStumps; j += buckets)
-                        dealt.push_back(run[static_cast<std::size_t>(j)]);
-                }
-                bucketStart[static_cast<std::size_t>(buckets)] =
-                    static_cast<int32_t>(dealt.size());
-                run.swap(dealt);
-                for (NameId k = 0; k < buckets; ++k) {
-                    const int32_t lo = bucketStart[static_cast<std::size_t>(k)];
-                    const int32_t hi = bucketStart[static_cast<std::size_t>(k) + 1];
-                    nextTasks.push_back(ExecTask{ t.lb, li,
-                        /*partCount=*/buckets, /*produceOnly=*/false,
-                        SplitStumpRef{ run.data() + lo,
-                                       static_cast<NameId>(hi - lo), k, buckets },
-                        &doomLines[li], &partsRemaining[li] });
-                }
+                if (phase2Backend == Phase2Backend::cpu)
+                    dealProducerStumps(i, nextTasks);
                 continue;
             }
 
@@ -11536,7 +13990,9 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         for (std::size_t i = 0; i < tasks.size(); ++i)
             if (stumpBound[i]) stumpPages[i].freePages();
 
+        phase2PassOutputsTrace.finish();
         // ---- Finalize every LB that has no work left ----
+        gl::Phase2TraceScope phase2FinalizeSweepTrace("GL.Phase2.FinalizeSweep", passNo);
         std::vector<char> hasNext(M, 0);
         for (const ExecTask& t : nextTasks) hasNext[t.li] = 1;
         std::vector<Memory*> toFinalize;
@@ -11551,6 +14007,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             std::atomic<std::size_t> nextLi{ 0 };
             // FINALIZE window: nextLi is a real fetch_add dispatch cursor over
             // toFinalize -- the pager tracks the finalize sweep like phases 1/3.
+            gl::memory_census::markPhase(gl::PoolPhase::Phase2Finalize);
             steward->beginPhaseWindow(/*phase=*/2, &nextLi, &toFinalize, workers,
                                       lbdeload::kDeloadDirectory);
             auto finalizeWorker = [this, &toFinalize, &finalizeLi, &keptParts,
@@ -11595,9 +14052,10 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 #endif
                     const bool firingRecordsCanonical =
                         lbFiringRecordsCanonical[li] != 0;
+                    gl::Phase2TraceScope phase2LbFinalizeTrace("GL.Phase2.LBFinalize", li, gl::phase2TraceEnabled(), true);
                     this->performElemPhase2(
                         *b, keptParts[li].data(), count,
-                        firingRecordsCanonical
+                        phase2Backend == Phase2Backend::cuda
                             ? kNoDoomLine
                             : doomLines[li].load(std::memory_order_relaxed),
                         firingRecordsCanonical);
@@ -11615,6 +14073,10 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     b->stewardClaim.store(
                         static_cast<uint8_t>(Memory::StewardClaim::Idle),
                         std::memory_order_release);
+                    // The finalize task is over: hand this slot's scratch
+                    // blocks back to the pool (no retention across tasks).
+                    releaseSlotScratch(scratchArenas(), genScratchArenas(),
+                                       ruleStagings(), tIdx);
                 }
                 };
             std::vector<std::thread> pool;
@@ -11627,6 +14089,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             for (std::size_t j = 0; j < finalizeLi.size(); ++j)
                 for (SealedPageSet* set : keptParts[finalizeLi[j]]) set->freePages();
         }
+        phase2FinalizeSweepTrace.finish();
 
         if (nextTasks.empty()) break;
         tasks = std::move(nextTasks);
@@ -11836,8 +14299,14 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // to the post-phase-3 report (lbTotalSub is scoped to this block).
     for (std::size_t li = 0; li < M; ++li) trapWork[li] = lbTotalSub[li];
 #endif
+    if (gl::phase2TraceEnabled())
+        for (std::size_t li = 0; li < M; ++li)
+            diagnosticsLog() << "[PHASE2-LB-WORK] call=" << phase2TraceCall
+                << " li=" << li << " work=" << lbTotalSub[li] << '\n';
+
     }  // active non-empty
 
+    phase2Trace.finish();
     const double phase2IterationSeconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - phase2Started).count();
     phase2CumulativeSeconds += phase2IterationSeconds;
@@ -11852,6 +14321,14 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     gl::rt_tracker::addRtPhaseWallSeconds(2, phase2IterationSeconds);
 #endif
 
+#ifdef USE_MIMALLOC
+    // Return the heap Phase 2 freed (the host projection and its scratch,
+    // allocated and freed on this thread) to the operating system before
+    // phase 3, instead of letting the allocator keep it committed and resident
+    // until the next Phase 2 reuses it (D-426).
+    mi_collect(true);
+#endif
+
     // Phase 3 opens the same working-set window (all phases equivalent).
     const auto phase3Started = std::chrono::steady_clock::now();
     {
@@ -11860,18 +14337,24 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         phase13TimingRows = phase3DetailRows.data();
         phase13TimingWorkers = workers;
 #endif
+        gl::memory_census::markPhase(gl::PoolPhase::Phase3);
         steward->beginPhaseWindow(/*phase=*/3, &phase3Cursor, &active, workers,
                                   lbdeload::kDeloadDirectory);
         runPhase(phase3Cursor, [this](Memory& b, unsigned cid) {
             g_inParallelWorkerPhase = true;
             this->performElemPhase3(b, cid);
             g_inParallelWorkerPhase = false;
+            // The task is over and every scratch-backed local of the body is
+            // destroyed: hand this slot's scratch blocks back to the pool.
+            releaseSlotScratch(scratchArenas(), genScratchArenas(),
+                               ruleStagings(), cid);
         }
 #if RT_MEASUREMENT
         , trapPh3Ns.data()
 #endif
         );
         steward->endPhaseWindow();
+        gl::memory_census::markPhase(gl::PoolPhase::Barrier);
 #if PHASE13_DEEP_TIMING
         phase13TimingRows = nullptr;
         phase13TimingWorkers = 0;
@@ -11933,13 +14416,11 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 const int64_t tb = trapPh1Ns[b] + trapPh2Ns[b]
                                  + trapFinNs[b] + trapPh3Ns[b];
                 return ta > tb; });
-        const std::size_t trapTopK =
-            std::min<std::size_t>(8, trapOrder.size());
+        const std::size_t trapTopK = trapOrder.size();
         for (std::size_t k = 0; k < trapTopK; ++k) {
             const std::size_t li = trapOrder[k];
             const int64_t tot = trapPh1Ns[li] + trapPh2Ns[li]
                               + trapFinNs[li] + trapPh3Ns[li];
-            if (tot < 500000000LL) break;  // report only LBs >= 0.5 s
             std::string chain;
             for (const Memory* p = active[li]; p != nullptr;
                  p = p->parentMemory) {
@@ -12052,7 +14533,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     std::sort(updateGlobalTuples.begin(), updateGlobalTuples.end());
 
     // BARRIER SEAM WINDOW B (D-196): the post-join drains
-    // below (deferred ancestor admissions, updateGlobal, updateGlobalDirect,
+    // below (deferred ancestor admissions, updateGlobal, updateGlobalSingleChapter,
     // the compaction flush) deposit into RANDOM-ACCESS recipient LBs (per-
     // theorem accessMemory tree lookups) — there is no sweep order to
     // register, so the window's cursor is PINNED AT 0 over `active`. That
@@ -12086,9 +14567,19 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         updateGlobal(std::get<0>(t), std::get<1>(t), std::get<2>(t));
     }
 
-    // Replay the proven direct theorems staged on updateGlobalDirectPages, sorted
-    // (the former std::sort over updateGlobalDirectTuples + the replay loop).
-    this->drainUpdateGlobalDirect();
+    // Replay the proven single-chapter theorems staged on updateGlobalSingleChapterPages, sorted
+    // (the former std::sort over updateGlobalSingleChapterTuples + the replay loop).
+    this->drainUpdateGlobalSingleChapter();
+    // Settle the global prune owed by the deactivateUnnecessary walks of the
+    // two theorem drains above (updateGlobal, updateGlobalSingleChapter): one
+    // tree-wide sweep for all of them, before the twin / subtree deactivation
+    // drains and the barrier discharge read isActive. An iteration whose
+    // drains ran no complete walk owes no sweep, exactly as before
+    // (D-451).
+    if (deactivationSweepOwed) {
+        deactivationSweepOwed = false;
+        deactivateRecursively();
+    }
     // Retract already-submitted rows whose producer turned out
     // unintentionally contradictory this iteration (the vacuous-premise
     // flag): the emission gates cover new submissions, this sweep covers
@@ -12293,7 +14784,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 
 	inductionMemoryBlocks.clear();
 	updateGlobalTuples.clear();
-	// updateGlobalDirectPages is reset by drainUpdateGlobalDirect above.
+	// updateGlobalSingleChapterPages is reset by drainUpdateGlobalSingleChapter above.
 
     // --- Statification: LAZY deload — dump-on-release only ---
     // (D-155) Still the LAST act of the
@@ -12339,6 +14830,10 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // (exhaustion still asserts).
     {
         assert(steward && "proveKernel barrier without a steward scope");
+        // The barrier drains are done with the reserved seam slot: return its
+        // scratch blocks before the pool count below is read.
+        releaseSlotScratch(scratchArenas(), genScratchArenas(), ruleStagings(),
+                           seamScratchSlot);
         staticMemory().disarmGrantTrigger();
         steward->quiesce();
         bool dumpedSomething = false;
@@ -12395,7 +14890,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     static_cast<uint8_t>(Memory::StewardClaim::Idle),
                     std::memory_order_release);
                 b->dischargeStatementContent(dischargeScratch);
-                if (parameters.allow_ssd_deload) {
+                if (steward->allowsSsdDeload()) {
                     // Stamp the ordinal single-threaded now, before any later
                     // steward dump names the file.
                     b->ensureDeloadOrdinal();
@@ -12410,7 +14905,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         // continuously by the working-set pager (the phase windows), so the
         // barrier no longer mass-deloads active LBs; the pool stays the hard
         // bound and genuine exhaustion asserts in a phase, never here.
-        assert(parameters.allow_ssd_deload || pendingDischarge.empty());
+        assert(steward->allowsSsdDeload() || pendingDischarge.empty());
         if (!pendingDischarge.empty()) {
             const int64_t totalBlocks = staticMemory().totalBlocks();
             const int64_t usedNow = staticMemory().blocksInUse();
@@ -12458,7 +14953,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                       * static_cast<std::size_t>(workers),
             lbdeload::kDeloadDirectory);
     }
-
+    gl::memory_census::markPhase(gl::PoolPhase::Outside);
 }
 
 void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSpan validityName, Memory& mb, int state) {
@@ -12473,7 +14968,7 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
         const NameId valId = mb.nameMap.lookup(validityName);
         if (origId == 0 || valId == 0) return;
         // Erase back to front to keep indices valid.
-        auto eraseIntRows = [origId, valId](PagedVector<IntEncodedExpr>& intVec) {
+        auto eraseIntRows = [origId, valId](SharedExpressionList& intVec) {
             for (int32_t i = intVec.size(); i-- > 0; ) {
                 if (intVec[i].originalId == origId
                     && intVec[i].validityId == valId) {
@@ -12481,8 +14976,11 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
                 }
             }
         };
-        eraseIntRows(mb.intLocalEncodedStatements);
-        eraseIntRows(mb.intLocalEncodedStatementsDelta);
+        {
+            RT_SCOPE_HERE("RMEXPR_LOCAL_ERASE");
+            eraseIntRows(mb.intLocalEncodedStatements);
+            eraseIntRows(mb.intLocalEncodedStatementsDelta);
+        }
         // intEncodedStatements erasures shift the positions the persistent
         // per-class statement-index waterlines (eqClassSttmntIndexMapMap)
         // point into — record each erased position and repair the
@@ -12492,6 +14990,7 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
         // capture buffer is a loud Rule-19 tripwire, not a real capacity.
         int32_t erasedPos[8];
         int32_t erasedN = 0;
+        RT_SCOPE_HERE("RMEXPR_ENCODED_ERASE");
         for (int32_t i = mb.intEncodedStatements.size(); i-- > 0; ) {
             if (mb.intEncodedStatements[i].originalId == origId
                 && mb.intEncodedStatements[i].validityId == valId) {
@@ -12502,6 +15001,7 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
             }
         }
         if (erasedN > 0) {
+            RT_SCOPE_HERE("RMEXPR_WATERLINES");
             // Collected back to front; the repair takes an ascending run.
             std::sort(erasedPos, erasedPos + erasedN);
             repairEqClassWaterlines(mb, erasedPos, erasedN);
@@ -12560,37 +15060,45 @@ void ExpressionAnalyzer::sweepAncestorKnownRows(Memory& body) {
     {
         DirtyState hitsDirty = DirtyState::Clean;
         PagedVector<int64_t> hits(&gArena, &hitsDirty);
-        for (int32_t i = 0; i < body.intEncodedStatements.size(); ++i) {
-            const NameId origId = body.intEncodedStatements[i].originalId;
-            const NameId valId = body.intEncodedStatements[i].validityId;
-            if (valId == NameMap::MAIN_ID) continue;
-            if (ancestorKnown(body, origId, valId, /*includeSelf=*/false)) {
-                hits.push_back(packStatementKey(origId, valId));
+        {
+            RT_SCOPE_HERE("SWEEP_SCAN");
+            for (int32_t i = 0; i < body.intEncodedStatements.size(); ++i) {
+                const NameId origId = body.intEncodedStatements[i].originalId;
+                const NameId valId = body.intEncodedStatements[i].validityId;
+                if (valId == NameMap::MAIN_ID) continue;
+                if (ancestorKnown(body, origId, valId, /*includeSelf=*/false)) {
+                    hits.push_back(packStatementKey(origId, valId));
+                }
             }
         }
         const int32_t hitN = hits.size();
         if (hitN > 0) {
-            int32_t* idx = reinterpret_cast<int32_t*>(gArena.resolve(
-                gArena.alloc(hitN * static_cast<int32_t>(sizeof(int32_t)),
-                             static_cast<int32_t>(alignof(int32_t)))));
-            for (int32_t k = 0; k < hitN; ++k) idx[k] = k;
-            std::sort(idx, idx + hitN, [&](int32_t a, int32_t b) {
-                const StatementKey ka = Codec<StatementKey>::decode(hits[a]);
-                const StatementKey kb = Codec<StatementKey>::decode(hits[b]);
-                const int c = compareSpans(body.nameMap.decodeView(ka.orig),
-                                           body.nameMap.decodeView(kb.orig));
-                if (c != 0) return c < 0;
-                return compareSpans(body.nameMap.decodeView(ka.validity),
-                                    body.nameMap.decodeView(kb.validity)) < 0;
-            });
-            for (int32_t k = 0; k < hitN; ++k) {
-                const StatementKey key =
-                    Codec<StatementKey>::decode(hits[idx[k]]);
-                removeExpressionFromMemoryBlock(
-                    body.nameMap.decodeView(key.orig),
-                    body.nameMap.decodeView(key.validity),
-                    body, /*state=*/0);
-            }
+            RT_SCOPE_HERE("SWEEP_REMOVE");
+            RT_NOTE_ITERATIONS_HERE(hitN);
+            // One stable compaction pass per statement vector over the hit-key
+            // set — the bulk twin of the per-hit `removeExpressionFromMemoryBlock`
+            // (state 0) sequence: that sequence erased every row whose
+            // (text, scope) pair is a hit from the same three vectors and
+            // repaired the class waterlines after each hit; the repairs compose
+            // (a waterline drops by the number of erased positions below it),
+            // so one repair over all erased positions of the original
+            // `intEncodedStatements` is identical, and the survivors keep their
+            // order either way. The hit order of the retired per-hit walk
+            // (text-lexicographic) had no observable effect and is not
+            // reproduced.
+            ColdHashSet<PodKeyStore<int64_t>> hitSet(&gArena, &hitsDirty);
+            hitSet.resetToFresh();
+            for (int32_t k = 0; k < hitN; ++k) hitSet.mint(hits[k]);
+            const auto isHit = [&](const IntEncodedExpr& row) {
+                return hitSet.lookup(packStatementKey(row.originalId,
+                                                      row.validityId)) != 0;
+            };
+            body.intLocalEncodedStatements.eraseIf(isHit, [](int32_t) {});
+            body.intLocalEncodedStatementsDelta.eraseIf(isHit, [](int32_t) {});
+            PagedVector<int32_t> erasedPos(&gArena, &hitsDirty);
+            const int32_t erasedN = body.intEncodedStatements.eraseIf(
+                isHit, [&](int32_t pos) { erasedPos.push_back(pos); });
+            if (erasedN > 0) repairEqClassWaterlines(body, erasedPos, erasedN);
             // Quiescence (D-194): removals can cancel a genuine addition in
             // the count diff — flag the mutation directly.
             body.mutatedThisBurst = true;
@@ -12930,9 +15438,9 @@ std::string ExpressionAnalyzer::compileImplicationToCompact(const std::string& i
 /// compaction (D-76, Option A).
 ///
 /// @details
-/// The eight `updateGlobalDirect` / `updateGlobal` broadcast sites call this
+/// The eight `updateGlobalSingleChapter` / `updateGlobal` broadcast sites call this
 /// instead of compiling inline. Compiling inline is unsound: the
-/// contradiction path reaches `updateGlobalDirect` via the parallel
+/// contradiction path reaches `updateGlobalSingleChapter` via the parallel
 /// `addExprToMemoryBlock(... coreId ...)` worker call, and
 /// `compileImplicationToCompact` mutates process-global `implCounter` /
 /// `compiledExpressions` / `repetitionExclusionMap` with no lock — a data
@@ -13010,9 +15518,10 @@ int32_t ExpressionAnalyzer::listLastRemovedArgsLE(const LogicalEntity& le,
 
 int32_t ExpressionAnalyzer::listLastRemovedArgsLE(StrSpan category,
     const StrSpan* elements, int32_t elemN, StrSpan* out, int32_t cap) {
-    // Check that the category is explicitly "existence"
-    assert(equalSpans(category, StrSpan("existence", 9))
-        && "LogicalEntity category must be 'existence'");
+    // Only witness-bearing instruction nodes have removed arguments.
+    assert((equalSpans(category, StrSpan("existence", 9))
+        || equalSpans(category, StrSpan("counterexample", 14)))
+        && "Instruction must describe a witness construction");
 
     // Gather every non-'u_' arg span (slices of the elements, input lifetime).
     StrSpan buf[ExecutionParameters::MAX_KEY_SLOTS];
@@ -13053,7 +15562,8 @@ void ExpressionAnalyzer::makeAdmissionKeys(const std::vector<std::string>& impli
     const std::string& expression,
     HashMemory& localMemory,
     const std::string& validityName,
-    Memory& mb)
+    Memory& mb,
+    int64_t ownerTask)
 {
     // Vector forwarder onto the span-run body (the additive twin) — build a
     // stack StrSpan run over the caller-stable vector strings, byte-identical.
@@ -13063,14 +15573,15 @@ void ExpressionAnalyzer::makeAdmissionKeys(const std::vector<std::string>& impli
         && "makeAdmissionKeys forwarder: implication length exceeds cap");
     for (int32_t i = 0; i < implFwdN; ++i) implRun[i] = StrSpan(implication[i]);
     makeAdmissionKeys(implRun, implFwdN, StrSpan(expression), localMemory,
-                      StrSpan(validityName), mb);
+                      StrSpan(validityName), mb, ownerTask);
 }
 
 void ExpressionAnalyzer::makeAdmissionKeys(const StrSpan* impl, int32_t implN,
     StrSpan expr,
     HashMemory& localMemory,
     StrSpan validityName,
-    Memory& mb)
+    Memory& mb,
+    int64_t ownerTask)
 {
     // 1. Check expression arguments. Args are zero-copy slices of `expr`
     //    (a caller-stable buffer) — no owning vector.
@@ -13101,8 +15612,12 @@ void ExpressionAnalyzer::makeAdmissionKeys(const StrSpan* impl, int32_t implN,
         return;
     }
 
-    localMemory.triggersForAdmissionSetIntegration.mint(
-        mintTemplateKey(mb.templateInterner, mb.nameMap, expr, validityName));
+    {
+        const int64_t triggerKey = mintTemplateKey(mb.templateInterner, mb.nameMap, expr, validityName);
+        const bool existed = localMemory.triggersForAdmissionSetIntegration.lookup(triggerKey) != 0;
+        localMemory.triggersForAdmissionSetIntegration.mint(triggerKey);
+        recordIntegrationOwner(mb, mb.lbMemory.admissionTriggerOwners, triggerKey, ownerTask, existed);
+    }
 
     // 2. Validate Head vs Expression
     if (implN == 0) return;
@@ -13213,9 +15728,13 @@ void ExpressionAnalyzer::makeAdmissionKeys(const StrSpan* impl, int32_t implN,
         if (argsValid && markerCount == 1) {
             const ScratchString admissionKey = removeUPrefixScratch(
                 strArena, StrSpan(mappedElement));
-            localMemory.admissionSetIntegration.mint(
-                mintTemplateKey(mb.templateInterner, mb.nameMap,
-                                StrSpan(admissionKey), validityName));
+            {
+                const int64_t setKey = mintTemplateKey(mb.templateInterner, mb.nameMap,
+                                                       StrSpan(admissionKey), validityName);
+                const bool existed = localMemory.admissionSetIntegration.lookup(setKey) != 0;
+                localMemory.admissionSetIntegration.mint(setKey);
+                recordIntegrationOwner(mb, mb.lbMemory.admissionSetOwners, setKey, ownerTask, existed);
+            }
 
             // New admission-set-integration key — revive any prior
             // integration-side rejection keyed at this marker form.
@@ -13398,6 +15917,17 @@ ScratchString ExpressionAnalyzer::expandSignature(StrSpan category,
         }
     }
 
+    else if (equalSpans(category, StrSpan("counterexample", 14))) {
+        assert(elemN >= 2);
+        // Restore the original head before reconstructing its universal.
+        // Only the admitted witness is non-u_; free instance parameters keep
+        // their prefixes until the shared history renaming below.
+        const StrSpan head = negateScratch(out, elements[elemN - 1]);
+        const ScratchString universal = reconstructImplicationFullBindScratch(
+            out, elements, elemN - 1, StrSpan(head));
+        result = negateScratch(out, StrSpan(universal));
+    }
+
     // --- CASE 3: IMPLICATION (returns early, before the renaming) ---
     else if (equalSpans(category, StrSpan("implication", 11))) {
         if (elemN == 0) return copyScratch(out, signature);
@@ -13492,7 +16022,7 @@ ScratchString ExpressionAnalyzer::expandSignature(StrSpan category,
             assert(pairN < 512 && "expandSignature rename pairs exceed 512");
             pairs[pairN++] = StrReplacement{ t, StrSpan(t.ptr + 2, t.len - 2) };
         }
-        else if (matchItLevId(t, esLevel, esId) || matchIntLevId(t, esLevel, esId)) {
+        else if (matchItLevId(t, esLevel, esId) || matchDisintegrationWitnessId(t, esLevel, esId)) {
             // it_ / int_ tokens are kept as-is (no replacement).
         }
         else {
@@ -13606,34 +16136,36 @@ int32_t ExpressionAnalyzer::flattenOrLeaves(
     return outCount;
 }
 
-/// @brief Consume one ordered true-polarity disjunct cohort — the or
-///        machinery's whole downstream, shared by the compiled-or arm and
-///        the negated-AND De-Morgan door.
-///
-/// @details
-/// See the declaration for the full contract. The body is the former or-arm
-/// downstream of `disintegrateExprCore2`, extracted verbatim; the expansion
-/// history is inlined (the arm used the function-local
-/// `trackExpansionHistory` lambda) so the door — which runs before the
-/// lambda's definition point — shares it.
-///
-/// @param expr              Deposited expression (history antecedent).
-/// @param entSignature      u_-form cohort signature.
-/// @param orLeaves          Ordered disjunct spans at TRUE polarity.
-/// @param orLeafN           Leaf count.
-/// @param currentStatement  u_-stripped `collected` key.
-/// @param memoryBlock       Owning LB.
-/// @param collected         Product sink.
-/// @param validityName      Deposit scope.
-/// @param trackHistoryLocal History suppression flag.
-/// @param allowOrDisintegration Route (b) signal.
-/// @param orSeedLevels      Seed level run.
-/// @param orSeedLevelCount  Seed level count.
-/// @param allowOrProbe      Real-deposit flag.
-/// @param sArena            Caller's per-slot string scratch.
-/// @invariant LB-local writes only (I-28); registry reads via
-///            `compiledEntity` only.
-/// @see disintegrateExprCore2, flattenOrLeaves.
+/// @brief Open or park one positive category-or leaf cohort.
+/// @details Ordered flattened leaves share one parent-scope identity.
+/// Proof work, depth, demand, and disintegration permission control cases;
+/// an OR with a disjunct that already holds at the scope (`orDisjunctTrueAt`)
+/// neither opens a case split nor parks (D-438).
+/// Exclusion is handled separately by finalized source registration and
+/// the on-demand evaluator; this consumer installs no exclusion rules.
+/// @param expr Deposited OR expression for history.
+/// @param entSignature Instantiated OR signature with u-prefixed arguments.
+/// @param orLeaves Ordered disjunct spans at their true polarity.
+/// @param orLeafN Number of flattened disjuncts.
+/// @param currentStatement Collected OR key.
+/// @param memoryBlock Owning block.
+/// @param collected Disintegration product sink.
+/// @param validityName Parent scope.
+/// @param trackHistoryLocal History permission.
+/// @param allowOrDisintegration Unconditional case-opening signal.
+/// @param orSeedLevels Ordered seed levels.
+/// @param orSeedLevelCount Number of seed levels.
+/// @param allowOrProbe Real-deposit demand-probe permission.
+/// @param signatureIsOr Caller category assertion; must be true.
+/// @param sArena Caller string scratch.
+/// @param instructions Caller instruction context.
+/// @param iteration Caller witness iteration.
+/// @param newVarMap Caller witness map.
+/// @param parentWitness Caller parent witness.
+/// @param witnessMeta Caller witness metadata.
+/// @return Void.
+/// @invariant Only category-or entities enter this consumer; all writes are block-local.
+/// @see registerOrImplicationSource, evaluateOrImplication, flattenOrLeaves.
 void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
     StrSpan entSignature,
     const StrSpan* orLeaves, int32_t orLeafN,
@@ -13645,6 +16177,7 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
     bool allowOrDisintegration,
     const int* orSeedLevels, int32_t orSeedLevelCount,
     bool allowOrProbe,
+    bool signatureIsOr,
     ScratchArena& sArena,
     WorkInstruction& instructions,
     int iteration,
@@ -13662,32 +16195,11 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
         }
     }
 
-    // The expansion record and the K mutual-exclusion implications are
-    // emitted at EVERY OR depth: they are flat hash rules — the
-    // disjunctive-syllogism consumption of the OR — and create no
-    // scopes. Only the per-branch case-split below is gated on
-    // max_or_depth (D-211).
-    //
-    // Compute the OR's expanded De-Morgan form once; used as the
-    // disintegration origin for the K mutual-exclusion implications
-    // below, mirroring the &/existence pattern in trackExpansionHistory.
-    // See D-55.
+    // Case history preserves the expanded OR independently of the
+    // on-demand exclusion evaluator. Only case scopes use the depth gate.
     const StrSpan entCategory("or", 2);
     const ScratchString expandedOrSignature = expandSignature(
         entCategory, entSignature, orLeaves, orLeafN, sArena);
-    // L3 span-record door. expandedOrSignature is a stable local; the
-    // per-branch KEY is u_-stripped onto sArena in the loop. The
-    // antecedent is loop-invariant, so the OriginDep is built once.
-    const OriginDep orDisDeps[1] = {
-        { StrSpan(expandedOrSignature), StrSpan(validityName) } };
-
-    // The K mutual-exclusion implications cite expandedOrSignature as
-    // their disintegration origin, which requires the matching
-    // expansion-origin record (expandedOrSignature -> deposited
-    // expression) to exist regardless of whether the per-branch
-    // case-split fires. Inlined trackExpansionHistory section 1: the
-    // paired mailOut write ships the record the statement delta cannot
-    // (the expansion conjunction never enters the delta).
     if (parameters.trackHistory && trackHistoryLocal) {
         const int expCap = (parameters.compressor_mode
             ? parameters.compressor_max_origins_per_expr
@@ -13701,145 +16213,10 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
             StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
     }
 
-    // 1. The or implications — the K mutual-exclusion rules
-    //    (!d_0 & ... & !d_{i-1} & !d_{i+1} & ... & !d_{N-1}) -> d_i and, for a
-    //    registry or with k >= 3 leaves, the subset-exclusion rules (I-184,
-    //    D-269) — come from the or entity's compiled `implications` list
-    //    (D-309): one compact instance
-    //    `(implication<N>[args])` per rule, u_p -> instance argument p
-    //    positionally (repeated arguments are legal). Each instance is a
-    //    product STATEMENT of this cohort exactly like an `and` element: a
-    //    child of the or's key, registered at the parent scope, and
-    //    disintegrated through the implication branch of
-    //    `disintegrateExprCore2`, which expands it into the same full-bind
-    //    rule the on-the-spot construction produced (the compact's elements
-    //    through reconstructImplicationFullBindScratch) and writes the rule's
-    //    `expansion` origin citing the compact. The compact itself takes the
-    //    `disintegration` origin the rule carried (the verifier's
-    //    check_disintegration or branch expands it back). A De-Morgan door
-    //    cohort (`!(op[args])`, no or entity) keeps the on-the-spot K-rule
-    //    construction in the else branch.
-    const LogicalEntity* orLe = nullptr;
-    if (entSignature.len > 0 && entSignature.ptr[0] == '(') {
-        const LogicalEntity* cand =
-            compiledEntity(extractExpressionUniversalSpan(entSignature));
-        if (cand != nullptr && cand->category == "or") orLe = cand;
-    }
-    if (orLe != nullptr) {
-        assert(static_cast<int32_t>(orLe->implications.size())
-                == expectedOrImplicationCount(orLeafN)
-            && "consumeOrLeavesCohort: or-implication list incomplete (I-208)");
-        StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
-        const int32_t sigN = getArgsSpans(StrSpan(orLe->signature), sigArgs,
-            ExecutionParameters::MAX_ARITY);
-        StrSpan instArgs[ExecutionParameters::MAX_ARITY];
-        const int32_t instN = getArgsSpans(entSignature, instArgs,
-            ExecutionParameters::MAX_ARITY);
-        assert(sigN == instN
-            && "consumeOrLeavesCohort: instance arity differs from the compiled or");
-        StrReplacement pairs[ExecutionParameters::MAX_ARITY];
-        for (int32_t p = 0; p < sigN; ++p) {
-            pairs[p].key = sigArgs[p];
-            pairs[p].value = instArgs[p];
-        }
-        const int maxOrigins = parameters.compressor_mode
-            ? parameters.compressor_max_origins_per_expr
-            : parameters.max_origin_per_expr;
-        // The instruction's marked goal is re-set by every
-        // prepareIntegrationCore call; copy it onto the arena first so the
-        // span never aliases the interner it is minted back into (I-3).
-        const StrSpan goalView = instructions.markedGoal();
-        const ScratchString goalCopy =
-            ScratchString::copyFrom(sArena, goalView.ptr, goalView.len);
-        for (const std::string& tmpl : orLe->implications) {
-            // Per-instance scope: the instance bytes live through the
-            // recursion (the WorkInstruction copies what it keeps).
-            ScratchScope instScope(sArena);
-            const ScratchString inst =
-                replaceKeysScratch(sArena, StrSpan(tmpl), pairs, sigN);
-            const ScratchString instClean =
-                removeUPrefixScratch(sArena, StrSpan(inst));
-            collected.insertChild(StrSpan(currentStatement), StrSpan(instClean));
-            if (parameters.trackHistory && trackHistoryLocal) {
-                // The compact takes the disintegration origin the rule
-                // carried (KEY u_-stripped: chapter rows surface u_-stripped
-                // expressions).
-                addOriginEncoded(memoryBlock.exprOriginMap,
-                    memoryBlock.originInterner, StrSpan(instClean),
-                    StrSpan(validityName), OriginTag::disintegration,
-                    orDisDeps, 1, maxOrigins);
-                // Paired `mailOut.exprOriginMap` write (D-274): the compact
-                // registers as a statement and rides the delta, and a
-                // receiver resolving its row needs the antecedent chain
-                // shipped alongside (the or's expansion record is pair-mailed
-                // above).
-                memoryBlock.addMailOutOrigin(StrSpan(instClean),
-                    StrSpan(validityName), OriginTag::disintegration,
-                    orDisDeps, 1, maxOrigins);
-            }
-            prepareIntegrationCore(StrSpan(inst), instructions, memoryBlock,
-                StrSpan(goalCopy));
-            disintegrateExprCore2(StrSpan(inst), instructions, memoryBlock,
-                iteration, collected, newVarMap, validityName,
-                trackHistoryLocal, allowOrDisintegration,
-                orSeedLevels, orSeedLevelCount, allowOrProbe,
-                parentWitness, witnessMeta);
-        }
-    }
-    else {
-        // De-Morgan door cohort: the K rules are built on the spot — the
-        // negated compound resolves to no or entity, so there is no compiled
-        // list (K rules only; the subset-exclusion family is registry-or
-        // only). Each is stamped with the `disintegration` origin pointing
-        // at the OR's expanded form so the proof graph can audit the K rules
-        // back to the originating OR (the verifier's De-Morgan branch
-        // rebuilds and verifies the exact shape).
-        for (int32_t i = 0; i < orLeafN; ++i) {
-            StrSpan premiseSpans[64];
-            std::size_t premiseCount = 0;
-            for (int32_t j = 0; j < orLeafN; ++j) {
-                if (j != i) {
-                    assert(premiseCount < 64 && "or-branch premise chain exceeds 64");
-                    // negateScratch, not prefixBang: a disjunct carries its
-                    // true polarity, so a negated leaf's exclusion premise is
-                    // its bare positive core, never a double negation.
-                    premiseSpans[premiseCount++] = negateScratch(sArena, orLeaves[j]);
-                }
-            }
-            const ScratchString impStr = reconstructImplicationFullBindScratch(
-                sArena, premiseSpans, static_cast<int>(premiseCount), orLeaves[i]);
-            collected.insertImpl(StrSpan(currentStatement), StrSpan(impStr), StrSpan(validityName));
-
-            if (parameters.trackHistory && trackHistoryLocal) {
-                // KEY u_-stripped (matches the &/existence pattern in
-                // trackExpansionHistory's section 2 — chapter rows
-                // surface u_-stripped expressions; the u_-prefixed form
-                // lives only in hash memory for unification).
-                const ScratchString impClean = removeUPrefixScratch(sArena, StrSpan(impStr));
-                int maxOrigins = parameters.compressor_mode
-                    ? parameters.compressor_max_origins_per_expr
-                    : parameters.max_origin_per_expr;
-                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(impClean), StrSpan(validityName), OriginTag::disintegration, orDisDeps, 1, maxOrigins);
-                // Paired `mailOut.exprOriginMap` write
-                // (D-274). The K mutual-exclusion
-                // implications are flat hash rules — never statements, never in
-                // the delta — so without this mirror a descendant that receives
-                // one of their fired heads by mail holds a citing row it cannot
-                // resolve (`buildStack` asserts). The antecedent
-                // `expandedOrSignature` record is itself pair-mailed above, so
-                // the receiver's chain closes.
-                memoryBlock.addMailOutOrigin(StrSpan(impClean),
-                    StrSpan(validityName), OriginTag::disintegration,
-                    orDisDeps, 1, maxOrigins);
-            }
-        }
-    }
-
-    // The per-branch case-split stays depth-gated: nested _ordis_
-    // scopes are the scope explosion max_or_depth exists to prevent.
-    // A depth-gated or neither opens nor parks (the single-layer
-    // contract): the K rules above are its whole consumption.
-    if (currentOrDepth < parameters.max_or_depth) {
+    // Exclusion processing is registered from the finalized OR statement.
+    // This consumer only controls case opening and parking.
+    assert(signatureIsOr && "Only category-or entities enter the OR consumer");
+    if (signatureIsOr && currentOrDepth < parameters.max_or_depth) {
         // 2. TWO-ROUTE cohort opening (admission-based ordis; restores
         //    the D-32 distinction the sequenced branch had overridden).
         //    Route (b): the firing rule is a product of disintegration
@@ -13948,7 +16325,6 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
         };
 
         const bool routeB = allowOrDisintegration;
-        bool probeHit = false;
         bool leafAdmitted[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS] = {};
         if (!routeB && allowOrProbe) {
             for (int32_t i = 0; i < orLeafN; ++i) {
@@ -13957,13 +16333,9 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
                     // isAdmitted's prologue, read-only: non-minting
                     // template probe + key presence. No updateAdmissionMap,
                     // no status write.
-                    int64_t probePk = 0;
-                    if (lookupTemplateKey(memoryBlock.templateInterner,
-                            memoryBlock.nameMap, tmpl, validityName, probePk)
-                        && memoryBlock.overallHashMemory.admissionMap.lookup(
-                               probePk) != 0) {
+                    if (canonicalTemplatePresent(memoryBlock, memoryBlock.overallHashMemory.admissionMap,
+                            memoryBlock.lbMemory.canonicalUses.algebraMatches, tmpl, validityName)) {
                         leafAdmitted[i] = true;
-                        probeHit = true;
                     }
                 });
             }
@@ -13978,27 +16350,68 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
         // the demand-first arrival order opens without ever parking.
         bool demandHit = false;
         bool leafDemand[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS] = {};
+        const unsigned demandSlot = g_currentCoreId >= 0 ? static_cast<unsigned>(g_currentCoreId)
+            : genScratchArenas().slotCount() - 1;
+        ScratchArena& demandArena = genScratchArenas().forSlot(demandSlot);
+        DirtyState demandDirty = DirtyState::Clean;
         if (!routeB && allowOrProbe
             && !memoryBlock.overallHashMemory.admissionMapOrdis2.empty()) {
             for (int32_t i = 0; i < orLeafN; ++i) {
-                int64_t demandPk = 0;
-                if (lookupTemplateKey(memoryBlock.templateInterner,
-                        memoryBlock.nameMap, cleanLeaves[i], validityName,
-                        demandPk)
-                    && memoryBlock.overallHashMemory.admissionMapOrdis2.lookup(
-                           demandPk) != 0) {
+                PagedVector<int64_t> matchedDemands(&demandArena, &demandDirty);
+                const NameId target = memoryBlock.nameMap.lookup(validityName);
+                matchingCanonicalTemplates(memoryBlock, memoryBlock.overallHashMemory.admissionMapOrdis2,
+                    memoryBlock.lbMemory.canonicalUses.ordis2Matches, cleanLeaves[i], target, target,
+                    matchedDemands, demandArena);
+                if (!matchedDemands.empty()) {
+                    // "Really missing" gate at branch creation
+                    // (D-358): a demanded
+                    // leaf already known at this scope or an ancestor is a
+                    // satisfied demand — the fact the rule waited for
+                    // exists, the full rule fires on it — so it opens
+                    // nothing; its stale entry is consumed here. Shared
+                    // ancestorKnown predicate, non-minting lookups (an
+                    // un-interned leaf text cannot be known).
+                    const NameId leafOrigId =
+                        memoryBlock.nameMap.lookup(cleanLeaves[i]);
+                    const NameId leafValId =
+                        memoryBlock.nameMap.lookup(validityName);
+                    if (leafOrigId != 0 && leafValId != 0
+                        && ancestorKnown(memoryBlock, leafOrigId, leafValId,
+                                         /*includeSelf=*/true)) {
+                        memoryBlock.overallHashMemory.admissionMapOrdis2
+                            .eraseBlobIf([&](int64_t key) {
+                                for (int32_t j = 0; j < matchedDemands.size(); ++j)
+                                    if (key == matchedDemands[j]) return true;
+                                return false;
+                            });
+                        continue;
+                    }
                     leafDemand[i] = true;
                     demandHit = true;
                 }
             }
         }
-        // No goals, no or branches (I-206): an LB whose
-        // goal registry is empty — any scope; evaluated at every open attempt,
-        // the registry empties mid-run — neither opens nor parks a cohort. The
-        // flat 1a rules above landed regardless.
-        const bool lbHasGoals = !memoryBlock.intToBeProved.empty();
-        const bool orAdmitted = lbHasGoals && (routeB || probeHit || demandHit);
-
+        // Explicit goals and active primed contradiction blocks can require
+        // cases. Flat rules remain unconditional when no proof work remains.
+        const bool hasProofWork = hasOrProofWork(memoryBlock);
+        // Satisfied-OR gate (D-438): a disjunct that
+        // already holds at this scope makes the case split useless — its
+        // branch equals this scope, so convergence could only conclude what
+        // the scope already proves. Such an OR opens no case split by any
+        // route and is not parked either: a disjunct that holds keeps holding
+        // (a scope's facts only accumulate and its classes only merge), so a
+        // parked satisfied OR could never open. The probes above keep their
+        // own consumption behavior.
+        bool orSatisfied = false;
+        if (hasProofWork && (routeB || allowOrProbe)) {
+            const NameId orScopeId = memoryBlock.nameMap.lookup(validityName);
+            assert(orScopeId != 0
+                && "satisfied-OR gate: the OR's scope must be interned");
+            for (int32_t i = 0; i < orLeafN && !orSatisfied; ++i)
+                orSatisfied = orDisjunctTrueAt(cleanLeaves[i], orScopeId, memoryBlock);
+        }
+        // Algebra product-template matches do not authorize case creation.
+        const bool orAdmitted = hasProofWork && !orSatisfied && (routeB || demandHit);
         if (orAdmitted) {
             // 3. Cohort identity + bootstrap guard. Equal signatures
             //    under different parents are independent case splits
@@ -14063,29 +16476,10 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
                         admitted, admittedN, anchorArgs, anchorArgN)];
                 }
 
-                // "Opening consumes both" (D-267):
-                // each demand-matched leaf's entry leaves admissionMapOrdis2
-                // with this open. Runs on the single-threaded absorb seam;
-                // re-sweeps stay idempotent because the bootstrap guard
-                // above already gates re-deposits. The park side's entries
-                // were erased by the wake (or never existed on the
-                // demand-first order) — the pair self-liquidates.
-                if (demandHit) {
-                    for (int32_t i = 0; i < orLeafN; ++i) {
-                        if (!leafDemand[i]) continue;
-                        int64_t consumePk = 0;
-                        const bool present = lookupTemplateKey(
-                            memoryBlock.templateInterner, memoryBlock.nameMap,
-                            cleanLeaves[i], validityName, consumePk);
-                        assert(present
-                            && "demand-matched leaf lost its template key");
-                        (void)present;
-                        memoryBlock.overallHashMemory.admissionMapOrdis2
-                            .eraseBlobIf([consumePk](int64_t k) {
-                                return k == consumePk;
-                            });
-                    }
-                }
+                // Opening a case split does not prove its demanded leaf.
+                // Keep the shared demand for other eligible OR sources;
+                // the probe removes it only when the fact is already known.
+                // The cohort guard above prevents duplicate scheduling.
 
                 // Queue each leaf in the wrapped payload-body form (the
                 // orBookkeeping id convention). The clean strings ride
@@ -14117,7 +16511,7 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
                 }
                 memoryBlock.pendingOrReleases.mint(orCohortId);
             }
-        } else if (lbHasGoals && allowOrProbe) {
+        } else if (hasProofWork && allowOrProbe && !orSatisfied) {
             // 4. PARK: no route admitted — file the cohort under each
             //    operator-based disjunct product template at this
             //    validity. Value = the clean or statement + the seed
@@ -14139,11 +16533,15 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
                     const int64_t parkPk = mintTemplateKey(
                         memoryBlock.templateInterner, memoryBlock.nameMap,
                         tmpl, validityName);
+                    const int32_t previousParkId = memoryBlock.overallHashMemory.rejectedMapOrdis.lookup(parkPk);
+                    const int32_t previousParkCount = previousParkId == 0 ? 0 : memoryBlock.overallHashMemory.rejectedMapOrdis.runLen(previousParkId);
                     insertRejectedOrdisIdsBlob(
                         memoryBlock.overallHashMemory.rejectedMapOrdis,
                         parkPk, parkStmtId,
                         orSeedLevels, orSeedLevelCount,
                         memoryBlock.valueInterner, parkArena);
+                    if (memoryBlock.overallHashMemory.rejectedMapOrdis.runLen(memoryBlock.overallHashMemory.rejectedMapOrdis.lookup(parkPk)) != previousParkCount)
+                        memoryBlock.lbMemory.canonicalUses.ordisSources.changed(parkPk);
                 });
             }
             // DUAL FILING (D-267): the same
@@ -14159,11 +16557,15 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
                 const int64_t park2Pk = mintTemplateKey(
                     memoryBlock.templateInterner, memoryBlock.nameMap,
                     cleanLeaves[i], validityName);
-                insertRejectedOrdisIdsBlob(
+                const int32_t previousParkId = memoryBlock.overallHashMemory.rejectedMapOrdis2.lookup(park2Pk);
+                    const int32_t previousParkCount = previousParkId == 0 ? 0 : memoryBlock.overallHashMemory.rejectedMapOrdis2.runLen(previousParkId);
+                    insertRejectedOrdisIdsBlob(
                     memoryBlock.overallHashMemory.rejectedMapOrdis2,
                     park2Pk, parkStmtId,
                     orSeedLevels, orSeedLevelCount,
                     memoryBlock.valueInterner, parkArena);
+                    if (memoryBlock.overallHashMemory.rejectedMapOrdis2.runLen(memoryBlock.overallHashMemory.rejectedMapOrdis2.lookup(park2Pk)) != previousParkCount)
+                        memoryBlock.lbMemory.canonicalUses.ordis2Sources.changed(park2Pk);
             }
         }
         // else: hypothetical-disintegration path — neither open nor park.
@@ -14172,7 +16574,41 @@ void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
 }
 
 void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
-    WorkInstruction& instructions,
+    WorkInstruction& instructions, Memory& memoryBlock, int iteration,
+    CollectedArena& collected, NewVarStore& newVarMap, StrSpan validityName,
+    bool trackHistoryLocal, bool allowOrDisintegration,
+    const int* orSeedLevels, int32_t orSeedLevelCount, bool allowOrProbe,
+    StrSpan parentWitness, WitnessMetaStore* witnessMeta)
+{
+    DisintInstructionView view(instructions);
+    disintegrateExprCoreView(expr, view, memoryBlock, iteration, collected,
+        newVarMap, validityName, trackHistoryLocal, allowOrDisintegration,
+        orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
+}
+
+/// @brief Expand one expression through an instruction substitution view.
+/// @details The traversal, witness order, history and OR decisions are unchanged.
+/// Witness recursion creates a read-only substitution view; instruction extension
+/// and concrete OR consumers materialize only their current view.
+/// @param expr Expression at this recursion node.
+/// @param instructions Current instruction view.
+/// @param memoryBlock Owning logic block.
+/// @param iteration Firing generation.
+/// @param collected Expansion products and history carriers.
+/// @param newVarMap Temporary witnesses and their defining elements.
+/// @param validityName Current validity scope.
+/// @param trackHistoryLocal Whether history may be emitted.
+/// @param allowOrDisintegration Existing unconditional OR signal.
+/// @param orSeedLevels Caller-owned source levels.
+/// @param orSeedLevelCount Number of source levels.
+/// @param allowOrProbe Whether demand-based OR processing is enabled.
+/// @param parentWitness Enclosing witness token, or the root empty token.
+/// @param witnessMeta Current discovery or publication metadata.
+/// @return Void.
+/// @invariant Child substitution views cannot mutate their parent instruction.
+/// @see DisintInstructionView, disintegrateExprCore2.
+void ExpressionAnalyzer::disintegrateExprCoreView(StrSpan expr,
+    DisintInstructionView& instructions,
     Memory& memoryBlock,
     int iteration,
     CollectedArena& collected,
@@ -14214,7 +16650,8 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
     // instructions.end() sentinel).
     int32_t hit = -1;
     for (int32_t i = 0; i < instructions.entityCount(); ++i) {
-        if (equalSpans(instructions.signature(i), addedSpan)) { hit = i; break; }
+        ScratchScope signatureFrame(sArena);
+        if (equalSpans(instructions.signature(i, sArena), addedSpan)) { hit = i; break; }
     }
 
     // Determine the current statement signature for the map key
@@ -14250,9 +16687,13 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                 // the compact. The compact itself takes the `expansion`
                 // origin the rule carried, citing the negated existence.
                 assert(static_cast<int32_t>(exLe->implications.size())
-                        == expectedExistenceImplicationCount(
-                               static_cast<int32_t>(exLe->elements.size()))
+                        == existenceImplicationCount(*exLe)
                     && "negated-existence expansion: existence-implication list incomplete (I-209)");
+                // A numbered element (a generated `and<N>`, a nested
+                // `existence<N>`) leaves the list empty — the named-only rule:
+                // the negated existence is then a stored statement only and
+                // falls through to the plain registration path below.
+                if (!exLe->implications.empty()) {
                 StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
                 const int32_t sigN = getArgsSpans(StrSpan(exLe->signature), sigArgs,
                     ExecutionParameters::MAX_ARITY);
@@ -14283,6 +16724,15 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                 const ScratchString goalCopy =
                     ScratchString::copyFrom(sArena, goalView.ptr, goalView.len);
                 for (const std::string& tmpl : exLe->implications) {
+                    // Body direction only (D-382):
+                    // the compact whose premise is the bound variable's bare
+                    // typing predicate — the typing direction
+                    // `in[k,S] → !body(k)` — is not instantiated; it would
+                    // deposit the negated body once per typed term and no
+                    // rule ever consumes those rows. The body direction
+                    // `body(k) → !in[k,S]` fires where the body is known and
+                    // refutes the witness's typing. Registry read only.
+                    if (isTypingDirectionCompact(StrSpan(tmpl))) continue;
                     // Per-instance scope: the instance bytes live through the
                     // recursion (the WorkInstruction copies what it keeps).
                     ScratchScope instScope(sArena);
@@ -14304,9 +16754,9 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                             StrSpan(validityName), OriginTag::expansion,
                             expDeps, 1, maxOrig);
                     }
-                    prepareIntegrationCore(StrSpan(inst), instructions, memoryBlock,
+                    prepareIntegrationCore(StrSpan(inst), instructions.materialize(sArena), memoryBlock,
                         StrSpan(goalCopy));
-                    disintegrateExprCore2(StrSpan(inst), instructions, memoryBlock,
+                    disintegrateExprCoreView(StrSpan(inst), instructions, memoryBlock,
                         iteration, collected, newVarMap, validityName,
                         trackHistoryLocal, allowOrDisintegration,
                         orSeedLevels, orSeedLevelCount, allowOrProbe,
@@ -14314,63 +16764,78 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                 }
 
                 return;
+                }
             }
         }
 
-        // ---- Negated-AND De-Morgan expansion (or-twin) ----
-        // !(op[args]) whose compiled definition body is an AND is a
-        // disjunction in De-Morgan clothing: !(& C1 .. Cn) = !C1 v .. v !Cn,
-        // with every disjunct at its TRUE polarity — a negated conjunct's
-        // disjunct is its bare positive core (negateScratch cancellation,
-        // I-175). The ordered leaves run the same consumption as a compiled
-        // or fact — K mutual-exclusion rules at this scope plus the
-        // two-route cohort machinery — with the negated compound itself as
-        // the cohort signature: no orN operator exists or is minted, the
-        // registry is only read (parallel-phase safe). The flat negated
-        // statement still registers through the ensureKey below, exactly as
-        // before; a leaf that is itself an or application re-disintegrates
-        // as an ordinary or fact when a branch asserts it.
-        if (addedSpan.len >= 2 && addedSpan.ptr[0] == '!' && addedSpan.ptr[1] == '(') {
-            const StrSpan negCore = extractExpressionUniversalSpan(addedSpan);
-            const LogicalEntity* negLe = compiledEntity(negCore);
-            if (negLe != nullptr && negLe->category == "and") {
-                const StrSpan innerInst(addedSpan.ptr + 1, addedSpan.len - 1);
-                StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
-                const int32_t sigN = getArgsSpans(StrSpan(negLe->signature),
-                    sigArgs, ExecutionParameters::MAX_ARITY);
-                StrSpan instArgs[ExecutionParameters::MAX_ARITY];
-                const int32_t instN = getArgsSpans(innerInst, instArgs,
-                    ExecutionParameters::MAX_ARITY);
-                assert(sigN == instN
-                    && "negated-AND door: instance arity differs from the "
-                       "compiled definition");
-                StrReplacement pairs[ExecutionParameters::MAX_ARITY];
-                for (int32_t a = 0; a < sigN; ++a) {
-                    pairs[a].key = sigArgs[a];
-                    pairs[a].value = instArgs[a];
-                }
-                ScratchString leafHold[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
-                StrSpan orLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
-                int32_t orLeafN = 0;
-                for (const std::string& rawElem : negLe->elements) {
-                    assert(orLeafN < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
-                        && "negated-AND door: element count exceeds cap");
-                    leafHold[orLeafN] = replaceKeysScratch(sArena,
-                        StrSpan(rawElem), pairs, sigN);
-                    orLeaves[orLeafN] =
-                        negateScratch(sArena, StrSpan(leafHold[orLeafN]));
-                    ++orLeafN;
-                }
-                currentStatement = removeUPrefixScratch(sArena, addedSpan);
-                collected.ensureKey(StrSpan(currentStatement));
-                consumeOrLeavesCohort(expr, addedSpan, orLeaves, orLeafN,
-                    StrSpan(currentStatement), memoryBlock, collected,
-                    validityName, trackHistoryLocal, allowOrDisintegration,
-                    orSeedLevels, orSeedLevelCount, allowOrProbe, sArena,
-                    instructions, iteration, newVarMap, parentWitness,
-                    witnessMeta);
-                return;
+
+        // A named conjunction's negation supplies its flat exclusion
+        // implications. Numbered conjunctions stay ordinary negative facts;
+        // neither kind registers an OR source or enters case processing.
+        const StrSpan negCore = extractExpressionUniversalSpan(addedSpan);
+        const LogicalEntity* negLe = compiledEntity(negCore);
+        if (addedSpan.len >= 2 && addedSpan.ptr[0] == '!' && addedSpan.ptr[1] == '('
+            && negLe != nullptr && negLe->category == "and"
+            && !isNumberedCompilationName(negCore, StrSpan(negLe->category))) {
+            const StrSpan innerInst(addedSpan.ptr + 1, addedSpan.len - 1);
+            StrSpan signatureArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t signatureCount = getArgsSpans(StrSpan(negLe->signature),
+                signatureArgs, ExecutionParameters::MAX_ARITY);
+            StrSpan instanceArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t instanceCount = getArgsSpans(innerInst, instanceArgs,
+                ExecutionParameters::MAX_ARITY);
+            assert(signatureCount == instanceCount
+                && "Named negated conjunction: instance arity differs from its definition");
+            StrReplacement substitutions[ExecutionParameters::MAX_ARITY];
+            for (int32_t i = 0; i < signatureCount; ++i) {
+                substitutions[i].key = signatureArgs[i];
+                substitutions[i].value = instanceArgs[i];
             }
+            StrSpan leaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+            int32_t leafCount = 0;
+            for (const std::string& element : negLe->elements) {
+                assert(leafCount < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+                    && "Named negated conjunction: element count exceeds capacity");
+                const ScratchString conjunct = replaceKeysScratch(sArena,
+                    StrSpan(element), substitutions, signatureCount);
+                leaves[leafCount++] = negateScratch(sArena, StrSpan(conjunct));
+            }
+            assert(leafCount >= 2 && "A conjunction has at least two elements");
+            currentStatement = removeUPrefixScratch(sArena, addedSpan);
+            collected.ensureKey(StrSpan(currentStatement));
+            const ScratchString expanded = expandSignature(StrSpan("or", 2),
+                addedSpan, leaves, leafCount, sArena);
+            const int maxOrigins = parameters.compressor_mode
+                ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr;
+            if (parameters.trackHistory && trackHistoryLocal) {
+                const ScratchString original = removeUPrefixScratch(sArena, expr);
+                const OriginDep dependency{StrSpan(original), validityName};
+                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner,
+                    StrSpan(expanded), validityName, OriginTag::expansion,
+                    &dependency, 1, maxOrigins);
+                memoryBlock.addMailOutOrigin(StrSpan(expanded), validityName,
+                    OriginTag::expansion, &dependency, 1, maxOrigins);
+            }
+            const OriginDep dependency{StrSpan(expanded), validityName};
+            for (int32_t i = 0; i < leafCount; ++i) {
+                StrSpan premises[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                int32_t premiseCount = 0;
+                for (int32_t j = 0; j < leafCount; ++j) {
+                    if (j != i) premises[premiseCount++] = negateScratch(sArena, leaves[j]);
+                }
+                const ScratchString implication = reconstructImplicationFullBindScratch(
+                    sArena, premises, premiseCount, leaves[i]);
+                collected.insertImpl(StrSpan(currentStatement), StrSpan(implication), validityName);
+                if (parameters.trackHistory && trackHistoryLocal) {
+                    const ScratchString clean = removeUPrefixScratch(sArena, StrSpan(implication));
+                    addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner,
+                        StrSpan(clean), validityName, OriginTag::disintegration,
+                        &dependency, 1, maxOrigins);
+                    memoryBlock.addMailOutOrigin(StrSpan(clean), validityName,
+                        OriginTag::disintegration, &dependency, 1, maxOrigins);
+                }
+            }
+            return;
         }
 
         currentStatement = removeUPrefixScratch(sArena, addedSpan);
@@ -14382,12 +16847,12 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
     // LogicalEntity materialized); the spans alias the read-only `instructions`
     // interner, stable for the whole call.
     const StrSpan entCategory = instructions.category(hit);
-    const StrSpan entSignature = instructions.signature(hit);
+    const StrSpan entSignature = instructions.signature(hit, sArena);
     StrSpan entElems[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
     const int32_t entElemN = instructions.elemCount(hit);
     assert(entElemN <= ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
         && "disintegrateExprCore2: element count exceeds cap");
-    for (int32_t j = 0; j < entElemN; ++j) entElems[j] = instructions.elemAt(hit, j);
+    for (int32_t j = 0; j < entElemN; ++j) entElems[j] = instructions.elemAt(hit, j, sArena);
     currentStatement = removeUPrefixScratch(sArena, entSignature);
     collected.ensureKey(StrSpan(currentStatement)); // Ensure entry exists
 
@@ -14405,6 +16870,7 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             // feed exprOriginMap / mailOut.exprOriginMap (buildStack followed
             // such an orphan origin and crashed).
             if (!trackHistoryLocal) return;
+            RT_SCOPE_HERE("CORE_EXPANSION_HISTORY");
 
             // 1. Record Expansion Origin.
             // L3 span-record doors. The "expansion" antecedent is u_-stripped
@@ -14418,7 +16884,10 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             const ScratchString expandedSignature = expandSignature(
                 thCategory, thSignature, thElems, thElemN, sArena);
 
-            addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(expandedSignature), StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
+            {
+                RT_SCOPE_HERE("CORE_HISTORY_LOCAL");
+                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(expandedSignature), StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
+            }
             // Paired `mailOut.exprOriginMap` write. The expansion conjunction
             // is NEVER added to `intEncodedStatements` /
             // `intLocalEncodedStatementsDelta`, so `fillMailOut`'s delta loop
@@ -14426,8 +16895,11 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             // `buildStack` (chapter export) walks from a child's
             // `disintegration | <conjunction>` origin to the conjunction,
             // looks it up in `exprOriginMap`, finds nothing, and asserts.
-            memoryBlock.addMailOutOrigin(StrSpan(expandedSignature),
-                StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
+            {
+                RT_SCOPE_HERE("CORE_HISTORY_MAIL");
+                memoryBlock.addMailOutOrigin(StrSpan(expandedSignature),
+                    StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
+            }
 
             // 2. Record Disintegration Origin for Children (if requested)
             if (trackChildren) {
@@ -14436,16 +16908,22 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                     const StrSpan elem = thElems[te];
                     const ScratchString elemClean = removeUPrefixScratch(sArena, elem);
 
-                    addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(elemClean), StrSpan(validityName), OriginTag::disintegration, disDeps, 1, expCap);
+                    {
+                        RT_SCOPE_HERE("CORE_HISTORY_LOCAL");
+                        addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(elemClean), StrSpan(validityName), OriginTag::disintegration, disDeps, 1, expCap);
+                    }
                     // Paired `mailOut.exprOriginMap` write. Even though each
                     // `elem` eventually enters `intLocalEncodedStatementsDelta`
                     // via recursive `disintegrateExprCore2`, some intermediate
                     // disintegration products do not directly hit the delta in
                     // this step (they are processed later in the recursion), so
                     // a delta-only path misses them.
-                    memoryBlock.addMailOutOrigin(StrSpan(elemClean),
-                        StrSpan(validityName), OriginTag::disintegration,
-                        disDeps, 1, expCap);
+                    {
+                        RT_SCOPE_HERE("CORE_HISTORY_MAIL");
+                        memoryBlock.addMailOutOrigin(StrSpan(elemClean),
+                            StrSpan(validityName), OriginTag::disintegration,
+                            disDeps, 1, expCap);
+                    }
                 }
             }
         };
@@ -14553,27 +17031,56 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                 : parameters.max_origin_per_expr;
 
             for (int32_t li = 0; li < introLeafN; ++li) {
-                // I-4 tripwire: every changeable (non-u_) argument of the or
-                // head must occur in the leaf premise, else the single-premise
-                // reconstruction would leave it unbound. The current or
-                // operator family repeats the element variable in every
-                // disjunct; a shape that does not is a new design to raise,
-                // never a silent emission.
+                StrSpan introPremises[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                int32_t introPremiseN = 0;
+                StrSpan conjunctionAncestors[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                const auto flattenConjunction = [&](StrSpan expression, int depth,
+                                                     auto&& self) -> void {
+                    assert(depth < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
+                    const StrSpan core = extractExpressionUniversalSpan(expression);
+                    const LogicalEntity* definition = expression.ptr[0] == '!'
+                        ? nullptr : compiledEntity(core);
+                    if (definition != nullptr && definition->category == "and") {
+                        for (int i = 0; i < depth; ++i)
+                            assert(!equalSpans(conjunctionAncestors[i], core)
+                                && "or-intro: cyclic conjunction definition");
+                        conjunctionAncestors[depth] = core;
+                        StrSpan formal[ExecutionParameters::MAX_ARITY], actual[ExecutionParameters::MAX_ARITY];
+                        const int count = getArgsSpans(StrSpan(definition->signature), formal,
+                            ExecutionParameters::MAX_ARITY);
+                        assert(count == getArgsSpans(expression, actual, ExecutionParameters::MAX_ARITY));
+                        StrReplacement substitution[ExecutionParameters::MAX_ARITY];
+                        for (int i = 0; i < count; ++i) substitution[i] = {formal[i], actual[i]};
+                        assert(!definition->elements.empty());
+                        for (const auto& element : definition->elements) {
+                            const ScratchString child = replaceKeysScratch(sArena,
+                                StrSpan(element), substitution, count);
+                            self(StrSpan(child), depth + 1, self);
+                        }
+                    } else {
+                        assert(introPremiseN < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
+                        introPremises[introPremiseN++] = expression;
+                    }
+                };
+                flattenConjunction(introLeaves[li], 0, flattenConjunction);
+                // Every changeable head argument must occur in the complete
+                // premise chain before ordinary full-binding reconstruction.
                 {
                     StrSpan headArgs[ExecutionParameters::MAX_ARITY];
                     const int32_t headArgN = getArgsSpans(orPremise, headArgs,
                         ExecutionParameters::MAX_ARITY);
-                    StrSpan leafArgs[ExecutionParameters::MAX_ARITY];
-                    const int32_t leafArgN = getArgsSpans(introLeaves[li],
-                        leafArgs, ExecutionParameters::MAX_ARITY);
                     for (int32_t ha = 0; ha < headArgN; ++ha) {
                         if (headArgs[ha].len >= 2 && headArgs[ha].ptr[0] == 'u'
                             && headArgs[ha].ptr[1] == '_') {
                             continue;
                         }
                         bool inLeaf = false;
-                        for (int32_t la = 0; la < leafArgN && !inLeaf; ++la) {
-                            inLeaf = equalSpans(leafArgs[la], headArgs[ha]);
+                        for (int32_t pi = 0; pi < introPremiseN && !inLeaf; ++pi) {
+                            StrSpan leafArgs[ExecutionParameters::MAX_ARITY];
+                            const int32_t leafArgN = getArgsSpans(introPremises[pi],
+                                leafArgs, ExecutionParameters::MAX_ARITY);
+                            for (int32_t la = 0; la < leafArgN && !inLeaf; ++la)
+                                inLeaf = equalSpans(leafArgs[la], headArgs[ha]);
                         }
                         assert(inLeaf
                             && "or-intro: head variable absent from leaf premise");
@@ -14583,7 +17090,7 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
 
                 const ScratchString introStr =
                     reconstructImplicationFullBindScratch(
-                        sArena, &introLeaves[li], 1, orPremise);
+                        sArena, introPremises, introPremiseN, orPremise);
                 collected.insertImpl(StrSpan(currentStatement),
                     StrSpan(introStr), StrSpan(validityName));
 
@@ -14612,20 +17119,21 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
 
         // Recurse on all elements
         for (int32_t i = 0; i < entElemN; ++i) {
-            disintegrateExprCore2(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
+            disintegrateExprCoreView(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
         }
 
         // Use Lambda (Children tracked for AND)
         trackExpansionHistory(entCategory, entSignature, entElems, entElemN, true);
     }
-    else if (equalSpans(entCategory, StrSpan("existence", 9)))
+    else if (equalSpans(entCategory, StrSpan("existence", 9))
+        || equalSpans(entCategory, StrSpan("counterexample", 14)))
     {
         StrSpan removedArgs[ExecutionParameters::MAX_KEY_SLOTS];
         const int32_t removedN = listLastRemovedArgsLE(entCategory, entElems,
             entElemN, removedArgs, ExecutionParameters::MAX_KEY_SLOTS);
         if (removedN == 0) {
             for (int32_t i = 0; i < entElemN; ++i) {
-                disintegrateExprCore2(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
+                disintegrateExprCoreView(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
             }
             return;
         }
@@ -14641,11 +17149,10 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
         // `instructions` interner, stable for the whole call (0% heap).
         const StrSpan boundVar = removedArgs[0];
 
-        // Helper lambda to process a specific path (Unconditional Generation).
-        // `base` is the outer WorkInstruction, read-only; each call rebuilds a
-        // FRESH renamed WorkInstruction from the UNMUTATED base, reproducing the
-        // two independent by-value copies the heap version made.
-        auto processPath = [&](StrSpan newVar, const WorkInstruction& base) {
+        // Each witness path sees an independent substitution over the same
+        // instruction. Only fields reached by recursion are instantiated.
+        auto processPath = [&](StrSpan newVar, const DisintInstructionView& base) {
+            RT_SCOPE_HERE("CORE_EXISTENCE_PATH");
             // ppScope holds renamedElemSpans for the whole path (freed per call,
             // mirroring the former heap renamedElements RAII). The nested
             // rnStrScope below marks ABOVE these, so they survive the `renamed`
@@ -14665,8 +17172,10 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             // CRUCIAL: Map the new variable to its immediate defining elements.
             // newVar is brand-new (fresh startInt), so its elements append
             // consecutively (appendToTail's current-last-or-new contract).
-            for (int32_t i = 0; i < entElemN; ++i)
-                newVarMap.addElement(newVar, renamedElemSpans[i]);
+            if (!witnessMeta->publishing) {
+                for (int32_t i = 0; i < entElemN; ++i)
+                    newVarMap.addElement(newVar, renamedElemSpans[i]);
+            }
 
             assert(!startsWithSpan(boundVar, "u_", 2));
             char uNewVar[256];
@@ -14676,39 +17185,14 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             const int32_t uNewVarLen = 2 + newVar.len;
             const StrReplacement u2Pair{ boundVar, StrSpan(uNewVar, uNewVarLen) };
 
-            // Rebuild a FRESH renamed WorkInstruction (the working form is
-            // read-only after commit, never mutated in place — I-133). The
-            // boundVar -> u_newVar rename runs through replaceKeysScratch (the
-            // byte-exact twin of the heap replaceKeysToString) on the string
-            // tier; every field interns into the fresh instruction's OWN
-            // throwaway arena ColdHashSet (NOT NameMap/valueInterner/etc — I-84).
-            // `renamed` rides the genScratchArenas page tier, so it survives the
-            // recursion and the string-tier rewind below.
-            const unsigned rnStrSlot = (g_currentCoreId >= 0)
-                ? static_cast<unsigned>(g_currentCoreId)
-                : scratchArenas().slotCount() - 1;
-            const unsigned rnGenSlot = (g_currentCoreId >= 0)
-                ? static_cast<unsigned>(g_currentCoreId)
-                : genScratchArenas().slotCount() - 1;
-            ScratchArena& rnStrArena = scratchArenas().forSlot(rnStrSlot);
-            ScratchScope rnStrScope(rnStrArena);
-            WorkInstruction renamed(&genScratchArenas().forSlot(rnGenSlot));
-            for (int32_t i = 0; i < base.entityCount(); ++i) {
-                const int32_t start = renamed.elemMark();
-                for (int32_t j = 0; j < base.elemCount(i); ++j)
-                    renamed.addElement(StrSpan(
-                        replaceKeysScratch(rnStrArena, base.elemAt(i, j), &u2Pair, 1)));
-                renamed.commitEntity(base.category(i),
-                    StrSpan(replaceKeysScratch(rnStrArena, base.signature(i), &u2Pair, 1)),
-                    base.definedSet(i), base.arity(i), start);
-            }
-            renamed.setMarkedGoal(base.markedGoal());
+            DisintInstructionView renamed(base, u2Pair);
 
             // Recurse using the renamed instruction. A nested existence
             // reached through this path records THIS witness as its enclosing
             // witness (the relay-selection parent chain).
             for (int32_t i = 0; i < entElemN; ++i) {
-                disintegrateExprCore2(renamedElemSpans[i], renamed, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, newVar, witnessMeta);
+                RT_SCOPE_HERE("CORE_EXISTENCE_RECURSE");
+                disintegrateExprCoreView(renamedElemSpans[i], renamed, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, newVar, witnessMeta);
             }
             };
 
@@ -14724,788 +17208,518 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             }
         }
 
-        // 1. Generate "it_" path (Algebra) - Conditional
-        if (hasOperator)
-        {
-            // newVar = "it_<iteration>_lev_<level>_<startInt>" -> a ScratchString
-            // on the string tier (snprintf then copyFrom; %d == std::to_string for
-            // the non-negative counters). startInt captured BEFORE the ++.
-            char itBuf[96];
-            const int itLen = std::snprintf(itBuf, sizeof(itBuf),
-                "it_%d_lev_%d_%d", iteration, memoryBlock.level, memoryBlock.startInt);
-            assert(itLen > 0 && itLen < static_cast<int>(sizeof(itBuf)));
-            const ScratchString newVar = ScratchString::copyFrom(sArena, itBuf, itLen);
-
-            memoryBlock.startInt++;
-
-            // Relay-selection metadata: this witness's spawning compact is the
-            // frame's instantiated existence (currentStatement); the enclosing
-            // witness is the recursion's parent. Appended BEFORE processPath so
-            // record order == newVarMap key order (the consumer asserts it).
-            if (witnessMeta != nullptr)
-                witnessMeta->append(StrSpan(newVar), StrSpan(currentStatement),
-                                    parentWitness);
-
-            if (parameters.trackHistory && trackHistoryLocal)
-            {
-                ScratchScope mhScope(sArena);
-                assert(!startsWithSpan(boundVar, "u_", 2));
-                const StrReplacement rm3Pair{ boundVar, StrSpan(newVar) };
-                // No entity copy: the renamed elements are a stack StrSpan run
-                // (signature unchanged in the rename, only the elements differ).
-                StrSpan modElemSpans[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
-                for (int32_t i = 0; i < entElemN; ++i)
-                    modElemSpans[i] = StrSpan(replaceKeysScratch(sArena, entElems[i], &rm3Pair, 1));
-
-                // Use Lambda (Children tracked for Algebra/Operator path)
-                trackExpansionHistory(entCategory, entSignature, modElemSpans, entElemN, true);
+        assert(witnessMeta != nullptr && "Existence expansion requires witness metadata");
+        const auto visitWitness = [&](TemporaryWitnessKind kind) {
+            if (kind == TemporaryWitnessKind::Integration && witnessMeta->forceIntegration)
+                kind = TemporaryWitnessKind::Forced;
+            int32_t witnessId;
+            if (witnessMeta->publishing) {
+                witnessId = witnessMeta->nextSlot++;
+                const TemporaryWitnessSlot recorded = witnessMeta->slot(witnessId);
+                assert(recorded.kind == kind && recorded.generation == iteration);
+                if (recorded.permanentId == 0) {
+                    witnessMeta->nextSlot = recorded.subtreeEnd;
+                    return;
+                }
+            } else {
+                const int32_t parentId = parentWitness.empty()
+                    ? 0 : witnessMeta->lookup(parentWitness);
+                assert(parentWitness.empty() || parentId != 0);
+                witnessId = witnessMeta->append(kind, iteration, parentId,
+                    witnessMeta->count(), StrSpan(currentStatement), witnessMeta->integrationDepth);
             }
+            const StrSpan variableView = witnessMeta->publishing
+                ? witnessMeta->permanent(witnessId) : witnessMeta->token(witnessId);
+            const ScratchString newVar = ScratchString::copyFrom(
+                sArena, variableView.ptr, variableView.len);
 
-            processPath(StrSpan(newVar), instructions);
-        }
-
-        // 2. Unconditionally generate "int_" path (Integration)
-        {
-            char intBuf[96];
-            const int intLen = std::snprintf(intBuf, sizeof(intBuf),
-                "int_lev_%d_%d", memoryBlock.level, memoryBlock.startInt);
-            assert(intLen > 0 && intLen < static_cast<int>(sizeof(intBuf)));
-            const ScratchString newVar = ScratchString::copyFrom(sArena, intBuf, intLen);
-
-            memoryBlock.startInt++;
-
-            // Relay-selection metadata — the int_ twin of the it_ append above
-            // (one existence's two witnesses share instance and parent).
-            if (witnessMeta != nullptr)
-                witnessMeta->append(StrSpan(newVar), StrSpan(currentStatement),
-                                    parentWitness);
-
-            if (parameters.trackHistory && trackHistoryLocal)
-            {
-                ScratchScope mhScope(sArena);
-                assert(!startsWithSpan(boundVar, "u_", 2));
-                const StrReplacement rm3Pair{ boundVar, StrSpan(newVar) };
-                StrSpan modElemSpans[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+            if (parameters.trackHistory && trackHistoryLocal) {
+                assert(witnessMeta->publishing);
+                ScratchScope historyScope(sArena);
+                const StrReplacement replacement{boundVar, StrSpan(newVar)};
+                StrSpan elements[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
                 for (int32_t i = 0; i < entElemN; ++i)
-                    modElemSpans[i] = StrSpan(replaceKeysScratch(sArena, entElems[i], &rm3Pair, 1));
-
-                // Use Lambda (Children tracked for Integration path)
-                trackExpansionHistory(entCategory, entSignature, modElemSpans, entElemN, true);
+                    elements[i] = replaceKeysScratch(sArena, entElems[i], &replacement, 1);
+                trackExpansionHistory(entCategory, entSignature, elements, entElemN, true);
             }
-
             processPath(StrSpan(newVar), instructions);
-        }
+            if (witnessMeta->publishing) {
+                assert(witnessMeta->nextSlot == witnessMeta->slot(witnessId).subtreeEnd);
+            } else {
+                witnessMeta->closeSubtree(witnessId);
+            }
+        };
+        // Counterexamples have one integration-kind witness, even when an
+        // immediate defining fact happens to be an operator application.
+        if (hasOperator && !equalSpans(entCategory, StrSpan("counterexample", 14)))
+            visitWitness(TemporaryWitnessKind::Algebra);
+        visitWitness(TemporaryWitnessKind::Integration);
     }
     else if (equalSpans(entCategory, StrSpan("or", 2))) {
+        // An enclosing existence has not passed admission during this walk.
+        // Keep only scratch intent; no OR registration, history, opening or
+        // parking is permitted until its full witness chain is admitted.
+        if (witnessMeta != nullptr && !witnessMeta->publishing) {
+            assert(witnessMeta != nullptr);
+            collected.recs.push_back(CollectedRec{
+                collected.strings.mint(StrSpan(currentStatement)),
+                collected.strings.mint(entSignature),
+                parentWitness.empty() ? 0 : collected.strings.mint(parentWitness), 3 });
+            return;
+        }
         // OR disintegration: flatten every contiguous nested OR now, in this
         // call, then treat the ordered atomic leaves as one cohort. The outer
         // signature remains the cohort/provenance identity; no intermediate
-        // OR-valued branch is created for a later hashburst. The whole
-        // downstream — expansion history, K mutual-exclusion rules, depth
-        // gate, two-route cohort machinery — lives in consumeOrLeavesCohort,
-        // shared with the negated-AND De-Morgan door.
+        // OR-valued branch is created for a later hashburst. The finalized
+        // statement activates on-demand exclusion. consumeOrLeavesCohort
+        // handles case history, depth, admission and parking.
+        const StrSpan cleanOr(currentStatement);
+        const LogicalEntity* orEntity = compiledEntity(extractExpressionUniversalSpan(cleanOr));
+        if (allowOrProbe && isOrCompactSpan(cleanOr) && orEntity != nullptr
+            && orEntity->symmetricDigitSlots[0] != 0) {
+            const NameId originalId = memoryBlock.nameMap.encode(cleanOr);
+            const NameId scopeId = memoryBlock.nameMap.encode(validityName);
+            const NameId processingId = canonicalOrIdAtScope(memoryBlock, originalId, validityName);
+            if (orEquiRepresentativeRecorded(memoryBlock,
+                    memoryBlock.nameMap.decodeView(processingId), validityName)) return;
+            recordProcessedOr(memoryBlock, originalId, scopeId);
+        }
+        collected.markOrSource(StrSpan(currentStatement));
         StrSpan orLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        WorkInstruction& concreteInstruction = instructions.materialize(sArena);
         const int32_t orLeafN = flattenOrLeaves(
-            instructions, hit, orLeaves,
+            concreteInstruction, hit, orLeaves,
             ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
         consumeOrLeavesCohort(expr, entSignature, orLeaves, orLeafN,
             StrSpan(currentStatement), memoryBlock, collected, validityName,
             trackHistoryLocal, allowOrDisintegration,
-            orSeedLevels, orSeedLevelCount, allowOrProbe, sArena,
-            instructions, iteration, newVarMap, parentWitness, witnessMeta);
+            orSeedLevels, orSeedLevelCount, allowOrProbe,
+            /*signatureIsOr=*/true, sArena,
+            concreteInstruction, iteration, newVarMap, parentWitness, witnessMeta);
     }
     else {
         // Default fallback
         // currentStatement was already inserted at top
     }
+    if (equalSpans(entCategory, StrSpan("implication", 11))
+        || equalSpans(entCategory, StrSpan("and", 3)))
+        collectContrapositionProducts(entSignature, StrSpan(currentStatement),
+            memoryBlock, collected, validityName, trackHistoryLocal, iteration);
 }
 
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
-bool
-ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
-    Memory& memoryBlock,
-    int iteration,
-    bool forceDeep,
-    StrSpan validityName,
-    DisintProducts& out,
-    bool trackHistoryLocal,
-    bool allowOrDisintegration,
-    const int* orSeedLevels,
-    int32_t orSeedLevelCount,
-    bool allowOrProbe)
+/// @brief Expand a source temporarily and publish only admitted constructions.
+/// @details Admission preserves its ordinary routes and commits successful updates
+/// after permanent substitution. Ordinary integration requires an eligible depth
+/// and a source without algebra-witness inputs. Unresolved eligible sources park
+/// for ordinary mail replay; no temporary name or speculative witness history
+/// enters persistent state.
+/// @param expr Concrete source expression.
+/// @param memoryBlock Owning logic block.
+/// @param iteration Firing generation; -1 retains the ordinary zero-generation normalization.
+/// @param forceDeep Select integration constructions on integration-only enclosing paths.
+/// @param validityName Target scope.
+/// @param out Accepted statements, rules, OR sources and relay carriers.
+/// @param trackHistoryLocal Whether this call materializes history.
+/// @param allowOrDisintegration Original unconditional OR-opening signal.
+/// @param orSeedLevels Caller-owned source level run.
+/// @param orSeedLevelCount Number of source levels.
+/// @param allowOrProbe Whether ordinary OR demand processing is enabled.
+/// @param replayKinds Explicit queued construction bits and inherited-carrier bit.
+/// @param replayIntegrationDepth Original assigned depth for replay, or -1 for a new expansion.
+/// @param inheritedSource Preserve a relay carrier's no-cascade status in source parks.
+/// @param recursionHead The source was fired by the installed induction implication
+/// (I-229); requires @p forceDeep. Every published witness enters
+/// `Memory::recursionHeadWitnesses` (I-286).
+/// @return Whether every relevant existence source is covered.
+/// @invariant Admitting an inner witness coadmits every enclosing witness.
+/// @see TemporaryWitnessStore, queueParkedExistence, I-252.
+bool ExpressionAnalyzer::disintegrateExpr2(StrSpan expr, Memory& memoryBlock,
+    int iteration, bool forceDeep, StrSpan validityName, DisintProducts& out,
+    bool trackHistoryLocal, bool allowOrDisintegration,
+    const int* orSeedLevels, int32_t orSeedLevelCount, bool allowOrProbe,
+    int32_t replayKinds, bool inheritedSource, int32_t replayIntegrationDepth,
+    bool recursionHead)
 {
-    int savedStartInt = memoryBlock.startInt;
+    assert((!recursionHead || forceDeep)
+        && "disintegrateExpr2: an induction head is always force-disintegrated (D-356)");
+    initializeCanonicalScope(memoryBlock, memoryBlock.nameMap.encode(validityName));
+    const int savedStartInt = memoryBlock.startInt;
+    const unsigned slot = g_currentCoreId >= 0
+        ? static_cast<unsigned>(g_currentCoreId) : genScratchArenas().slotCount() - 1;
+    ScratchArena& arena = genScratchArenas().forSlot(slot);
+    ScratchArena& strings = scratchArenas().forSlot(slot);
+    ScratchScope frame(strings);
+    CollectedArena discovered(&arena);
+    NewVarStore definitions(&arena);
+    assert(replayIntegrationDepth >= -1);
+    const int32_t integrationDepth = forceDeep ? 0
+        : replayIntegrationDepth >= 0 ? replayIntegrationDepth : assignedIntegrationDepth(expr);
+    if (replayIntegrationDepth >= 0 && (replayKinds & 2) != 0)
+        assert(integrationDepth <= parameters.maxIntegrationDepth);
+    WitnessMetaStore witnesses(arena, integrationDepth, forceDeep);
+    WorkInstruction instruction(&arena);
+    const ScratchString prefixed = prefixArgumentsWithUScratch(strings, expr);
+    prepareIntegrationCore(StrSpan(prefixed), instruction, memoryBlock, expr, true);
+    disintegrateExprCore2(StrSpan(prefixed), instruction, memoryBlock, iteration,
+        discovered, definitions, validityName, false, false, nullptr, 0, false,
+        StrSpan(), &witnesses);
+    assert(memoryBlock.startInt == savedStartInt);
+    assert(witnesses.count() == definitions.varCount());
+    const int32_t count = witnesses.count();
+    DirtyState dirty = DirtyState::Clean;
+    ColdHashSet<BytesKeyStore> selectedStatements(&arena, &dirty);
+    ColdHashSet<BytesKeyStore> algebraParks(&arena, &dirty);
+    ColdHashSet<BytesKeyStore> integrationParks(&arena, &dirty);
+    uint8_t* disabled = count == 0 ? nullptr : reinterpret_cast<uint8_t*>(
+        arena.resolve(arena.alloc(count + 1, 1)));
+    if (count != 0) std::memset(disabled, 0, count + 1);
 
-    // collected is a page-tier (allocPage) container, so
-    // it rides genScratchArenas -- NOT scratchArenas, whose allocBytes string
-    // fill (prefixArgumentsWithU, below) would clobber a container page sharing
-    // the slot when disintegration re-enters via the hypothetical / integration
-    // paths (allocBytes targets pageHighWater()-1 and its ScratchScope rewind
-    // poisons it). Same container-vs-string split as the request generators.
-    const unsigned collSlot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : genScratchArenas().slotCount() - 1;
-    CollectedArena collected(&genScratchArenas().forSlot(collSlot));
-    NewVarStore newVarMap(&genScratchArenas().forSlot(collSlot));
-    WitnessMetaStore witnessMeta(&genScratchArenas().forSlot(collSlot));
-    WorkInstruction instructions(&genScratchArenas().forSlot(collSlot));
-
-    // String-tier scratch for the statified twins (prefixArgumentsWithUScratch /
-    // removeUPrefixScratch / makeMarkedExprScratch). Deliberately the string
-    // arena, NOT the genScratchArenas the page-tier containers above use. One
-    // function-level scope holds the long-lived replExpr / topLevelExprClean
-    // ScratchStrings; every per-block / per-element scope below nests ABOVE it
-    // (byte-bump LIFO), so they survive the nested rewinds and are freed at
-    // function return (I-124).
-    ScratchArena& strArena = scratchArenas().forSlot(collSlot);
-    ScratchScope fnScope(strArena);
-
-    // replExpr = prefixArgumentsWithUScratch(expr) held as a ScratchString on the
-    // string tier (0% heap); consumed by prepareIntegrationCore / core2 / the
-    // topLevelExprClean strip below.
-    const ScratchString replExpr = prefixArgumentsWithUScratch(strArena, StrSpan(expr));
-    {
-        RT_SCOPE_HERE("DISINT_PREPARE_CORE");
-        prepareIntegrationCore(StrSpan(replExpr), instructions, memoryBlock, expr);
+    const auto substitute = [&](StrSpan raw) -> ScratchString {
+        const ScratchString clean = removeUPrefixScratch(strings, raw);
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t n = getArgsSpans(StrSpan(clean), args, ExecutionParameters::MAX_ARITY);
+        StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+        int32_t used = 0;
+        for (int32_t i = 0; i < n; ++i) {
+            const int32_t id = witnesses.lookup(args[i]);
+            if (id == 0 || witnesses.slot(id).permanentId == 0) continue;
+            bool present = false;
+            for (int32_t j = 0; j < used; ++j)
+                if (equalSpans(pairs[j].key, args[i])) present = true;
+            if (!present) pairs[used++] = {args[i], witnesses.permanent(id)};
+        }
+        return replaceKeysScratch(strings, StrSpan(clean), pairs, used);
+    };
+    const auto temporary = [&](StrSpan text) {
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t n = getArgsSpans(text, args, ExecutionParameters::MAX_ARITY);
+        for (int32_t i = 0; i < n; ++i)
+            if (witnesses.lookup(args[i]) != 0) return true;
+        return false;
+    };
+    const auto kindBit = [&](int32_t id) {
+        return witnesses.slot(id).kind == TemporaryWitnessKind::Algebra ? 1 : 2;
+    };
+    const auto hasAlgebraInput = [&](StrSpan source) {
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t n = getArgsSpans(source, args, ExecutionParameters::MAX_ARITY);
+        for (int32_t i = 0; i < n; ++i) {
+            StrSpan argument = args[i];
+            if (startsWithSpan(argument, "u_", 2))
+                argument = StrSpan(argument.ptr + 2, argument.len - 2);
+            const int32_t input = witnesses.lookup(argument);
+            if (input != 0) {
+                if (witnesses.slot(input).kind == TemporaryWitnessKind::Algebra) return true;
+            } else if (classifyWitnessName(argument, false).kind == WitnessNameKind::Algebra) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const NameId scopeId = memoryBlock.nameMap.lookup(validityName);
+    for (int32_t id = 1; id <= count; ++id) {
+        const TemporaryWitnessSlot value = witnesses.slot(id);
+        if (value.parent != 0 && disabled[value.parent])
+            disabled[id] = disabled[value.parent] == 1 ? 1 : 4;
+        if (value.kind == TemporaryWitnessKind::Integration
+            && (integrationDepth > parameters.maxIntegrationDepth
+                || hasAlgebraInput(witnesses.source(id))))
+            disabled[id] = 3;
+        if (value.parent == 0 && replayKinds != 0 && (replayKinds & kindBit(id)) == 0)
+            disabled[id] = 1;
+        if (!disabled[id] && !forceDeep && scopeId != 0) {
+            const StrSpan source = witnesses.source(id);
+            if (!temporary(source)) {
+                const NameId sourceId = canonicalExistenceId(memoryBlock, source, scopeId);
+                const int32_t* receipt = memoryBlock.existenceReplays.find(packOriginKey(sourceId, scopeId));
+                if (receipt && (*receipt & kindBit(id)) != 0) disabled[id] = 2;
+            }
+        }
     }
 
-    // The disintegration core now reads the arena WorkInstruction directly —
-    // the former heap std::vector<LogicalEntity> bridge is gone.
-    {
-        RT_SCOPE_HERE("DISINT_CORE");
-        disintegrateExprCore2(StrSpan(replExpr),
-            instructions,
-            memoryBlock,
-            iteration,
-            collected,
-            newVarMap,
-            validityName,
-            trackHistoryLocal,
-            allowOrDisintegration,
-            orSeedLevels,
-            orSeedLevelCount,
-            allowOrProbe,
-            /*parentWitness=*/StrSpan(),
-            &witnessMeta);
-    }
-
-    // finalStringStatements: membership + dedup ColdHashSet on the same per-slot
-    // genScratchArenas page tier as collected (the admittedVars pattern). Iteration
-    // is id / first-seen order EXCEPT the canBeSentIds mint in forceDeep, which sorts
-    // a byte-bump snapshot to reproduce the former std::set<string> lex order (the
-    // NameMap mint order feeds the dump, I-105). The cascade closure and the
-    // set<EWV> conversions are order-independent (the set re-sorts).
-    ScratchArena& fssArena = genScratchArenas().forSlot(collSlot);
-    DirtyState fssDirty = DirtyState::Clean;
-    ColdHashSet<BytesKeyStore> finalStringStatements(&fssArena, &fssDirty);
-
-    // Recursive collector. A self-passing generic lambda rather than a
-    // std::function so there is no type-erasure heap: the closure captures by
-    // reference and recurses through its own `self` parameter.
-    const auto addToFinal = [&](const StrSpan& s, const auto& self) -> void {
-        const int32_t beforeN = finalStringStatements.count();
-        finalStringStatements.mint(s);
-        if (finalStringStatements.count() == beforeN) return;  // already present
-
-        collected.forImpls(s, [&](const StrSpan& original, const StrSpan& validity) {
-            // `s` is the statement whose disintegration produced the rule —
-            // the carrier the install door records.
-            out.implications.append(original, validity, s);
-        });
-
-        // Recurse for every child
-        collected.forChildren(s, [&](const StrSpan& child) {
-            self(child, self);
-        });
+    // The scratch closure selects products; it never publishes them.
+    const auto includeStatement = [&](StrSpan text, const auto& self) -> void {
+        const int32_t before = selectedStatements.count();
+        selectedStatements.mint(text);
+        if (selectedStatements.count() == before) return;
+        discovered.forChildren(text, [&](StrSpan child) { self(child, self); });
+    };
+    const auto selectWitness = [&](int32_t id, const auto& self) -> void {
+        assert(!disabled[id]);
+        const TemporaryWitnessSlot value = witnesses.slot(id);
+        if (value.permanentId != 0) return;
+        if (value.parent != 0) self(value.parent, self);
+        witnesses.materialize(id, memoryBlock.level, memoryBlock.startInt);
+        const int32_t varId = definitions.lookupVar(witnesses.token(id));
+        assert(varId != 0);
+        for (int32_t j = 0; j < definitions.elemCount(varId); ++j) {
+            ScratchScope elementFrame(strings);
+            const ScratchString clean = removeUPrefixScratch(strings, definitions.elemAt(varId, j));
+            includeStatement(StrSpan(clean), includeStatement);
+        }
     };
 
-    if (forceDeep) {
-        // 1. Filter and Collect Phase
-        collected.forEachKey([&](const StrSpan& stmt) {
-            bool allow = true;
-            StrSpan args[ExecutionParameters::MAX_ARITY];
-            const int32_t argN =
-                getArgsSpans(StrSpan(stmt), args, ExecutionParameters::MAX_ARITY);
-
-            for (int32_t ai = 0; ai < argN; ++ai) {
-                // Rule: a statement carrying a new "it_" variable at level ==
-                // mb.level is not allowed.
-                int level = 0, id = 0;
-                if (matchItLevId(args[ai], level, id)) {
-                    if (id >= savedStartInt && level == memoryBlock.level) {
-                        allow = false;
-                        break;
-                    }
-                }
-            }
-
-            if (allow) {
-                addToFinal(stmt, addToFinal);
-            }
-        });
-
-        // Memo only the `int_lev_*` carriers — the only entries
-        // `allowedForMail` can ever probe.
-        // canBeSentIds must see the int_lev_ carriers in the former std::set<string>
-        // lex order (the NameMap mint order feeds the dump, I-105). Collect the
-        // carrier ids, sort by decoded bytes on the gen arena's byte-bump tier (no
-        // heap; independent of the page tier holding finalStringStatements), mint.
-        if (finalStringStatements.count() > 0) {
-            ScratchScope sortScope(fssArena);
-            const int32_t fssN = finalStringStatements.count();
-            int32_t* ids = reinterpret_cast<int32_t*>(
-                fssArena.resolve(fssArena.alloc(fssN * 4, 4)));
-            int32_t carrierN = 0;
-            for (int32_t id = 1; id <= fssN; ++id) {
-                if (containsSpan(finalStringStatements.keyAt(id), StrSpan("int_lev_", 8)))
-                    ids[carrierN++] = id;
-            }
-            std::sort(ids, ids + carrierN, [&](int32_t a, int32_t b) {
-                return compareSpans(finalStringStatements.keyAt(a),
-                                    finalStringStatements.keyAt(b)) < 0;
-            });
-            for (int32_t i = 0; i < carrierN; ++i)
-                memoryBlock.canBeSentIds.mint(
-                    memoryBlock.nameMap.encode(finalStringStatements.keyAt(ids[i])));
-        }
-        // canBeSentIds from the int_lev_ implications, in the former
-        // std::set<EWV> order == out.implications.forEachSorted (EWV::operator<).
-        // out.implications is already filled by addToFinal above.
-        out.implications.forEachSorted([&](const StrSpan& original, const StrSpan& /*v*/) {
-            if (containsSpan(original, StrSpan("int_lev_", 8))) {
-                memoryBlock.canBeSentIds.mint(memoryBlock.nameMap.encode(original));
-            }
-        });
-        // forceDeep statements: append finalStringStatements (all at parent
-        // validity) straight to the channel; forEachSorted at
-        // the caller reproduces the former std::set<EWV> order byte-for-byte.
-        // (Sequenced or-disintegration: branch seeds ride
-        // sameIterationInternalMail from the OR case itself, not this
-        // channel — the absorb runs them through the full kernel pipeline.)
-        for (int32_t id = 1; id <= finalStringStatements.count(); ++id)
-            out.statements.append(finalStringStatements.keyAt(id), validityName);
-        // forceDeep has no admission pass: an expression with witnesses (any
-        // existence) is not fully disintegrated here; an atomic (no witnesses) is.
-        return newVarMap.empty();
-    }
-
-    // Rejection staging: the algebra (it_) and integration (int_) buffers are
-    // RejectionStores on the per-slot genScratchArenas page tier. Records append in
-    // Pass-B order, which IS the former std::map lex-var-then-insertion drain order,
-    // so each drain walks the list in order. The revival path (revisitRejected2) reads
-    // the buffered constituent + siblings without re-running prepareIntegrationCore;
-    // compactExpr + levels are captured at buffer time (algebra side only -- the
-    // integration side passes an empty compactExpr and no levels).
-    RejectionStore pendingRejections(&genScratchArenas().forSlot(collSlot));
-    RejectionStore pendingRejectionsIntegration(&genScratchArenas().forSlot(collSlot));
-
-    // Track successfully admitted variables in this call (membership only --
-    // mint/contains, never iterated). Transient ColdHashSet on the per-slot
-    // genScratchArenas (page-tier container) arena -- NOT the scratchArenas
-    // string arena the door helpers fill with allocBytes, whose scratch-fill +
-    // ScratchScope rewind would poison a page-tier container sharing the slot.
-    // Freed with the function frame -- no malloc heap.
-    const unsigned admittedSlot = (g_currentCoreId >= 0)
-        ? static_cast<unsigned>(g_currentCoreId)
-        : genScratchArenas().slotCount() - 1;
-    ScratchArena& admittedArena = genScratchArenas().forSlot(admittedSlot);
-    DirtyState admittedDirty = DirtyState::Clean;
-    ColdHashSet<BytesKeyStore> admittedVars(&admittedArena, &admittedDirty);
-
-    // topLevelExprClean = removeUPrefix(replExpr) held as a ScratchString on the
-    // string tier under fnScope (used in Pass B + the integration rejection
-    // commit; the intervening per-block scopes nest above it).
-    const ScratchString topLevelExprClean = removeUPrefixScratch(strArena, StrSpan(replExpr));
-
-    // Pass A: Unconditional Statements
-    RT_SCOPE_HERE("DISINT_PASSES_AB");
-    collected.forEachKey([&](const StrSpan& stmt) {
-        if (finalStringStatements.contains(stmt)) return;
-
-        StrSpan args[ExecutionParameters::MAX_ARITY];
-        const int32_t argN =
-            getArgsSpans(StrSpan(stmt), args, ExecutionParameters::MAX_ARITY);
-        bool hasNewVars = false;
-        for (int32_t ai = 0; ai < argN; ++ai) {
-            // A new it_/int_ variable at this LB's level (id at or past the
-            // saved start) keeps the statement out of the unconditional set.
-            int varLevel = 0, id = 0;
-            if (matchItLevId(args[ai], varLevel, id)
-                || matchIntLevId(args[ai], varLevel, id)) {
-                if (varLevel == memoryBlock.level && id >= savedStartInt) {
-                    hasNewVars = true;
-                    break;
-                }
-            }
-        }
-
-        if (!hasNewVars) {
-			addToFinal(stmt, addToFinal);
-        }
+    discovered.forEachKey([&](StrSpan text) {
+        if (!temporary(text)) includeStatement(text, includeStatement);
     });
-
-    if (!parameters.compressor_mode && !parameters.ban_disintegration) {
-        // Pass B: New Variable Admission
-        // Gated by !parameters.ban_disintegration (collapsed from short-lived
-        // allow_disintegration flag on 2026-04-29 — see D-28; original gate
-        // was !parameters.incubator_mode pre-2026-04-29). See I-7.
-        newVarMap.forEachVarSorted([&](int32_t varId) {
-            // var is a zero-copy span into newVarMap (read-only in Pass B, so no
-            // mint into its interner intervenes -- decodeView-safe, I-3).
-            const StrSpan var = newVarMap.varAt(varId);
-            bool isVarAdmitted = false;
-            int classLevel = 0, classId = 0;  // discarded out-params for the it_/int_ name classifier
-            const int32_t elemN = newVarMap.elemCount(varId);
-
-            for (int32_t j = 0; j < elemN; ++j) {
-                // ru / marked held as ScratchStrings for the whole j-iteration on
-                // the string tier; jsc frees them at each iteration (former heap
-                // removedU / markedExpr). isAdmitted / isAdmittedIntegration /
-                // the rejected doors take spans now.
-                ScratchScope jsc(strArena);
-                const ScratchString ru =
-                    removeUPrefixScratch(strArena, newVarMap.elemAt(varId, j));
-                const ScratchString marked =
-                    makeMarkedExprScratch(strArena, StrSpan(ru), var);
-
-                // 1. Check for Iteration Variable (it_...)
-                if (matchItLevId(var, classLevel, classId)) {
-                    const StrSpan core = extractExpressionSpan(StrSpan(ru));
-                    bool hasOperator = (this->operators.find(
-                        std::string_view(core.ptr, core.len)) != this->operators.end());
-
-                    if (hasOperator) {
-                        // Ancestor-inclusive probe (D-288):
-                        // a fired input-slot demand key lands at
-                        // deeperOf(subkey constituents), which may be a strict
-                        // ancestor of this deposit's scope (ordis branch).
-                        if (isAdmittedIncludingAncestors(memoryBlock, StrSpan(ru), var, StrSpan(marked), validityName)) {
-                            isVarAdmitted = true;
-                            break;
-                        }
-                        else if (isAllowedAsOperatorInput(memoryBlock, StrSpan(ru), var)) {
-                            isVarAdmitted = true;
-                            break;
-                        }
-                        else {
-                            // Buffer rejection instead of calling updateRejectedMap immediately.
-                            // Capture the cohort (other expressions sharing this it_ var)
-                            // and the parent compound's levels so the revival path can
-                            // mail-emit the full body without re-running
-                            // prepareIntegrationCore. Symmetric to the int_ branch below.
-                            ScratchArena& rArena = scratchArenas().forSlot(collSlot);
-                            ScratchScope rsc(rArena);
-                            StrSpan sibSpans[256];
-                            int32_t sibN = 0;
-                            for (int32_t k = 0; k < elemN; ++k) {
-                                if (k == j) continue;
-                                assert(sibN < 256 && "rejection siblings exceed 256");
-                                sibSpans[sibN++] = StrSpan(removeUPrefixScratch(
-                                    rArena, newVarMap.elemAt(varId, k)));
-                            }
-                            // Level capture = frame ∪ registry
-                            // (D-327). The
-                            // compound's registry levels row is written by the
-                            // kernel's stmts-loop AFTER disintegrateExpr2
-                            // returns, so on a fresh local deposit the registry
-                            // lookup alone misses by construction and the
-                            // record would park level-empty — the revival
-                            // would then stamp the witness facts {-1}, hiding
-                            // the compound's real levels from every downstream
-                            // level union. The deposit's own levels are in
-                            // hand as orSeedLevels; a re-arrival's registry
-                            // row may carry levels the frame does not, so
-                            // merge both (ascending runs, non-negative tier
-                            // only — an all-non-derived park stays empty and
-                            // the addStatement door re-stamps {-1} at
-                            // revival).
-                            int32_t levArr[256];
-                            int32_t levN = 0;
-                            {
-                                int32_t regArr[256];
-                                int32_t regN = 0;
-                                const int32_t compoundLvlsId2 = lookupStatementLevels(
-                                    memoryBlock.intStatementLevelsMap, memoryBlock.nameMap,
-                                    StrSpan(topLevelExprClean), validityName);
-                                if (compoundLvlsId2) {
-                                    regN = coldIntRunAt(
-                                        memoryBlock.intStatementLevelsMap,
-                                        compoundLvlsId2, regArr, 256);
-                                }
-                                int32_t ai = 0, bi = 0;
-                                while (ai < orSeedLevelCount && orSeedLevels[ai] < 0) ++ai;
-                                while (bi < regN && regArr[bi] < 0) ++bi;
-                                while (ai < orSeedLevelCount && bi < regN) {
-                                    assert(levN < 256 && "park level union exceeds levArr");
-                                    if (orSeedLevels[ai] < regArr[bi]) {
-                                        levArr[levN++] = orSeedLevels[ai++];
-                                    } else if (regArr[bi] < orSeedLevels[ai]) {
-                                        levArr[levN++] = regArr[bi++];
-                                    } else {
-                                        levArr[levN++] = orSeedLevels[ai++];
-                                        ++bi;
-                                    }
-                                }
-                                while (ai < orSeedLevelCount) {
-                                    assert(levN < 256 && "park level union exceeds levArr");
-                                    levArr[levN++] = orSeedLevels[ai++];
-                                }
-                                while (bi < regN) {
-                                    assert(levN < 256 && "park level union exceeds levArr");
-                                    levArr[levN++] = regArr[bi++];
-                                }
-                            }
-                            pendingRejections.addRejection(var, StrSpan(ru),
-                                StrSpan(marked), StrSpan(topLevelExprClean),
-                                sibSpans, sibN, levArr, levN);
-                        }
-                    }
-                }
-                // 2. Check for Integration Variable (int_...)
-                else if (matchIntLevId(var, classLevel, classId)) {                    if (isAdmittedIntegration(memoryBlock, StrSpan(ru), var, StrSpan(marked), validityName)) {
-                        isVarAdmitted = true;
-                        break;
-                    }
-                    else if ([&]() {
-                        // Non-minting probe — a never-interned template was
-                        // never registered in the admission set.
-                        int64_t setPk = 0;
-                        return lookupTemplateKey(memoryBlock.templateInterner,
-                                   memoryBlock.nameMap, StrSpan(marked), validityName, setPk)
-                            && memoryBlock.overallHashMemory.admissionSetIntegration.contains(setPk);
-                    }()) {
-                        isVarAdmitted = true;
-                        break;
-                    }
-                    else {
-                        // Buffer rejection symmetric to the it_ branch above.
-                        // Skip (in[...]) typing elements — per user spec, they
-                        // never become a rejectedMapIntegration key (siblings
-                        // still carry them for re-emission).
-                        const StrSpan core = extractExpressionSpan(StrSpan(ru));
-                        const bool isInTyping = equalSpans(core, StrSpan("in", 2));
-                        if (!isInTyping) {
-                            ScratchArena& rArena = scratchArenas().forSlot(collSlot);
-                            ScratchScope rsc(rArena);
-                            StrSpan sibSpans[256];
-                            int32_t sibN = 0;
-                            for (int32_t k = 0; k < elemN; ++k) {
-                                if (k == j) continue;
-                                assert(sibN < 256 && "rejection siblings exceed 256");
-                                sibSpans[sibN++] = StrSpan(removeUPrefixScratch(
-                                    rArena, newVarMap.elemAt(varId, k)));
-                            }
-                            pendingRejectionsIntegration.addRejection(var,
-                                StrSpan(ru), StrSpan(marked), StrSpan(),
-                                sibSpans, sibN, nullptr, 0);
-                        }
-                    }
-                }
-            }
-
-            if (isVarAdmitted) {
-                admittedVars.mint(var); // Mark as locally admitted
-
-                for (int32_t j = 0; j < elemN; ++j) {
-                    ScratchScope sc(strArena);
-                    const ScratchString cleanStmt =
-                        removeUPrefixScratch(strArena, newVarMap.elemAt(varId, j));
-                    addToFinal(StrSpan(cleanStmt), addToFinal);
-                }
-            }
-        });
-    }
-
-    // ---------------------------------------------------------
-    // Cascade Admission for Dependent Variables (int_ and it_)
-    // ---------------------------------------------------------
-
-    // Stack-buffer prefixes (no per-call heap): byte-identical to the former
-    // "int_lev_<level>_" / "_lev_<level>_" std::strings (level is int, so %d
-    // matches std::to_string); used directly in the std::string rfind/find
-    // probes below.
-    char intPrefix[40];
-    char levSubstring[40];
-    const int intPrefixLen = std::snprintf(intPrefix, sizeof(intPrefix), "int_lev_%d_", memoryBlock.level);
-    const int levSubLen = std::snprintf(levSubstring, sizeof(levSubstring), "_lev_%d_", memoryBlock.level);
-
-    while (true) {
-        bool hasGrown = false;
-
-        // Iterate through all potential statements in 'collected'. id / first-seen
-        // order is fine here: the cascade is a closure (the while-loop converges to
-        // the same admitted set regardless of visitation order), and addToFinal's
-        // inserts beyond passCount are picked up on the next pass. newVarMap is still
-        // a std::map this commit, so its lookups materialize the arg span (commit 4
-        // removes that round-trip).
-        const int32_t passCount = finalStringStatements.count();
-        for (int32_t fid = 1; fid <= passCount; ++fid)
-        {
-            const StrSpan stmt = finalStringStatements.keyAt(fid);
-            StrSpan args[ExecutionParameters::MAX_ARITY];
-            const int32_t argN = getArgsSpans(stmt, args, ExecutionParameters::MAX_ARITY);
-
-            bool hasAdmittedVar = false;
-            StrSpan candidates[ExecutionParameters::MAX_ARITY];
-            int32_t candN = 0;
-
-            // First pass: Classify arguments in this statement
-            for (int32_t ai = 0; ai < argN; ++ai) {
-                const StrSpan arg = args[ai];
-                // Check if already admitted
-                if (admittedVars.contains(arg)) {
-                    hasAdmittedVar = true;
-                }
-                // Check if it is a potential candidate (Target Syntax + New + Not Admitted)
-                else {
-                    bool isTarget = false;
-                    // Check A: int_lev_X_
-                    if (arg.len >= intPrefixLen
-                        && std::memcmp(arg.ptr, intPrefix, static_cast<size_t>(intPrefixLen)) == 0) {
-                        isTarget = true;
-                    }
-                    // Check B: it_..._lev_X_
-                    else if (arg.len > 3 && arg.ptr[0] == 'i' && arg.ptr[1] == 't' && arg.ptr[2] == '_') {
-                        if (containsSpan(arg, StrSpan(levSubstring, levSubLen))) {
-                            isTarget = true;
-                        }
-                    }
-
-                    if (isTarget) {
-                        // Must be in newVarMap (new) and not yet admitted
-                        if (newVarMap.hasVar(arg)) {
-                            candidates[candN++] = arg;
-                        }
-                    }
-                }
-            }
-
-            // Admission Rule: New vars are admitted ONLY if they share an expression with an admitted var
-            if (hasAdmittedVar && candN > 0) {
-                for (int32_t ci = 0; ci < candN; ++ci) {
-                    const StrSpan cand = candidates[ci];
-                    // Double-check to ensure we don't process the same candidate twice in one pass
-                    if (!admittedVars.contains(cand)) {
-
-                        admittedVars.mint(cand);
-                        hasGrown = true;
-
-                        // Pull in all defining expressions for this newly admitted
-                        // variable (verified present via hasVar above).
-                        const int32_t cvId = newVarMap.lookupVar(cand);
-                        const int32_t cvN = newVarMap.elemCount(cvId);
-                        for (int32_t j = 0; j < cvN; ++j) {
-                            ScratchScope sc(strArena);
-                            const ScratchString cleanStmt =
-                                removeUPrefixScratch(strArena, newVarMap.elemAt(cvId, j));
-                            addToFinal(StrSpan(cleanStmt), addToFinal);
-                        }
-                    }
-                }
-            }
+    const auto selectCounterexamples = [&]() {
+        bool changed = false;
+        for (int32_t id = 1; id <= count; ++id) {
+            const TemporaryWitnessSlot value = witnesses.slot(id);
+            if (disabled[id] || value.permanentId != 0) continue;
+            if (value.parent != 0 && witnesses.slot(value.parent).permanentId == 0) continue;
+            const StrSpan source = witnesses.source(id);
+            if (!startsWithSpan(source, "!(", 2)) continue;
+            const LogicalEntity* entity = compiledEntity(extractExpressionUniversalSpan(source));
+            assert(entity != nullptr);
+            if (entity->category != "implication") continue;
+            assert(value.kind == TemporaryWitnessKind::Integration);
+            // This slot was prepared from an exactly-one-variable negative
+            // implication. The exception admits only it, not its descendants.
+            selectWitness(id, selectWitness);
+            changed = true;
         }
-
-        // Break if no new variables were admitted in this pass
-        if (!hasGrown) {
-            break;
+        return changed;
+    };
+    if (forceDeep) {
+        for (int32_t id = 1; id <= count; ++id) {
+            const TemporaryWitnessSlot value = witnesses.slot(id);
+            if (value.kind == TemporaryWitnessKind::Forced
+                && (value.parent == 0 || witnesses.slot(value.parent).permanentId != 0))
+                selectWitness(id, selectWitness);
         }
-    }
-
-
-    // --- FIX: Commit Rejections Only for Never-Admitted Variables ---
-    // Records are in lex-var-then-insertion order (Pass-B order); walk in order and
-    // skip records whose var was admitted (in Pass B or the cascade).
-    for (int32_t r = 0; r < pendingRejections.count(); ++r) {
-        const RejRec& fail = pendingRejections.recAt(r);
-        if (admittedVars.contains(pendingRejections.decode(fail.varId))) continue;
-        // Variable was truly rejected (dependencies never resolved). decode
-        // returns spans into the RejectionStore's own interner (page tier, not
-        // mutated during the drain); updateRejectedMap mints valueInterner /
-        // templateInterner / nameMap (different), so the spans stay valid (I-3).
-        const StrSpan removedUF = pendingRejections.decode(fail.s1Id);
-        const StrSpan markedExprF = pendingRejections.decode(fail.s2Id);
-        const StrSpan compactExprF = pendingRejections.decode(fail.s3Id);
-        StrSpan siblingsF[256];
-        assert(fail.sibCount <= 256 && "pendingRejections siblings exceed cap");
-        for (int32_t k = 0; k < fail.sibCount; ++k)
-            siblingsF[k] = pendingRejections.sibAt(fail, k);
-        int lvRunF[256];
-        assert(fail.levCount <= 256
-            && "pendingRejections level run exceeds lvRunF");
-        for (int32_t k = 0; k < fail.levCount; ++k)
-            lvRunF[k] = pendingRejections.levAt(fail, k);
-        updateRejectedMap(removedUF, markedExprF, compactExprF,
-                          removedUF,         // concreteConstituent (= removedU)
-                          siblingsF, fail.sibCount, lvRunF, fail.levCount,
-                          memoryBlock.overallHashMemory, memoryBlock, iteration, validityName);
-        // Park-demand rendezvous (D-243): the
-        // admission-marker side fires revisitRejected2 exactly once, at the
-        // moment the marker key is written. A cohort parked AFTER that
-        // one-shot probe would sleep forever — witness-generation pacing
-        // defers firing-fed parkings by a mail hop, so the demand can
-        // arrive first. Probe the admission map for this parked key's
-        // demand; if it is already live, fire the revival now — whichever
-        // side arrives second wakes the other. A consumed demand needs no
-        // wake: its constituent was admitted through another route. The
-        // probe is VALUE-level (admissionRunHasRegularValue): an ordis-only
-        // key is cohort-opening demand evidence and must not wake the
-        // general rejectedMap.
-        int64_t parkedPk = 0;
-        if (lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
-                              markedExprF, validityName, parkedPk)) {
-            const unsigned rdvSlot = (g_currentCoreId >= 0)
-                ? static_cast<unsigned>(g_currentCoreId)
-                : genScratchArenas().slotCount() - 1;
-            if (admissionRunHasRegularValue(
-                    memoryBlock.overallHashMemory.admissionMap, parkedPk,
-                    genScratchArenas().forSlot(rdvSlot))) {
-                revisitRejected2(markedExprF, memoryBlock, validityName);
-            }
-        }
-    }
-
-    // Integration-side commit — mirror of algebra block above. A pending
-    // integration-rejection is committed to rejectedMapIntegration only if
-    // the int_ var stayed un-admitted after cascade admission.
-    for (int32_t r = 0; r < pendingRejectionsIntegration.count(); ++r) {
-        const RejRec& fail = pendingRejectionsIntegration.recAt(r);
-        if (admittedVars.contains(pendingRejectionsIntegration.decode(fail.varId))) continue;
-        const StrSpan markedExprF = pendingRejectionsIntegration.decode(fail.s2Id);
-        const StrSpan concreteF = pendingRejectionsIntegration.decode(fail.s1Id);
-        StrSpan siblingsF[256];
-        assert(fail.sibCount <= 256 && "pendingRejectionsIntegration siblings exceed cap");
-        for (int32_t k = 0; k < fail.sibCount; ++k)
-            siblingsF[k] = pendingRejectionsIntegration.sibAt(fail, k);
-        updateRejectedMapIntegration(markedExprF, concreteF, siblingsF, fail.sibCount,
-                                     StrSpan(topLevelExprClean),
-                                     memoryBlock.overallHashMemory, memoryBlock, validityName);
-    }
-
-    // Append the normal statements (all at parent validity) straight to the
-    // channel; forEachSorted
-    // at the caller reproduces the former std::set<EWV> order byte-for-byte.
-    // out.implications is already filled by addToFinal.
-    // (Sequenced or-disintegration: branch seeds ride
-    // sameIterationInternalMail from the OR case itself, not this channel —
-    // the absorb runs them through the full kernel pipeline.)
-    for (int32_t id = 1; id <= finalStringStatements.count(); ++id)
-        out.statements.append(finalStringStatements.keyAt(id), validityName);
-
-    // fullDisintegrationHappened: true iff every existence inside the compound
-    // got at least one ADMITTED witness. Group the witness vars in newVarMap by
-    // their marker-body signature: makeMarkedExpr replaces the witness name with
-    // "marker", so the it_ and int_ spawned from one existence share a signature
-    // and fall in the same group; a group is covered when any of its vars is in
-    // admittedVars. No existence (newVarMap empty) => no groups => vacuously true
-    // (e.g. a plain in3 has nothing to witness). Erring to false is always safe
-    // (cFE just disintegrates); only a wrong true re-introduces the mirror bug.
-    bool fullDisintegrationHappened = true;
-    {
-        // existenceGroups -> two ColdHashSets on the per-slot genScratchArenas:
-        // allSigs (every existence's marker signature) and coveredSigs (those with an
-        // admitted witness). makeMarkedExpr maps a witness name to "marker", so all
-        // witnesses of one existence share one signature; full disintegration means
-        // every signature is covered. coveredSigs is a subset of allSigs by
-        // construction, so that is exactly coveredSigs.count() == allSigs.count().
-        // Counts only, so the witness iteration order is unobservable.
-        ScratchArena& egArena = genScratchArenas().forSlot(collSlot);
-        DirtyState egDirty = DirtyState::Clean;
-        ColdHashSet<BytesKeyStore> allSigs(&egArena, &egDirty);
-        ColdHashSet<BytesKeyStore> coveredSigs(&egArena, &egDirty);
-        ScratchArena& egStr = scratchArenas().forSlot(collSlot);
-
-        // Per-witness signature ids for the relay selection below (mint order,
-        // parallel to witnessMeta's records).
-        const int32_t wTotal = newVarMap.varCount();
-        int32_t* sigIdOf = (wTotal > 0)
-            ? reinterpret_cast<int32_t*>(egArena.resolve(
-                  egArena.alloc(wTotal * 4, 4)))
-            : nullptr;
-
-        for (int32_t wid = 1; wid <= newVarMap.varCount(); ++wid) {
-            const StrSpan witnessVar = newVarMap.varAt(wid);
-            const int32_t wN = newVarMap.elemCount(wid);
-            ScratchScope sc(egStr);
-            // Build this witness's marker set, sort + dedup, join into a canonical
-            // signature key (separator 0x01, never present in MPL text).
-            StrSpan markers[256];
-            int32_t markerN = 0;
-            for (int32_t j = 0; j < wN; ++j) {
-                assert(markerN < 256 && "existence body exceeds 256 markers");
-                const ScratchString clean = removeUPrefixScratch(egStr, newVarMap.elemAt(wid, j));
-                const ScratchString marked = makeMarkedExprScratch(egStr, StrSpan(clean), witnessVar);
-                markers[markerN++] = StrSpan(marked);
-            }
-            std::sort(markers, markers + markerN,
-                [](const StrSpan& a, const StrSpan& b) { return compareSpans(a, b) < 0; });
-            markerN = static_cast<int32_t>(std::unique(markers, markers + markerN,
-                [](const StrSpan& a, const StrSpan& b) { return compareSpans(a, b) == 0; }) - markers);
-            int32_t sigLen = 0;
-            for (int32_t i = 0; i < markerN; ++i) { if (i) ++sigLen; sigLen += markers[i].len; }
-            char* sigBuf = egStr.allocBytes(sigLen);
-            int32_t at = 0;
-            for (int32_t i = 0; i < markerN; ++i) {
-                if (i) sigBuf[at++] = '\x01';
-                std::memcpy(sigBuf + at, markers[i].ptr, static_cast<size_t>(markers[i].len));
-                at += markers[i].len;
-            }
-            const StrSpan sigKey(sigBuf, sigLen);
-            sigIdOf[wid - 1] = allSigs.mint(sigKey);
-            if (admittedVars.contains(witnessVar)) coveredSigs.mint(sigKey);
-        }
-        fullDisintegrationHappened = (allSigs.count() == coveredSigs.count());
-
-        // Relay selection (D-284): mark the HIGHEST
-        // uncovered existence groups — an uncovered group whose enclosing
-        // group is covered (or that is the top compound) relays its spawning
-        // compact; deeper uncovered groups ride inside it. The caller stages
-        // the compacts for flag-5 mail (local statuses only). witnessMeta is
-        // record-parallel to newVarMap's mint order (asserted).
-        if (!fullDisintegrationHappened && wTotal > 0) {
-            assert(witnessMeta.count() == wTotal
-                && "relay selection: witnessMeta out of step with newVarMap");
-            int32_t* parentIdx = reinterpret_cast<int32_t*>(egArena.resolve(
-                egArena.alloc(wTotal * 4, 4)));
-            for (int32_t i = 0; i < wTotal; ++i) {
-                assert(equalSpans(witnessMeta.witnessAt(i),
-                                  newVarMap.varAt(i + 1))
-                    && "relay selection: witnessMeta order mismatch");
-                const StrSpan parent = witnessMeta.parentAt(i);
-                if (parent.empty()) {
-                    parentIdx[i] = -1;
+    } else if (!parameters.compressor_mode && !parameters.ban_disintegration) {
+        selectCounterexamples();
+        // A recursion-owned admission value serves this expansion only when
+        // the original has numbers as its only arguments
+        // (I-285).
+        const bool originalHasOnlyNumbers = hasOnlyNumberArguments(expr);
+        // Preserve the previous admission visitation order without allocating
+        // those names. Slot records, not this sorting text, determine their kind.
+        const auto admissionLess = [&](int32_t a, int32_t b) {
+            char left[96], right[96];
+            const auto name = [&](int32_t id, char* bytes) {
+                const auto value = witnesses.slot(id + 1);
+                assert(savedStartInt <= INT_MAX - id);
+                return value.kind == TemporaryWitnessKind::Algebra
+                    ? std::snprintf(bytes, 96, "it_%d_lev_%d_%d", value.generation,
+                        memoryBlock.level, savedStartInt + id)
+                    : std::snprintf(bytes, 96, "int_%d_lev_%d_%d", value.integrationDepth,
+                        memoryBlock.level, savedStartInt + id);
+            };
+            const int ln = name(a, left), rn = name(b, right);
+            return compareSpans(StrSpan(left, ln), StrSpan(right, rn)) < 0;
+        };
+        ChunkSortedOrdinals<decltype(admissionLess)> order(arena, count, 0, admissionLess);
+        for (int32_t k = 0; k < count; ++k) {
+            const int32_t id = order.next() + 1;
+            if (disabled[id]) continue;
+            const TemporaryWitnessSlot value = witnesses.slot(id);
+            const int32_t varId = definitions.lookupVar(witnesses.token(id));
+            assert(varId != 0);
+            for (int32_t j = 0; j < definitions.elemCount(varId); ++j) {
+                ScratchScope probeFrame(strings);
+                const ScratchString candidate = substitute(definitions.elemAt(varId, j));
+                const StrSpan variable = value.permanentId != 0
+                    ? witnesses.permanent(id) : witnesses.token(id);
+                const ScratchString marker = makeMarkedExprScratch(strings, StrSpan(candidate), variable);
+                WitnessAdmissionMetrics metrics{value.generation,
+                    countPatternOccurrences(StrSpan(candidate), memoryBlock.overallHashMemory, memoryBlock.nameMap)};
+                StrSpan args[ExecutionParameters::MAX_ARITY];
+                const int32_t n = getArgsSpans(StrSpan(candidate), args, ExecutionParameters::MAX_ARITY);
+                for (int32_t i = 0; i < n; ++i) {
+                    const int32_t temporaryId = witnesses.lookup(args[i]);
+                    if (temporaryId != 0 && witnesses.slot(temporaryId).kind == TemporaryWitnessKind::Algebra)
+                        ++metrics.secondaryCount;
+                }
+                const bool algebra = value.kind == TemporaryWitnessKind::Algebra;
+                int route = 0;
+                if (algebra) {
+                    const StrSpan core = extractExpressionSpan(StrSpan(candidate));
+                    if (operators.find(std::string_view(core.ptr, core.len)) == operators.end()) continue;
+                    if (isAdmittedIncludingAncestors(memoryBlock, StrSpan(candidate), variable,
+                            StrSpan(marker), validityName, &metrics, false,
+                            originalHasOnlyNumbers)) route = 1;
+                    else if (isAllowedAsOperatorInput(memoryBlock, StrSpan(candidate), variable, &metrics)) route = 2;
                 } else {
-                    const int32_t pid = newVarMap.lookupVar(parent);
-                    assert(pid != 0
-                        && "relay selection: enclosing witness not in newVarMap");
-                    parentIdx[i] = pid - 1;
+                    if (isAdmittedIntegration(memoryBlock, StrSpan(candidate), variable,
+                            StrSpan(marker), validityName, false)) route = 3;
+                    else {
+                        if (canonicalTemplatePresent(memoryBlock, memoryBlock.overallHashMemory.admissionSetIntegration,
+                            memoryBlock.lbMemory.canonicalUses.integrationSetMatches, StrSpan(marker), validityName)) route = 4;
+                    }
+                }
+                if (route == 0) continue;
+                selectWitness(id, selectWitness);
+                const ScratchString permanentCandidate = substitute(definitions.elemAt(varId, j));
+                const ScratchString permanentMarker = makeMarkedExprScratch(strings,
+                    StrSpan(permanentCandidate), witnesses.permanent(id));
+                if (route == 1) {
+                    const bool accepted = isAdmittedIncludingAncestors(memoryBlock,
+                        StrSpan(permanentCandidate), witnesses.permanent(id),
+                        StrSpan(permanentMarker), validityName, &metrics, true,
+                        originalHasOnlyNumbers);
+                    assert(accepted);
+                } else if (route == 3) {
+                    const bool accepted = isAdmittedIntegration(memoryBlock,
+                        StrSpan(permanentCandidate), witnesses.permanent(id),
+                        StrSpan(permanentMarker), validityName, true);
+                    assert(accepted);
+                }
+                break;
+            }
+        }
+        bool grew;
+        do {
+            grew = selectCounterexamples();
+            const int32_t passCount = selectedStatements.count();
+            for (int32_t i = 1; i <= passCount; ++i) {
+                StrSpan args[ExecutionParameters::MAX_ARITY];
+                const int32_t n = getArgsSpans(selectedStatements.keyAt(i), args, ExecutionParameters::MAX_ARITY);
+                bool hasSelected = false;
+                int32_t candidates[ExecutionParameters::MAX_ARITY];
+                int32_t pending = 0;
+                for (int32_t j = 0; j < n; ++j) {
+                    const int32_t id = witnesses.lookup(args[j]);
+                    if (id == 0 || disabled[id]) continue;
+                    if (witnesses.slot(id).permanentId != 0) hasSelected = true;
+                    else candidates[pending++] = id;
+                }
+                if (!hasSelected) continue;
+                for (int32_t j = 0; j < pending; ++j) {
+                    if (witnesses.slot(candidates[j]).permanentId != 0) continue;
+                    selectWitness(candidates[j], selectWitness);
+                    grew = true;
                 }
             }
-            bool* relayMask = reinterpret_cast<bool*>(egArena.resolve(
-                egArena.alloc(wTotal, 1)));
-            const int32_t selected = selectRelayWitnesses(sigIdOf, parentIdx,
-                wTotal,
-                [&](int32_t sid) {
-                    return coveredSigs.lookup(allSigs.keyAt(sid)) != 0;
-                },
-                relayMask);
-            if (selected > 0) {
-                // Dedup by spawning-compact instance (the it_/int_ pair of one
-                // existence selects together); the channel dedups on the
-                // composite key, so repeated appends are no-ops.
-                for (int32_t i = 0; i < wTotal; ++i) {
-                    if (relayMask[i])
-                        out.relayCompacts.append(witnessMeta.instanceAt(i),
-                                                 validityName);
-                }
+        } while (grew);
+    }
+
+    // Reconstruct only selected paths using permanent names. This is the
+    // existing expansion/history/OR machinery, now behind admission.
+    CollectedArena published(&arena);
+    witnesses.publishing = true;
+    witnesses.nextSlot = 1;
+    disintegrateExprCore2(StrSpan(prefixed), instruction, memoryBlock, iteration,
+        published, definitions, validityName, trackHistoryLocal,
+        allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe,
+        StrSpan(), &witnesses);
+    assert(witnesses.nextSlot == count + 1);
+    published.forEachKey([&](StrSpan text) {
+        assert(!containsSpan(text, StrSpan("__gl_temporary_witness_", 23)));
+        out.statements.append(text, validityName);
+        if (published.isOrSource(text)) out.orSources.append(text, validityName);
+        published.forImpls(text, [&](StrSpan rule, StrSpan validity) {
+            assert(!containsSpan(rule, StrSpan("__gl_temporary_witness_", 23)));
+            out.implications.append(rule, validity, text);
+        });
+    });
+    // The induction hypothesis' own constructions: no recursion-owned
+    // template accepts them (I-286).
+    if (recursionHead)
+        for (int32_t id = 1; id <= count; ++id)
+            if (witnesses.slot(id).permanentId != 0)
+                memoryBlock.recursionHeadWitnesses.mint(witnesses.permanent(id));
+    if (forceDeep) return count == 0;
+
+    int levels[256];
+    int32_t levelCount = 0;
+    for (int32_t i = 0; i < orSeedLevelCount; ++i)
+        if (orSeedLevels[i] >= 0) levelCount = insertLevelSorted(levels, levelCount, orSeedLevels[i], 256);
+    const int32_t storedLevels = lookupStatementLevels(memoryBlock.intStatementLevelsMap,
+        memoryBlock.nameMap, expr, validityName);
+    if (storedLevels != 0)
+        for (int32_t i = 0; i < memoryBlock.intStatementLevelsMap.runLen(storedLevels); ++i) {
+            const int level = memoryBlock.intStatementLevelsMap.valueAt(storedLevels, i);
+            if (level >= 0) levelCount = insertLevelSorted(levels, levelCount, level, 256);
+        }
+
+    const auto highestUnresolved = [&](int32_t id) {
+        while (witnesses.slot(id).parent != 0
+            && witnesses.slot(witnesses.slot(id).parent).permanentId == 0)
+            id = witnesses.slot(id).parent;
+        return id;
+    };
+    for (int32_t id = 1; id <= count; ++id) {
+        if (disabled[id]) continue;
+        ScratchScope sourceFrame(strings);
+        const TemporaryWitnessSlot value = witnesses.slot(id);
+        if (value.permanentId != 0) {
+            const ScratchString source = substitute(witnesses.source(id));
+            assert(!temporary(StrSpan(source)));
+            const NameId scope = memoryBlock.nameMap.lookup(validityName);
+            assert(scope != 0);
+            const int64_t key = packOriginKey(canonicalExistenceId(memoryBlock, StrSpan(source), scope), scope);
+            const int32_t* old = memoryBlock.existenceReplays.find(key);
+            const int32_t state = old ? *old : 0;
+            writeExistenceState(memoryBlock, key, state | kindBit(id));
+            continue;
+        }
+        const int32_t root = highestUnresolved(id);
+        const ScratchString source = substitute(witnesses.source(root));
+        assert(!temporary(StrSpan(source)));
+        const int32_t flags = kindBit(root) | (allowOrDisintegration ? 4 : 0)
+            | (inheritedSource ? 8 : 0);
+        const int32_t varId = definitions.lookupVar(witnesses.token(id));
+        for (int32_t j = 0; j < definitions.elemCount(varId); ++j) {
+            ScratchScope elementFrame(strings);
+            const ScratchString candidate = substitute(definitions.elemAt(varId, j));
+            const ScratchString key = makeMarkedExprScratch(strings, StrSpan(candidate), witnesses.token(id));
+            if (temporary(StrSpan(key))) continue;
+            const StrSpan core = extractExpressionSpan(StrSpan(candidate));
+            if (value.kind == TemporaryWitnessKind::Algebra) {
+                if (operators.find(std::string_view(core.ptr, core.len)) == operators.end()) continue;
+                updateRejectedMap(StrSpan(key), StrSpan(source), value.generation, flags,
+                    levels, levelCount, memoryBlock.overallHashMemory, memoryBlock, validityName,
+                    nullptr, 0, integrationDepth);
+                algebraParks.mint(StrSpan(key));
+            } else if (!equalSpans(core, StrSpan("in", 2))) {
+                updateRejectedMapIntegration(StrSpan(key), StrSpan(source), value.generation, flags,
+                    levels, levelCount, memoryBlock.overallHashMemory, memoryBlock, validityName,
+                    nullptr, 0, integrationDepth);
+                integrationParks.mint(StrSpan(key));
             }
         }
     }
 
-    // out.implications / out.statements are filled in place above (addToFinal +
-    // the direct statement/OR-branch appends); nothing to copy here.
-    return fullDisintegrationHappened;
+    if (memoryBlock.startInt != savedStartInt)
+        retireCompletedExistences(memoryBlock, memoryBlock.nameMap.encode(validityName));
+
+    // Whichever side arrives second completes the rendezvous, including a
+    // demand already present in a descendant when an ancestor parks its source.
+    for (int32_t i = 1; i <= algebraParks.count(); ++i)
+        revisitRejected2(algebraParks.keyAt(i), memoryBlock, validityName);
+    for (int32_t i = 1; i <= integrationParks.count(); ++i)
+        revisitRejectedIntegration2(integrationParks.keyAt(i), memoryBlock, validityName);
+    wakeParkedExistencesAtExistingDemands(memoryBlock, algebraParks, integrationParks);
+
+    ColdHashSet<BytesKeyStore> groups(&arena, &dirty);
+    ColdHashSet<PodKeyStore<int32_t>> covered(&arena, &dirty);
+    int32_t* groupOf = count == 0 ? nullptr : reinterpret_cast<int32_t*>(
+        arena.resolve(arena.alloc(count * 4, 4)));
+    for (int32_t id = 1; id <= count; ++id) {
+        // Source identity groups the alternative constructions; outer temporary
+        // identities still separate distinct enclosing expansions.
+        groupOf[id - 1] = disabled[id] == 1 ? 0 : groups.mint(witnesses.source(id));
+        if (groupOf[id - 1] != 0 && (witnesses.slot(id).permanentId != 0 || disabled[id] == 2))
+            covered.mint(groupOf[id - 1]);
+    }
+    const bool full = groups.count() == covered.count();
+    if (!full) {
+        for (int32_t id = 1; id <= count; ++id) {
+            if (disabled[id] != 0 || covered.contains(groupOf[id - 1])) continue;
+            const int32_t parent = witnesses.slot(id).parent;
+            if (parent != 0 && !covered.contains(groupOf[parent - 1])) continue;
+            ScratchScope relayFrame(strings);
+            const ScratchString source = substitute(witnesses.source(highestUnresolved(id)));
+            assert(!temporary(StrSpan(source)));
+            out.relayCompacts.append(StrSpan(source), validityName);
+        }
+    }
+    return full;
 }
 
 
@@ -15526,7 +17740,11 @@ void ExpressionAnalyzer::prove(int numberIterations,
     // scope's final barrier was never armed and is dropped here (the
     // kernel re-plans from live state at its next pressured barrier).
     stewardEvictionPlan.clear();
-    steward = std::make_unique<MemorySteward>(parameters.allow_ssd_deload);
+    // Counterexample-filter clones (the CUDA filter proves them in batches
+    // through this scope) are destroyed right after it, so their steward is
+    // resident-only: no clone is ever written to SSD.
+    steward = std::make_unique<MemorySteward>(
+        parameters.allow_ssd_deload && !ceFilteringActive);
     // The worker count sizes the I/O executor pool (steward::ioThreadCountFor
     // — 4 executors at 32 workers).
     steward->start(logicalCores);
@@ -15541,6 +17759,15 @@ void ExpressionAnalyzer::prove(int numberIterations,
         [&bodies, s = steward.get()](int64_t inUse, int64_t total) {
             printExhaustionCensus(bodies, s, inUse, total);
         });
+    // GRANT BACKPRESSURE (D-422): a grant that would
+    // leave fewer free blocks than the emergency floor first evicts one idle
+    // logic block behind the open window's cursor, so growth inside claimed
+    // blocks cannot outrun the SSD evictions. Cleared with the reporter
+    // below, while the steward still lives.
+    if (steward->allowsSsdDeload())
+        staticMemory().setPressureValve(
+            [s = steward.get()] { s->relieveGrantPressure(lbdeload::kDeloadDirectory); },
+            steward->emergencyFloorBlocks());
     struct StewardScope {
         std::unique_ptr<MemorySteward>& s;
         ~StewardScope() {
@@ -15571,6 +17798,7 @@ void ExpressionAnalyzer::prove(int numberIterations,
             // this guard) and the steward pointer (alive until the reset
             // below) — both outlive every possible invocation.
             staticMemory().setExhaustionReporter(nullptr);
+            staticMemory().setPressureValve(nullptr, 0);
             s.reset();
         }
     } stewardScope{ steward };
@@ -15627,6 +17855,7 @@ void ExpressionAnalyzer::prove(int numberIterations,
         // state (intToBeProved persistent I-108, isActive + tree edges on
         // the LB slab I-109/I-110).
         deactivateRecursively();
+
     }
 
 }
@@ -15638,7 +17867,7 @@ void ExpressionAnalyzer::saveProvedTheorems() {
 
     // Resolve path: <repo>/files/theorems/theorems.txt
     const auto theoremsDir =
-        fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
+        gl::projectRoot()
         / "files" / "theorems";
 
     const auto filePath = theoremsDir / "theorems.txt";
@@ -15683,7 +17912,7 @@ void ExpressionAnalyzer::saveProvedTheoremsFiltered(const std::vector<std::strin
     namespace fs = std::filesystem;
 
     const auto theoremsDir =
-        fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
+        gl::projectRoot()
         / "files" / "theorems";
 
     const auto filePath = theoremsDir / "theorems.txt";
@@ -15796,6 +18025,7 @@ void ExpressionAnalyzer::precompileStructuralOperators(std::string& theorem) {
     compileAtMarker("!(&");
     // Pass 2: compile all !(>...) — these become (existence<N>[...]).
     compileAtMarker("!(>");
+    compileContrapositionFamilies();
 }
 
 
@@ -16187,7 +18417,9 @@ Memory* ExpressionAnalyzer::incubatorAnchorLb() const {
 ///        anchor LB (declaration Doxygen in `prover.hpp` carries the contract).
 ///
 /// @details
-/// Single premise → true. Two premises → true iff the second premise is an
+/// Single premise → true unless the head is a positive anchor: anchor bridges
+/// must also fire on copied anchors created only in descendant LBs.
+/// Two premises → true iff the second premise is an
 /// operator application (not an equality, negation or implication) and the
 /// head is `(=[a,b])` with one side a non-anchor argument of that operator and
 /// the other side a `(1)`-typed anchor slot value. Otherwise false.
@@ -16205,7 +18437,7 @@ bool ExpressionAnalyzer::anchorOnlyRule(const std::string& theorem) const {
     const std::string& anchorPremise = std::get<0>(chain[0]);
     assert(anchorPremise.rfind("(Anchor", 0) == 0
         && "anchorOnlyRule: an incubator-derived theorem starts with an anchor premise");
-    if (chain.size() == 1) return true;
+    if (chain.size() == 1) return head.rfind("(Anchor", 0) != 0;
     if (chain.size() != 2) return false;
 
     const std::string& premise2 = std::get<0>(chain[1]);
@@ -16308,7 +18540,8 @@ void ExpressionAnalyzer::prefillIntegrationMapsRecursive(Memory* mb) {
 
 //#pragma optimize("", off)
 
-void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& memoryBlock, StrSpan validityName) {
+void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& memoryBlock, StrSpan validityName,
+    HypotheticalScopes* created) {
     if (parameters.ban_disintegration) return;
 
     // Function-level string-tier scope holding the sentinel / hypo payloads and
@@ -16367,7 +18600,13 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
         char* sb = hypoStrArena.allocBytes(sLen);
         std::memcpy(sb, SENT_PREFIX, static_cast<size_t>(spLen));
         if (expr.len > 0) std::memcpy(sb + spLen, expr.ptr, static_cast<size_t>(expr.len));
+        const int32_t namesBefore = memoryBlock.nameMap.nameCount();
         sentinelValId = memoryBlock.nameMap.encodePush(parentValId, StrSpan(sb, sLen));
+        if (created != nullptr) {
+            created->sentinel = sentinelValId;
+            created->sentinelNew = memoryBlock.nameMap.nameCount() != namesBefore;
+        }
+        initializeCanonicalScope(memoryBlock, sentinelValId);
     }
     // copyFrom: disintegrateExpr2 below mints NameMap heavily, so a raw decodeView
     // would dangle (I-3); the copy rides the string tier (a different arena).
@@ -16500,7 +18739,13 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
         std::memcpy(hb + hat, HYPO_MID, static_cast<size_t>(hmLen)); hat += hmLen;
         if (expr.len > 0) { std::memcpy(hb + hat, expr.ptr, static_cast<size_t>(expr.len)); hat += expr.len; }
         assert(hat == hpLen);
+        const int32_t namesBefore = memoryBlock.nameMap.nameCount();
         hypoNewValidityId = memoryBlock.nameMap.encodePush(hypoParentId, StrSpan(hb, hpLen));
+        if (created != nullptr) {
+            created->hypothesis = hypoNewValidityId;
+            created->hypothesisNew = memoryBlock.nameMap.nameCount() != namesBefore;
+        }
+        initializeCanonicalScope(memoryBlock, hypoNewValidityId);
     }
     // copyFrom: step 6's addExprToMemoryBlock + step 7's encode/nameMap.encode
     // mint NameMap, so a raw decodeView would dangle (I-3); the copy rides the
@@ -16557,18 +18802,19 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
                 // BEFORE the addExprToMemoryBlock mint below, so the peeked views
                 // stay valid. Bucket resolution mirrors decodeClassesAt.
                 const NameId dupValId = memoryBlock.nameMap.lookup(validityName);
+                if(dupValId!=0) initializeCanonicalScope(memoryBlock,dupValId);
                 const int32_t bucketId = (dupValId == 0)
-                    ? 0 : memoryBlock.equivalenceClassesMap.lookup(dupValId);
+                    ? 0 : memoryBlock.canonicalEquivalenceClassesMap.lookup(dupValId);
                 if (bucketId != 0) {
                     const unsigned slot = (g_currentCoreId >= 0)
                         ? static_cast<unsigned>(g_currentCoreId)
                         : genScratchArenas().slotCount() - 1;
                     ScratchArena& gArena = genScratchArenas().forSlot(slot);
-                    const int32_t cc = memoryBlock.equivalenceClassesMap.runLen(bucketId);
+                    const int32_t cc = memoryBlock.canonicalEquivalenceClassesMap.runLen(bucketId);
                     for (int32_t ci = 0; ci < cc; ++ci) {
                         ScratchScope viewScope(gArena);
                         int32_t blen = 0;
-                        const char* bp = memoryBlock.equivalenceClassesMap.peekRecordBytes(
+                        const char* bp = memoryBlock.canonicalEquivalenceClassesMap.peekRecordBytes(
                             bucketId, ci, blen, gArena);
                         const EquivalenceClassView view{ bp, blen };
                         if (varId != 0 && view.memberCount() > 1
@@ -16840,7 +19086,7 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb, int axedMode) {
                       mb->intStatementLevelsMap.assignSetRange(
                           packStatementKey(ie.originalId, ie.validityId),
                           lv0, lv0 + 1); }
-                    upsertStatementKey(mb->intKnownStatements, packStatementKey(
+                    publishKnownStatementKey(*mb, packStatementKey(
                         mb->nameMap.encode(enc.original),
                         mb->nameMap.encode(enc.validityName)),
                         /*local=*/true);
@@ -16883,8 +19129,7 @@ std::vector<std::string> ExpressionAnalyzer::runCeFilterOnly(
     if (!parameters.skip_ce_filter) {
         if (parameters.mirror_refutation) {
             const auto mirrorPairsPath =
-                std::filesystem::path(__FILE__).parent_path().parent_path()
-                    .parent_path().parent_path() / "files" / "theorems"
+                gl::projectRoot() / "files" / "theorems"
                     / "mirror_pairs.txt";
             mirrorPartnerMap = loadMirrorPairs(mirrorPairsPath);
             std::cout << "CE filter: " << mirrorPartnerMap.size()
@@ -16936,6 +19181,7 @@ void ExpressionAnalyzer::destroyGrid() {
             if (child) stack.push_back(child);
         });
         if (node->lbMemory.manager.resident()) {
+            node->lbMemory.existenceLookups.clear();
             node->overallHashMemory.releaseAllCold();
             node->localHashMemory.releaseAllCold();
             node->localHashMemoryDelta.releaseAllCold();
@@ -16946,6 +19192,7 @@ void ExpressionAnalyzer::destroyGrid() {
     // 2) Empty the root's arena-backed cold HashMemory containers in place (its
     //    arena destructs before them at end of process — same hazard).
     if (this->body.lbMemory.manager.resident()) {
+        this->body.lbMemory.existenceLookups.clear();
         this->body.overallHashMemory.releaseAllCold();
         this->body.localHashMemory.releaseAllCold();
         this->body.localHashMemoryDelta.releaseAllCold();
@@ -16966,6 +19213,8 @@ void ExpressionAnalyzer::destroyGrid() {
 void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theorems,
     const std::vector<std::string>& provedTheorems,
     const std::vector<std::string>& externalTheorems) {
+
+    compilationNamesFrozen = true;
 
     // Statification: one gl_quick invocation = one batch — empty the
     // deload directory at batch START only (end-of-run files stay on
@@ -17028,7 +19277,8 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     // Helper: build grid from current permanentBodies
     // =========================================================================
     auto buildGrid = [&]() {
-        this->prefillIntegrationMapsRecursive(&this->body);
+        // Integration demand comes from explicit goals and installed rule premises.
+        // A known operator premise does not request alternative output witnesses.
         this->prehandleAnchor(&this->body);
 
         // Process-documentation telemetry for the mail-history experiment.
@@ -17122,6 +19372,9 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     compileAndRegister(filteredConjectures);
     buildGrid();
 
+    int64_t initialWitnessCounterSum = 0;
+    const size_t initialBodyCount = permanentBodies.size();
+    for (const Memory* memory : permanentBodies) initialWitnessCounterSum += memory->startInt;
     std::cout << "Prover started." << std::endl;
     auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -17239,6 +19492,19 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     auto dt = std::chrono::duration<double>(t1 - t0);
     std::cout << "Prover finished." << std::endl;
     std::cout << "Runtime prover: " << dt.count() << " seconds" << std::endl;
+    assert(permanentBodies.size() == initialBodyCount);
+    int64_t finalWitnessCounterSum = 0;
+    int64_t sourceBlockPeakSum = 0;
+    for (const Memory* memory : permanentBodies) {
+        finalWitnessCounterSum += memory->startInt;
+        sourceBlockPeakSum += memory->parkedSourcePeakBytes;
+    }
+    assert(finalWitnessCounterSum >= initialWitnessCounterSum);
+    std::cout << "[WITNESS-STORAGE] permanent_mints_during_prover="
+              << finalWitnessCounterSum - initialWitnessCounterSum
+              << " source_container_block_peak_sum_bytes=" << sourceBlockPeakSum
+              << std::endl;
+    std::cout << "Number proven theorems: " << globalTheoremList.size() << std::endl;
     // Statification sizing telemetry: drives the static_pool_bytes /
     // static_block_bytes config audit (see G-52).
     std::cout << "[STATIC-MEMORY] peak blocks in use: "
@@ -17343,14 +19609,15 @@ std::string ExpressionAnalyzer::constructOrTheorem(
     // Registry dedup-or-mint (I-23) through the one shared site. Exact
     // element equality implies the identical u_-position mapping, so the
     // instance args below line up with a reused signature.
+    std::vector<int> orArgumentPositions;
     const std::string orCoreName =
-        findOrMintOrOperator(elems, static_cast<int>(orArgs.size()));
+        findOrMintOrOperator(elems, static_cast<int>(orArgs.size()), nullptr, &orArgumentPositions);
 
     // Build compiled OR head: (or0[actual_args])
     std::string compiledOrHead = "(" + orCoreName + "[";
     for (std::size_t i = 0; i < orArgs.size(); ++i) {
         if (i > 0) compiledOrHead += ",";
-        compiledOrHead += orArgs[i];
+        compiledOrHead += orArgs[static_cast<std::size_t>(orArgumentPositions[i]) - 1];
     }
     compiledOrHead += "])";
 
@@ -17389,9 +19656,39 @@ std::string ExpressionAnalyzer::constructOrTheorem(
 
 // Doxygen at the declaration (prover.hpp).
 std::string ExpressionAnalyzer::findOrMintOrOperator(
-    const std::vector<std::string>& elems, int arity, bool* mintedOut) {
+    const std::vector<std::string>& elems, int arity, bool* mintedOut,
+    std::vector<int>* argumentPermutationOut) {
 
     if (mintedOut != nullptr) *mintedOut = false;
+    if (argumentPermutationOut != nullptr) {
+        argumentPermutationOut->resize(static_cast<std::size_t>(arity));
+        std::iota(argumentPermutationOut->begin(), argumentPermutationOut->end(), 1);
+    }
+    const bool hasNamedOr = std::any_of(namedRepetitionExclusionMap.begin(), namedRepetitionExclusionMap.end(),
+        [](const auto& entry) { return entry.first.second == "or"; });
+    if (hasNamedOr) {
+      std::vector<EncodedExpression> encoded;
+      for (const auto& element : elems) encoded.emplace_back(element, "main");
+      auto combinations = giveAllSortedCombinations(encoded);
+      combinations.insert(combinations.begin(), encoded);
+      for (const auto& combination : combinations) {
+        const auto normalized = makeNormalizedEncodedKey(combination, 2);
+        const auto named = namedRepetitionExclusionMap.find(
+            {splitCompilationKey(combination, normalized.first.data), "or"});
+        if (named == namedRepetitionExclusionMap.end()) continue;
+        const auto mapping = combineUnchangeablePaths(normalized.second, std::get<0>(named->second));
+        const auto arguments = ce::getArgs(createArgList(mapping));
+        assert(arguments.size() == static_cast<std::size_t>(arity));
+        std::vector<int> permutation;
+        for (const auto& argument : arguments) permutation.push_back(std::stoi(argument));
+        for (int i = 0; i < arity; ++i)
+            assert(argumentPermutationOut != nullptr || permutation[static_cast<std::size_t>(i)] == i + 1);
+        if (argumentPermutationOut != nullptr) *argumentPermutationOut = permutation;
+        const auto& name = std::get<1>(named->second);
+        compiledOrReuse[elems] = {name, permutation};
+        return name;
+      }
+    }
 
     // Registry dedup (I-23): reuse an existing or-category entry whose
     // ordered element list matches exactly — the same (elements, category)
@@ -17522,8 +19819,9 @@ void ExpressionAnalyzer::preMintReducedOrs() {
             }
             const int arity = renumberULeaves(reduced);
             bool minted = false;
+            std::vector<int> argumentPositions;
             const std::string rname =
-                findOrMintOrOperator(reduced, arity, &minted);
+                findOrMintOrOperator(reduced, arity, &minted, &argumentPositions);
             if (minted && queued.insert(rname).second) {
                 work.push_back(rname);
             }
@@ -17541,6 +19839,7 @@ void ExpressionAnalyzer::preMintReducedOrs() {
         if (le.category == "or") orNames.push_back(name);
     }
     for (const std::string& name : orNames) {
+        compileOrSymmetry(name);
         if (compiledEntity(StrSpan(name))->implications.empty()) {
             assert(orsAwaitingImplications.count(name) == 1
                 && "preMintReducedOrs: an or minted without its K-rule compacts (missed mint hook)");
@@ -17569,19 +19868,17 @@ void ExpressionAnalyzer::preMintReducedOrs() {
         if (le.category == "existence") exNames.push_back(name);
     }
     for (const std::string& name : exNames) {
-        const int32_t elemCount = static_cast<int32_t>(
-            compiledEntity(StrSpan(name))->elements.size());
-        if (compiledEntity(StrSpan(name))->implications.empty()
-            && expectedExistenceImplicationCount(elemCount) > 0) {
+        const int32_t expected = existenceImplicationCount(*compiledEntity(StrSpan(name)));
+        if (compiledEntity(StrSpan(name))->implications.empty() && expected > 0) {
             assert(existencesAwaitingImplications.count(name) == 1
                 && "preMintReducedOrs: an existence minted without its implication compacts (missed mint hook)");
             compileExistenceImplications(name);
         }
-        assert(static_cast<int32_t>(compiledEntity(StrSpan(name))->implications.size())
-                == expectedExistenceImplicationCount(elemCount)
+        assert(static_cast<int32_t>(compiledEntity(StrSpan(name))->implications.size()) == expected
             && "preMintReducedOrs: existence-implication list incomplete after the seam");
     }
     existencesAwaitingImplications.clear();
+    compileContrapositionFamilies();
 }
 
 /// @brief Compile an or's K-rule compacts into its `implications` list.
@@ -17589,6 +19886,7 @@ void ExpressionAnalyzer::preMintReducedOrs() {
 /// @param orName Registry name of an or-category entity.
 /// @see `compileOrSubsetExclusions`, `preMintReducedOrs`.
 void ExpressionAnalyzer::compileOrKRules(const std::string& orName) {
+    compileOrSymmetry(orName);
     const auto it = compiledExpressions.find(orName);
     assert(it != compiledExpressions.end() && it->second.category == "or"
         && "compileOrKRules: name must resolve to an or entity");
@@ -17667,15 +19965,17 @@ void ExpressionAnalyzer::compileOrSubsetExclusions(const std::string& orName) {
             std::vector<StrSpan> canon;
             canon.reserve(reduced.size());
             for (const std::string& r : reduced) canon.emplace_back(r);
+            std::vector<int> argumentPositions(tokOrder.size());
             const std::string* redName =
-                compiledOrByElements(canon.data(), static_cast<int32_t>(canon.size()));
+                compiledOrByElements(canon.data(), static_cast<int32_t>(canon.size()),
+                                    argumentPositions.data(), static_cast<int>(argumentPositions.size()));
             assert(redName != nullptr
                 && "compileOrSubsetExclusions: reduced or missing (I-185 violated)");
 
             std::string head = "(" + *redName + "[";
             for (std::size_t s = 0; s < tokOrder.size(); ++s) {
                 if (s > 0) head += ',';
-                head += tokOrder[s];
+                head += tokOrder[static_cast<std::size_t>(argumentPositions[s]) - 1];
             }
             head += "])";
 
@@ -17731,7 +20031,7 @@ void ExpressionAnalyzer::compileExistenceImplications(const std::string& exName)
     const std::size_t arity = ce::getArgs(it->second.signature).size();
     // A non-[left, right] shape (test-only) carries no compacts — a defined
     // state, the formula's zero.
-    if (expectedExistenceImplicationCount(static_cast<int32_t>(elements.size())) == 0) {
+    if (existenceImplicationCount(it->second) == 0) {
         return;
     }
 
@@ -17765,15 +20065,41 @@ void ExpressionAnalyzer::compileExistenceImplications(const std::string& exName)
     compiledExpressions.find(exName)->second.implications = std::move(compacts);
 }
 
-/// @brief Complete existence-implication list length for @p elemCount
-///        registry elements.
+/// @brief Whether an existence-implication compact is the typing direction
+///        `in[k,S] → !body(k)` of its existence.
 /// @details Doxygen contract at the declaration (prover.hpp).
-/// @param elemCount The existence entity's element count.
-/// @return 2 for the `[left, right]` shape; 0 otherwise.
-int32_t ExpressionAnalyzer::expectedExistenceImplicationCount(int32_t elemCount) {
-    assert(elemCount >= 0
-        && "expectedExistenceImplicationCount: negative element count");
-    return elemCount == 2 ? 2 : 0;
+/// @param compact The compact instance or template `(implication<N>[…])`.
+/// @return True iff the compact's premise element is the bare typing
+///         predicate of the bound variable.
+bool ExpressionAnalyzer::isTypingDirectionCompact(StrSpan compact) const {
+    const LogicalEntity* le = compiledEntity(extractExpressionUniversalSpan(compact));
+    assert(le != nullptr && le->category == "implication" && le->elements.size() == 2
+        && "isTypingDirectionCompact: an existence-implication compact resolves to a two-element implication");
+    const StrSpan premise(le->elements[0]);
+    if (!equalSpans(extractExpressionUniversalSpan(premise), StrSpan("in", 2))) return false;
+    StrSpan args[ExecutionParameters::MAX_ARITY];
+    const int32_t argN = getArgsSpans(premise, args, ExecutionParameters::MAX_ARITY);
+    // The bound variable is the one premise argument without the u_ prefix;
+    // `in[bound, S]` is the typing predicate, `in[u_x, bound]` is not.
+    return argN == 2 && !(args[0].len >= 2 && args[0].ptr[0] == 'u' && args[0].ptr[1] == '_');
+}
+
+/// @brief Complete existence-implication list length for an existence
+///        entity — the named-only rule.
+/// @details Doxygen contract at the declaration (prover.hpp).
+/// @param le The existence entity.
+/// @return 2 for a `[left, right]` shape over named operators; 0 for any
+///         other shape or a numbered element.
+int32_t ExpressionAnalyzer::existenceImplicationCount(const LogicalEntity& le) const {
+    if (le.elements.size() != 2) return 0;
+    for (const std::string& element : le.elements) {
+        const std::string core =
+            extractExpressionUniversalSpan(StrSpan(element)).toStdString();
+        const LogicalEntity* coreLe = compiledEntity(StrSpan(core));
+        if (coreLe != nullptr && isNumberedCompilationName(core, coreLe->category))
+            return 0;
+    }
+    return 2;
 }
 
 /// @brief Construct every OR theorem licensed by the head-switch pairs

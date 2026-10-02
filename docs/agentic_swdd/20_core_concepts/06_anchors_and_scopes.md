@@ -11,7 +11,7 @@ and a commercial license — see https://generative-logic.com/license.
 
 # Core concept — Anchors and anchor-handling `[DRAFT]`
 
-> Every theorem in a GL batch starts with one anchor atom that pins the axiomatic context. The anchor supplies the fixed names (`N`, `i0`, `s`, `+`, `*`, `i1`, …) that subsequent arguments refer to. Anchor-handling is the prover step that resolves raw bound-variable indices (`1`, `2`, …) to these anchor-slot names; the proof graph records it as the `anchor handling` tag with a per-step substitution trace.
+> Every theorem in a GL batch starts with one anchor atom that pins the axiomatic context. The anchor supplies the fixed names (`N`, `i0`, `s`, `+`, `*`, `i1`, …) that subsequent arguments refer to. Runtime anchor handling creates distinct copies of selected element slots and records an `anchor handling` origin. Stage 6 subsequently renames the raw indices and copies for the processed proof graph.
 
 ---
 
@@ -24,7 +24,7 @@ An anchor is a single atomic expression that the conjecturer places at the outer
 (AnchorGauss[N,i0,s,+,*,i1,i2,id])  — 8 slots
 (AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3]) — 9 slots
 (AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8]) — 14 slots
-(AnchorFTA[...])                     — (TBD per current FTA ladder)
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])  — 8 slots
 ```
 
 Every anchor's body is a small MPL file in `files/definitions/Anchor*.mpl`. The body unpacks the anchor's claim about its arguments. For `AnchorPeano.mpl`:
@@ -42,15 +42,15 @@ The anchor, in other words, claims that "(N, i0, s, +, *) satisfy the Peano axio
 
 ## Free vs bound anchor slots
 
-An anchor slot can appear in a theorem's outer bound-variable list (the `>[...]` at the very outside) or not:
+The outer implication binds every non-`u_` anchor argument, including slots unused later in the theorem. Schematic example:
 
-```text
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))
+```mpl
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))
 ```
 
-Here `i0`, `s`, `+`, `i1` are bound; `N`, `*` are free. This means: "for any i0, s, +, i1 satisfying the Peano axioms (with N and * left as given global symbols), …". In practice the conjecturer binds only those anchor slots that are actually *used* somewhere in the theorem body; slots unused in the body stay free.
+Here all six anchor arguments are bound once, in first-occurrence order. Subsequent implications bind only newly encountered non-`u_` variables; already bound anchor arguments remain references to the same context.
 
-**Invariant [I-11](../30_invariants.md#i-11):** anchor-slot names must never appear in *inner* `>[...]` lists. Binding them inner-level would turn a theorem about Peano arithmetic into a theorem about arbitrary structures — silently changing the meaning.
+**Invariants [I-4](../30_invariants.md#i-4) and [I-11](../30_invariants.md#i-11):** bind the complete anchor at the outer implication and never rebind its arguments in an inner `>[...]` list.
 
 ---
 
@@ -74,9 +74,11 @@ When the prover works with an anchor slot, it often needs a "fresh copy" of the 
 
 The renaming stage (stage 6, `process_proof_graphs.py`) then rewrites `x<N>` names to `<digit>_copy` where `<digit>` is the anchor-slot index that the `x` was a copy of:
 
-```text
-raw: (AnchorPeano[N,x1,x2,x3,x4,x5])
-renamed: (AnchorPeano[N,0_copy,s,+,*,1_copy])      (example — actual slot pinning depends on chapter)
+Schematic renaming (only element slots are copied):
+
+```mpl
+raw: (AnchorPeano[1,x2,3,4,5,x6])
+renamed: (AnchorPeano[N,0_copy,s,+,*,1_copy])
 ```
 
 Priority 2.5 of the renaming scheme (see [`10_pipeline/06_process_proof_graph.md`](../10_pipeline/06_process_proof_graph.md)) handles this. Priority 4 then propagates the `_copy` suffix through any raw variable whose base was renamed.
@@ -85,7 +87,7 @@ Priority 2.5 of the renaming scheme (see [`10_pipeline/06_process_proof_graph.md
 
 ## The `anchor handling` tag
 
-Each chapter has at most one `anchor handling` row. Example from `0_direct_proof.txt`:
+Each LB registers at most one copied-anchor variant; a chapter can collect several such rows from different LB depths. Example:
 
 ```text
 (AnchorPeano[N,0_copy,s,+,*,i1])	main	anchor handling	(AnchorPeano[N,i0,s,+,*,i1])	main
@@ -97,9 +99,10 @@ The verifier's `check_anchor_handling` ([`verifier.py`](../../verifier.py)) vali
 
 - The expression is an anchor atom.
 - The substitution is consistent with the anchor's config slot types.
-- Only one `anchor handling` row per chapter.
+- Source and result both have scope `main`, the same anchor core and the same arity.
+- The cited source is an exact `task formulation` row in the chapter.
 
-Following the `anchor handling` row are zero or more `anchor handling trace` rows — each recording one step of the `_copy` substitution chain. The verifier counts these but does not validate them (non-checker category).
+`anchor handling trace` is a chapter-level meta-check, not a producer row tag. For each copied variable introduced by any anchor-handling row, dependencies carrying that variable must trace back to an anchor-handling source. The checker validates those chains and counts successes and failures.
 
 ---
 
@@ -114,7 +117,7 @@ This means: the `anchor handling` tag row exists as an explicit row in the raw p
 The prover-side function `ExpressionAnalyzer::prehandleAnchor` ([`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp)) walks every memory block once per grid build (called from the `buildGrid` lambda inside `analyzeExpressions`, after every LB — induction sub-LBs included — exists) and, for each non-anchor LB whose ancestry reaches an `Anchor*` LB, computes the axed-anchor expression `(AnchorXxx[…, x<i>, …])` for slots whose `definitionSets[i] == "(1)"` and whose original arg appears in the chain of LB exprKeys leading down from the anchor LB (the `traceVariables` guard — the chain INCLUDES the LB's own exprKey). State written per touched LB:
 
 1. **Axed names (every LB)** — each substituted slot's x-name is minted into the LB's `intAxedVariables`, arming the deposit filter (below).
-2. **Statement (outside recursion subtrees only)** — `replacedAnchor` is appended to `intEncodedStatements`, `intKnownStatements` (both membership bits), `intLocalEncodedStatements{,Delta}` + `intLocalEncodedStatementsSet`, and `intStatementLevelsMap` (the `{-1}` non-derived tier) so the axed form is a live fact at this LB. The write is direct — deliberately bypassing the `addExprToMemoryBlock` door, which would refuse the x-citing arguments.
+2. **Statement (outside recursion subtrees only)** — `replacedAnchor` is appended to `intEncodedStatements`, `intKnownStatements` (row presence establishes membership), `intLocalEncodedStatements{,Delta}` + `intLocalEncodedStatementsSet`, and `intStatementLevelsMap` (the `{-1}` non-derived tier) so the axed form is a live fact at this LB. The write is direct — deliberately bypassing the `addExprToMemoryBlock` door, which would otherwise filter x-citing arguments when the positive-anchor exception is disabled.
 3. **History line (with the statement)** — a single `addOriginEncoded(mb->exprOriginMap, …, replacedAnchor, ("anchor handling", [originalAnchor]))`, written locally on the same LB.
 
 #### Set-only containment in recursion subtrees, and the anchor-numeral exception
@@ -128,7 +131,9 @@ Historically the walk early-returned on `isPartOfRecursion` LBs ABOVE both the m
 
 #### The axed-variable deposit filter and its positive-anchor exception
 
-The x-copy names minted into `intAxedVariables` are contained at THREE set-keyed checks ( closed the two bypass gaps): the `addExprToMemoryBlock` prologue drops any deposit carrying an axed name in an argument slot before registration; the `addStatement` door repeats the check for registrations that never pass the prologue (disintegration products, equalities); and the `applyEquivalenceClass` orbit commit refuses a rewritten product citing an axed name (the door-bypassing path). The copies therefore serve as anchor-premise completions without breeding derived x-facts; all three checks are inert where the set is empty (the mode-2 anchor-numeral subtrees, by design). One flag-gated exception (`D-234`, `parameters.axed_anchor_exception`, default OFF — no shipped config enables it): a POSITIVE anchor-category expression (`isAnchor` by name prefix, not negated) deposits normally. This is what extends the copied-anchor mechanism to EXTERNAL anchors: an anchor-bridge rule (batch anchor ⟹ external anchor) firing on the x-copied batch anchor derives the external anchor's x-form — e.g. `(AnchorPeano[1,x2,3,4,5,x6])` from `(AnchorIncubator3[1,x2,3,4,5,x6,x7,8,9])` in the incubator batches — as a live statement, so external-anchor-premise rules can bind element arguments at anchor slot values just as batch-anchor-premise rules do. Without it an instance binding an element to an anchor value cannot match the rule's normalized request key (the slots are positional variables of one shared key — the element-vs-anchor-slot collision, third form of the I-36 family). Negated anchor forms stay filtered even when enabled: a derived negated x-anchor at `main` would pair against the positive form as a spurious premise inconsistency under the vacuous-premise suppression. The flag defaults off because the live x-anchor opens the external anchor's whole rule universe at x-arguments — an x-ed anchor triggering another anchor — which exploded the IncubatorGauss3 runtime in the rung-2.1 acceptance runs.
+The x-copy names minted into `intAxedVariables` are contained at THREE set-keyed checks: the `addExprToMemoryBlock` prologue drops any deposit carrying an axed name in an argument slot before registration; the `addStatement` door repeats the check for registrations that never pass the prologue (disintegration products, equalities); and the `applyEquivalenceClass` orbit commit refuses a rewritten product citing an axed name. The copies therefore serve as anchor-premise completions without breeding derived x-facts; all three checks are inert where the set is empty (the mode-2 anchor-numeral subtrees, by design). One flag-gated exception ([D-234](../40_decisions.md#d-234), `parameters.axed_anchor_exception`, default OFF, enabled in `ConfigIncubatorGauss3.json`): a POSITIVE anchor-category expression (`isAnchor` by name prefix, not negated) deposits normally. This extends the copied-anchor mechanism to EXTERNAL anchors: an anchor bridge firing on the x-copied batch anchor derives the external anchor's x-form — schematically `(AnchorPeano[1,x2,3,4,5,x6])` from `(AnchorIncubator3[1,x2,3,4,5,x6,7,8,9])` — as a live statement, so external-anchor-premise rules can bind element arguments at anchor slot values just as batch-anchor-premise rules do. Without it an instance binding an element to an anchor value cannot match the rule's normalized request key (the element-versus-anchor-slot collision, third form of the I-36 family). Negated anchor forms stay filtered even when enabled. The flag remains opt-in because a live copied external anchor broadens the rule instances available to the block.
+
+The bridge rule must reach the block holding the copied source. In incubator mode `anchorOnlyRule` excludes positive one-premise anchor-to-anchor bridges from the anchor-only optimization: load-time broadcast and in-run compaction route them through the anchor LB's log to descendants ([I-220](../30_invariants.md#i-220)). The derived copied external anchor has an ordinary `implication` origin citing the proved bridge and copied source; it is not another `anchor handling` row. The ordinary one-premise fact route, axed-variable filter and purity gates remain unchanged.
 
 ---
 
@@ -167,8 +172,10 @@ A theorem under `AnchorGauss` is still proved at scope `"main"` by default — t
 
 Some theorems reference two anchors. In the current codebase, this appears as:
 
-```text
-(>[N,i0,s,+,*,i1](AnchorGauss[N,i0,s,+,*,i1,i2,id])(AnchorPeano[N,i0,s,+,*,i1]))    direct    -1
+Schematic bridge with every source-anchor argument bound:
+
+```mpl
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(AnchorPeano[N,i0,s,+,*,i1]))
 ```
 
 — the trivial claim that AnchorGauss implies AnchorPeano (via the shared first-6 slots). These serve as the bridge between batches. Peano theorems proved in a prior batch can be cited against a Gauss goal via this bridge.
@@ -180,7 +187,7 @@ Some theorems reference two anchors. In the current codebase, this appears as:
 ### Known & tracked
 
 - **Anchor-slot count is implicit across files.** AnchorPeano has 6 slots; AnchorGauss has 8; AnchorIncubator has 14. These counts are hardcoded in conjecturer filters, verifier logic, rename priorities, and several other places without a single source of truth. Adding a new anchor (e.g. AnchorFTA) requires coordinating all these sites manually.
-- **[I-11](../30_invariants.md#i-11) enforcement is structural, not asserted.** The invariant "anchor vars not in inner `>[...]`" holds by construction in the current conjecturer. A regression in conjecturer filters could silently emit violating theorems.
+- **Binder consistency across producers.** Every theorem producer must follow the complete outer-anchor binding rule and must not rebind those arguments in an inner implication.
 
 ### Suspected fragility
 
@@ -190,8 +197,8 @@ Some theorems reference two anchors. In the current codebase, this appears as:
 
 ### Not exercised by tests
 
-- **Cross-anchor theorem handling.** The AnchorGauss → AnchorPeano bridge theorem exists. Tests for chapter rendering, verifier checks on it — assumed correct but not targeted.
-- **Per-anchor `rename_expr_*` symmetry.** HTML-export's `rename_expr_peano` and `rename_expr_gauss` ([`generate_full_proof_graph.py–753`](../../generate_full_proof_graph.py)) are separate functions. A divergence in conventions (e.g. Peano renames `i0` to `0` but Gauss to `zero`) would silently produce inconsistent HTML output.
+- **Cross-anchor rendering variants.** Routing has direct regressions in `test_incubator_mail_routing.cpp`, including the copied Incubator consumer. Coverage of every anchor combination in chapter rendering remains incomplete.
+- **Per-anchor `rename_expr_*` symmetry.** HTML-export's `rename_expr_peano` and `rename_expr_gauss` ([`generate_full_proof_graph.py`](../../generate_full_proof_graph.py)) are separate functions. A divergence in conventions (e.g. Peano renames `i0` to `0` but Gauss to `zero`) would silently produce inconsistent HTML output.
 
 ---
 

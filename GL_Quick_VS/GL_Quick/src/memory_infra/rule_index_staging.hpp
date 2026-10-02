@@ -454,4 +454,47 @@ namespace gl {
         return registry;
     }
 
+    /// @brief Return one slot's string-scratch and request-generation-scratch
+    ///        blocks to the pool at the end of the slot's task.
+    ///
+    /// @details
+    /// A scratch arena keeps every block it acquired until `releaseAll`: a
+    /// `ScratchScope` rewind or an `ArenaStack` pop frees bytes and pages
+    /// inside the held blocks, never the blocks. Without a release at each
+    /// task end a slot therefore holds its lifetime high-water for the rest of
+    /// the batch; on the CUDA route, which never runs `performElem2`, nothing
+    /// else would ever return those blocks to the main pool. Every executor that runs on a slot calls this at its single exit: the
+    /// phase-1 and phase-3 bodies, the phase-2 executor and finalize, and
+    /// `proveKernel` for the reserved single-threaded slot at iteration entry
+    /// and exit. Both registries release, and both bump their generation, so a
+    /// `ScratchString` or container view that escaped the task asserts at its
+    /// next access.
+    ///
+    /// The slot's rule-index stagings ride its gen-scratch arena: every window
+    /// flushed and cleared them before this point, so they hold no page.
+    ///
+    /// @param strings  The string-scratch registry (`scratchArenas()`).
+    /// @param gen      The request-generation registry (`genScratchArenas()`).
+    /// @param stagings The rule-index staging registry built on `gen`.
+    /// @param slot     The slot whose task ended; `< slotCount()` of both
+    ///                 registries.
+    /// @return Nothing.
+    /// @invariant The two registries have the same slot count (production:
+    ///            `logicalCores + 1`); the slot's stagings are empty.
+    /// @see `ScratchArena`, `ScratchArenaRegistry`, `RuleStagingRegistry`,
+    ///      `LbArena::releaseAll`.
+    inline void releaseSlotScratch(ScratchArenaRegistry& strings,
+                                   ScratchArenaRegistry& gen,
+                                   RuleStagingRegistry& stagings,
+                                   unsigned slot) {
+        assert(strings.slotCount() == gen.slotCount()
+            && "releaseSlotScratch: the string and gen registries differ in slot count");
+        assert(stagings.slotCount() == gen.slotCount()
+            && "releaseSlotScratch: the staging registry is not built on this gen registry");
+        assert(stagings.slotIsEmpty(slot)
+            && "releaseSlotScratch: staged rule-index writes outlive their window");
+        strings.forSlot(slot).releaseAll();
+        gen.forSlot(slot).releaseAll();
+    }
+
 }  // namespace gl

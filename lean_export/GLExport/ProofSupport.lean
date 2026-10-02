@@ -20,6 +20,12 @@ abbrev GLBinaryRelation (α : Type u) := α → α → Prop
 /-- An ordinary ternary predicate represents a GL ternary relation. -/
 abbrev GLTernaryRelation (α : Type u) := α → α → α → Prop
 
+/-- Induction for one fixed domain, zero, and successor relation. -/
+def RelationalInduction {α : Type u} (N : GLSet α) (zero : α)
+    (succ : GLBinaryRelation α) : Prop :=
+  ∀ (P : α → Prop) (k : α), P zero →
+    (∀ n, N n → P n → ∀ m, succ n m → P m) → N k → P k
+
 /-- Classical elimination for GL's negated-universal existence encoding. -/
 theorem existsAndOfNotForallImpNot
     {α : Type u}
@@ -52,5 +58,42 @@ theorem orIffNotAndNot (left right : Prop) :
       exact no_disjunction (Or.inl left_value)
     · intro right_value
       exact no_disjunction (Or.inr right_value)
+
+/-- Extensionality of GL sets: two sets are equal exactly when each is a
+subset of the other. GL integrates a set-typed equality through its two
+subsets. -/
+theorem setEqIffSubsets {α : Type u} (A B : GLSet α) :
+    A = B ↔ ((∀ x, A x → B x) ∧ (∀ x, B x → A x)) := by
+  constructor
+  · intro equal
+    subst equal
+    exact ⟨fun _ member => member, fun _ member => member⟩
+  · intro subsets
+    funext x
+    exact propext ⟨subsets.1 x, subsets.2 x⟩
+
+/-- Extensionality of GL binary relations: equal exactly when each contains
+the other. -/
+theorem binaryRelationEqIffSubsets {α : Type u} (A B : GLBinaryRelation α) :
+    A = B ↔ ((∀ x y, A x y → B x y) ∧ (∀ x y, B x y → A x y)) := by
+  constructor
+  · intro equal
+    subst equal
+    exact ⟨fun _ _ member => member, fun _ _ member => member⟩
+  · intro subsets
+    funext x y
+    exact propext ⟨subsets.1 x y, subsets.2 x y⟩
+
+/-- Extensionality of GL ternary relations: equal exactly when each contains
+the other. -/
+theorem ternaryRelationEqIffSubsets {α : Type u} (A B : GLTernaryRelation α) :
+    A = B ↔ ((∀ x y z, A x y z → B x y z) ∧ (∀ x y z, B x y z → A x y z)) := by
+  constructor
+  · intro equal
+    subst equal
+    exact ⟨fun _ _ _ member => member, fun _ _ _ member => member⟩
+  · intro subsets
+    funext x y z
+    exact propext ⟨subsets.1 x y z, subsets.2 x y z⟩
 
 end GLExport

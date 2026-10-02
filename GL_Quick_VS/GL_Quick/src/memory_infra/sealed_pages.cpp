@@ -29,7 +29,7 @@ namespace gl {
     /// @brief Asserts the lifecycle completed: no blocks outstanding
     ///        (freed after consumption, or never used).
     SealedPageSet::~SealedPageSet() {
-        assert(bump_.blocksHeld() == 0
+        assert(slices_ == nullptr && bump_.blocksHeld() == 0
             && "SealedPageSet destroyed with blocks outstanding — the "
                "consumer must freePages() after draining the records");
     }
@@ -37,20 +37,31 @@ namespace gl {
     /// @brief Exact-length allocation at the bump head; `Filling` only.
     ///
     /// @details
-    /// A within-page bump on the set's own cold per-task arena (`LbArena`):
-    /// exact-length, never straddling a page, the first allocation acquiring
-    /// the first page. The arena's own asserts cover a positive length that
-    /// fits a page.
+    /// Small allocations pack into exclusive slices of shared backing blocks.
+    /// A larger allocation uses the existing private byte arena and preserves
+    /// the full one-block contiguous allocation contract. Neither path straddles
+    /// its owned storage or writes another set's payload.
     ///
-    /// @param bytes Exact length of the new allocation; > 0, at most one
-    ///              page.
+    /// @param bytes Exact length of the new allocation; > 0, at most one block.
     /// @return Pointer to `bytes` writable bytes, stable until
     ///         `freePages`.
     char* SealedPageSet::alloc(int32_t bytes) {
         assert(global_ != nullptr && "SealedPageSet::alloc before bind");
         assert(state_ == State::Filling
             && "SealedPageSet::alloc outside the Filling window");
-        char* out = bump_.allocBytes(bytes);
+        assert(bytes > 0 && bytes <= global_->blockBytes());
+        char* out;
+        if (bytes <= global_->sealedSliceCapacity()) {
+            if (slices_ == nullptr || bytes > slices_->capacity - slices_->used) {
+                SealedSlice* slice = global_->acquireSealedSlice();
+                slice->next = slices_;
+                slices_ = slice;
+            }
+            out = reinterpret_cast<char*>(slices_) + sizeof(SealedSlice) + slices_->used;
+            slices_->used += bytes;
+        } else {
+            out = bump_.allocBytes(bytes);
+        }
         bytesAllocated_ += bytes;
         return out;
     }
@@ -76,6 +87,13 @@ namespace gl {
         assert(state_ == State::Sealed
             && "SealedPageSet::freePages on an unsealed set — seal at "
                "task end, free after consumption");
+        while (slices_ != nullptr) {
+            SealedSlice* slice = slices_;
+            slices_ = slice->next;
+            std::memset(reinterpret_cast<char*>(slice) + sizeof(SealedSlice),
+                        kArenaPoisonByte, static_cast<std::size_t>(slice->used));
+            global_->releaseSealedSlice(slice);
+        }
         bump_.reset();        // poison every filled page before release
         bump_.releaseAll();   // return every hot block to the pool
         recordHead_ = nullptr;

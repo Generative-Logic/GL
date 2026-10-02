@@ -1,0 +1,3 @@
+# Published byte for byte: SHA256SUMS hashes these bytes, so git must not
+# convert line endings on commit or checkout.
+* -text

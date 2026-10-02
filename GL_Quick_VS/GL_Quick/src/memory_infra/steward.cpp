@@ -374,6 +374,20 @@ namespace gl {
         return false;
     }
 
+    /// @brief The grant-time pressure valve: evict one idle logic block
+    ///        behind the open window's cursor (see the header).
+    ///
+    /// @param directory The deload directory the eviction writes to.
+    /// @return Nothing.
+    void MemorySteward::relieveGrantPressure(const std::string& directory) {
+        const auto evStart = std::chrono::steady_clock::now();
+        if (!evictOneForReload(directory)) return;
+        deloadStats().recordWorkerInlineEvict(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - evStart).count());
+        deloadStats().emergencyEvictCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
     /// @brief The unified per-worker claim+load handshake for all three
     ///        phases (see the header).
     void MemorySteward::claimAndLoadForWork(Memory& lb, int phase,
@@ -722,11 +736,7 @@ namespace gl {
             }
             else if (c == static_cast<uint8_t>(
                          Memory::StewardClaim::Idle)) {
-                const int64_t span = lb->lbMemory.manager.usedBytes();
-                const int64_t reclaimable =
-                    span - lb->lbMemory.liveBytes();
-                if (steward::needsReshuffle(reclaimable, span,
-                                            staticMemory().blockBytes()))
+                if (steward::arenaNeedsCompaction(lb->lbMemory.manager))
                     enqueueIoTask(
                         IoTask{ IoTask::Kind::Reshuffle, lb, i, gen },
                         /*high=*/false);
@@ -1078,10 +1088,7 @@ namespace gl {
             if (lb->stewardClaim.load(std::memory_order_acquire)
                     != static_cast<uint8_t>(Memory::StewardClaim::Idle))
                 return;
-            const int64_t span = lb->lbMemory.manager.usedBytes();
-            const int64_t reclaimable = span - lb->lbMemory.liveBytes();
-            if (!steward::needsReshuffle(reclaimable, span,
-                                         staticMemory().blockBytes()))
+            if (!steward::arenaNeedsCompaction(lb->lbMemory.manager))
                 return;
             uint8_t expected =
                 static_cast<uint8_t>(Memory::StewardClaim::Idle);

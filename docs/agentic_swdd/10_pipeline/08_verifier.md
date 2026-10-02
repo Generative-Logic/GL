@@ -42,7 +42,7 @@ theorem goal reached                         success N, failure M
 implication                                  success N, failure M
 expansion                                    success N, failure M
 ...
-(31 TAG_CHECKERS tags + the meta counters that recorded at least one event)
+(33 TAG_CHECKERS tags + the meta counters that recorded at least one event)
 ...
 (final summary line — one of:)
    N checks, 0 failures — airtight.
@@ -51,7 +51,9 @@ expansion                                    success N, failure M
 
 Column width: `W = 44`. The tag name is left-justified to 44 chars, followed by `success <count>, failure <count>`.
 
-Row composition on a typical run: 1 (`theorem goal reached`) + 31 (TAG_CHECKERS in dispatch order) + ~9 meta counters that were hit (`self-reference`, `anchor handling trace`, `contradiction trace`, `vacuous truth trace`, `origin`, `definition set consistency`, `origin chain termination`, `operator registry consistency`, `theorem usage termination`) + 1 headline ≈ 42 rows. Meta counters not hit on a given run are omitted, so the row count drifts with chapter shape.
+Row composition on a typical run: 1 (`theorem goal reached`) + 34 (TAG_CHECKERS in dispatch order) + ~9 meta counters that were hit (`self-reference`, `anchor handling trace`, `contradiction trace`, `vacuous truth trace`, `origin`, `definition set consistency`, `origin chain termination`, `operator registry consistency`, `theorem usage termination`, `chapter coverage`) + 1 headline ≈ 45 rows. Meta counters not hit on a given run are omitted, so the row count drifts with chapter shape.
+
+The command line exits with status 1 when any row reports a failure and 0 when the headline says airtight, so scripts and CI can rely on the status as well as on the headline ([D-455](../40_decisions.md#d-455)). It refuses to start under `python -O` or `PYTHONOPTIMIZE` (status 2), which would remove the assert statements several checks rely on ([D-454](../40_decisions.md#d-454)).
 
 **On a clean release run, every row reports `failure 0`.** In-flight FTA-ladder branches (e.g. ) regularly have non-zero failures — these indicate the rung currently being worked on, not regressions against the release baseline. for the reference clean counts.
 
@@ -77,6 +79,7 @@ Full table:
 | `recursion` | `check_recursion` | [`verifier.py`](../../verifier.py) |
 | `theorem` | `check_theorem_tag` | [`verifier.py`](../../verifier.py) |
 | `reformulation for integration and` | `check_reformulation_for_integration_and` | [`verifier.py`](../../verifier.py) |
+| `reformulation for integration flattened` | `check_reformulation_for_integration_flattened` | [`verifier.py`](../../verifier.py) |
 | `reformulation for integration >[bound]` | `check_reformulation_for_integration_bound` | [`verifier.py`](../../verifier.py) |
 | `reformulation for integration >[]` | `check_reformulation_for_integration_empty` | [`verifier.py`](../../verifier.py) |
 | `expansion for integration` | `check_expansion_for_integration` | [`verifier.py`](../../verifier.py) |
@@ -103,15 +106,21 @@ Full table:
 
 **Or-element polarity awareness ([I-175](../30_invariants.md#i-175), I-16-consented).** Or-compact elements carry each disjunct's true sign, so the helper `_negate_expr` (double-negation cancellation, the Python twin of `negateScratch`) backs every element negation: `_build_or_from_elements` and `_build_or_subimpls_from_elements` build conjuncts/premises through it, `_check_or_disintegration_implication` computes its expected exclusion premises through it (lockstep with the producer's `negateScratch`), and `check_or_branch_assumption` recovers the disjunct as `_negate_expr(line.expression)` — a NEGATED disjunct's assumption row is its bare positive core, so the former leading-`!` requirement is gone and the branch-namespace payload parser accepts a `!`-headed asserted leaf.
 
+**Disintegration compound at an ancestor scope (`D-341`, I-16-consented).** `check_disintegration` accepts `rest[1]` (the compound's scope) equal to `line.namespace` OR a strict `_boundary_`-aware ancestor of it (`_ns_matches_or_strict_prefix`), and `_check_existence_disintegration` collects the sibling rows at `line.namespace` (with `rest[0]`/`rest[1]` naming the same compound and scope). The expansion row is still located at the compound's scope. The producer is the ancestor-park release (a `main`-scope park released into an or branch with its `main` provenance copied); a sibling or descendant compound scope is still rejected. Tests: `tests/test_verifier_structural.py::test_disintegration_compound_at_ancestor_scope_accepted` / `…_existence_siblings_at_product_scope` / `…_sibling_scope_compound_rejected`; the descendant-compound rejection test stays.
+
 `check_premise_element` accepts a namespace whose LAST `_boundary_`-delimited payload is either the bare compact `cleanSig` (legacy / statement-driven subproof scopes) or the goal-carrying `<goal>_subproof_<cleanSig>` form ([I-170](../30_invariants.md#i-170)), parsed by `verifier.py::_split_subproof_payload` — the Python twin of the prover's `splitSubproofPayload`. The bare half must equal `cleanSig` EXACTLY; the goal half is validated structurally (optionally-negated balanced group + the exact separator) but deliberately NOT matched against the chapter's rows: a subproof's compact statement at main is shared, so a chapter proving a DIFFERENT goal may legitimately cite machinery owned by another goal. `check_validity_name` needs no change — the scoped-goal closure deposits the STRIPPED bare compact. The three OR-family checkers (`or disintegration` / `or branch proven` / `or branch assumption`) still reconstruct bare `orint_`/`ordis_` namespaces: a goal-carrying orint scope on MAIN cannot occur in the current pipeline (OR branches spawn at subproof scopes), and if a future batch mints one into a chapter these checkers fail LOUDLY — the deliberate I-16 posture until a real case exists to extend them against.
 
 ### Validity matching on dep cells
 
-Each checker that compares a row's dep validity to a stored validity uses **exact `==`** equality where possible. Per `D-56`, `buildStack` emits every chapter cell (`row[1]` and every dep cell) at the **closest-to-`main` ancestor of the requested validity for which an origin entry exists in the emitting LB's `exprOriginMap`**, so a row's `row[1]` and each cited dep's recorded validity are already at the same lifted scope by construction. The `_ns_matches_or_strict_prefix` helper at `verifier.py` is consumed by **three checkers**: `check_implication` (the validity-stack deposit pair-check), `check_equality1`, and `check_equality2` — the latter two because the source/target validity relationship is on the *expression* side of an equivalence-class rewrite, not the rule-application side. The helper requires `tgt_ns == src_ns` or `tgt_ns == src_ns + "_boundary_" + …` (separator-aware ancestor); a bare byte-prefix that does not respect the `_boundary_` separator is rejected.
+Each checker that compares a row's dep validity to a stored validity uses **exact `==`** equality where possible. Per `D-56`, `buildStack` emits every chapter cell (`row[1]` and every dep cell) at the **closest-to-`main` ancestor of the requested validity for which an origin entry exists in the emitting LB's `exprOriginMap`**, so a row's `row[1]` and each cited dep's recorded validity are already at the same lifted scope by construction. The `_ns_matches_or_strict_prefix` helper at `verifier.py` is consumed by **four checkers**: `check_implication` (the validity-stack deposit pair-check), `check_disintegration`, `check_equality1`, and `check_equality2` — the latter two because the source/target validity relationship is on the *expression* side of an equivalence-class rewrite, not the rule-application side. The helper requires `tgt_ns == src_ns` or `tgt_ns == src_ns + "_boundary_" + …` (separator-aware ancestor); a bare byte-prefix that does not respect the `_boundary_` separator is rejected.
+
+**Earlier generic ancestor-history copy (superseded by zoom in).** The recorder copies every stored origin row with dependencies left at their original scopes. This repair makes no verifier changes: same-scope-only and tag-specific checks remain active, and any resulting failures are retained for individual maintainer review. The chapter walker also preserves the deepest OR-branch boundary when lifting origins; it cannot be assumed to lift every copied row back to the parent.
+
+**Zoom in.** `check_zoom_in` validates an unchanged expression, exactly one source pair, strict ancestor scope, and the presence of that exact pair as a chapter row. It does not exempt the row from ordinary origin/type/cycle checks. This is a new tag-specific check; existing derivation-tag scope rules remain unchanged.
 
 **Per-tag structural contracts.** The exact `rest`-field shape each checker expects is documented in [`20_core_concepts/08_proof_tags.md`](../20_core_concepts/08_proof_tags.md). Key examples to watch when authoring new origins:
 
-- `equality1` — `rest[0]=source_expr`, `rest[1]=source_ns`, interleaved `(eq, ns)` pairs thereafter. Minimum `len(rest)=4`. Source must be in the row's namespace. See [`08_proof_tags.md#equality1`](../20_core_concepts/08_proof_tags.md#equality1).
+- `equality1` — `rest[0]=source_expr`, `rest[1]=source_ns`, interleaved `(eq, ns)` pairs thereafter. Minimum `len(rest)=4`, even length. The source and each equality may be in the row's namespace or a strict ancestor scope. Every cited equality must be exactly a positive equality `(=[a,b])`, and source and result must be simple atoms (atom, negated atom, equality or negated equality) of the same polarity, operator and arity (`_simple_atom`, `_equality_args`); `equality2` and the two symmetry tags likewise require exact (negated) equalities. See [`08_proof_tags.md#equality1`](../20_core_concepts/08_proof_tags.md#equality1).
 - Every tag's `rest` alternates `(expr, ns)` — odd-length `rest` is silent-reject by the length check in every checker. See the [row-shape recap](../20_core_concepts/08_proof_tags.md#row-shape-recap).
 - An unknown origin tag (not in `TAG_CHECKERS`) is treated as 1 failure per occurrence — `<unknown:tag>` row in the verifier summary. Reusing an existing tag whose structural contract fits is safer than adding a new tag (which requires `verifier.py` modification — see [I-16](../30_invariants.md#i-16)).
 
@@ -140,7 +149,7 @@ Independent copies of algorithms the verifier needs. These must stay in sync wit
 | `_normalize_expr_list` | [`verifier.py`](../../verifier.py) | α-rename v-variables across a list of expressions by order of first appearance in arguments. |
 | `_alpha_canonicalize_bound_vars` | [`verifier.py`](../../verifier.py) | Canonicalize every name introduced inside a `>[...]` binder to `b1, b2, …` in declaration order. Used by the origin check (D-35) to compare a chapter's `rest[0]` rule against the global theorem registry across batches when bound variables were renamed differently by `process_proof_graphs.py` (e.g. incubator chapter has `>[i2]` where Peano global has `>[v1]`). Stronger than `_normalize_expr_list`, which renames `[vV]\d+` (lowercase v digits + uppercase V sets, both case-folded into the same canonical sequence — sandbox `var_typing` 2026-05-04). |
 | `_check_reformulation` | [`verifier.py`](../../verifier.py) | Verify `target` is a valid reformulation — expand existence head via GL binary into left+right elements, check `definedSet`, permute non-anchor premises, normalise, compare. |
-| `_find_digit_args` | [`verifier.py`](../../verifier.py) | Replicates the C++ `findDigitArgs`: collect `inputIndices`-arg positions, subtract anchor args, subtract output args. |
+| `_find_digit_args` | [`verifier.py`](../../verifier.py) | Replicates the C++ `findDigitArgs`: collect `inputIndices`-arg positions, subtract anchor args, subtract output args. Input slots come from `ConfigVisu.json`, not the batch config; it applies neither the `(1)` typing of `=` inputs nor the `(1)` typing of other inputs (D-413), which differ from the prover only for a non-`(1)` input — none is configured. |
 | `_find_immutable_args` | [`verifier.py`](../../verifier.py) | Replicates the C++ `findImmutableArgs`: seed from digit-args minus induction variable, propagate through outputs where all inputs are immutable. |
 | `_replace_arg_safe` | [`verifier.py`](../../verifier.py) | Argument-level replacement with lookaround regex — prevents `v1` from matching inside `v10`. |
 | `_extract_args` | [`verifier.py`](../../verifier.py) | Extract args from the **outermost** `[…]` group of an expression (e.g. `(in3[a,b,c,+])` → `[a,b,c,+]`). Caller-side default — used by 30+ checkers that operate on atomic expression arguments. Misses nested `[…]` content by design; for compound source expressions (negated implications etc.) where args may be buried inside an outer binder list, use `_extract_all_args` instead. |
@@ -152,11 +161,11 @@ Independent copies of algorithms the verifier needs. These must stay in sync wit
 
 Function: `run_verifier(base_dir)` at [`verifier.py`](../../verifier.py). Steps (in order):
 
-1. **Load global theorem list.** `load_global_theorem_list(base_dir)` populates `state.global_theorems` + `state.global_theorem_list`. Each row is `(expression, method, reference)`.
+1. **Load global theorem list.** `load_global_theorem_list(base_dir)` populates `state.global_theorems` + `state.global_theorem_list`. Each row is `(expression, method, reference)`. A missing primary `global_theorem_list.txt` is a `chapter coverage` failure: without the manifest no chapter can be tied to a theorem.
 2. **Load GL binaries.** `load_gl_binaries(binaries_dir)` — looks first in `os.path.dirname(base_dir)/GL_binaries`, falls back to `files/GL_binaries`. Silently uses fallback — no warning. Since [D-54](../40_decisions.md#d-54) the incubator-side fallback is the only path taken on disk: the duplicate `files/incubator/GL_binaries/` was removed and all per-batch dictionaries — incubator and main alike — live in `files/GL_binaries/`.
 3. **Load external theorems.** Read `external_theorems.txt`. Each line becomes an entry in `state.external_theorems` (a set).
 4. **Enumerate chapter files.** Glob all `.txt` files except `global_theorem_list.txt` and `external_theorems.txt`. Sort via `chapter_sort_key` ([`verifier.py`](../../verifier.py)) which extracts the leading numeric prefix.
-5. **Build chapter → theorem mapping.** `build_chapter_theorem_map` at [`verifier.py`](../../verifier.py). Maps each filename to its theorem tuple. **Enforces induction triads** — `<N>_induction_typing` + `<N+1>_check_zero` + `<N+2>_check_induction_condition` must appear in strict filename order. Violation raises `AssertionError`.
+5. **Build chapter → theorem mapping and check coverage.** `build_chapter_theorem_map` at [`verifier.py`](../../verifier.py) maps each present chapter whose filename is the one the primary manifest calls for (`expected_chapter_files`) to its theorem tuple; `check_chapter_coverage` records one `chapter coverage` check per expected chapter and a failure per present chapter the manifest does not call for. See [Chapter-file naming](#chapter-file-naming-and-coverage).
 6. **Iterate chapters.** For each chapter file `cf`:
  - Parse lines into `ProofLine` records via `parse_chapter_file(filepath)` at [`verifier.py`](../../verifier.py).
  - Extract `chapter_type` from filename.
@@ -216,7 +225,7 @@ External theorems are also consulted as valid sources during origin validation (
 
 ---
 
-## Chapter-file naming — the load-bearing assertion
+## Chapter-file naming and coverage
 
 The filename pattern is:
 
@@ -224,15 +233,14 @@ The filename pattern is:
 <N>_<type>.txt
 ```
 
-where `<type>` is one of the known chapter types: `direct_proof`, `check_zero`, `check_induction_condition`, `induction_typing`, `reformulated_statement`, `back_reformulated_statement`, `or_theorem`.
+where `<N>` numbers the chapters from 0 in manifest order and `<type>` follows from the theorem's proof method, exactly as the producer writes it (`process_proof_graphs.py`, `_build_fname_list`, mirrored in the verifier's `_CHAPTER_SUFFIXES`): `induction` owns three chapters (`induction_typing`, `check_zero`, `check_induction_condition`, in that order); `single chapter proof`, `reformulated statement`, `incubator back reformulation` (`back_reformulated_statement`), `or theorem`, `or elimination`, `proved not broadcast` and `debug` own one each.
 
-`build_chapter_theorem_map` ([`verifier.py`](../../verifier.py)) enforces:
+`expected_chapter_files` lists the chapters the primary manifest calls for, and `build_chapter_theorem_map` maps chapters by that exact filename, so a missing chapter never shifts later chapters onto the wrong theorem. `check_chapter_coverage` records under `chapter coverage`:
 
-- Induction chapter triples (`induction_typing` + `check_zero` + `check_induction_condition`) must be consecutive and in exact order.
-- Filename's leading-number prefix must parse as an integer.
-- Filename's suffix must be a known type.
+- one check per expected chapter, failing when the file is absent or the proof method is unknown (a method without a checker cannot be verified);
+- one failure per present chapter the manifest does not call for (stray or misnumbered).
 
-Any violation raises `AssertionError`, terminating the verifier with a stack trace.
+A graph with missing chapters therefore fails verification instead of reporting success over the chapters that happen to be present (external review, 2026-10-02: a manifest with no chapter used to report 2,680 checks, 0 failures). Sibling manifests passed with `--include-globals` only add citable theorems; their chapters live elsewhere and are not covered here.
 
 ---
 
@@ -249,7 +257,7 @@ Since [D-54](../40_decisions.md#d-54) the auto-detect for the incubator-side `ba
 
 The `state.gl_binaries` map is consulted by:
 
-- `check_expansion` — to expand a named expression into its compiled-structure form. Its `_try_expand` core accepts, per category: the reconstructed AND / implication / existence / De-Morgan-or forms; for `or`, additionally the K per-branch sub-implication forms (D-52); and for `implication`, additionally the per-leaf OR-INTRO forms `(>[bv](D_k)(orPremise))` for each premise element that is a compiled OR (D-237 — the producer's `disintegrateExprCore2` implication branch emits one intro implication per flattened disjunct alongside the main rule; the acceptance resolves the premise's `or<N>` entry through the supplied binaries and admits exactly the compiled leaves). Negated sources (`rest[0]` starting `!`) take dedicated branches before `_try_expand`: negated existence (the two FullBind implications; a row whose expression is a compact `(implication<N>[…])` — the existence-implication product statement, [D-310](../40_decisions.md#d-310) — is first expanded through its implication binary entry via `_expand_implication_compact`) and negated AND (the prover's De-Morgan door — expected form is the negation of the substituted definition body, `!(&` + conjuncts verbatim + `)`); `check_disintegration` symmetrically dispatches a negated-AND expansion source to the shared `_check_or_disintegration_against` tail with the disjuncts derived as the entry's negated conjuncts (double negation cancelled).
+- `check_expansion` — to expand a named expression into its compiled-structure form. Its `_try_expand` core accepts, per category: the reconstructed AND / implication / existence / De-Morgan-or forms; for `or`, additionally the K per-branch sub-implication forms (D-52); and for `implication`, additionally the per-leaf OR-INTRO forms `(>[bv](D_k)(orPremise))` for each premise element that is a compiled OR (D-237 — the producer's `disintegrateExprCore2` implication branch emits one intro implication per flattened disjunct alongside the main rule; the acceptance resolves the premise's `or<N>` entry through the supplied binaries and admits exactly the compiled leaves). Negated sources (`rest[0]` starting `!`) take dedicated branches before `_try_expand`: negated existence (the two FullBind implications; a row whose expression is a compact `(implication<N>[…])` — the existence-implication product statement, [D-310](../40_decisions.md#d-310) — is first expanded through its implication binary entry via `_expand_implication_compact`) and negated AND (the prover's De-Morgan door — expected form is the negation of the substituted, left-nested binary conjunction from `_build_and_from_elements`, with at least two constituents and each sign preserved); `check_disintegration` symmetrically dispatches a negated-AND expansion source to the shared `_check_or_disintegration_against` tail with the disjuncts derived as the entry's negated conjuncts (double negation cancelled).
 - `_check_reformulation` — to expand an existence head via the binary into left+right elements.
 - `check_anchor_handling` — to match anchor-slot positions.
 
@@ -338,14 +346,18 @@ _ORIGIN_EXEMPT_TAGS = {
     "or branch assumption",
     "or theorem",
 }
-originated = {line.expression for line in lines}     # left-hand side of every row in this chapter
+derived_at = {}                                      # expression -> scopes of its rows in this chapter
+for line in lines:
+    derived_at.setdefault(line.expression, set()).add(line.namespace)
 for line in lines:
     if line.tag in _ORIGIN_EXEMPT_TAGS:
         continue
     for i in range(0, len(line.rest), 2):            # rest is alternating expr/validity pairs
         dep = line.rest[i]
-        if dep in originated:
-            continue
+        dep_ns = line.rest[i + 1] if i + 1 < len(line.rest) else None
+        if dep_ns is not None and any(_ns_matches_or_strict_prefix(ns, dep_ns)
+                                      for ns in derived_at.get(dep, ())):
+            continue                                 # derived at the cited scope or an enclosing one
         if dep.endswith("_integration_goal"):
             continue
         # Special i==0 path for implication-style rules
@@ -376,7 +388,7 @@ for line in lines:
 
 For every row's `rest[]` field iterated at even indices (the expression component of each `(expr, validity)` pair), the check asks: **is this dependency derivable?**
 
-- **In-chapter derivation.** If `dep` appears as the left-hand side of any row in this chapter (`dep in originated`), pass — the chapter justifies it locally.
+- **In-chapter derivation.** If `dep` is the left-hand side of a row in this chapter whose scope is the cited scope `rest[i+1]` or an enclosing one, pass — the chapter justifies it locally. A fact derived only inside a nested subproof (or a sibling branch) is not available outside it; before the external review of 2026-10-02 the lookup ignored scopes, and a row at `main` could cite an assumption of a nested contradiction subproof.
 - **Integration-goal placeholder.** If `dep` ends with `_integration_goal`, pass — these are placeholders inserted by `reformulation for integration` flow, deliberately underived.
 - **Cross-chapter rule citation (the `i==0` path).** When the row's tag is `implication` / `multiplied from` / `reformulated from` and we're looking at `rest[0]`, the dep is the *rule* applied. Rules can be globally proved, externally provided, or alpha-canonical equivalents of either. Pass if any of those four match. Fail otherwise.
 - **All other unmatched deps.** Fail — record `False` for the `origin` counter.
@@ -438,7 +450,7 @@ A second chapter-level meta-check (added by [D-41](../40_decisions.md#d-41)). Li
 
 ### What it checks
 
-`check_defset_consistency` at [`verifier.py`](../../verifier.py). For every row in a chapter, every expression in `[line.expression] + line.rest[::2]` is parsed independently with `_parse_subtree`. The parser builds a per-node `remainingArgsDefs` map (`var → type_label`) and removes bound variables at every `>[…]` quantifier so their names can be reused at outer scopes without collision. `_merge_maps` is the actual mismatch detector — when two child sub-trees share a variable name with disagreeing types, it raises `_DefsetMismatch`, which `check_defset_consistency` catches and records as a row failure.
+`check_defset_consistency` at [`verifier.py`](../../verifier.py). For every row in a chapter, every expression in `[line.expression] + line.rest[::2]` is parsed independently with `_parse_subtree`, which records every leaf's type constraints in one union-find, `_DefsetGroups`. A bound variable is keyed per `>[…]` quantifier, so its name can be reused at outer or sibling scopes without collision; a free variable is keyed by its name. An operator slot fixes its argument's group to the slot's type label, and `=` joins its two arguments' groups without fixing them ([I-267](../30_invariants.md#i-267): `=` is typed by its arguments, `(1)` when nothing else types them). `_DefsetGroups` is the mismatch detector — a group that receives two different labels raises `_DefsetMismatch`, which `check_defset_consistency` catches and records as a row failure. `_try_derive_from_elements` applies the same `=` rule when it types a composite's signature from its elements.
 
 ### Faithful translation of the C++ compiler's algorithm
 
@@ -446,12 +458,12 @@ The Python implementation translates `compiler.hpp` (`ArgumentAnalyzer`) symbol-
 
 | Python | C++ |
 |---|---|
-| `_merge_maps` | `ArgumentAnalyzer::mergeMaps` |
+| `_DefsetGroups` | `ArgumentAnalyzer::mergeMaps` (extended: `=` joins its two arguments instead of fixing both to `(1)`) |
 | `_process_leaf` | `RecursiveParser::processLeaf` |
 | `_parse_subtree` | `RecursiveParser::parseSubtree` (implication / conjunction / leaf, with negated counterparts) |
 | `check_defset_consistency` | `ArgumentAnalyzer::checkDefinitionConsistency`, called from `compileCoreExpressionMap` in `prover.hpp` |
 
-The intent: any verifier-side failure points squarely at a producer-side bug, because the verifier and producer enforce the same algorithm.
+The intent: any verifier-side failure points squarely at a producer-side bug, because the verifier and producer enforce the same algorithm. One difference is deliberate: the verifier types `=` per occurrence, while the compile-time `ArgumentAnalyzer` still reads `=`'s config slots as `(1)`. It sees definitions only, and no definition has a set-typed `=` (listed under the prover's Weaknesses).
 
 ### Per-batch resolution
 
@@ -510,7 +522,15 @@ A failure is a producer bug in the chapter exporter's origin choice (`buildStack
 
 ---
 
+### Negative conjunction expansion
+
+`verifier.py` / `check_expansion` substitutes the named conjunction's actual arguments into its definition, requires at least two constituents, and negates the left-nested binary body produced by `_build_and_from_elements`. This matches `prover.cpp` / `expandSignature` without importing producer code. Existing source-presence, exact-scope, category, signature-arity and variable-normalization checks still apply. The grouping is checked for every constituent count; a flat conjunction with three or more children is not the canonical binary form. Mixed signs remain literal, and missing, duplicated or changed constituents fail comparison. Direct regressions include the five-leaf `interval` expansion.
+
 ## Weaknesses
+
+Negative OR expansion/disintegration is checked by `verifier.py` / `_negated_or_children`: instantiate the exact signature arguments, complement each disjunct with double-negation cancellation, and require the same left-nested conjunction and literal child. No witness renaming or scope widening is introduced. Positive OR exclusion checks remain unchanged.
+
+The approved one-witness negative-implication extension uses `verifier.py` / `_counterexample_children` in both `check_expansion` and `check_disintegration`. It substitutes free parameters literally, checks exactly one binder across the full reconstructed chain, and validates each projected fact against that same concrete witness. Zero/multiple binders, changed head polarity, changed free arguments and independently renamed sibling witnesses are rejected. The existing namespace rule still requires the cited expansion at the same or a strict ancestor scope; other category checks remain unchanged.
 
 ### Known & tracked
 
@@ -567,6 +587,14 @@ These checkers structurally pass any row meeting trivial gates. Soundness of the
 - [`20_core_concepts/08_proof_tags.md`](../20_core_concepts/08_proof_tags.md) — tag vocabulary.
 - [I-16](../30_invariants.md#i-16) — verifier is sacred.
 - — the "don't modify verifier.py without consent" rule.
+
+## Unary implication composition
+
+`check_implication_composition` accepts exactly two source implications with one premise each. It checks a bijection of both complete source binder sets through the intermediate expression onto the complete result binder; bound-to-fixed specialization, collapsed binders and unmatched binders fail. Fixed parameters, polarity and repeated arguments remain unchanged, and the result requires the exact deeper comparable scope. The tag has no origin exemption. Each source must originate locally or resolve as a main-scope theorem citation, using the existing registry matching rules. Both source positions contribute edges to theorem-usage cycle checking. `proof_export/implication_composition.py` supplies the independent Python check and explicit certificate substitutions; the native C++ matcher is separate. Lean replays the two cited implications by direct application. The admission-demand gate controls rule construction and adds no premise to the logical proof.
+
+## Grouping and contraposition checks
+
+`verifier.py`, `check_contraposition_auxiliary`, dispatches `implication grouping` and `contraposition` to separate strict contracts in `proof_export/contraposition.py`. Grouping requires all and only the cited heads under one completely matched premise; contraposition reverses the exact cited source and complements both ends. Both preserve complete binders, fixed parameters, repeated arguments and the exact compatible source-scope join. Neither tag is origin-exempt.
 
 ---
 

@@ -38,18 +38,18 @@ TEST(theorem_sink_dedup, duplicate_append_is_dropped) {
     const std::string thm =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(thm, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(thm, "single chapter proof", "-1", "-1"));
     // Same theorem string through a different emission path: dropped.
     ASSERT_FALSE(ea.appendGlobalTheorem(thm, "induction", "v1", "0"));
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
     // First emission wins: the retained tuple keeps the first method label.
-    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("direct"));
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("single chapter proof"));
 }
 
 TEST(theorem_sink_dedup, distinct_theorems_both_land) {
     gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(a)", "direct", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(a)", "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "single chapter proof", "-1", "-1"));
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 2);
 }
 
@@ -73,16 +73,16 @@ TEST(theorem_sink_dedup, tier_row_upgrades_to_first_class) {
     // The first-class arrival upgrades the row in place: no second row, the
     // method and producer flip, the tier mirror leaves, the or-scan mark
     // clears.
-    ASSERT_TRUE(ea.appendGlobalTheorem("(t)", "direct", "-1", "-1", &full));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(t)", "single chapter proof", "-1", "-1", &full));
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
-    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("direct"));
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("single chapter proof"));
     ASSERT_TRUE(ea.globalTheoremProducers[0] == &full);
     ASSERT_TRUE(ea.fullTheoremList.empty());
     ASSERT_TRUE(ea.orInRunScannedRows.count("(t)") == 0);
 
     // Later duplicates of the upgraded row: dropped, first-class rules apply.
     ASSERT_FALSE(ea.appendGlobalTheorem("(t)", "induction", "v1", "0"));
-    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("direct"));
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("single chapter proof"));
 }
 
 // The tier is subordinate on both dedup sides: tier-after-tier and
@@ -99,10 +99,10 @@ TEST(theorem_sink_dedup, tier_arrival_never_lands_on_existing_row) {
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
     ASSERT_TRUE(ea.globalTheoremProducers[0] == &p1);
 
-    ASSERT_TRUE(ea.appendGlobalTheorem("(u)", "direct", "-1", "-1", &p1));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(u)", "single chapter proof", "-1", "-1", &p1));
     ASSERT_FALSE(ea.appendGlobalTheorem("(u)", "proved not broadcast", "-1",
                                         "-1", &p2));
-    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[1]) == std::string("direct"));
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[1]) == std::string("single chapter proof"));
 }
 
 // Vacuous reversion: rows whose recorded producer (or a producer ancestor)
@@ -116,13 +116,13 @@ TEST(theorem_sink_dedup, vacuous_producer_rows_are_reverted) {
     gl::Memory badChild;
     badChild.parentMemory = &bad;
 
-    ASSERT_TRUE(ea.appendGlobalTheorem("(a)", "direct", "-1", "-1", &clean));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "direct", "-1", "-1", &bad));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(a)", "single chapter proof", "-1", "-1", &clean));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "single chapter proof", "-1", "-1", &bad));
     ASSERT_TRUE(ea.appendGlobalTheorem("(c)", "reformulated statement", "(b)",
                                        "-1", &badChild));
     ASSERT_TRUE(ea.appendGlobalTheorem("(d)", "or theorem", "-1", "-1"));
-    ea.fullTheoremList.emplace_back("(b)", "direct", "-1", "-1");
-    ea.fullTheoremList.emplace_back("(a)", "direct", "-1", "-1");
+    ea.fullTheoremList.emplace_back("(b)", "single chapter proof", "-1", "-1");
+    ea.fullTheoremList.emplace_back("(a)", "single chapter proof", "-1", "-1");
 
     // Nothing flagged: sweep is a no-op.
     ea.revertVacuousGlobalTheorems();
@@ -139,7 +139,7 @@ TEST(theorem_sink_dedup, vacuous_producer_rows_are_reverted) {
     ASSERT_TRUE(std::get<0>(ea.fullTheoremList[0]) == std::string("(a)"));
 
     // The dedup string is free again: a legitimate re-prove re-appends.
-    ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "direct", "-1", "-1", &clean));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "single chapter proof", "-1", "-1", &clean));
 }
 
 // Premise-contradiction vacuity certificate: contradictory heads on the same
@@ -148,12 +148,12 @@ TEST(theorem_sink_dedup, vacuous_producer_rows_are_reverted) {
 // the aligned producer vector and fullTheoremList follow.
 TEST(theorem_sink_dedup, vacuous_premise_pairs_classified_out) {
     gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])(b[1]))", "direct", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])!(b[1]))", "direct", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])(c[1]))", "direct", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](d[1])(e[1]))", "direct", "-1", "-1"));
-    ea.fullTheoremList.emplace_back("(>[1](a[1])(b[1]))", "direct", "-1", "-1");
-    ea.fullTheoremList.emplace_back("(>[1](d[1])(e[1]))", "direct", "-1", "-1");
+    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])(b[1]))", "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])!(b[1]))", "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])(c[1]))", "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](d[1])(e[1]))", "single chapter proof", "-1", "-1"));
+    ea.fullTheoremList.emplace_back("(>[1](a[1])(b[1]))", "single chapter proof", "-1", "-1");
+    ea.fullTheoremList.emplace_back("(>[1](d[1])(e[1]))", "single chapter proof", "-1", "-1");
 
     const std::vector<std::string> vac = ea.classifyVacuousPremisePairs();
 
@@ -169,12 +169,12 @@ TEST(theorem_sink_dedup, vacuous_premise_pairs_classified_out) {
     ASSERT_TRUE(std::get<0>(ea.fullTheoremList[0])
                 == std::string("(>[1](d[1])(e[1]))"));
     // Dedup freed for the classified strings.
-    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])(b[1]))", "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem("(>[1](a[1])(b[1]))", "single chapter proof", "-1", "-1"));
 
     // No contradiction, no classification: a defined no-op.
     gl::ExpressionAnalyzer ea2(std::string("Peano"));
-    ASSERT_TRUE(ea2.appendGlobalTheorem("(>[1](a[1])(b[1]))", "direct", "-1", "-1"));
-    ASSERT_TRUE(ea2.appendGlobalTheorem("(>[1](a[1])(c[1]))", "direct", "-1", "-1"));
+    ASSERT_TRUE(ea2.appendGlobalTheorem("(>[1](a[1])(b[1]))", "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea2.appendGlobalTheorem("(>[1](a[1])(c[1]))", "single chapter proof", "-1", "-1"));
     ASSERT_TRUE(ea2.classifyVacuousPremisePairs().empty());
     ASSERT_EQ(static_cast<int>(ea2.globalTheoremList.size()), 2);
 }

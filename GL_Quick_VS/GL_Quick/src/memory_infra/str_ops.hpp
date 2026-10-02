@@ -171,6 +171,46 @@ namespace gl {
         return h;
     }
 
+    /// @brief Word-at-a-time 64-bit hash of a byte string — the placement and
+    ///        probe hash of the byte-key cold hash maps.
+    ///
+    /// @details
+    /// MurmurHash64A (seed `0x8445d61a4e774912`) over 8-byte words read in
+    /// host order (every supported host is little-endian), the byte tail as
+    /// one partial word, and a final avalanche that mixes the low bits the
+    /// masked linear probe uses. One dependent multiply per word instead of
+    /// one per byte (`hashSpan`, FNV-1a), which dominated lookups of the long
+    /// expression and scope names the name maps intern. The digest only places
+    /// ids in a derived, never-persisted index, so it never reaches an
+    /// observable; fixed-size keys keep `hashSpan`, whose structure-following
+    /// placement probes packed integer pairs more tightly.
+    ///
+    /// @param s Span to hash.
+    /// @return 64-bit digest; equal spans hash equal across runs.
+    /// @see hashSpan, BytesKeyStore.
+    inline uint64_t coldKeyHash(const StrSpan& s) {
+        constexpr uint64_t m = 0xc6a4a7935bd1e995ULL;
+        constexpr int r = 47;
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(s.ptr);
+        int32_t n = s.len;
+        uint64_t h = 0x8445d61a4e774912ULL
+            ^ (static_cast<uint64_t>(static_cast<uint32_t>(n)) * m);
+        while (n >= 8) {
+            uint64_t k;
+            std::memcpy(&k, p, 8);
+            k *= m; k ^= k >> r; k *= m;
+            h ^= k; h *= m;
+            p += 8; n -= 8;
+        }
+        if (n > 0) {
+            uint64_t tail = 0;
+            std::memcpy(&tail, p, static_cast<std::size_t>(n));
+            h ^= tail; h *= m;
+        }
+        h ^= h >> r; h *= m; h ^= h >> r;
+        return h;
+    }
+
     /// @brief Substring containment over spans — the zero-allocation twin
     ///        of `std::string::find(...) != npos`.
     ///
@@ -361,6 +401,46 @@ namespace gl {
             pos = comma + 1;
         }
         return count;
+    }
+
+    /// @brief Visit every substitution token of an MPL text — the maximal
+    ///        runs `replaceKeysScratch` can replace as a whole key.
+    ///
+    /// @details
+    /// `replaceKeysScratch` replaces a key only when the byte before the
+    /// match is `[` or `,` (never at position 0) and the byte after it is
+    /// `]` or `,`. For keys that carry neither `]` nor `,` — every NameMap
+    /// name — this means: the text changes under a substitution iff one of
+    /// the runs visited here equals a key byte for byte. The walk therefore
+    /// slices the text at exactly those boundaries: for every position whose
+    /// previous byte is `[` or `,`, the run up to (not including) the next
+    /// `]` or `,` — every position is a candidate start, so a run that
+    /// contains an inner `[` (a nested argument) also yields the runs that
+    /// start inside it. A run without a terminator can never be replaced and
+    /// ends the walk (no later run has one either); an empty run (`[,` /
+    /// `,,`) never equals a non-empty key and is not visited. On a flat MPL
+    /// expression the runs are exactly its `getArgsSpans` arguments; on a
+    /// nested text every innermost argument is a run as well, which is what
+    /// makes an index built from the runs exact for the substitution.
+    ///
+    /// @tparam Fn Callable `void(StrSpan)`; the span points INTO @p text.
+    /// @param text The MPL text (a template, a ground statement, a key).
+    /// @param fn   Receives each run in text order.
+    /// @return (void)
+    /// @invariant Never allocates; the spans inherit @p text's lifetime.
+    /// @see replaceKeysScratch — the substitution whose boundary rule this
+    ///      walk mirrors; RejectedValidityBuckets::rebuildFrom — the posting
+    ///      index built from these runs.
+    template <class Fn>
+    inline void forEachSubstitutionToken(const StrSpan& text, Fn&& fn) {
+        for (int32_t i = 1; i < text.len; ++i) {
+            const char prev = text.ptr[i - 1];
+            if (prev != '[' && prev != ',') continue;
+            int32_t j = i;
+            while (j < text.len && text.ptr[j] != ']' && text.ptr[j] != ',') ++j;
+            if (j >= text.len) break;
+            if (j > i) fn(StrSpan(text.ptr + i, j - i));
+        }
     }
 
     /// @brief Whether a byte is a single ASCII decimal digit `0`–`9`.
@@ -864,93 +944,6 @@ namespace gl {
             sink(pos, m.end, m.d1Start, m.d1Len);
             pos = m.end;
         }
-    }
-
-    /// @brief Existence + single-distinct collection of `int_lev_\d+_\d+`
-    ///        tokens — the heap-free twin of a `regex_search` gate followed by
-    ///        a `std::set<std::string>` occurrence collection.
-    ///
-    /// @details
-    /// Returns `0` when no occurrence exists; `1` when exactly ONE DISTINCT
-    /// token occurs (its span written to @p outVar); `2` when two or more
-    /// distinct tokens occur. Distinctness is byte equality (`equalSpans`) —
-    /// the exact semantics of the former `std::set<std::string>` dedup.
-    ///
-    /// @p outVar is the FIRST occurrence's span, which equals `*set.begin()`
-    /// (the lex-least) WHENEVER the verdict is `1`: if any later token differed
-    /// the verdict would be `2` (set size != 1) and the caller never reads the
-    /// value, so first-found == lex-least exactly when it is the sole distinct
-    /// token. Duplicates of one token yield verdict `1`.
-    ///
-    /// The scan is TOTAL (no early exit): existence and distinct-count are
-    /// monotone, so an early exit could not change the verdict, but running the
-    /// full scan keeps the function trivially total (cheap on the short inputs
-    /// this gates).
-    ///
-    /// @param s      Span scanned (a slice of a caller-stable buffer).
-    /// @param outVar Receives the sole distinct token's span on verdict `1`;
-    ///               untouched otherwise.
-    /// @return `0` / `1` / `2` as above.
-    /// @see scanIntLevOccurrences — the occurrence driver; `allowedForMail`
-    ///      (`prover.cpp`) — the consumer; `scanSpecialTokens` (`memory.hpp`)
-    ///      — the retained regex oracle.
-    inline int scanSingleDistinctIntLev(const StrSpan& s, StrSpan& outVar) {
-        StrSpan first;
-        bool haveFirst = false;
-        bool multi = false;
-        scanIntLevOccurrences(s, [&](int32_t start, int32_t len) {
-            const StrSpan tok(s.ptr + start, len);
-            if (!haveFirst) { first = tok; haveFirst = true; return; }
-            if (!equalSpans(tok, first)) multi = true;
-        });
-        if (!haveFirst) return 0;
-        if (multi) return 2;
-        outVar = first;
-        return 1;
-    }
-
-    /// @brief Whether EVERY `int_lev_<level>_<id>` occurrence in the span
-    ///        carries a level STRICTLY BELOW the given bound — the
-    ///        parent-level mail-gate predicate.
-    ///
-    /// @details
-    /// A witness name minted at logic-block level `k` embeds `k` as the first
-    /// digit run of its `int_lev_k_id` token. Mail flows only ancestor to
-    /// descendant, so a token whose level is strictly below an LB's own level
-    /// can only have reached that LB by ancestor mail — and every ancestor
-    /// deposit is pulled by ALL of the LB's descendants directly. Such names
-    /// are therefore known below by construction, and an expression composed
-    /// exclusively of them is safe to mail onward regardless of how many
-    /// distinct tokens it carries (`allowedForMail`'s parent-level pass).
-    ///
-    /// The scan is TOTAL (no early exit), matching the sibling
-    /// `scanSingleDistinctIntLev`'s convention. The level parse accumulates
-    /// into 64 bits; a run whose value exceeds `INT32_MAX` fails the
-    /// predicate conservatively (the caller falls through to the memo gates
-    /// — a refusal is always sound on this path). Zero occurrences satisfy
-    /// the predicate vacuously; the caller's no-token early exit fires first.
-    ///
-    /// @param s          Span scanned (a slice of a caller-stable buffer).
-    /// @param levelBound Exclusive upper bound — the owning LB's `level`.
-    /// @return `true` iff every `int_lev` occurrence's level is
-    ///         `< levelBound`.
-    /// @see scanIntLevOccurrences — the occurrence driver;
-    ///      scanSingleDistinctIntLev — the verdict sibling;
-    ///      `allowedForMail` (`prover.cpp`) — the consumer.
-    inline bool allIntLevLevelsBelow(const StrSpan& s, int32_t levelBound) {
-        bool allBelow = true;
-        scanIntLevOccurrences(s, [&](int32_t start, int32_t len) {
-            (void)len;
-            int32_t i = start + 8;   // just past "int_lev_"; run 1 has >= 1 digit
-            int64_t v = 0;
-            while (i < s.len && isDecimalDigitByte(s.ptr[i])) {
-                v = v * 10 + (s.ptr[i] - '0');
-                if (v > INT32_MAX) { allBelow = false; return; }
-                ++i;
-            }
-            if (v >= levelBound) allBelow = false;
-        });
-        return allBelow;
     }
 
     /// @brief Whether the span contains any `it_\d+_lev_\d+_` prefix-shape

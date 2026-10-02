@@ -75,7 +75,7 @@ Hand-audit of the 23 induction theorems:
 
 Expected loss: **theorem 1 + its mirrored statement ≈ 2 theorems**. Verified
 OR-theorem form (`(in[n,N])` as explicit premise) remains sound and
-untouched — it uses `method = direct` after OR-convergence, not
+untouched — it uses `method = single chapter proof` after OR-convergence, not
 `method = induction`.
 
 ## Implementation plan

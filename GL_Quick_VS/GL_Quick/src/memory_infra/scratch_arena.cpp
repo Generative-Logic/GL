@@ -41,20 +41,25 @@ namespace gl {
     ///
     /// @param global    Pool the arenas draw blocks from.
     /// @param slotCount Number of worker slots (`logicalCores`).
+    /// @param purpose   Pool attribution of every slot arena's blocks; a
+    ///                  re-init must repeat it.
     void ScratchArenaRegistry::init(GlobalMemoryManager* global,
-                                    unsigned slotCount) {
+                                    unsigned slotCount, PoolPurpose purpose) {
         assert(global != nullptr && global->initialized());
         assert(slotCount >= 1);
         if (initialized()) {
             assert(global == global_
                 && slotCount == static_cast<unsigned>(arenas_.size())
+                && purpose == purpose_
                 && "ScratchArenaRegistry re-init with a different shape — one "
                    "process, one scratch-arena shape");
             return;
         }
         global_ = global;
+        purpose_ = purpose;
         for (unsigned i = 0; i < slotCount; ++i) {
             arenas_.emplace_back();
+            arenas_.back().setPurpose(purpose);
             arenas_.back().bind(global);
         }
     }
@@ -84,7 +89,8 @@ namespace gl {
     ///
     /// @param slotCount Number of worker slots (`logicalCores`).
     void initScratchArenas(unsigned slotCount) {
-        scratchArenas().init(&staticMemory(), slotCount);
+        scratchArenas().init(&staticMemory(), slotCount,
+                             PoolPurpose::ScratchString);
     }
 
     /// @brief The process-wide request-generation scratch-arena registry.
@@ -111,7 +117,25 @@ namespace gl {
     ///
     /// @param slotCount Number of worker slots (`logicalCores`).
     void initGenScratchArenas(unsigned slotCount) {
-        genScratchArenas().init(&staticMemory(), slotCount);
+        genScratchArenas().init(&staticMemory(), slotCount,
+                                PoolPurpose::ScratchGen);
+    }
+
+    /// @brief The process-wide compaction scratch-arena registry.
+    ///
+    /// @return The singleton (constructed on first use).
+    ScratchArenaRegistry& compactionScratchArenas() {
+        static ScratchArenaRegistry instance;
+        return instance;
+    }
+
+    /// @brief Initialize the compaction scratch registry against the
+    ///        never-deloaded LB-body pool.
+    ///
+    /// @param slotCount Number of worker slots.
+    void initCompactionScratchArenas(unsigned slotCount) {
+        compactionScratchArenas().init(&lbMemory(), slotCount,
+                                       PoolPurpose::ScratchGen);
     }
 
 }

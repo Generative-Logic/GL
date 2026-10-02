@@ -115,7 +115,13 @@ namespace gl {
         int minNumOperatorsKey = 2;
         int minNumOperatorsKeyCE = 4;
         int maxIterationNumberVariable = 1;
+        int maxIntegrationDepth = 1;
         int standardMaxSecondaryNumber = 1;
+
+        // Eligible statements retained per request-filter call, before sorting.
+        // Shared by CPU generation, stump production and CUDA filtering.
+        // The positive limit must fit the uint16_t position-code representation.
+        int maxNumberFilteredStatements = 16384;
 
         // --- Submatch cap (LB split) ---
         // Maximum number of SUBMATCHES a single LB part may make in one hashburst.
@@ -279,11 +285,10 @@ namespace gl {
         bool use_gpu = false;
 
         // Per-batch permission for the working-set steward to write LB images
-        // to SSD. Backend-derived at prover construction: a processor batch
-        // keeps this default and pages; CUDA and SSD deload are intentionally
-        // mutually exclusive, so a CUDA batch derives false (resident-only
-        // steward). A config may still set false to pin a processor batch
-        // resident. Config key: allow_ssd_deload.
+        // to SSD. Both Phase 2 backends page with it (the CUDA route claims
+        // each logic block it reads inside a steward window). A config may set
+        // false to pin a batch resident; counterexample-filter clones always
+        // run resident-only. Config key: allow_ssd_deload.
         bool allow_ssd_deload = true;
 
         bool trackHistory = true;
@@ -356,9 +361,9 @@ namespace gl {
         // power of two for the arena's offset shift/mask) and
         // isValidStaticPageConfig (block a whole multiple of page, page a
         // power of two); the ExpressionAnalyzer constructor asserts both.
-        int64_t static_pool_bytes = 12884901888LL; // 12 GiB
+        int64_t static_pool_bytes = 6442450944LL;  // 6 GiB (D-410)
         int32_t static_block_bytes = 262144;      // 256 KiB
-        int32_t static_page_bytes = 8192;         // 8 KiB
+        int32_t static_page_bytes = 2048;         // 2 KiB (D-411)
 
         // --- Statification: persistent (second) pool ---
         // A SECOND program-start reservation, separate from static_pool_bytes
@@ -482,6 +487,10 @@ namespace gl {
 
     // Static hot path sizing constants — config-independent, compile-time.
     struct ExecutionParameters {
+        /// @brief Largest nonzero code for a retained statement position.
+        /// @details Zero denotes an absent stump position; positions use code-1.
+        static constexpr uint32_t MAX_FILTERED_POSITION_CODE = UINT16_MAX;
+
         static constexpr int16_t MAX_KEY_SLOTS   = 256;    // max NameId values in a normalized key
         static constexpr NameId  MAX_NAME_IDS    = 1000000; // max NameMap IDs (raised from 32000 now that NameId is 32-bit; mint-time tripwire at every mint site)
         static constexpr int32_t KEY_ARENA_CHUNK = 16384;  // NameId slots per arena chunk (unused knob)
@@ -659,6 +668,21 @@ namespace gl {
         ///      `drainDeferredAncestorAdmissions`, `isAdmitted`.
         static constexpr int32_t MAX_ADMISSION_REM_ARGS = 256;
 
+        /// @brief Ceiling on the distinct variables of one definition-set
+        ///        inference (`ExpressionAnalyzer::VarTypeTable`).
+        ///
+        /// @details
+        /// One inference covers the flat leaves of a theorem (premise chain
+        /// plus head), of an LB's key chain, or of one compiled entity's
+        /// elements. The distinct-variable ceiling of a normalized key is
+        /// `MAX_EXPRESSIONS * MAX_ARITY` (128); a theorem stays far below it.
+        /// The table is a fixed stack array, so its add path asserts at this
+        /// ceiling (a Rule-19 tripwire: widen with evidence, never truncate).
+        ///
+        /// @see `ExpressionAnalyzer::VarTypeTable`,
+        ///      `ExpressionAnalyzer::typeLeafInto`.
+        static constexpr int32_t MAX_TYPED_VARIABLES = 128;
+
         /// @brief Minimum operator-expression count (head included, anchors
         ///        excluded) for the ordis-only admission qualification route.
         ///
@@ -706,6 +730,29 @@ namespace gl {
         ///      consumer.
         static constexpr int32_t kOrdis2DemandMinPremises = 4;
 
+        /// @brief Minimum NON-anchor premise count (qualifying slot
+        ///        included) for an INTEGRATION-justified rule to install
+        ///        ordis2 demand variants.
+        ///
+        /// @details
+        /// Integration-justified installs (a goal's flat integration-rule
+        /// variants and its per-level conjunct rules, justification
+        /// `"integration"`) join the ordis2 demand route with their own
+        /// floor: 6 is the D1 division-with-remainder closure rule — three
+        /// witness typings, `q·d=t`, `t+s(r)=a` and the one missing ground
+        /// compound premise `s(r)<d` — and the maintainer-set value
+        /// (2026-08-24): the shorter per-level chain rules (2–3 premises)
+        /// and the narrow flat variants mint no demand variants, which
+        /// keeps the demand-LMV population and the shared-subkey owner
+        /// sets bounded. General rules keep `kOrdis2DemandMinPremises`.
+        /// The compound-only key language (`ordis2KeyEligible`) and the
+        /// non-anchor subset test still gate every slot, so equality /
+        /// typing conjuncts mint nothing at any floor.
+        ///
+        /// @see `ExpressionAnalyzer::ordis2DemandSlotQualifies` — the one
+        ///      consumer.
+        static constexpr int32_t kOrdis2DemandMinPremisesIntegration = 6;
+
         /// @brief Minimum NON-anchor premise count for a rule to install
         ///        UNTAGGED input-slot demand variants
         ///        (D-288).
@@ -723,6 +770,28 @@ namespace gl {
         /// @see `ExpressionAnalyzer::inputSlotDemandSlotQualifies` — the one
         ///      consumer.
         static constexpr int32_t kInputSlotDemandMinPremises = 4;
+
+        /// @brief Minimum number of NON-marker arguments of the marked
+        ///        operator premise that a relation premise must bind for a
+        ///        received theorem rule to install an UNTAGGED input-slot
+        ///        demand variant through the theorem-relation route
+        ///        (D-370).
+        ///
+        /// @details
+        /// The fan-out gate of the fifth qualification pass. The route has
+        /// no premise-count floor (the D2 consumer `a<b ∧ a+k=b → k≠0` has
+        /// two non-anchor premises); instead the marked premise must have
+        /// at least this many other arguments bound by the relation
+        /// premises. 2 admits the binary-operator shapes (an `in3` premise
+        /// whose two remaining arguments are the relation's arguments) and
+        /// excludes the successor-witness shapes (`in2[p,x,3] ∧ x≤y → …`,
+        /// one bound argument), which would demand a predecessor for every
+        /// ordered term. The maintainer set the value on 2026-09-11 with the
+        /// explicit note that it can be relaxed later.
+        ///
+        /// @see `ExpressionAnalyzer::theoremRelationDemandSlotQualifies` —
+        ///      the one consumer.
+        static constexpr int32_t kTheoremRelationDemandMinBoundArgs = 2;
 
         /// @brief Ceiling on one registered or-operator's FLATTENED leaf
         ///        count for the reduced-or pre-mint closure.

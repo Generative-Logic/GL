@@ -21,25 +21,69 @@ Defined at [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp). Fields:
 
 | Field | Type | Role |
 |---|---|---|
-| `memberIds` | `vector<int16_t>` | The members of this class — all known-equal — as NameMap ids, sorted by DECODED name (never by id): the first member of a tier is that tier's lex-min, the canonical-selection order ([D-134](../40_decisions.md#d-134), [I-88](../30_invariants.md#i-88)). Writers keep the order structurally: `setMembersFromNames` (creation) and `unionMemberIdsByName` (merge). |
-| `intEqualityLevelsMap` | `map<uint32_t, levels>` | Per-pair admission levels, keyed by `packEqPairKey` (unordered id pair). |
+| `memberIds` | `vector<NameId>` (32-bit names) | The members of this class — all known-equal — as NameMap ids, sorted by DECODED name (never by id): the first member of a tier is that tier's lex-min, the canonical-selection order ([D-134](../40_decisions.md#d-134), [I-88](../30_invariants.md#i-88)). Writers keep the order structurally: `setMembersFromNames` (creation) and `unionMemberIdsByName` (merge). |
+| `intEqualityLevelsMap` | `map<int64_t, levels>` | Per-pair admission levels, keyed by `packEqPairKey` (unordered id pair). |
 | `equalityOriginMap` | `IdOriginMap` (packed origin-interner keys → `(OriginTag, packed deps)` lines) | Provenance — which equalities produced this class. Id form per `D-131`, same `Memory::originInterner` space as `exprOriginMap`, so class↔body history copies are pure id operations. |
 
 The weak-variable record is the packed `Memory::intWeakVariables` (`packStatementKey(variableId, validityId)` keys; the former `ExpressionWithValidity` string set is gone), written at `updateWeakVariables`, probed by `reduceEqClassIds`, filtered at `wipeSubtree` by the low-32-bits validity predicate, swapped at the `destroyGrid` capacity release; its dump section derives byte-identical output by decode + lex-sort. One reset rule for the [name caches](#name-classification--classifyname--scanspecialtokens--eqclassnamecaches): `destroyGrid` resets `nameMap`, so the caches reset with it — ids re-bind there.
 
-Classes are owned per-scope on each `Memory`: `Memory::equivalenceClassesMap` is the cold `TypedColdBlobMap<int16_t, EquivalenceClass>` (Batch 3, one canonical blob per class keyed by validity id) — a scope can hold several disjoint classes. Read paths decode via the non-minting `Memory::decodeClassesAt(validityName)` / `decodeClassesById(validityId)` (empty vector = no classes, the defined absent state), or read a single class blob in place through the zero-copy `EquivalenceClassView` (the transient-statification read form — layout-coupled to `serializeEquivalenceClass`, no heap decode; see [I-128](../30_invariants.md#i-128)); write paths (`updateEquivalenceClasses`, the `addEquality` registration site) serialize through `assignClassesById`. Order-sensitive walks — `reactToHypo`, `applyEquiClasses` pass 2, the hashburst dump section — iterate decoded-name lex-sorted snapshots, never id order ([I-84](../30_invariants.md#i-84)). `changedClassesThisStep` carries `(validityId, class copy)`; `eqClassSttmntIndexMapMap` is `(validityId, memberIds)`-keyed (flattened onto a byte-key `ColdHashMap<BytesKeyStore, int>` since Batch 2 — `encodeEqClassKey` packs the validity id + member ids into the byte key; point lookups only, never iterated). Different scopes can have different classes — an equality asserted under a hypothesis does not bleed into the parent unless the hypothesis discharges.
+Classes are owned per-scope on each `Memory`: `Memory::equivalenceClassesMap` is the cold `TypedColdBlobMap<NameId, EquivalenceClass>` (Batch 3, one canonical blob per class keyed by validity id) — a scope can hold several disjoint classes. Read paths decode via the non-minting `Memory::decodeClassesAt(validityName)` / `decodeClassesById(validityId)` (empty vector = no classes, the defined absent state), or read a single class blob in place through the zero-copy `EquivalenceClassView` (the transient-statification read form — layout-coupled to `serializeEquivalenceClass`, no heap decode; see [I-128](../30_invariants.md#i-128)); write paths (`updateEquivalenceClasses`, the `addEquality` registration site) serialize through `assignClassesById`. Order-sensitive walks — `reactToHypo`, `applyEquiClasses` pass 2, the hashburst dump section — iterate decoded-name lex-sorted snapshots, never id order ([I-84](../30_invariants.md#i-84)). `changedClassesThisStep` carries `(validityId, class copy)`; `eqClassSttmntIndexMapMap` is `(validityId, memberIds)`-keyed (flattened onto a byte-key `ColdHashMap<BytesKeyStore, int>` since Batch 2 — `encodeEqClassKey` packs the validity id + member ids into the byte key; point lookups only, never iterated). Different scopes can have different classes — an equality asserted under a hypothesis does not bleed into the parent unless the hypothesis discharges.
+
+### Complete target-scope class view
+
+`Memory::canonicalEquivalenceClassesMap` is a second, independently owned cold class store. `ExpressionAnalyzer::rebuildCanonicalScope` combines the target's application classes with its parent's complete view, closes every overlap transitively, and retains independent ancestor components. Local pair-level precedence and original equality citation scopes are preserved. Previously recorded paths are retained when a component is rebuilt; identical complete runs are not rewritten.
+
+`initializeCanonicalScope` initializes parent scopes first. After ordinary equality, weak-variable and history maintenance, `refreshCanonicalClasses` excludes scopes refuted by `refutedOrBranchAtOrAbove`, then rebuilds the changed live scope and initialized live descendants in depth and decoded-name order — but only when the equality changed the membership of a class at its scope (the class watcher, [D-417](../40_decisions.md#d-417)). An equality between members already in one class records its pair level and origin in the scope's own class and leaves every complete view, representative and weak mark as it was (weak marks are a function of membership); its evidence reaches the complete views at their next rebuild. The rebuilt runs of one refresh are held (`CanonicalRunOverlay`, descendants read their parent's new run from it) and written with one scratch rebuild of the class store (`flushCanonicalRuns`) instead of one pool-tail move per scope; the result is byte-identical. No canonical copy enters the application-class store, its change buffer or its processing positions.
+
+`LbMemory::canonicalMemberRepresentatives` records the last normal and special-name representative for each `(member, scope)`. The separate `canonicalClassChanges` records identity, membership, evidence and special-name-selection changes with bits 1, 2, 4 and 8 respectively. This snapshot detects representative changes even when weak-variable metadata changes before the complete view is rebuilt. Unchanged components contribute no pending changes. Both maps are independent of ordinary multiplication events.
+
+Within `refreshCanonicalClasses`, parked-source and watch identity refresh, together with settled ancestor-negation import, select only members carrying change bit 1: their keys and imported values depend on canonical text. New class members also carry that bit. Evidence-only changes retain these identities without rebuilding unchanged source dependencies or re-importing unchanged negations. Ancestor import retains the original complete member list while statement arrivals await the watch drain, so a newly registered negation is imported at the same class-update seam even when its representative is unchanged. `refreshCanonicalSourceUses` still synchronizes authoritative source writes even when its identity list is empty; `recanonicalizeWatchLedgers` likewise synchronizes goal dependencies before its empty-identity return. All member versions and class changes are still published; processed/branched OR identities, completion receipts and OR cache invalidation retain their existing complete change list. Equality levels, locality and provenance remain available to their original consumers.
+
+Watch identity maintenance ([I-269](../30_invariants.md#i-269)) selects exact `(original expression, effective scope)` records once from `canonicalUses.watches`, then resolves their actual ledger runs. Selection across cores is shared; no full-ledger or per-record linear membership scan is needed at an exact-scope refresh. Selected records retain ledger-key order followed by decoded original-expression order, so canonical identifier minting is unchanged. Each touched run is rebuilt once in its original position. The index's `contains` reader distinguishes live records from retained retired keys; scope wipes, clear/replace and reconstruction keep this membership synchronized with the ledger.
+
+`importAncestorNegationsForClass` ensures the watch index is built, then checks its live original/scope key before canonicalizing an already-imported record. Those records have just passed identity refresh at this boundary. Pending-arrival selection still uses the full component member set, preserving same-boundary import of new negations. `canonicalWatchIdAt` calls the shared `canonicalFormAtScope` chooser and substitution walk in text-only mode: it builds neither pair-level unions nor equality justifiers/locality/citation data. The full evidence mode remains the default for proof-producing consumers, including `canonicalWatchFormAt`; evidence versions, supporting levels and history are maintained in their original owners.
+
+`MergeClassAccum` keeps an exact pair-key-to-zero-based-position index on its own page-tier scratch arena ([I-273](../30_invariants.md#i-273)). `levelIndex` probes that derived map and asserts that a hit still names the same key in the flat rows. `setLevel`, `mergeLevelsBBase` and `mergeLevelsFromAccum` register each newly appended row; replacements retain its position, including empty level runs. Shared-key merges retain the accumulator's existing levels (A-wins replacement), while missing keys append in the same source order. No index traversal controls serialization, no new persistent or deloaded state is introduced, and origins are unchanged. The original flat key/start/length/value columns and sorted serializer remain authoritative.
+
+The complete class store and its two small companion maps participate in clone, scope wipe, deload/reload and aggregate release. Their facets use tags 839–846 on the existing main pool. See [I-254](../30_invariants.md#i-254).
+
+`importAncestorNegationsForClass` rejects positive statements and negated equalities while visiting member postings, before allocating candidate keys and sorting them. These are the same immutable shape exclusions applied by the import path; eligible negatives retain their original `(expression, source scope)` decoded order and authoritative ownership. Anchor/watch-shape checks, canonicalization and publication remain in that ordered path. No statement or dependency posting is removed from its shared index.
+
+Canonical identity readers use the complete view at the target scope: expression entry, compact carriers, OR and watch identities, admission templates and values, construction receipts, goals and representative filtering. The existing application store continues to drive multiplication and weak-variable bookkeeping.
+
+`CanonicalUseIndex` stores original/current-name and value dependencies under stable logical record keys. Equality versions and posting revisions select affected records; unchanged components retain their entries. `CanonicalTemplateIndex` projects only requested expression shapes and source scopes into a target scope. Matching returns original owning keys, including when ancestor-owned records are compared in a descendant. It neither rewrites an ancestor through child equalities nor admits a new scope route. Literal goal prefixes in subproof payloads are preserved. In `matchingCanonicalTemplates`, identical original and canonical text share one dependency-indexing pass; different forms retain both passes so every original/current token still invalidates its dependent projection.
+
+Comparison refresh is queued at mutation boundaries. `rebuildCanonicalScope` sends each new or changed normal representative (change bit 1) to `CanonicalUseIndexes::invalidateComparisonMember`; each comparison store uses its original/current-token postings to enqueue affected `(original, target scope)` projections. A new source key or requested shape queues its previously unseen projections directly. The derived pending store is an `OrPostingIndex` keyed by target scope, so `matchingCanonicalTemplates` visits only that scope's queued identities and rebuilds them in the same decoded-original order. It no longer scans every class member before and after each lookup or scans a global pending set. Evidence-only changes retain the comparison forms, whose contract depends on canonical text; evidence consumers keep their independent versioned updates. Invalidation coalesces repeated changes, including a representative that changes back before the next query. Canonical release clears the queues with the other comparisons. Scope closure retires only closed target projections and closed source-shape postings; surviving forms, token dependencies, versions and queued invalidations remain warm. Raw eviction preserves them and queue mutation dirties the raw cache image. The authoritative map still filters retired source owners at lookup.
+
+Each dependency edge carries its insertion revision under a logical `(token, record)` key. When equality is unchanged, selection visits only the new posting prefix, including edges reinserted for replaced records; an erasure alone schedules no surviving record. Equality-version changes still select all live dependents. `OrPostingIndex::forEachWhile` preserves newest-insertion order across erasure and permits stopping at the first previously observed edge. Edge revisions use the same derived pool storage and raw-image dirtiness/lifecycle as the other index state; they add one 20-byte key/value payload per distinct recorded edge, plus the existing cold-table overhead.
+
+Boolean presence reads first test the original and target-canonical text against the exact source owner. A positive key answers without constructing comparison projections. Pure algebra admission probes use an exact canonical key only when its existing generation, secondary-variable and demand-kind gates pass; an ineligible exact hit still searches equivalent originals. Pure integration probes retain typing and negated-equality exclusions. Committed reads continue to process every matching original and its values.
+
+`updateAdmissionMap` distinguishes fixed arguments from numbered placeholders before canonicalizing a chain. In a mixed rule chain, `u_` identifies fixed arguments; after renaming, `remainingArgs` identifies them. Only these arguments use complete-class representatives. The existing `renamingChainScratch` then separates placeholders from the selected fixed names, including when a representative has the same spelling as a placeholder. An already renamed chain may retain fixed-argument metadata absent from its remaining premises: these names stay in the admission value but do not constrain local alpha-renaming. A scope equality must not bind a rule placeholder or erase its marker demand.
+
+`canonicalAdmissionChain` supplies the same binding distinction to stored algebra-value maintenance, target-scope comparison and recursion replay. Bare nonnumeric names remain concrete; numbered names outside the fixed set remain placeholders and do not contribute equality-dependency postings. It reports the existing Anchor exclusion without changing those values. Recursion and integration replay identify each marker group from the incoming expression before normalizing its fixed arguments. Already shared occurrences remain one group; equality normalization cannot capture another argument into that group. Applied integration values still use complete scoped identities. The task ledger records validation and runtime-gate evidence.
+
+Construction completion is keyed by `(canonical_S(E), S)`. Algebra and integration completion bits remain distinct. Actual queued raw carriers retain pending and carrier-mode bits, with an exact index from canonical identity and scope to those carriers. Watches own their dependency index independently of expression-row retention. These derived indexes use the existing main pool, survive raw eviction, and are cleared at canonical image load/release and discharge. `CanonicalUseIndexes::eraseScopes`, called by `Memory::wipeSubtrees`, retires closed-scope records, edges, observations, pending carriers and comparisons. Surviving revisions and initialized-ledger flags remain valid; authoritative map synchronization rechecks keys after compaction without decoding unchanged records. Private token and shape names remain interned until full release. Their private dirty flags also participate in the raw-image reuse check: a cache-only change requires a fresh raw snapshot without dirtying the logical canonical image. Flags are acknowledged only after the raw dump completes.
+
+`queueCanonicalWake` coalesces wake kinds by original template and target scope during the canonical consumer pass. `applyEquivalenceClassToCompactImplications` collects original carrier keys while removing their ownership. Its dependency selection preserves `isCompactImplicationSpan` eligibility: the shared ownership store also contains other expansion carriers, which this hook does not process. `finishCompactRemovals` finishes one batched removal across the complete pass; `installCanonicalCompacts` then installs replacements in decoded expression/scope order. `drainCanonicalWakes` first matches newly parked sources against settled demands, then releases wakes in decoded template/scope order after those replacements exist. Outside this pass the ordinary immediate wake path remains. Before matching parked algebra or integration sources, `hasPotentialParkedDemand` rejects only impossible demand routes. Algebra retains local/ancestor demand and the single-input operator route; integration retains its exact-scope prefixed instruction map and admission set. Positive candidates still execute all ordinary source-specific generation, secondary-variable, completion and history checks. Deferred wakes are queued before this filter, so unsettled canonical maintenance cannot lose a later demand. Anchor-excluded values survive another value's same-key rewrite. Deferred source and OR rewrite history cites equalities at their original scope through `findEqualityCiteScope`.
+
+`CANONICAL_CLASS_VIEW`, `CANONICAL_DEPENDENT_IDENTITIES`, `CANONICAL_DEPENDENT_RECORDS` and `CANONICAL_MATCH_REBUILD` separate class calculation, dependent work and cache rebuilding in the existing runtime tracker. The task ledger owns validation status and the current-main runtime gate.
 
 ### Name classification — `classifyName` / `scanSpecialTokens` / `EqClassNameCaches` ([D-134](../40_decisions.md#d-134))
 
-The subsystem's canonical-member selection partitions names into three tiers — whole-string `int_lev_<digits>_<digits>`, whole-string `it_<digits>_lev_<digits>_<digits>`, and normal (everything else). [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp) owns the single classification authority `classifyName` (per name) and the single expression-scan authority `scanSpecialTokens` (substring `sregex_iterator` semantics, deliberately faithful to the historical inline scan — `"print_lev_3_4"` does contain the token `int_lev_3_4`). Both are pure functions of their input string, so `EqClassNameCaches` (`Memory::eqClassNameCaches`) memoizes them per NameMap id with no invalidation story: ids never re-bind, the cache survives scope teardown untouched, and `Memory` copies (CE clone LBs) carry valid copies. Lazy fill mutates shared state, so probes are confined to the prover's single-threaded phases ([I-83](../30_invariants.md#i-83)). The canonical-selection readers run on the cached id path: `firstSpecialMemberId` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) is the expression-side canonical authority (first `int_lev_*` member of `memberIds` in decoded-lex storage order, fallback first `it_*_lev_*`; 0 = no special member), consumed by `filterIterationsCore` (shared core behind an id overload that reads the per-expression token cache and a string overload for non-interned admission/rejected keys) and `updateWeakVariables`; `chooseCanonical` runs its three-tier rule (normal > int > it) over `reduceEqClassIds` (weak filtering via the packed `intWeakVariables` twin). None of these run regex anymore — the only regex left lives in `classifyName` / `scanSpecialTokens` behind the caches. The per-class token judgement itself (member probe + tier assert + non-canonical verdict) lives in ONE sink-parameterized core, `forEachNonCanonicalMemberToken` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)): `filterIterationsCore`'s view overload is its stop-at-first-hit wrapper (the registry's REFUSING discipline), and `canonicalizeMailArrival` is its collecting wrapper (the mail-absorb SUBSTITUTING discipline — every status-3 arrival canonicalized once before both the `intExternalStatements` staging and the registry offer, [I-203](../30_invariants.md#i-203)); its memo-independent scan for un-interned arrivals is `buildSpecialTokenScanView` ([`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp)). No third copy of that walk may be written.
+Canonical selection uses four classes: ordinary names, forced witnesses, ordinary integration witnesses, then algebraic witnesses. Within integration names, numeric depth is compared first; all remaining ties use decoded lexical order. `memory_infra/witness_names.hpp` / `compareWitnessNames` is the common ordering authority. `memory.hpp` / `classifyName` and the special-token cache retain forced and integration kinds separately while sharing the disintegration-token run. `firstSpecialMemberId` uses the same preference among special names; `chooseCanonicalId` includes ordinary names and excludes scope-weak members. Goal sanitization uses the same special-name comparator. Class members remain stored in decoded lexical order, so choosing the shallowest integration name requires a comparison scan rather than taking the first lexical member. No interner identifier determines rank.
+
+The caches are pure functions of immutable NameMap strings and survive scope teardown. The shared token walk still distinguishes substring scanning from whole-argument substitution, preserving prefix and copy-suffix boundaries. Cache fills remain confined to block-exclusive phases.
 
 ---
+
+**OR equality refuters.** `canonicalFormAtScope` and `canonicalWatchFormAt` preserve standalone equalities and inequalities by default. The OR matching cache explicitly includes those shapes: a refuting fact and an equality-valued OR leaf must receive the same substitutions at the same effective scope. Only a selected firing asks `writeWatchTwinCanonical` to materialize that equality or inequality view with an `equality1` bridge. Equality registration and the ordinary negation/goal watch paths retain their existing defaults. See `or_implication_matching.cpp` / `ensureOrCanonicalCache` and `or_implication_firing.cpp` / `evaluateOrImplication`.
 
 ## Registration — when a class forms
 
 `addStatement` (see [prover chapter](../10_pipeline/04_prover.md#addstatement-central-ingestion)) handles equality ingestion. When `(=[a,b])` arrives:
 
-1. If `a == b`, the statement is trivially true and is dropped (no new information).
+1. `addEquality` registers the original statement; its mirror branch runs only when `a!= b`. `updateEquivalenceClasses` accepts one or two distinct argument ids, so reflexive input is not rejected by these registration helpers.
 2. If neither `a` nor `b` is in an existing class, create a new class `{a, b}`.
 3. If one of `a` or `b` is in an existing class `C`, add the other to `C`.
 4. If both are in existing classes `C_a` and `C_b`, merge them — the union becomes the new class.
@@ -60,9 +104,9 @@ The mail-sync exists because the class's `equalityOriginMap` is the source of tr
 
 ## Propagation — the mirror emission
 
-When `(=[a,b])` is admitted, the prover automatically emits `(=[b,a])` (guarded by `a!= b`, see [I-9](../30_invariants.md#i-9)). Equality is thereby made reflexive *by construction* at the statement level, without requiring a `reflexivity` rule in every implication table.
+When `(=[a,b])` is admitted, the prover automatically emits `(=[b,a])` (guarded by `a!= b`, see [I-9](../30_invariants.md#i-9)). Equality is thereby made symmetric *by construction* at the statement level, without requiring a symmetry rule in every implication table. This mirror operation does not establish reflexivity.
 
-Argument substitution (the "equality1" tag) is handled during hash-request generation: when producing requests from an expression, the prover also considers variants where each argument is replaced by any known equivalent. This means a rule keyed on `(P[a, …])` will also fire on `(P[b, …])` whenever `a ≡ b`, without the index needing a separate entry for every equivalence class.
+Argument substitution (the `equality1` tag) materializes encoded statement variants in `prover.hpp` and `applyEquiClasses` for signed cores used as premises. Unused encoded rows remain stored without class updates. Goals and negated statements are watched through the canonical ledgers; `materializeWatchHits` supplies the exact goal or contradiction twin before discharge ([I-246](../30_invariants.md#i-246)). Request generation consumes the resulting encoded rows rather than performing an additional equivalence-substitution pass.
 
 ---
 
@@ -89,21 +133,25 @@ Why skip the cross-product: it would blow up combinatorially (|class(a)| × |cla
 
 **Scope symmetry ([D-271](../40_decisions.md#d-271)).** The expander's class walk covers all three scope directions, mirroring `applyEquivalenceClass`'s D-33 comparability rule. Classes at the negation's own scope and at strict ancestors emit the sibling inequalities at the negation's scope (the two historical directions). Classes at strict DESCENDANTS of the negation's scope — walked in decoded-lex order over `equivalenceClassesMap`'s bucket validities, never id order ([I-84](../30_invariants.md#i-84)) — emit at the CLASS's scope, i.e. `deeperOf(negation scope, class scope)`, exactly where `applyEquivalenceClass` deposits its descendant-direction rewrites. Before this direction existed, an ancestor-scope negation was invisible to a deeper class: only a branch-scope COPY of the negation triggered branch-scope expansion, which made those copies load-bearing and blocked the ancestor-known dedup contract (a dropped branch copy would have silently lost the branch's expanded variants).
 
+**Depth-first continuations and refuted scopes ([I-274](../30_invariants.md#i-274)).** `applyEquivalenceClassToNegatedEquality` stores suspended expansions in a page-backed `PagedVector` on the existing worker general scratch arena. Each frame keeps its scope/class/member cursors, source levels, owned source text and post-child publication. `addStatement` registers the next variant through its existing door and reports whether it reached the expansion point; the loop then pushes a child frame. It completes that child before publishing the parent's output row and resuming the parent scan. Self scopes, ancestors, lexically ordered descendants, classes and one-sided members retain their existing order. A large live closure consumes arena frames rather than native call-stack depth. Class-blob scratch stays live until its frame finishes; string scratch rewinds after its child and publication finish.
+
+The existing `refutedOrBranchAtOrAbove` predicate runs before a target scope is scanned and again before its variant is admitted, including pending-dead ancestors. Canonical refresh uses the same predicate when choosing descendants. These guards do not retire scopes or remove proof history: `standardProcessing` still reaches the existing retirement drain, and its history-preservation rules remain in place. The phase-entry ignored-scope snapshot alone does not describe retirement staged during the current step.
+
 **Citation scope of the justifying equality ([D-227](../40_decisions.md#d-227)).** Every equivalence-class history line cites each justifying equality at the scope where that equality's `exprOriginMap` row actually lives, never blindly at the emission or class scope. `applyEquivalenceClass` probes non-minting at the class scope first and then its strict ancestors deepest-first because a descendant class can absorb ancestor-class content. The negated-equality expander uses the same order, additionally considering the negation's own scope when it lies between a descendant class and their shared ancestors. `mergeTwoEquivalenceClasses` applies the rule independently to both bridge dependencies of each `equality2` row, so a branch-local bridge half and an inherited ancestor half retain their different scopes. The chapter walker resolves a dependency at its cited validity and its ancestor lift refuses to cross an `_orint_`/`_ordis_` boundary, so a branch-scope citation of an above-boundary equality could never resolve. The verifier accepts each equality dependency at a strict ancestor of the derived row. A probe that misses everywhere asserts at the emission (Rule 19).
 
 ---
 
 ## Per-step cleanup placement and `intKnownStatements` immortality ([D-93](../40_decisions.md#d-93), [I-58](../30_invariants.md#i-58))
 
-The expression-side cleanup `prover.hpp::cleanUpExpressions` runs **deferred**, once per unique `validityName` in `memoryBlock.changedClassesThisStep`, from the Step-4b block at `prover.hpp::standardProcessing` immediately after `applyEquiClasses(memoryBlock)`. The two pre-fix inline call sites — `updateEquivalenceClasses` post-merge and `addStatement` isEquality-suffix — are retired; comments at those former sites point at the Step-4b block.
+The expression-side cleanup `prover.hpp::cleanUpExpressions` runs **deferred**, from the Step-4b block at `prover.hpp::standardProcessing` immediately after `applyEquiClasses(memoryBlock)`: one call per step sweeps every affected scope collected from complete-class changes and application deltas, including affected descendants, in first-occurrence order ([D-405](../40_decisions.md#d-405)). The two pre-fix inline call sites — `updateEquivalenceClasses` post-merge and `addStatement` isEquality-suffix — are retired; comments at those former sites point at the Step-4b block.
 
-The Step-4b block runs `cleanUpExpressions` alone, once per unique validity. The admission maps need no Step-4b sweep: since [D-106](../40_decisions.md#d-106) both admission hooks canonicalise inline (drop the changed key, insert the canonical form the moment a class rewrite touches it), so no non-canonical admission key survives to Step-4b. The former sweep pair `cleanUpAdmissionMap` / `cleanUpAdmissionMapIntegration` was deleted as dead code (2026-07-02, user-authorized).
+The Step-4b block runs `cleanUpExpressions` alone, once per step over the unique validities. The admission maps need no Step-4b sweep: since [D-106](../40_decisions.md#d-106) both admission hooks canonicalise inline (drop the changed key, insert the canonical form the moment a class rewrite touches it), so no non-canonical admission key survives to Step-4b. The former sweep pair `cleanUpAdmissionMap` / `cleanUpAdmissionMapIntegration` was deleted as dead code (2026-07-02, user-authorized).
 
 Why deferred. Pre-fix, the inline `cleanUpExpressions` call inside `updateEquivalenceClasses` ran **before** `applyEquiClasses` had a chance to read the non-canonical source row in `intEncodedStatements` and emit the canonical-form rewrite. Result: the source row was dropped without a canonical replacement, and any rule whose firing depended on having a same-witness pair across two `in3` (or similar) rows lost the input it needed. The right-cancellation theorem `(>[1..6](AnchorPeano[1..6])(>[7,8,9](in3[7,8,9,4])(>[10](in3[10,8,9,4])(=[7,10]))))` was the canonical regression — `(in3[10,rec,it_0_lev_3_8,4])` got dropped before `(in3[10,rec,it_0_lev_3_32,4])` could be generated. Deferring the cleanup lets `applyEquiClasses` see the source row, emit the canonical rewrite, *then* the sweep drops the now-redundant non-canonical original. See [D-93](../40_decisions.md#d-93) for the full reproducer.
 
-What `cleanUpExpressions` modifies (one sweep per call: the scope's classes are viewed once and each registry is walked once, a row at the validity being kept iff every class keeps it — classes probed in class order until the first drop — so the kept rows, their order and the `filterIterations` call set equal the former walk-and-rebuild-per-class loop; the rebuild and the waterline repair then run once per sweep):
+What `cleanUpExpressions` modifies (one pass per call over all scheduled scopes: each registry is walked once to group the rows of the scheduled scopes by scope; each scope's complete view (`canonicalEquivalenceClassesMap`) is viewed once and its own rows judged in registry order: a row is dropped iff one of its scanned special tokens is a member of a class of the view other than that class's first special member — the verdict of `filterIterations` over the view's classes, read token by token from the special half of `canonicalMemberRepresentatives` ([I-287](../30_invariants.md#i-287)); the first dropping class (class order) is located only for a dropped delta row. A row is judged only by its own scope's view, so the kept rows, their order and the mail order of dropped delta histories equal one full-registry sweep per scope in the same order; the rebuild and the waterline repair then run once per call):
 
-- `mb.intLocalEncodedStatements` + `mb.intLocalEncodedStatementsDelta` + the packed-key `mb.intLocalEncodedStatementsSet` (rebuilt from the kept rows) — filtered (drop where the id-overload `filterIterations(ie.originalId, eqClass, mb)` returns `false` at the matching validity).
+- `mb.intLocalEncodedStatements` + `mb.intLocalEncodedStatementsDelta` + the packed-key `mb.intLocalEncodedStatementsSet` (rebuilt from the kept rows) — filtered (drop where the row carries a special member of a class of its scope's view other than that class's first special member, the id-overload `filterIterations` verdict, read from the recorded representatives).
 - `mb.intEncodedStatements` — same filter.
 
 What `cleanUpExpressions` deliberately does **not** modify ([I-58](../30_invariants.md#i-58)):
@@ -171,14 +219,14 @@ This is what unblocked FTA-rung-1 §9b: a class registered at an OR-disintegrati
 
 ### Trigger sites
 
-Equivalence-class application fires from a **single driver, `applyEquiClasses`** ([prover.hpp](../../GL_Quick_VS/GL_Quick/src/prover.hpp)), called once per elementary step between mail absorption and request generation. It replaces the three former inline sites (the `updateEquivalenceClasses` merge-postscan, the `addStatement` per-statement block, and the `addStatement` fixpoint), which were consolidated into it: `updateEquivalenceClasses` still performs the class MERGE and records each changed class in `Memory::changedClassesThisStep`, but the per-statement APPLICATION loop moved out of the add path into the driver (recorded in the `addStatement` in-code comment).
+Equivalence-class application fires from a **single driver, `applyEquiClasses`** ([prover.hpp](../../GL_Quick_VS/GL_Quick/src/prover.hpp)), called by `standardProcessing` after mail absorption in phases 1 and 3. It replaces the three former inline sites (the `updateEquivalenceClasses` merge-postscan, the `addStatement` per-statement block, and the `addStatement` fixpoint), which were consolidated into it: `updateEquivalenceClasses` still performs the class MERGE and records each changed class in `Memory::changedClassesThisStep`, but the per-statement APPLICATION loop moved out of the add path into the driver (recorded in the `addStatement` in-code comment).
 
 Once per step, the driver runs its fixpoint rounds. Each round first runs the hooks (the rejected / admission / compact reconcilers) for every live delta class — the classes whose membership changed during the just-finished mail-absorb pass, keep-last deduplicated, dead-scope skipped — and for every non-delta class, class-major as before; then ONE statement-major batch replaces the former per-class registry sweeps ([D-334](../40_decisions.md#d-334)):
 
 1. **Class table** (`buildEquiClassTable`, built once per apply — the class state is fixed inside an apply, no path in it admits a positive equality): every class of the LB with its zero-copy blob view, its strong-member run (`reduceEqClassIds` once per class, not once per pair), an application rank (delta entries in delta order, then the former Pass-2 order), a due-from position (the delta entry's `startIdx`, or the persistent waterline of `eqClassSttmntIndexMapMap`), and the token postings `member id → classes containing it` (`EquiClassTable`, the `ReverseArgsIndex` chain idiom). A delta entry Pass 1 skipped as dead-scope is left out.
 2. **Affected rows** (`collectEquiAffectedRows`): one pass over the registry's int columns — a row is due when a comparable class (same scope, strict ancestor, strict descendant) is due for one of its `argId`s; anchors and positive equalities are skipped, negated equalities go to their own list.
 3. **Closure per row** (`stageEquiClosure`): the row and its own staged products form a queue; every comparable class containing one of an item's argument ids runs `enumerateEqClassRewrites` on it, in rank order; the deposit scope is the deeper of class and item scope; the former sink's filters run in order — already staged at that scope, known at that scope, known at a strict ancestor (in the registry or among the products staged so far; the I-174 signal survives the refusal), the iteration cap, the `countPatternOccurrences` cap, an axed variable. A surviving product joins the queue, so the closure is the fixpoint the registry-wide loop reached, confined to one statement. Levels are the item's run ∪ the rewrite's pair levels (`mergeLevelRuns`). Nothing in the closure mints the NameMap (asserted). The products ride `StagedEquiProducts` — the temporary list keyed by `(scope id ++ text)`, O(1) append, nothing shifts.
-4. **Drain** (`drainStagedEquiProducts`): the staged products commit in staging order through the same doors as before (levels row, known + local bits, local set, the three registry pushes), each with one `equality1` row under the I-34 gate — source = the immediate source (registry row or earlier product) at its scope, the class's pairs cited at `findEqualityCiteScope` — then one `ordisMerge` pass over the committed rows in `sortStatementRows` order.
+4. **Drain** (`drainStagedEquiProducts`): the staged products commit in staging order through the same doors as before (levels row, known + local bits, local set, the three registry pushes), each with one `equality1` row under the I-34 gate — source = the immediate source (registry row or earlier product) at its scope, the class's pairs cited at `findEqualityCiteScope` — then one `ordisMerge` pass over the committed rows in their existing commit order.
 5. Every class's due-from position then moves to the registry size; the negated equalities a delta class is due for run `applyEquivalenceClassToNegatedEquality` once per row (it covers every scope direction itself and self-dedups; the former loop ran it once per (delta class, row) pair). A round that grew the registry is followed by another; at the end of the apply every table class's waterline in `eqClassSttmntIndexMapMap` is set to the final registry size.
 
 The three scope directions of a class × statement pair, the deposit scope being the deeper of the two ([D-33](../40_decisions.md#d-33)):
@@ -199,7 +247,7 @@ Products commit inline in the drain, never through the door ([I-217](../30_invar
 
 Every deposit — same-scope, shallower-class, deeper-class — flows into the **single** `newStatements` channel: since the L5 id-form flip a caller-owned `PagedVector<IntEncodedExpr>&` out-param (`addStatement` returns `void` — PagedVector is non-movable, so it cannot be returned) on the per-slot `genScratchArenas`, holding one id-form row per deposit whose decoded `validityId` is the deposit's actual scope (see [I-25](../30_invariants.md#i-25)). There is no separate sink for cross-scope deposits.
 
-The kernel's post-`addStatement` loop ([prover.cpp](../../GL_Quick_VS/GL_Quick/src/prover.cpp)) index-sorts the buffer with `sortStatementRows` (byte-identical to the former `std::sort` over `ExpressionWithValidity::operator<`), decodes each row's `(originalId, validityId)` at the edge, and uses the decoded scope for the `intStatementLevelsMap` lookup, admission-map updates, `toBeProved` discharge, and validity-name promotion. Cross-scope deposits therefore go through the same discharge logic as same-scope deposits — the only difference is which scope drives the lookup.
+The kernel's post-`addStatement` loop ([prover.cpp](../../GL_Quick_VS/GL_Quick/src/prover.cpp)) consumes the buffer in emission order, decodes each row's `(originalId, validityId)` at the edge, and uses the decoded scope for the `intStatementLevelsMap` lookup, admission-map updates, `toBeProved` discharge, and validity-name promotion. Cross-scope deposits therefore go through the same discharge logic as same-scope deposits — the only difference is which scope drives the lookup.
 
 This routing replaced an earlier WIP design (the original D-33 commit, prior to the routing fix) where cross-scope deposits went into separate sinks (`crossScopeSink`, `descendantSink`, `ancestorSink`) to avoid tripping the kernel's same-scope assert. That design caused cross-scope deposits to bypass `toBeProved` discharge entirely — facts were inserted at the right key but matching `toBeProved` entries never fired. The single per-deposit-scope channel closes that gap.
 
@@ -332,11 +380,16 @@ That would require the symmetric cross-product. Two one-sided steps reach it: `!
 
 ### Known & tracked
 
+- **Complete-view rebuilding still follows class growth across initialized descendants.** Indexed level lookup removes the quadratic absence scans in pair copying, but it does not make reconstruction incremental or defer equality visibility. Components that later compare unchanged still have their retained histories merged, serialized and published before that comparison. 
+
+- **Large live inequality closure remains proportional to its generated pairs.** Explicit continuations remove native recursion and refuted scopes are excluded, but neither change bounds the number of distinct live variants. Runtime investigation must measure that work separately from canonical maintenance.
+
 - **[I-12](../30_invariants.md#i-12) — one-sided-only is deliberate.** Anyone questioning the design should first profile alternatives.
 - **Class-visibility confinement to deeper-scopes.** A fact derived via equality in scope `S` is admitted at scope `S`, not promoted to `"main"`. If `S` eventually discharges, the class itself goes with it (scope-scoped).
 
 ### Suspected fragility
 
+- **Substring special tokens in the registry filter.** The scan behind `filterIterationsCore` is a substring search, so a statement holding a longer normal name such as `it_0_lev_1_7_copy` also yields the special token `it_0_lev_1_7`. The canonical door drops such fragments (`resolveStatementTokens`, whole bracket tokens only); the filter still judges them, so a class holding both names could make the filter refuse or keep a statement for a token it does not contain. Not observed; not changed.
 - **`applyEquivalenceClassToNegatedEquality` precondition assert.** A caller that mis-gates (passes a non-negated-equality) crashes the prover. The guard is deliberate, but adding a new call site without reviewing the guard is a regression risk.
 - **Class-merge level computation.** When two classes merge, the new class's per-pair level is the maximum of the two — or is it? Not inspected for this chapter; worth confirming.
 - **Per-scope class-map lookup cost.** On each `addStatement`, the per-validity class map is queried. For deeply-nested scope stacks, this is O(depth) per emission. Not currently a hot path but warrants measurement before FTA scale.
@@ -350,24 +403,13 @@ That would require the symmetric cross-product. Two one-sided steps reach it: `!
 
 ---
 
-## Extension — `rejectedMapIntegration` (integration-side equi-class hook, re-key in place)
+## Extension — `rejectedMapIntegration` (source re-keying)
 
-`applyEquivalenceClassToRejectedMapIntegration` (`prover.hpp`) is the integration twin of the algebra hook below; called from `applyEquiClasses` for every delta class (Pass 1) and every registered non-delta class (Pass 2) in each fixpoint round, subject to the round skip. Since [D-308](../40_decisions.md#d-308) it re-keys parks in place; the drop + mail path of [D-64](../40_decisions.md#d-64) survives only for a demanded park.
+`prover.hpp` / `applyEquivalenceClassToRejectedMapIntegration` delegates to `rewriteParkedExistences`. Both rejected maps now retain source existences rather than concrete witness products. The class's normal canonical chooser rewrites the marked key and source arguments at the class scope. Source arguments absent from the key are checked too. Source generation and processing flags remain, and the levels of applied equality pairs join the source's stored levels.
 
-**What it does.** Same canonical representative (`chooseCanonical`, [D-106](../40_decisions.md#d-106)), same `varsInRejectedMapIntegrationKeys` short-circuit, same-scope only, same hit test (the marker key changes under the replacement map), same bucket walk and round skip as the algebra hook. Per hit record (`RejectedMapIntegrationValue`: concrete constituent, compound, siblings — no level run):
+Each applied substitution appends a concrete before/after/equality triple to the source record. No witness or history is allocated for an undemanded rewritten source. A qualifying demand queues the rewritten existence on internal mail; selected disintegration later writes fresh witness history. Source/scope completion records follow canonical source spellings. Admission remains independent of origin-map contents.
 
-1. Rewrite the bare key K → K', the concrete constituent, the compound and every sibling with the replacement map.
-2. **Demanded right now?** The bare K' in `admissionSetIntegration`, or the `u_`-form K' (`prefixNonMarkerArgumentsWithUScratch`) in `admissionMapIntegration`, at the park scope — the lookups `isAdmittedIntegration` and Pass B's set probe perform, without their inserts. Decided per compound.
-3. **Undemanded:** erase K; drop the park if the rewritten compound is already local at the park scope or known at a strict ancestor, or unchanged (Site-F parity with the mail path); otherwise insert the rewritten record under K' through `updateRejectedMapIntegration` (which also posts K''s arguments to `varsInRejectedMapIntegrationKeys`); write one `equality1` row per changed product / sibling at the park scope (source = the pre-rewrite text at that scope, justifiers = the pairs that fired on it) into `exprOriginMap` and the mail-out origin column; nothing mailed; `mutatedThisBurst` set. The record stores no levels, so a later revival keeps looking the (rewritten) compound's levels up as before.
-4. **Demanded:** erase K and mail the rewritten compound once onto `sameIterationInternalMail` with `levels(compound) ∪ pairLevels` ([D-280](../40_decisions.md#d-280)) and the `equality1` history line (source = the pre-rewrite compound, justifiers = the fired pairs) — the absorb re-disintegrates it and Pass B admits or re-parks.
-5. Gated on `!parameters.skip_eq_classes`.
-
-**Provenance chain** for a re-keyed record on revival: `rewritten constituent ← equality1 ← pre-rewrite constituent ← disintegration ← compound`; for a mailed compound the D-64 chain (`constituent ← disintegration ← rewritten compound ← equality1 ← compound`). Every link a tag the verifier already validates.
-
-**[I-22](../30_invariants.md#i-22) preserved.** The hook does not touch admission templates. The companion [admission-integration hook](#extension--admissionmapintegration-integration-side-equi-class-hook) re-keys them and calls `revisitRejectedIntegration2`, which finds a re-keyed park under K' exactly as it found a re-absorbed one.
-
----
-
+The integration writer maintains its argument-key cache and excludes typing keys. Scope buckets refresh when re-keying adds keys; the two source hooks share the same record layout and transformation contract.
 
 ## Extension — `admissionMapIntegration` (integration-side equi-class hook)
 
@@ -456,7 +498,7 @@ As of [D-57](../40_decisions.md#d-57), equivalence-class application has a third
 
 1. **Short-circuit on `HashMemory::varsInAdmissionMapKeys`** — symmetric to `varsInRejectedMapIntegrationKeys`. Monotonically-growing set of non-marker args appearing in any admission key. Populated at every admission insert (`prover.hpp::prepareIntegration`, `memory.cpp::makeMandatoryEncodedStatementLists1Static`, `prover.cpp::updateAdmissionMapRecursion`, and the hook itself's post-loop insert). Lets the hook early-exit for classes whose `clss.variables` have zero overlap with this set.
 
-2. **Pick one canonical representative for the whole class** via `chooseCanonical` (`prover.hpp::chooseCanonical`): the highest-priority *strong* member (drop weak names with `reduceEqClass`), preferring a normal name (not `int_lev_*`/`it_*_lev_*`; `repl_` counts as normal), then `int_`, then `it_`, lex-smallest within a tier. Build one replacement map sending every other class member to that representative. An empty pick (empty / all-weak class) returns with no work.
+2. **Pick one canonical representative for the whole class** via `chooseCanonical` (`prover.hpp::chooseCanonical`): the highest-priority *strong* member (drop weak names with `reduceEqClass`), preferring ordinary names (including `repl_`), then forced witnesses, then integration witnesses by numeric depth, then algebraic witnesses, with lexical ties. Build one replacement map sending every other class member to that representative. An empty pick (empty / all-weak class) returns with no work.
 
 3. **Same-scope only.** Apply only to entries whose `validityName` is identical to the class's. Cross-scope equalities are folded into the class beforehand by the ancestor-absorbing merge ([D-44](../40_decisions.md#d-44)), so key application is same-`validityName` only — no ancestor/descendant directions. The deposit scope is that shared validity. See [D-106](../40_decisions.md#d-106).
 
@@ -486,7 +528,7 @@ The hook now drops the changed key **inline** (the re-key in step 6), so there i
 
 **Mechanism.** Option 3 of three considered (1-hop / iterative fix-point / canonicalization):
 
-- For each entry K' at `validity`, compute `canonicalizeUnderClasses(K'.original, classes_at_validity)` — the helper substitutes every class member with its class's canonical (lex-smallest `int_lev_*`, fallback lex-smallest `it_*_lev_*`) per the same rule `filterIterations` and `updateWeakVariables` use.
+- For each entry K' at `validity`, compute `canonicalizeUnderClasses(K'.original, classes_at_validity)` — the helper substitutes every class member with its class's canonical (forced before integration by numeric depth before algebraic, with lexical ties) per the same rule `filterIterations` and `updateWeakVariables` use.
 - Erase every K' whose canonical form equals `canon(consumed K)` — across all four state structures `cleanAdmissionMap` already touches: `admissionMap`, `admissionStatusMap`, `admissionMapIntegration`, `consumedAdmissionKeys`.
 
 Canonicalization-based closure naturally covers transitive equivalence (a fact reachable from K via two different classes composed together still has the same canonical form). 1-hop closure (enumerate one class application at a time) would leave 2-hop entries stranded: with classes `C₁ = {a, b}`, `C₂ = {c, d}`, and admission keys `K = (p[a, c, marker])`, `K1 = (p[b, c, marker])`, `K2 = (p[a, d, marker])`, `K12 = (p[b, d, marker])`, a 1-hop sweep on K erases K1 and K2 but leaves K12 stale. Iterative fix-point would catch K12 but at the cost of multiple passes. Option 3 collapses the closure into one O(|admissionMap_at_v|) walk with deterministic semantics.
@@ -495,50 +537,25 @@ Canonicalization-based closure naturally covers transitive equivalence (a fact r
 
 **Same-validity pin.** Cross-scope K' (deposited at `deeperOf(class.scope, entry.scope)` by D-57's hook from the descendant or ancestor direction) is **not** chased by the closure. Each scope's `cleanAdmissionMap` triggers independently; the closure operates only on `admissionMap` entries at the consumed K's validity. Consistent with the principle that consumption at validity V does not necessarily speak to admission state at a different scope.
 
-### Algebra `revisitRejected2` mail-first emission
+### Algebra `revisitRejected2` source delivery
 
-As of the same branch, `prover.cpp::revisitRejected2`'s body emits the stored cohort (`concreteConstituent` + `siblings` + `levels` per the widened `RejectedMapValue` schema) directly via `emitIntegrationRevivalToInternalMailIn`, without re-expanding the compact form through `prepareIntegrationCore` and without writing per-child `disintegration` origins inline. The proper `disintegration` origin for each child was already written at the original production site by `disintegrateExprCore2::trackExpansionHistory` (a re-keyed park's child carries a complete `equality1` row instead, D-308); the mail's degenerate `equality1` self-source origin cannot displace it because `addOrigin`'s cap-full preference clause (`prover.hpp::addOrigin` — [D-49](../40_decisions.md#d-49) / [I-35](../30_invariants.md#i-35)) only allows non-equality to replace equality, not the reverse — existing slot wins. Chapter export reads `disintegration`; verifier accepts.
+`prover.cpp` / `revisitRejected2` resolves exact and strict-ancestor source parks. `queueParkedExistence` checks current demand and budgets, deduplicates pending/completed source constructions at the target scope and mails the existence itself. Normal absorption re-expands the source with temporary slots and mints only after admission. Descendant history records `zoom in` for the source before its fresh disintegration chain; ancestor witnesses are not reused.
 
-The pre-refactor body re-ran `prepareIntegrationCore` on the compact form, did `find_if` for the matching `LogicalEntity`, extracted the bound variable, swapped it for the rejected variable, expanded the modified entity, and emitted per-child `addExprToMemoryBlock(status=0)` with explicit `expansion` + `disintegration` origins. All of that machinery existed solely because `RejectedMapValue` stashed the compact form without the per-element children. Widening the struct ([C1 commit on the branch](#)) put the cohort in place at rejection time; the body refactor ([C2 commit](#)) collapsed to a single helper call. Asserts preserved: `markerIndex!= -1`, `argsIdentical`. The `ent.category == "existence"` assert went with the `prepareIntegrationCore` path. The `intStatementLevelsMap` presence assert was REMOVED on this branch — the compact form's level entry may legitimately be missing when a Pass-B rejection commits before the kernel-loop's compound-stmt addStatement runs (the commit happens inside `disintegrateExpr2`; the level write happens later in the kernel's per-stmt `addStatement` loop, and the equi-class hook from C3 can fire from an earlier-stmt's `addStatement` before the compound's own write). `val.levels` (captured at buffer time, may be empty) is the authoritative deposit-time levels set.
+## Extension — `rejectedMap` (source re-keying)
 
-## Extension — `rejectedMap` (algebra-side equi-class hook, re-key in place)
+`applyEquivalenceClassToRejectedMap` uses the same `rewriteParkedExistences` body as integration. Marked keys retain algebra qualification and the normal generation/secondary-variable budgets. Undemanded source rewrites remain parked with deferred provenance. A known source alone does not mean its witnesses were admitted: source/scope completion state, rather than ordinary statement presence, prevents duplicate minting.
 
-`applyEquivalenceClassToRejectedMap` (`prover.hpp`) is the algebra hook on the parked map. Called from `applyEquiClasses` for every delta class (Pass 1) and every registered non-delta class (Pass 2) in each fixpoint round, subject to the round skip, in the fixed hook order (integration hooks, then this hook, the ordis hooks, the admission hook, the compact hook). Since [D-308](../40_decisions.md#d-308) it re-keys parks in place; the drop + mail path of [D-63](../40_decisions.md#d-63) survives only for a demanded park.
+The parked-OR maps retain their separate key-posting and drop/mail behavior through `applyEquivalenceClassToRejectedOrdisCore` (I-243). Their cohort semantics are unchanged by the witness-source representation.
 
-**What it does.**
+## Extension — `rejectedMapSubproof` (key-only re-keying)
 
-1. **Same-scope only.** A class applies to keys at its own `validityName` (cross-scope equalities are merged into the class beforehand).
-2. **One canonical representative** via `chooseCanonical` (normal > `int_` > `it_`, lex-smallest within a tier, strong members), one replacement map from every other member to it; a key is a hit iff its marker template changes under that map (`replaceKeysScratch`, token-boundary). See [D-106](../40_decisions.md#d-106).
-3. **Per hit record** (`RejectedMapValue`: renamed form, compound, iteration, concrete constituent, siblings, level run): rewrite K → K', the renamed form, the compound, the concrete constituent and every sibling with the same map; levels = the parked run ∪ the stored levels of every pair that fired on the compound ([D-280](../40_decisions.md#d-280)).
-4. **Demanded right now?** A regular (non-ordis) admission entry under K' at the park scope or a strict ancestor (`lookupTemplateKey` + `admissionRunHasRegularValue` over `copyStrictAncestorSpans` — the D-243 rendezvous probe), or `isAllowedAsOperatorInput` on the rewritten product with the witness in K''s marker slot: the side-effect-free superset of Pass B's admission test. Decided per compound — one demanded product sends the whole compound down route 5b.
-5. **Erase K, then either**
- - **0. drop** (Site-F parity with the mail path): a park whose rewritten compound is already local at the park scope or known at a strict ancestor — the absorb refused the re-sent compound there, its products belong to that compound's own disintegration — or whose compound did not change (never re-sent) is not re-keyed; or
- - **a. re-key in place:** insert the rewritten record under K' through `updateRejectedMap` (the kernel's writer — frozen mint order, canonical run); write one `equality1` row for the rewritten product and for each changed sibling at the park scope (source = the pre-rewrite text at that scope — it keeps its `disintegration` row — justifiers = the `(=[member,canonical])` pairs that fired on that text) into `exprOriginMap` and the mail-out origin column; nothing mailed; `mutatedThisBurst` set; or
- - **b. mail:** the rewritten compound once onto `sameIterationInternalMail` with the unioned levels and the `equality1` history line (source = the pre-rewrite compound, justifiers = the fired pairs); a compound not yet local first has its dedup registries wiped (`resetResentExpressionRegistries`, the D-106 delete → send → reabsorb) so the absorb re-disintegrates it and Pass B — caps, cascade, `checkForEquivalence`, relay — admits or re-parks it.
-6. Gated on `!parameters.skip_eq_classes`.
-
-**Walk and round skip ([D-307](../40_decisions.md#d-307)).** The hook reads from the per-apply `RejectedValidityBuckets` snapshot ([`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp); built once at the first hook use of an `applyEquiClasses` call: keys grouped by validity from the packed pair, plus `(validity, argument id) → keys` postings over the decoded flat templates) only the keys at the class validity that name one of the class's non-canonical members, re-checks each with the substitution test, sorts the hits by template, and returns the hit count; a round in which the hook hit nothing is followed by a round in which every class that ran it skips it. A K' inserted during the apply is not in the snapshot and is visited at the next apply — K' never names a non-canonical member of the class that minted it, so nothing is missed; a K' equal to a key dropped earlier in the apply is reached through that key's stale posting. See [I-207](../30_invariants.md#i-207).
-
-**Provenance chain** on revival of a re-keyed record — every link a tag the verifier already validates:
-
-```
-rewritten constituent  ←  equality1       ←  pre-rewrite constituent + (=[from, to])
-pre-rewrite constituent ←  disintegration  ←  compound (production site)
-```
-
-The revival door adds its one-dependency `equality1` self-source row on top; the chapter walker skips it (a dependency on the node itself is a cycle) and takes the complete row. A mailed compound keeps the D-63 chain (`constituent ← disintegration ← rewritten compound ← equality1 ← compound`).
-
-**Why the demanded case still mails.** Only the absorb's Pass B admits with the caps, cascades the co-witnesses of the same compound, runs `checkForEquivalence` and stages the flag-5 relay; a product that would be admitted right now goes through it as before. The probe is a superset, so a refused product is simply re-parked under K' by the absorb.
-
-**Why in place for the rest.** The mail round trip re-derived the same parks under the canonical names one burst later — measured at 44 s of a 45 s IncubatorGauss3 burst (a whole-statement-table scan per re-sent compound in `resetResentExpressionRegistries`, then the re-disintegration of every mailed compound) with nothing learned.
-
-The hook is gated on `!parameters.skip_eq_classes`.
+Parked implication subproofs ([D-406](../40_decisions.md#d-406)) keep a canonical key and a verbatim value. There is no hook inside `applyEquiClasses`: `rebuildCanonicalScope` stages every scope whose complete view changed (`stageSubproofRecheck`, only while parks exist), and the step-4b drain (`drainSubproofArrivals`) moves every park at or below a staged scope to its canonical key (`rekeySubproofPark`: records merged verbatim through the read-modify-write) and rechecks it. The recheck matters on its own: a merge can make a gate known without any new row, when a known row's member joins the gate's class. Reopening happens only in the drain, never inside the class application, because it opens scopes.
 
 ## Extension — `toBeProved` ([D-67](../40_decisions.md#d-67))
 
 `sanitizeToBeProved` (`prover.hpp`) closes the gap that pending goals in `Memory::toBeProved` were not rewritten on equi-class formation. A goal whose body referenced a now-renamed variable previously stayed in the map under its old form and could not be discharged. The function runs once per burst at the END of `performElementaryLogicalStep`, walks `toBeProved`, and rewrites every entry whose `it_/int_` args are now downprioritized under the active equi-classes. The entry's `validityName` is preserved verbatim — the goal's namespace never changes.
 
-**`it_/int_` → `it_/int_` only.** The substitution rule is symmetric with `sanitizeHashMemory`: an arg matching `int_lev_*` or `it_*_lev_*` is replaced ONLY by another `it_/int_` name of strictly higher priority. Priority: `int_*` outranks `it_*`; within the same prefix, lex-smallest wins. `repl_*` and plain (non-`it_/int_`) names never qualify as replacements and never participate in the priority ranking. The same priority machinery as `applyEquivalenceClassToRejectedMapIntegration`'s canonical-pick block.
+**Special-name sanitization.** Forced, integration and algebraic arguments can be replaced by a strictly preferred special peer under `compareWitnessNames`. Ordinary and `repl_` names do not participate in this special-only goal sanitization; the complete statement canonicalizer retains its ordinary-first policy.
 
 **Why this constrained design — and why the catalogue prototype was retired.** An earlier prototype (additive insert via `applyEquivalenceClassToToBeProved` + per-class sweep `cleanUpToBeProved` + position catalogue `Memory::tbpAllowedIndices` + cascade-discharge of equivalent siblings + propagation logic + three call sites) was tried first. It exploded the Peano theorem count from baseline 58 to 160 until the catalogue gate was added. Once we constrained replacements to `it_/int_` → `it_/int_` only:
 
@@ -554,7 +571,7 @@ Net result: one function, one call site, zero side-data structures. No `tbpAllow
 
 **`auxies` are disjoint from `it_/int_` goals.** Auxies (the `set<int>` first slot of the TBP value tuple) are induction-discharge bookkeeping. A TBP entry whose body has `it_/int_` args is class-rewritable by sanitize and never participates in induction discharge — sanitize would rewrite the body while a parallel auxy expects the pre-rename form, breaking the induction discharge contract. An assert at the `addExprToMemoryBlock` `status==2` insertion site enforces this: if the body matches `it_/int_` regex, `auxyIndex` must be `< 0`.
 
-**Call site.** One — the end of `performElementaryLogicalStep`, immediately after `sanitizeHashMemory(body)`.
+**Call site.** The end of `performElementaryLogicalStep`; compact rules use their separate canonical maintenance path.
 
 ## Extension — `applyEquivalenceClass` compiled-implication branch ([D-68](../40_decisions.md#d-68), RETIRED)
 
@@ -564,9 +581,9 @@ A prototype split `applyEquivalenceClass`'s per-rewrite deposit loop by source-e
 
 **Only the canonical form of a compact implication enters hash memory.** The install door's per-implication body (`installExpandedImplication`, `prover.hpp`; the one place the mailed compact and the or / existence cohort compact share, because a cohort's compacts are disintegrated inside the parent's disintegration and reach the door only through the implication channel's source column) opens with the gate:
 
-1. **Canonical predicate.** For a compact carrier (`isCompactImplicationSpan`), `canonicalizeCompact` maps every argument that is a NameMap name and a member of a class at the rule's scope or a strict ancestor to `chooseCanonicalId` of the DEEPEST such class (a descendant class absorbs its ancestors' members, so its pick is the global one; normal > `int_` > `it_`, lex-min in the tier, weak members at that scope skipped). The rewrite is `replaceKeysScratch` over the fired pairs; the pairs and their admission levels (`forEachLevel(packEqPairKey(from, to))`, D-280) come back with it. Unchanged text = canonical.
+1. **Canonical predicate.** For a compact carrier (`isCompactImplicationSpan`), `canonicalizeCompact` maps every eligible argument to `chooseCanonicalId` of its complete component at the rule's own scope (normal > `int_` > `it_`, lex-min in the tier, weak members at that target scope skipped). The rewrite is `replaceKeysScratch` over the fired pairs; the pairs and their admission levels (`forEachLevel(packEqPairKey(from, to))`, D-280) come back with it. Unchanged text = canonical.
 2. **A canonical carrier** installs exactly as before (`overallHashMemory` always, `workingMemory` for a status-3 recovery, else `localHashMemory` + `localHashMemoryDelta`; the D-274 row; the `expandedImplications` pair and the carrier-index record).
-3. **A non-canonical carrier K keeps no rule.** Its canonical form K* is expanded instead, once (`expandCanonicalCompact`: skipped when K* is already a carrier here or known at a strict ancestor; otherwise K*'s own disintegration, its implications through the same gate, and K* registered at the scope with the `equality1` history row `K* ← K, (=[from,to])…` — each equality cited where its origin row lives, the `applyEquivalenceClass` commit's walk — and the level run = the deposit's levels ∪ the fired pairs' levels). K itself stays a registered statement — hash fodder for the multiplied statements (the maintainer's rule: statements are multiplied, rules are canonical only).
+3. **A non-canonical carrier K keeps no rule.** Its canonical form K* is expanded instead, once (`expandCanonicalCompact`: skipped when K* is already a carrier here or known at a strict ancestor; otherwise K*'s own disintegration, its implications through the same gate, and K* registered at the scope with the `equality1` history row `K* ← K, (=[from,to])…` — each equality cited where its origin row lives, the `applyEquivalenceClass` commit's walk — and the level run = the deposit's levels ∪ the fired pairs' levels). Attached implication products from that disintegration are also registered through `addStatement`, with their already-recorded derivations and the same supporting levels, including pair-free re-expansion. Each installed auxiliary rule therefore retains its own compact statement. K itself stays in the historical known-statement registry. Its encoded row remains stored while unused; ordinary class processing is enabled when its core becomes used.
 
 **What it does not cover.** A compact expanded BEFORE its arguments joined a class keeps its rules until the class forms; that is the hook below, which runs the same reconcile from the class side. Gated on `!parameters.skip_eq_classes`.
 
@@ -574,8 +591,8 @@ A prototype split `applyEquivalenceClass`'s per-rewrite deposit loop by source-e
 
 **Only the class-canonical form of a deposit is admitted.** `addExprToMemoryBlock` (`prover.cpp`), after Site F on the raw text and Site H, runs `canonicalFormAtScope` (`prover.hpp`) on every deposit that is not a goal (status 2), not a positive or negated equality, and not an anchor predicate:
 
-1. **Own scope only.** The classes consulted are the deposit scope's own bucket (`equivalenceClassesMap` at that validity). An ancestor's class never binds directly — the D-44 merge absorbs it into the descendant's bucket when the first equality is admitted there — and a fresh scope's bucket is empty, so an `_orint_` branch's seeds and a recursion block's hypothesis keep the raw spelling their scope name / `recursionHypothesisId` were minted from. This agrees with `addStatement`'s registry filter, which judges at the exact scope.
-2. **Chooser.** `chooseCanonicalId` — normal > `int_lev_*` > `it_*_lev_*`, weak members at the scope skipped, lex-min within a tier — the same representative the admission / rejected key hooks collapse onto. Special-tier tokens come from the token scan, normal names from `collectExprTokens`; the walk is the ONE core `forEachNonCanonicalMemberTokenCore`, of which `filterIterationsCore` (the registry filter) is the `firstSpecialMemberId` / no-normal-source instance (byte-identical probe order, I-134). The two choosers agree on every reachable class (weak = the complement of `firstSpecialMemberId`'s pick at the same scope; a normal-name canonical carries no special token), so a door deposit is never refused by the registry filter.
+1. **The scope's complete view.** The classes consulted are the deposit scope's complete canonical view (`canonicalEquivalenceClassesMap` at that validity: its own application classes merged with every visible ancestor class, maintained by `rebuildCanonicalScope`). The scope name and the induction-hypothesis identity keep the raw spelling they were minted from.
+2. **Chooser.** `chooseCanonicalId` — ordinary > forced > integration by numeric depth > algebraic, weak members at the scope skipped, lexical ties — the same representative the admission / rejected key hooks collapse onto. Special-tier tokens come from the token scan, normal names from `collectExprTokens`, both resolved to NameMap ids once per call and walked once with the per-token rule of the core `forEachNonCanonicalMemberTokenCore`; each member token's representative is read from the normal half of `canonicalMemberRepresentatives` (`liveCanonicalMemberAt`, re-chosen live only when the recorded member turned weak, [I-287](../30_invariants.md#i-287)) instead of walking every class of the view. `filterIterationsCore` (the registry filter) is the core's `firstSpecialMemberId` / no-normal-source instance over the scan-and-lookup token source (byte-identical probe order, I-134). The two choosers agree on every reachable class (weak = the complement of `firstSpecialMemberId`'s pick at the same scope; a normal-name canonical carries no special token), so a door deposit is never refused by the registry filter.
 3. **Skip on presence.** A changed deposit whose canonical form is known at the scope or a strict ancestor ends at the door — nothing registers, no history line for the new raw spelling, both the raw and the canonical ids run `stageOrReleaseForRefusedDeposit` (I-174). The maintainer's rule: a known canonical form that was not disintegrated means the raw one would not be either; retrospective admission (the rejected-map revival) disintegrates parked compounds independently of this loop.
 4. **Locality, history and levels.** A rewrite flips the deposit to a LOCAL derivation iff at least one applied equality is a local statement of this LB (`appliedEqualityIsLocal` — the direct row or its mirror at the class scope or a strict ancestor; for a transitively joined pair, any local equality between two class members): it is then this LB's class product, the `equality1` rewrite `applyEquivalenceClass` would have made, and the canonical form registers local (the per-step delta the main-goal discharge and `fillMailOut` read; it is not staged external). A rewrite licensed only by mailed equalities keeps the arrival's locality. Without the flip a mailed fact that canonicalizes onto a main goal's literal text sits in the registry non-local and the goal never closes (the eight-theorem loss of the first landing). Under `trackHistory` the raw text keeps its producer line under the raw key (asserted present — a rewritten origin-less deposit would leave a bridge no chapter can resolve) and ships that row to `mailOut` at once whenever the row is local (the D-286 ship: the raw form is never a delta row). The canonical form's origin is one `equality1` bridge — raw form at the deposit scope, then each applied `(=[member,canonical])` cited at `findEqualityCiteScope` (the D-227 walk, shared with `applyEquivalenceClass`) — written only when the canonical form has no origin row (I-34). The level run is the deposit's ∪ the applied pairs' class levels (`{-1}` transparent, I-182); no union happens on the skip (a known canonical form with fewer levels means the arrival's extra premise was not needed — the over-premised-lemma ruling).
 5. **Downstream unchanged.** `applyEquiClasses` multiplies the registered canonical form into its full orbit (products commit inline, never through the door), so a literal non-equality goal closes from the product in the same `standardProcessing` call. Equalities merge classes at arrival and negated equalities get the one-sided I-12 expansion as before. Rule carriers, negated compact existences and or compacts are canonicalized like any statement: the rule install's gate (D-312) then sees a canonical carrier, and an or cohort opens on the canonical signature.
@@ -588,6 +605,10 @@ The absorb drain offers every arrival raw and stages the status-3 `intExternalSt
 
 `applyEquivalenceClassToCompactImplications` (`prover.hpp`) runs after the admission hook for every class visit of both `applyEquiClasses` passes, with the D-307 round skip (`cbHitsPrevRound`). Its per-apply snapshot (`RejectedValidityBuckets::ensureBuiltFrom` over the compact rows of `intEncodedStatements`, decoded through the NameMap) posts `(validity, argument) → compact keys`; the candidates are the compacts at the class validity or a strict descendant of it naming a non-canonical member. Per candidate: a carrier removed earlier in the apply is skipped; one unchanged under the class and installed is done; otherwise the full canonical form under every visible class (`canonicalizeCompact`) decides — changed: its rules leave (`removeCompactExpansion`, staged) and K* is expanded (`expandCanonicalCompact`, status 1, generation 0, the statement's levels ∪ the fired pairs' levels); unchanged but unexpanded (a weak-member shift): expanded as is. The removals finish ONCE per apply after the fixpoint (`finishCompactRemovals`: the removed carrier keys erased in one pass, every instance's LMV compaction over the drop set + owner-less erasure) — before the next hashburst. Contract: [I-210](../30_invariants.md#i-210).
 
+## Hypothesis reaction before class application
+
+`prover.hpp` and `ExpressionAnalyzer::standardProcessing` call `reactToHypo` after absorbing and clearing input mail, before `applyEquiClasses`. Qualifying hypothetical classes emit parent-scope copy equalities through the ordinary deposit door. Their class deltas reach application, recursion-product enrichment and expression cleanup before the sole delta clear; `fillMailOut` publishes their history in the same call. Both CPU phases use this order. Earlier qualification may change theorem coverage; there is no compatibility condition or extra processing pass.
+
 ## Extension — hashMem rule registry via end-of-burst sanitize ([D-69](../40_decisions.md#d-69), RETIRED)
 
 > **Retired ([D-312](../40_decisions.md#d-312)).** `sanitizeHashMemory` and `eradicateImplicationFromLB` are deleted; the rule registry stays canonical through the canonical gate and the compact hook above. `expandedImplications` survives as the hashburst dump's section source. The text below describes the retired mechanism.
@@ -598,7 +619,7 @@ The absorb drain offers every arrival raw and stages the status-3 `intExternalSt
 
 **The `expandedImplications` index.** Every call to `addToHashMemory` from `addExprToMemoryBlock`'s implication branch inserts the implication's `(original, validityName)` into both `memoryBlock.expandedImplications` (local index, surveyed by the next end-of-burst sanitize) and `memoryBlock.mailOut.expandedImplications` (broadcast to children via `sendMail`). At the start of every burst, `body.mailIn.expandedImplications` is merged into `body.expandedImplications` and `mailIn` is cleared. Result: every LB whose hash registry actually holds a particular implication has that implication's signature in its own index, ready for sanitize.
 
-**Sanitize walk.** For each entry in `body.expandedImplications`, the helper checks every `it_*_lev_*_*` / `int_lev_*_*` arg against the equi-classes visible at the entry's scope (the entry's own `validityName` plus every ancestor scope via `mb.nameMap.strictAncestorNames`). If any arg has a strictly-higher-priority `it_/int_` peer in any visible equi-class, the substitution is scheduled; otherwise the entry is skipped. Priority: `int_*` outranks `it_*`; within the same prefix, lex-smallest wins. `repl_*` and plain (non-`it_/int_`) names never qualify as replacements and never participate in the priority ranking.
+**Sanitize walk.** For each entry in `body.expandedImplications`, the helper checks every `it_*_lev_*_*` / `int_lev_*_*` arg against the equi-classes visible at the entry's scope (the entry's own `validityName` plus every ancestor scope via `mb.nameMap.strictAncestorNames`). If any arg has a strictly-higher-priority `it_/int_` peer in any visible equi-class, the substitution is scheduled; otherwise the entry is skipped. The retired mechanism preferred its integration names to algebraic names with lexical ties and excluded ordinary names. Current witness ordering is described above under special-name sanitization.
 
 **Apply: mail rewrite, eradicate original.** For each scheduled rewrite:
 
@@ -628,7 +649,7 @@ The kernel's natural absorb-via-`addStatement` → `addExprToMemoryBlock` → di
 ## Extension — `checkForEquivalence` gates on the `fullyDisintegrated` flag
 
 `intKnownStatements` is a map `packStatementKey(originalId, validityId) → StatementFlags`, where
-`StatementFlags { bool local; bool fullyDisintegrated; bool registered; bool known; }` (memory.hpp; the two membership bits per [I-85](../30_invariants.md#i-85)):
+`StatementFlags { bool local; bool fullyDisintegrated; }` (memory.hpp; row presence is membership per [I-85](../30_invariants.md#i-85)):
 
 - `local` — `1` iff the expression was added to `localEncoded` (a status 0/1 local
  derivation — set as `local` in `addStatement` / `addEquality` /
@@ -644,12 +665,9 @@ The kernel's natural absorb-via-`addStatement` → `addExprToMemoryBlock` → di
  one admitted witness** (one `it_`/`int_` witness in `admittedVars` after Pass B +
  cascade — one is enough). Default `0`; only the `addExprToMemoryBlock` call site
  that consumed a `true` from `disintegrateExpr2` flips it on `expr`'s own entry
- (inserting the entry if `expr` was not self-returned among the stmts).
+ only if admission already created that entry; the marker creates no row.
 
-`checkForEquivalence` (the disintegration-gate variant check) suppresses
-disintegration only when a matching equivalence-class variant is present **and
-`fullyDisintegrated`** (`it->second.fullyDisintegrated`), not on locality and not
-on mere presence.
+`checkForEquivalence` compares stored and incoming expressions through the complete classes at the exact disintegration scope. A matching original row must have `fullyDisintegrated` set. The index retains original statement keys and reads their current flags; ancestor and sibling completion does not suppress this scope. Direct literal completion is a fast hit, and other identities use the shared shape/scope projection cache. No Cartesian family of hypothetical expressions is enumerated.
 
 **Why full disintegration, not locality.** Locality is too weak. The Gauss
 fold-`n+1` step stalled on the dead product `9·7`: the local existence
@@ -687,6 +705,116 @@ change is invisible to them.
 - [D-19](../40_decisions.md#d-19), [D-57](../40_decisions.md#d-57), [D-62](../40_decisions.md#d-62), [D-63](../40_decisions.md#d-63), [G-31](../50_gotchas.md#g-31), [G-32](../50_gotchas.md#g-32).
 -.
 - Verifier tags: `equality1`, `equality2`, `symmetry of equality`, `symmetry of inequality` — see [`20_core_concepts/08_proof_tags.md`](08_proof_tags.md).
+
+## Dormant encoded rows, `usedAsPremise`, and the watch ledgers
+
+`memory.hpp` and `usedAsPremise` classify an encoded row as used when its
+SIGNED core occurs in any of the block's four current premise indexes
+(`usedAsPremiseCorePairs`, rebuilt by `refreshUsedAsPremise` at every rule
+staging close from `forEachPremiseCore`); equality, negated equality and
+anchors retain their dedicated handling. Nothing else makes a row used —
+not a goal, not a negated statement, not a contradiction seed — and the same
+signed membership is the only device-upload criterion. Those rows are
+WATCHED instead: `Memory::negationLedger` mirrors `intKnownStatements` for
+the known negated non-equality, non-anchor rows and `Memory::goalLedger` is
+derived from `intToBeProved`, both keyed `(scope, unsigned core)` with sorted
+`(canonical id, original id)` runs, where the canonical id is the original
+text under every class bucket visible at the scope (`canonicalWatchFormAt`,
+root → scope to a fixpoint). The class-merge seam re-keys the merged scope
+and its descendants, stages the moved negation entries for a re-check, and
+imports the ancestor negated rows naming a member into the merged scope's
+run; a new negated row imports itself into the descendant class scopes that
+can rewrite it. Once per `standardProcessing`, after the class application
+and before the two discharge sweeps, `materializeWatchHits` turns every
+canonical contradiction or goal pair into the exact pair the sweeps fire on:
+positive arrivals probe the negation runs, negated arrivals / re-checks /
+goals probe the known registry when their peer's signed core is used as a
+premise and otherwise a per-step batch sweep, live `_ordis_` branches probe
+their assumption's negation — and a hit writes the canonical twin of each
+side at the probing scope (`commitDerivedLocalRow` with one `equality1`
+bridge) plus, for a goal, its literal spelling. See
+[D-380](../40_decisions.md#d-380)
+and [I-246](../30_invariants.md#i-246).
+
+The deposit door still processes the own-scope canonical replacement. A rejected
+original spelling gets no new known entry or levels row; its producer history
+remains when an equality bridge cites it. `canonicalizeUnusedDeposit` supplies
+the same admission rule to statement products. A stored unused row is retained
+as admitted: subsequent class changes neither rewrite it nor remove it through
+`cleanUpExpressions`. Its known entry, levels, locality and ordinary list
+membership remain. Scope wipes and block discharge still remove rows normally.
+
+`applyEquiClasses` uses newly eligible signed cores to revisit stored rows below
+the class waterlines. The statement-major closure generates required forms under
+comparable classes, with products at the deeper scope. Older rows reactivated
+without a class delta receive cleanup only after the closure completes; delta
+scopes keep the normal `standardProcessing` cleanup order. Per-call completed
+core coverage prevents reopening the same core in every fixpoint round. No
+suppression set or restoration scan exists. A negated arrival activates
+nothing; the watch drain pairs it. For a newly used row, affected-row
+collection continues through applicable classes after its first hit so a
+child delta cannot hide the older source scope's cleanup requirement.
+
+`LbMemory` stores current signed premise eligibility and completed signed
+class coverage in tags 822 and 824 (tag 823, the former retained unsigned
+usage, is retired; tag 825 too). The two sets deload and clear on discharge.
+The watch ledgers and the two pending lists ride the persistent arena (never
+deloaded, reclaimed at discharge); fact-template clones copy the negation
+ledger alongside the facts. GPU upload is controlled exclusively by signed
+premise cores.
+
+See [I-225](../30_invariants.md#i-225) and
+[D-361](../40_decisions.md#d-361).
+
+### Why the excluded shapes need separate handling
+
+Core usage is insufficient by itself for shapes
+with dedicated consumers. Equality substitution remains logically valid; the
+exclusions preserve the current registration, propagation, and context contracts.
+
+- **Equalities:** `prover.hpp` and `addStatement` register the original pair
+ through `addEquality` and then update the class. Once that class contains both
+ arguments, canonicalizing the pair can turn `(=[a,b])` into `(=[a,a])`.
+ `fillMailOut` sends the local delta rows, not the class store, so replacing that
+ delta would remove the nontrivial relation from outgoing statement mail. A
+ canonical-only equality list therefore needs an explicit way to preserve
+ class-building information for recipients and its existing proof history.
+- **Negated equalities:** `applyEquivalenceClassToNegatedEquality` runs at
+ arrival and after relevant class changes, including comparable scopes.
+ `dischargeContradiction` scans encoded rows and probes the exact negated
+ spelling in known facts. A canonical-only extension must coordinate those
+ consumers, mirrored registration, and the equal-endpoint case; removing the
+ shape gate alone does not establish that contract.
+- **Anchors:** the runtime treats their argument tuples as positional context.
+ `canonicalFormAtScope` and `collectEquiAffectedRows` exclude them, and the
+ admission hooks independently refuse substitutions that change anchor slots.
+ Anchor predicates can occur in rule premises; those signed cores are already
+ eligible under the ordinary premise test. Canonicalizing an unused anchor row
+ would still require checking its context and export consumers.
+
+### Ordering of OR deposits
+
+`ordisMerge` consumes each owning statement buffer in its existing order:
+post-registration emissions, committed equivalence products, canonicalized
+registry rows, and negated-equality products. No extra expression sort runs at
+these four consumers. Class traversal and hash-engine ordering retain their
+own contracts.
+
+The first matching deposit selects any capped contradiction witness. A different
+repeatable order can therefore change proof bytes without being nondeterministic.
+The direct production-path regression in `tests/test_equi_reshuffle.cpp` checks
+that reversed p/q input selects the corresponding first witness and repeated
+identical input repeats that selection. Full and shortcut repeated-run acceptance
+is recorded in `ordis_merge_sorting_plan.md`. See
+[D-343](../40_decisions.md#d-343).
+
+Canonical-only history bridges follow the execution mode: ordinary proof
+processing requires the source history and keeps the assertion at the rewrite
+site. Counterexample-filter clones intentionally omit fact origins and never
+export proof certificates, so their canonical-only replacements update state
+without producing these bridges. Admission first applies the existing raw
+axed-variable and ancestor-known refusals; rewritten rows also pass the target
+axed-variable and ancestor-known gates.
 
 ---
 

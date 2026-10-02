@@ -62,9 +62,9 @@ def find_lake() -> Path | None:
     """
     @brief Locate the Lake build tool of the Lean toolchain.
     @details
-    `lake` on the PATH wins; otherwise the elan default install directory
-    `~/.elan/bin` is probed for `lake.exe` and `lake`. Absence is a defined
-    answer, not a failure: the maintainer's policy makes the Lean export
+    `lake` on the PATH wins; otherwise the configured elan directory
+    `ELAN_HOME/bin` (default `~/.elan/bin`) is probed for `lake.exe` and
+    `lake`. Absence is a defined answer, not a failure: the maintainer's policy makes the Lean export
     conditional on the toolchain and never crashes a customer run without it.
     @return Path of the Lake executable, or None when no toolchain is installed.
     """
@@ -72,8 +72,9 @@ def find_lake() -> Path | None:
     found = shutil.which("lake")
     if found is not None:
         return Path(found)
+    elan_home = Path(os.environ.get("ELAN_HOME", str(Path.home() / ".elan")))
     for name in ("lake.exe", "lake"):
-        candidate = Path.home() / ".elan" / "bin" / name
+        candidate = elan_home / "bin" / name
         if candidate.is_file():
             return candidate
     return None
@@ -141,6 +142,31 @@ def parsed_block(
     ]
 
 
+def canonical_citation_sources(
+    records: tuple[TheoremRecord, ...],
+    first: int,
+    last: int,
+) -> list[int]:
+    """
+    @brief Select one explicit citation source for each proposition in a live block.
+    @details Equivalent public proofs remain selected for export. Their citations
+    name the lowest source index, which the certificate validates and uses in
+    both dependency ordering and chapter references.
+    @param records Complete processed theorem registry.
+    @param first First source index of the live block.
+    @param last Last source index of the live block.
+    @return Sorted citation source indices with one entry per alpha-equivalent class.
+    @invariant Every chosen source belongs to the requested nonempty block.
+    """
+
+    assert 0 <= first <= last < len(records)
+    chosen: dict[str, int] = {}
+    for record in records[first:last + 1]:
+        key = alpha_key(record.expression)
+        chosen[key] = min(chosen.get(key, record.source_index), record.source_index)
+    return sorted(chosen.values())
+
+
 def same_list_imports(
     records: tuple[TheoremRecord, ...],
     parsed: list[TheoremRecord],
@@ -171,9 +197,11 @@ def same_list_imports(
             matches = by_alpha.get(alpha_key(cited), [])
             if not matches:
                 continue
-            assert len(matches) == 1, f"citation of source {theorem.source_index} is alpha-ambiguous"
-            if not first <= matches[0] <= last:
-                imported.add(matches[0])
+            outside = [index for index in matches if not first <= index <= last]
+            if outside:
+                # A statement-only citation may name multiple proved copies.
+                # Pin one canonical prior proof in the dependency certificate.
+                imported.add(min(outside))
     return sorted(imported)
 
 
@@ -455,6 +483,22 @@ def _fresh_export_directory(out_dir: Path) -> Path:
     return export_dir
 
 
+def skip_export(out_dir: Path, notice: str) -> None:
+    """@brief Omit certification and remove this output's stale generated export.
+
+    @details The current graph must never display a previous run's Lean result.
+    Only the resolved export child of the specified output directory is removed.
+    @param out_dir Proof graph output directory whose export is disabled.
+    @param notice User-facing reason for omitting certification.
+    @return None.
+    """
+    print(f"[lean-export] {notice}")
+    stale = out_dir / EXPORT_FOLDER
+    assert stale.resolve().parent == out_dir.resolve()
+    if stale.exists():
+        shutil.rmtree(stale)
+
+
 def _skip_without_toolchain(out_dir: Path) -> None:
     """
     @brief Apply the no-toolchain policy: one notice, no export, no stale folder.
@@ -465,24 +509,30 @@ def _skip_without_toolchain(out_dir: Path) -> None:
     @return None.
     """
 
-    print(f"[lean-export] Lean toolchain not found — Lean export skipped; {INSTALL_HINT}")
-    stale = out_dir / EXPORT_FOLDER
-    if stale.exists():
-        shutil.rmtree(stale)
+    skip_export(out_dir, f"Lean toolchain not found — Lean export skipped; {INSTALL_HINT}")
 
 
 def kernel_check(lake: Path, project_dir: Path, fta_module: bool) -> None:
     """
     @brief Kernel-check an exported Lean project and record the log.
-    @details `lake build` checks the default target (Peano and Gauss); the FTA
-    module is outside that target and is compiled separately. Output goes to
-    `kernel_check.log` in the project; a non-zero exit fails the run.
+    @details `lake build` checks the connected default target, including Peano,
+    Gauss, FTA and their Nat instances. The optional additional command compiles
+    the FTA module directly when requested. Output goes to
+    `kernel_check.log` in the project; a non-zero exit fails the run with a
+    `RuntimeError` -- an explicit raise, not an `assert`, so the gate holds
+    under `python -O` too.
+    The child receives explicit `ELAN_HOME` (the configured override or
+    `~/.elan`), so launcher discovery does not depend on implicit user-home
+    resolution. The project toolchain pin and the parent environment are unchanged.
     @param lake The Lake executable.
     @param project_dir Exported Lean project.
     @param fta_module Whether `GLExport/Generated/FTA.lean` must be compiled too.
-    @return None.
+    @return None; a failing command raises `RuntimeError` after its exit code
+            is logged.
     """
 
+    environment = dict(os.environ)
+    environment.setdefault("ELAN_HOME", str(Path.home() / ".elan"))
     commands: list[list[str]] = [[str(lake), "build"]]
     if fta_module:
         commands.append([str(lake), "env", "lean", os.path.join("GLExport", "Generated", "FTA.lean")])
@@ -492,12 +542,13 @@ def kernel_check(lake: Path, project_dir: Path, fta_module: bool) -> None:
             handle.write("$ " + " ".join(command) + "\n")
             handle.flush()
             completed = subprocess.run(
-                command, cwd=project_dir, stdout=handle, stderr=subprocess.STDOUT, check=False,
+                command, cwd=project_dir, env=environment,
+                stdout=handle, stderr=subprocess.STDOUT, check=False,
             )
             handle.write(f"exit {completed.returncode}\n")
-            assert completed.returncode == 0, (
-                f"Lean kernel check failed: {' '.join(command)} (see {log})"
-            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"Lean kernel check failed: {' '.join(command)} (see {log})")
     print(f"[lean-export] kernel check passed: {project_dir}")
 
 
@@ -508,12 +559,12 @@ def export_main_graph(
     binaries_dir: Path,
 ) -> Path | None:
     """
-    @brief Export and kernel-check the full run's Peano and Gauss theorems.
+    @brief Export and kernel-check the connected Peano, Gauss, and FTA proofs.
     @details
-    Writes `<out_dir>/lean_export/`: the two live selections, the Peano
-    certificate, the Gauss certificate (depending on the Peano one by hash and
-    by the Peano theorems Gauss cites), the Lean project with both generated
-    modules and manifests, and the kernel-check log. Without a Lean toolchain
+    Writes `<out_dir>/lean_export/`: three live selections, certificates with
+    the exact same-run preceding proof dependencies, generated modules and
+    manifests, the shared Nat model and every public theorem's concrete
+    instance, and the single connected kernel-check log. Without a Lean toolchain
     nothing is written and one notice is printed.
     @param proc_dir The main `processed_proof_graph` folder.
     @param out_dir The main `full_proof_graph` folder.
@@ -529,7 +580,7 @@ def export_main_graph(
     export_dir = _fresh_export_directory(out_dir)
     records = load_theorem_records(proc_dir)
     blocks = theorem_list_blocks(records)
-    assert "AnchorPeano" in blocks and "AnchorGauss" in blocks, f"unexpected anchor blocks {blocks}"
+    assert set(blocks) == {"AnchorPeano", "AnchorGauss", "AnchorFTA"}, f"unexpected anchor blocks {blocks}"
     theorem_list_hash = sha256_file(proc_dir / "global_theorem_list.txt")
 
     peano_first, peano_last = blocks["AnchorPeano"]
@@ -541,6 +592,7 @@ def export_main_graph(
         "theorem_list_sha256": theorem_list_hash,
         "source_range": {"first": peano_first, "last": peano_last},
         "excluded_sources": [],
+        "citation_source_indices": canonical_citation_sources(records, peano_first, peano_last),
     })
     peano_certificate_path = export_dir / "certificates" / "peano" / "certificate.json"
     peano_certificate = build_certificate(
@@ -562,6 +614,7 @@ def export_main_graph(
         "theorem_list_sha256": theorem_list_hash,
         "source_range": {"first": gauss_first, "last": gauss_last},
         "excluded_sources": [],
+        "citation_source_indices": canonical_citation_sources(records, gauss_first, gauss_last),
         "certificate_dependencies": [{
             "id": peano_id,
             "certificate": "certificates/peano/certificate.json",
@@ -575,6 +628,41 @@ def export_main_graph(
     write_certificate(gauss_certificate, export_dir / "certificates" / "gauss" / "certificate.json")
     write_lean(gauss_certificate, export_dir)
     print(f"[lean-export] {gauss_id}: {gauss_certificate['corpus']['coverage']}")
+    fta_first, fta_last = blocks["AnchorFTA"]
+    fta_id = f"fta_live_{fta_last - fta_first + 1}"
+    parsed = parsed_block(records, fta_first, fta_last)
+    imports = same_list_imports(records, parsed, fta_first, fta_last)
+    gauss_certificate_path = export_dir / "certificates" / "gauss" / "certificate.json"
+    dependencies = []
+    for identifier, path, lower, upper in (
+        (peano_id, peano_certificate_path, peano_first, peano_last),
+        (gauss_id, gauss_certificate_path, gauss_first, gauss_last),
+    ):
+        dependencies.append({
+            "id": identifier,
+            "certificate": str(path.relative_to(export_dir)).replace(chr(92), "/"),
+            "certificate_sha256": sha256_file(path),
+            "required_source_indices": [index for index in imports if lower <= index <= upper],
+        })
+    assert all(peano_first <= index <= gauss_last for index in imports)
+    selection_path = export_dir / "selection_fta.json"
+    _write_json(selection_path, {
+        "schema_version": 3, "id": fta_id,
+        "theorem_id_prefix": "fta_source", "theorem_name_prefix": "FTA source",
+        "theorem_list_sha256": theorem_list_hash,
+        "source_range": {"first": fta_first, "last": fta_last},
+        "excluded_sources": [],
+        "citation_source_indices": canonical_citation_sources(records, fta_first, fta_last),
+        "certificate_dependencies": dependencies,
+        "target_source_indices": list(range(fta_first, fta_last + 1)),
+    })
+    fta_certificate = build_certificate(
+        selection_path, proc_dir, config_dir / "ConfigFTA.json", binaries_dir / "GL_binary_FTA.json")
+    write_certificate(fta_certificate, export_dir / "certificates" / "fta" / "certificate.json")
+    write_lean(fta_certificate, export_dir)
+    print(f"[lean-export] {fta_id}: {fta_certificate['corpus']['coverage']}")
+    from proof_export.nat import write_nat_model
+    write_nat_model([peano_certificate, gauss_certificate, fta_certificate], export_dir)
     kernel_check(lake, export_dir, fta_module=False)
     return export_dir
 
@@ -667,9 +755,10 @@ def export_shortcut_graph(
     binaries_dir: Path,
 ) -> Path | None:
     """
-    @brief Export and kernel-check the shortcut run's FTA theorems.
+    @brief Render a historical shortcut graph as a conditional Lean fixture.
     @details
-    Independent of the main path: the FTA corpus cites only the externals
+    This helper is not called by the development shortcut and does not supply
+    a connected Nat certificate. The FTA corpus cites only the externals
     snapshot the shortcut proved against, so that snapshot becomes the
     certificate's dependency (`external_theorem_lists`), every external
     citation is resolved by content against it — alpha-equivalently or by

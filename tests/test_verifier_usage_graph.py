@@ -65,8 +65,8 @@ def _state_with_theorems(*exprs):
     """Minimal state whose global registry holds ``exprs`` (direct type)."""
     state = make_state_minimal()
     for expr in exprs:
-        state.global_theorems[expr] = {"type": "direct", "ref": "-1"}
-        state.global_theorem_list.append((expr, "direct", "-1"))
+        state.global_theorems[expr] = {"type": "single chapter proof", "ref": "-1"}
+        state.global_theorem_list.append((expr, "single chapter proof", "-1"))
     return state
 
 

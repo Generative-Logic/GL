@@ -1,4 +1,4 @@
-﻿/* Generative Logic : A deterministic reasoning and knowledge generation engine.
+/* Generative Logic : A deterministic reasoning and knowledge generation engine.
  Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
@@ -22,6 +22,7 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
+#include "project_paths.hpp"
 #include "prover.hpp"
 #include "memory_infra/lb_deload.hpp"
 #include <numeric>
@@ -275,6 +276,15 @@ static std::vector<size_t> sortedOriginIndicesD49(
 static ExpressionWithValidity liftToShallowestOriginAncestor(
         const Memory& mb,
         const ExpressionWithValidity& v) {
+    int64_t exactKey = 0;
+    if (lookupOriginKey(mb.originInterner, v.original, v.validityName, exactKey)) {
+        const int32_t exactId = mb.exprOriginMap.lookup(exactKey);
+        if (exactId != 0) {
+            for (const IdOrigin& origin : mb.exprOriginMap.recordsAt(exactId)) {
+                if (origin.first == OriginTag::zoomIn) return v;
+            }
+        }
+    }
     const std::string& s = v.validityName;
     static const std::string sep = "_boundary_";
     std::vector<std::string> ancestors;
@@ -379,13 +389,14 @@ bool ExpressionAnalyzer::contradictionLbHoldsRecord(Memory& contraLB,
 /// @param stack                Accumulating chapter rows.
 /// @param covered              Nodes already given a row this chapter.
 /// @param rowsSurviveOnFailure See the details above.
+/// @param preserveScope Keep the exact source scope recorded by a zoom in row.
 /// @return True when an acyclic derivation tree was emitted.
 /// @see ExpressionAnalyzer::buildStack (declaration)
 bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     const ExpressionWithValidity& provedIn,
     std::vector<std::vector<std::string>>& stack,
     std::set<ExpressionWithValidity>& covered,
-    bool rowsSurviveOnFailure) {
+    bool rowsSurviveOnFailure, bool preserveScope) {
     // Hang tripwire: exponential candidate exploration can make a chapter
     // walk unboundedly long; cap calls at 5M so the process exits with a
     // clear signal instead of hanging indefinitely.
@@ -423,7 +434,8 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     // the lifted scope (truthful "this is where the derivation lives"), the
     // path-cycle filter uses the lifted form, and recursion lifts each dep
     // so duplicates collapse to a single (expr, lifted_v) row per chapter.
-    const ExpressionWithValidity proved = liftToShallowestOriginAncestor(memoryBlock, provedIn);
+    const ExpressionWithValidity proved = preserveScope ? provedIn
+        : liftToShallowestOriginAncestor(memoryBlock, provedIn);
 
     int64_t pkProved = 0;
     bool hasOrigins = false;
@@ -470,7 +482,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
                 // this frame's verdict, so whoever would discard ours discards
                 // its too.
                 return buildStack(*contraLB, proved, stack, covered,
-                                  rowsSurviveOnFailure);
+                                  rowsSurviveOnFailure, preserveScope);
             }
         }
         std::cerr << "[buildStack] no origin for: " << proved.original
@@ -594,7 +606,8 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         std::vector<ExpressionWithValidity> liftedDeps;
         liftedDeps.reserve(origin.second.size());
         for (const auto& d : origin.second) {
-            liftedDeps.push_back(liftToShallowestOriginAncestor(memoryBlock, d));
+            liftedDeps.push_back(origin.first == "zoom in" ? d
+                : liftToShallowestOriginAncestor(memoryBlock, d));
         }
 
         bool cyclic = false;
@@ -653,7 +666,8 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
                 // to `stackSnap`, taken before this candidate emitted, so every
                 // row the child pushed goes with it.
                 if (!buildStack(memoryBlock, ingredient, stack, covered,
-                                /*rowsSurviveOnFailure=*/false)) {
+                                /*rowsSurviveOnFailure=*/false,
+                                /*preserveScope=*/origin.first == "zoom in")) {
                     myConflict.insert(g_failConflict.begin(), g_failConflict.end());
                     myConsulted.insert(g_failConsulted.begin(), g_failConsulted.end());
                     if (g_failContextDependent) myContextDependent = true;
@@ -702,7 +716,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
             if (insertedHere) g_buildStackPath.erase(proved);
             // Inherits this frame's fate, exactly as the entry-side site.
             const bool twinVerdict = buildStack(*contraLB, proved, stack, covered,
-                                                rowsSurviveOnFailure);
+                                                rowsSurviveOnFailure, preserveScope);
             if (!twinVerdict) {
                 // The twin conflict plus this frame own blockers; not cached,
                 // because the verdict was produced on another LB.
@@ -767,7 +781,8 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         std::vector<ExpressionWithValidity> liftedDeps;
         liftedDeps.reserve(fb.second.size());
         for (const auto& d : fb.second) {
-            liftedDeps.push_back(liftToShallowestOriginAncestor(memoryBlock, d));
+            liftedDeps.push_back(fb.first == "zoom in" ? d
+                : liftToShallowestOriginAncestor(memoryBlock, d));
         }
         emitRow(fb, liftedDeps);
         for (const auto& d : liftedDeps) {
@@ -776,7 +791,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
                 // Inherits: this frame ignores the verdict and never rolls
                 // back, so the child's rows live exactly as long as ours.
                 (void) buildStack(memoryBlock, d, stack, covered,
-                                  rowsSurviveOnFailure);
+                                  rowsSurviveOnFailure, fb.first == "zoom in");
             }
         }
     }
@@ -1024,6 +1039,7 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
     int loadedSpontaneous = 0;
     int loadedTotal = 0;
     int maxImpl = -1, maxExist = -1, maxAnd = -1, maxOr = -1;
+    std::vector<std::string> loadedNamed;
 
     for (auto it = root.begin(); it != root.end(); ++it) {
         const std::string& name = it.key();
@@ -1062,6 +1078,40 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
         {
             LogicalEntity le(category, elements, signature, arity, definedSet);
             le.implications = implications;
+            if (entry.contains("conjunction_refutations")) {
+                const auto& auxiliary = entry.at("conjunction_refutations");
+                assert(auxiliary.at("version") == 1);
+                le.conjunctionRefutationsPrepared = auxiliary.at("prepared").get<bool>();
+                le.conjunctionRefutations = auxiliary.at("rules").get<
+                    std::vector<std::pair<std::string, std::string>>>();
+            }
+            if (entry.contains("supporting_implications")) {
+                const auto& auxiliary = entry.at("supporting_implications");
+                const int version = auxiliary.at("version").get<int>();
+                assert(version == 1 || version == 2);
+                le.supportingImplicationsPrepared = version == 2 && auxiliary.at("prepared").get<bool>();
+                le.supportingImplicationAuxiliary = auxiliary.at("auxiliary").get<bool>();
+                le.supportingImplications = auxiliary.at("rules").get<std::vector<std::string>>();
+                if (version == 2)
+                    le.composedSupportingImplications = auxiliary.at("composed_rules").get<std::vector<std::string>>();
+                assert(le.composedSupportingImplications.empty()
+                    || le.composedSupportingImplications.size() == le.supportingImplications.size());
+            }
+            if (entry.contains("contraposition")) {
+                const auto& auxiliary = entry.at("contraposition");
+                assert(auxiliary.at("version") == 1);
+                le.contrapositionPrepared = auxiliary.at("prepared").get<bool>();
+                le.contrapositionAuxiliary = auxiliary.at("auxiliary").get<bool>();
+                assert(auxiliary.at("rules").is_array());
+                for (const auto& row : auxiliary.at("rules")) {
+                    ContrapositionTemplate rule;
+                    rule.sources = row.at("sources").get<std::vector<std::string>>();
+                    rule.sourceRule = row.at("source").get<std::string>();
+                    rule.reverseRule = row.at("reverse").get<std::string>();
+                    assert(!rule.sources.empty());
+                    le.contrapositives.push_back(std::move(rule));
+                }
+            }
             compiledExpressions[name] = le;
         }
         ++loadedTotal;
@@ -1070,22 +1120,33 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
         // constructor loads the binary BEFORE coreExpressionMap exists — so
         // it is recorded and compiled at the first preMintReducedOrs seam,
         // which precedes every burst.
-        if (category == "or" && implications.empty()) {
-            orsAwaitingImplications.insert(name);
+        // A loaded list settles the wait either way: a later binary (a
+        // test's, a batch's) may supply the list an earlier one lacked.
+        if (category == "or") {
+            if (implications.empty()) orsAwaitingImplications.insert(name);
+            else orsAwaitingImplications.erase(name);
         }
-        if (category == "existence" && implications.empty()
-            && ExpressionAnalyzer::expectedExistenceImplicationCount(
-                   static_cast<int32_t>(elements.size())) > 0) {
-            existencesAwaitingImplications.insert(name);
+        // The named-only rule needs the registry the constructor is still
+        // filling: every two-element existence without a list awaits the
+        // seam, which compiles the named ones and leaves the rest empty.
+        if (category == "existence" && elements.size() == 2) {
+            if (implications.empty()) existencesAwaitingImplications.insert(name);
+            else existencesAwaitingImplications.erase(name);
         }
 
-        // Spontaneous categories also need a repetitionExclusionMap entry
-        // and contribute to counter seeding. Anchor / atomic entries are
-        // batch-local and stay out of these structures.
+        // Logical categories participate in reuse; only generated spellings
+        // seed numbered counters. Atomic predicates have no compound body.
         const bool isSpontaneous =
             (category == "implication") || (category == "existence")
             || (category == "or") || (category == "and");
         if (!isSpontaneous) continue;
+
+        // Public logical predicates need the same normalized reuse identities
+        // as fresh forced-name compilation, independently of counter seeding.
+        if (!isNumberedCompilationName(name, category)) {
+            loadedNamed.push_back(name);
+            continue;
+        }
 
         // Identify the prefix that matches the category and parse the
         // trailing integer. Names that don't fit (e.g. an anchor
@@ -1130,7 +1191,8 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
         // existence with the same elements E without the existence reusing the
         // implication's name. See repetitionExclusionMap declaration in
         // prover.hpp for the full rationale.
-        repetitionExclusionMap[std::make_pair(elements, category)] = std::make_tuple(reverseUnchMap, name, elements);
+        registerCompilationReuse(std::make_pair(elements, category),
+            std::make_tuple(reverseUnchMap, name, elements), false);
         ++loadedSpontaneous;
     }
 
@@ -1138,6 +1200,12 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
     if (maxExist >= 0) existenceCounter = std::max(existenceCounter, maxExist + 1);
     if (maxAnd   >= 0) andCounter       = std::max(andCounter,       maxAnd   + 1);
     if (maxOr    >= 0) orCounter        = std::max(orCounter,        maxOr    + 1);
+
+    loadCompilationState(jsonPath);
+    // Install all definitions before deriving public reuse and retirement.
+    // Shared files omit atomic entries; splitCompilationKey uses source arities.
+    for (const auto& name : loadedNamed) registerLoadedNamedCompilation(name);
+    finalizeCompilationReplacements();
 
 #if 0
     std::cout << "[loadGlBinary] loaded " << loadedTotal << " entries ("
@@ -1184,6 +1252,28 @@ void ExpressionAnalyzer::exportCompiledExpressionsJSON(const std::filesystem::pa
             entry["implications"] = impls;
         }
 
+        if (compExpr.contrapositionPrepared || compExpr.contrapositionAuxiliary
+            || !compExpr.contrapositives.empty()) {
+            nlohmann::json rules = nlohmann::json::array();
+            for (const auto& row : compExpr.contrapositives)
+                rules.push_back({{"sources", row.sources}, {"source", row.sourceRule},
+                    {"reverse", row.reverseRule}});
+            entry["contraposition"] = {{"version", 1},
+                {"prepared", compExpr.contrapositionPrepared},
+                {"auxiliary", compExpr.contrapositionAuxiliary}, {"rules", rules}};
+        }
+        if (compExpr.conjunctionRefutationsPrepared) {
+            entry["conjunction_refutations"] = {{"version", 1},
+                {"prepared", compExpr.conjunctionRefutationsPrepared},
+                {"rules", compExpr.conjunctionRefutations}};
+        }
+        if (compExpr.supportingImplicationsPrepared || compExpr.supportingImplicationAuxiliary) {
+            entry["supporting_implications"] = {{"version", 2},
+                {"prepared", compExpr.supportingImplicationsPrepared},
+                {"auxiliary", compExpr.supportingImplicationAuxiliary},
+                {"rules", compExpr.supportingImplications},
+                {"composed_rules", compExpr.composedSupportingImplications}};
+        }
         root[coreName] = entry;
     }
 
@@ -1192,6 +1282,7 @@ void ExpressionAnalyzer::exportCompiledExpressionsJSON(const std::filesystem::pa
         f << root.dump(2);
         f.close();
     }
+    exportCompilationState(outDir);
 }
 
 void ExpressionAnalyzer::generateRawProofGraph(
@@ -1270,6 +1361,40 @@ void ExpressionAnalyzer::generateRawProofGraph(
     exportTheoremUsage.clear();
     exportCurrentChapterTheorem.clear();
 
+    auto toLower = [](std::string s) {
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            s[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+        }
+        return s;
+        };
+
+    // Synthetic chapters have fixed citations, independent of origin choice.
+    // Make those obligations visible before any earlier chapter can cite the
+    // synthetic result; otherwise its later emission could close a cycle.
+    for (const auto& theorem : theoremList) {
+        const std::string& name = std::get<0>(theorem);
+        const std::string method = toLower(std::get<1>(theorem));
+        std::vector<std::string> row{name, "main"};
+        if (method == "reformulated statement") row.push_back("reformulated from");
+        else if (method == "incubator back reformulation") row.push_back(method);
+        else if (method == "or theorem" || method == "or elimination") row.push_back(method);
+        else continue; // Ordinary proof chapters choose their origins during the walk.
+        row.push_back(std::get<2>(theorem));
+        row.push_back("main");
+        if (method == "or theorem" || method == "or elimination") {
+            row.push_back(std::get<3>(theorem));
+            row.push_back("main");
+        }
+        if (method == "or elimination") {
+            const auto license = orElimCitedOrByMerged.find(name);
+            assert(license != orElimCitedOrByMerged.end()
+                && "generateRawProofGraph: fixed or-elimination edge has no license");
+            row.push_back(license->second);
+            row.push_back("main");
+        }
+        exportTheoremUsage.addEdgesFromStack(name, {row});
+    }
+
     // Per-chapter reload release (G-53): the export
     // reloads LBs from their SSD images on demand; without releasing them the
     // resident block set grows monotonically across the walk to static-pool
@@ -1279,9 +1404,6 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // an LB reloads it again on demand.
     std::vector<Memory*> exportReloaded;
     g_exportReloadSink = &exportReloaded;
-
-    std::cout << "Number proven theorems: "
-        << theoremList.size() / 2 << "\n";
 
     // ---------- out dir: "files/raw_proof_graph" by default ----------
     fs::path outDir = outDirParam.empty() ? (fs::path("files") / "raw_proof_graph") : outDirParam;
@@ -1297,8 +1419,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // set it to files/incubator/raw_proof_graph) would land the export in
     // files/incubator/GL_binaries/ — a directory the loader and the Python
     // _merge_into_shared step never read from. See D-54.
-    fs::path glBinDir = fs::path(__FILE__).parent_path()
-                        .parent_path().parent_path().parent_path()
+    fs::path glBinDir = gl::projectRoot()
                       / "files" / "GL_binaries";
     const auto binaryExportStarted = FrameClock::now();
     this->exportCompiledExpressionsJSON(glBinDir);
@@ -1345,13 +1466,6 @@ void ExpressionAnalyzer::generateRawProofGraph(
         ++buildStackCalls;
         return result;
     };
-
-    auto toLower = [](std::string s) {
-        for (std::size_t i = 0; i < s.size(); ++i) {
-            s[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-        }
-        return s;
-        };
 
     auto startsWith = [](const std::string& s, const std::string& pref) -> bool {
         return s.size() >= pref.size() && std::equal(pref.begin(), pref.end(), s.begin());
@@ -1408,7 +1522,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
             ++serializedChapters;
         };
 
-    auto directStack = [&](const std::string& theorem) -> std::vector<std::vector<std::string> > {
+    auto singleChapterStack = [&](const std::string& theorem) -> std::vector<std::vector<std::string> > {
         std::vector< std::tuple<
             std::string,                    // leftExpr
             std::vector<std::string>,       // args of the current implication node
@@ -1694,7 +1808,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // holds the scanned start offset.
     std::ofstream mapping((outDir / "global_theorem_list.txt").c_str(), std::ios::out | std::ios::app);
 
-    int lastDirectIdx = -1;
+    int lastSingleChapterIdx = -1;
     for (std::size_t i = 0; i < theoremList.size(); ++i) {
         const std::string& name = std::get<0>(theoremList[i]);
         const std::string& methodOrig = std::get<1>(theoremList[i]);
@@ -1733,21 +1847,21 @@ void ExpressionAnalyzer::generateRawProofGraph(
             writeStackIndexed(idx, "check_induction_condition", name, st1);
             ++idx;
         }
-        else if (method == "direct") {
+        else if (method == "single chapter proof") {
             auto cacheIt = cachedProofStacks.find(name);
             std::vector<std::vector<std::string> > st =
-                (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack0 : directStack(name);
-            writeStackIndexed(idx, "direct_proof", name, st);
+                (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack0 : singleChapterStack(name);
+            writeStackIndexed(idx, "single_chapter_proof", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
-            lastDirectIdx = idx;
+            lastSingleChapterIdx = idx;
             ++idx;
         }
         else if (method == "proved not broadcast") {
             // Level-refused closure recorded by the proved-not-broadcast
             // tier: a real derivation exists in the producing LB, so the
-            // chapter is the ordinary direct-proof walk under its own
+            // chapter is the ordinary single-chapter walk under its own
             // chapter kind.
-            std::vector<std::vector<std::string> > st = directStack(name);
+            std::vector<std::vector<std::string> > st = singleChapterStack(name);
             writeStackIndexed(idx, "proved_not_broadcast", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;

@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -53,7 +54,7 @@ namespace gl {
     /// statification no-heap rule): the only heap-free per-container state is a
     /// handful of inline ints. The directory is adaptive, to keep the
     /// per-container page overhead low (`dirCap = pageBytes / sizeof(int32)`
-    /// data-page vids per directory page — a power of two, e.g. 2048 at 8 KiB):
+    /// data-page vids per directory page — a power of two, e.g. 512 at 2 KiB):
     ///   - EMPTY: `rootVid_ == kNoVid`, zero pages.
     ///   - ONE data page (`numPages_ == 1`): `rootVid_` IS that data page's vid
     ///     — no directory page at all.
@@ -64,9 +65,13 @@ namespace gl {
     ///     holds up to `dirCap` data-page vids. When the single directory page
     ///     fills, it becomes L1 page 0 with NO copying. The page index splits
     ///     into (L1 index, slot) with one shift + one mask (`dirCap` is a power
-    ///     of two), mirroring the within-page split. Overflowing `dirCap²`
-    ///     asserts, naming the three-level directory that would follow — no real
-    ///     per-LB container is expected to exceed it under LB-split.
+    ///     of two), mirroring the within-page split.
+    ///   - `dirCap²+1 .. dirCap³` data pages: an L3 root indexes L2 pages,
+    ///     each with the same L1 shape. Promotion keeps the previous L2 root
+    ///     as child zero without moving payload. Empty tail directories are
+    ///     freed on shrink and the old root shape is restored at the boundary.
+    /// Directory coverage and the signed 32-bit element count are independent
+    /// hard bounds. Smaller vectors allocate no extra directory pages.
     ///
     /// Pages are addressed by the arena's stable virtual ids (vids), resolved
     /// through `pageAt` at every access; nothing here caches a physical
@@ -319,10 +324,12 @@ namespace gl {
         ///
         /// @param value Element to copy in.
         void push_back(const T& value) {
+            assert(size_ < std::numeric_limits<int32_t>::max()
+                && "PagedVector element count exceeds int32");
             if (*dirty_ == DirtyState::Clean)
                 *dirty_ = DirtyState::AppendedOnly;
             ensureGeometry();
-            if (size_ == (numPages_ << shift_))
+            if (size_ == (static_cast<int64_t>(numPages_) << shift_))
                 appendDataVid(arena_->allocPage());
             writeSlot(size_, value);
             ++size_;
@@ -332,19 +339,59 @@ namespace gl {
         ///        (the `std::vector::erase` contract, page-aware).
         ///
         /// @details
-        /// O(size - i) element copies across pages — fine for the cold
-        /// maintenance paths that erase (`wipeSubtree`-style back-to-front
-        /// loops). A tail page emptied by the shrink is freed eagerly.
+        /// O(size - i) element moves across pages, done as one overlap-safe
+        /// `memmove` per page span (`blockMove`). Repeated interior erases
+        /// can repeatedly move the same survivors; bulk filtering uses stable
+        /// forward compaction via `setAt` followed by `truncate` instead.
+        /// A tail page emptied by the shrink is freed eagerly.
         ///
         /// @param i Logical index in `[0, size())`.
         void erase(int32_t i) {
             assert(i >= 0 && i < size_);
             *dirty_ = DirtyState::Restructured;
-            for (int32_t j = i; j + 1 < size_; ++j)
-                writeSlot(j, (*this)[j + 1]);
+            blockMove(i + 1, i, size_ - 1 - i);
             --size_;
-            if (numPages_ > 0 && size_ <= ((numPages_ - 1) << shift_))
+            if (numPages_ > 0 && size_ <= (static_cast<int64_t>(numPages_ - 1) << shift_))
                 freeLastDataPage();
+        }
+
+        /// @brief Erase every element the predicate accepts in ONE stable
+        ///        forward compaction pass (the bulk twin of @ref erase).
+        ///
+        /// @details
+        /// Reads the elements in index order, keeps the survivors in their
+        /// relative order by writing each survivor to the next free slot
+        /// (`writeSlot`, skipped when nothing has moved yet), and reports each
+        /// erased element's ORIGINAL index to @p onErased before moving on.
+        /// The tail is released with @ref truncate, which frees the emptied
+        /// tail pages exactly as a sequence of single @ref erase calls would.
+        /// The result — survivors, their order, the pages held and the
+        /// `Restructured` mark — is identical to erasing the accepted
+        /// elements one by one from back to front; the cost is O(size)
+        /// element copies instead of O(size × erased).
+        ///
+        /// @param pred     Callable `bool(const T&)` — `true` erases.
+        /// @param onErased Callable `void(int32_t originalIndex)`, invoked in
+        ///                 ascending index order for every erased element.
+        /// @return The number of erased elements.
+        /// @post `size()` shrank by the return value; the dirty flag is
+        ///       `Restructured` iff the return value is non-zero.
+        template <typename Pred, typename OnErased>
+        int32_t eraseIf(Pred pred, OnErased onErased) {
+            int32_t write = 0;
+            const int32_t n = size_;
+            for (int32_t read = 0; read < n; ++read) {
+                const T value = (*this)[read];
+                if (pred(value)) {
+                    onErased(read);
+                    continue;
+                }
+                if (write != read) writeSlot(write, value);
+                ++write;
+            }
+            const int32_t removed = n - write;
+            if (removed != 0) truncate(write);   // marks Restructured, frees the tail pages
+            return removed;
         }
 
         /// @brief Insert `value` at index `i`, shifting elements `[i, size())`
@@ -352,26 +399,65 @@ namespace gl {
         ///        page-aware).
         ///
         /// @details
-        /// The mirror of `erase(index)` — O(size - i) element copies across
-        /// pages, growing by one page on a boundary. The cold-map family's
+        /// The mirror of `erase(index)` — O(size - i) element moves across
+        /// pages as one overlap-safe `memmove` per page span (`blockMove`),
+        /// growing by one page on a boundary. The cold-map family's
         /// set-valued store (`SetValueStore`) uses it to splice one value into
         /// the sorted middle of a key's CSR run, the operation `appendToTail`
-        /// (tail only) cannot do. Marks the aggregate `Restructured` — an
-        /// interior insert is not a tail-delta-eligible append. Single-threaded
-        /// write side only (I-83).
+        /// (tail only) cannot do. `value` is copied before the move, so a
+        /// reference into this vector is inserted with its pre-move content
+        /// (the `std::vector::insert` contract). Marks the aggregate
+        /// `Restructured` — an interior insert is not a tail-delta-eligible
+        /// append. Single-threaded write side only (I-83).
         ///
         /// @param i     Logical index in `[0, size()]` (`i == size()` appends).
         /// @param value Element to copy in.
         void insertAt(int32_t i, const T& value) {
             assert(i >= 0 && i <= size_);
+            assert(size_ < std::numeric_limits<int32_t>::max()
+                && "PagedVector element count exceeds int32");
+            const T copy = value;
             *dirty_ = DirtyState::Restructured;
             ensureGeometry();
-            if (size_ == (numPages_ << shift_))
+            if (size_ == (static_cast<int64_t>(numPages_) << shift_))
                 appendDataVid(arena_->allocPage());
-            for (int32_t j = size_; j > i; --j)
-                writeSlot(j, (*this)[j - 1]);
-            writeSlot(i, value);
             ++size_;
+            blockMove(i, i + 1, size_ - 1 - i);
+            writeSlot(i, copy);
+        }
+
+        /// @brief Add `delta` to every element of `[from, from + count)` —
+        ///        the page-aware bulk offset adjust of a CSR run-start column.
+        ///
+        /// @details
+        /// One pass per page span over contiguous slots, no per-element page
+        /// resolve. An interior splice into a CSR value column moves every
+        /// later run by the splice length; the owning set map applies that
+        /// move to its run-start column with this call. Arithmetic element
+        /// types only. Marks the aggregate `Restructured`. Single-threaded
+        /// write side only (I-83).
+        ///
+        /// @param from  First slot; `0 <= from <= size()`.
+        /// @param count Slots to adjust; `from + count <= size()`, `count <= 0`
+        ///              is a no-op.
+        /// @param delta Value added to each slot.
+        /// @return Nothing.
+        /// @invariant Slots outside the range keep their content.
+        void addToRange(int32_t from, int32_t count, T delta) {
+            static_assert(std::is_arithmetic<T>::value,
+                "PagedVector::addToRange needs an arithmetic element type");
+            assert(from >= 0 && count <= size_ - from);
+            if (count <= 0) return;
+            *dirty_ = DirtyState::Restructured;
+            const int32_t epp = mask_ + 1;
+            int32_t at = from;
+            const int32_t end = from + count;
+            while (at < end) {
+                const int32_t chunk = std::min(end - at, epp - (at & mask_));
+                T* span = reinterpret_cast<T*>(slotPtr(at));
+                for (int32_t k = 0; k < chunk; ++k) span[k] += delta;
+                at += chunk;
+            }
         }
 
         /// @brief Replace the `oldLen` elements at `[pos, pos+oldLen)` with the
@@ -438,14 +524,17 @@ namespace gl {
         template <typename Emit>
         void replaceRangeGenerated(int32_t pos, int32_t oldLen, int32_t newLen,
                                    Emit emit) {
-            assert(pos >= 0 && oldLen >= 0 && pos + oldLen <= size_);
+            assert(pos >= 0 && oldLen >= 0 && static_cast<int64_t>(pos) + oldLen <= size_);
             assert(newLen >= 0);
+            assert(static_cast<int64_t>(size_) - oldLen + newLen
+                <= std::numeric_limits<int32_t>::max()
+                && "PagedVector element count exceeds int32");
             const int32_t delta = newLen - oldLen;
             if (delta > 0) {
                 ensureGeometry();
                 const int32_t oldSize = size_;
                 for (int32_t k = 0; k < delta; ++k) {     // extend pages + size_
-                    if (size_ == (numPages_ << shift_))
+                    if (size_ == (static_cast<int64_t>(numPages_) << shift_))
                         appendDataVid(arena_->allocPage());
                     ++size_;
                 }
@@ -457,7 +546,7 @@ namespace gl {
             }
             int32_t written = 0;
             const auto sink = [&](const T* elements, int32_t count) {
-                assert(count >= 0 && written + count <= newLen);
+                assert(count >= 0 && static_cast<int64_t>(written) + count <= newLen);
                 assert(count == 0 || elements != nullptr);
                 if (count > 0) {
                     writeBytesAt(pos + written,
@@ -470,7 +559,7 @@ namespace gl {
                 && "PagedVector::replaceRangeGenerated emitter length mismatch");
             if (delta < 0) {
                 size_ += delta;
-                while (numPages_ > 0 && size_ <= ((numPages_ - 1) << shift_))
+                while (numPages_ > 0 && size_ <= (static_cast<int64_t>(numPages_ - 1) << shift_))
                     freeLastDataPage();
             }
             *dirty_ = DirtyState::Restructured;
@@ -494,8 +583,31 @@ namespace gl {
             if (newSize == size_) return;
             *dirty_ = DirtyState::Restructured;
             size_ = newSize;
-            while (numPages_ > 0 && size_ <= ((numPages_ - 1) << shift_))
+            while (numPages_ > 0 && size_ <= (static_cast<int64_t>(numPages_ - 1) << shift_))
                 freeLastDataPage();
+        }
+
+        /// @brief Drop every element but keep the held data pages for the
+        ///        appends that follow — the reuse reset of a transient work
+        ///        list that is refilled many times.
+        ///
+        /// @details
+        /// Sets the size to zero and leaves the page directory untouched. Every
+        /// growth path (`push_back`, `appendRun`, `growTo`, `insertAt`) acquires a
+        /// page only when `size()` reaches the held capacity, so the next appends
+        /// write into the retained pages instead of allocating new ones, and the
+        /// pages are not freed (and poison-filled) once per refill. `truncate`,
+        /// `clear` and the destructor still free them. A vector refilled level by
+        /// level therefore holds the pages of its largest fill until it is
+        /// cleared. Marks the aggregate `Restructured`. Single-threaded write side
+        /// only (I-83).
+        ///
+        /// @return Nothing.
+        /// @invariant `size() == 0` after return; `liveBytes()` is unchanged.
+        /// @see truncate, clear, appendRun.
+        void resetKeepingPages() {
+            *dirty_ = DirtyState::Restructured;
+            size_ = 0;
         }
 
         /// @brief Grow to `newSize` elements without initializing the new
@@ -520,10 +632,10 @@ namespace gl {
             *dirty_ = DirtyState::Restructured;
             ensureGeometry();
             while (size_ < newSize) {
-                if (size_ == (numPages_ << shift_))
+                if (size_ == (static_cast<int64_t>(numPages_) << shift_))
                     appendDataVid(arena_->allocPage());
-                const int32_t room = std::min(newSize - size_,
-                                              (numPages_ << shift_) - size_);
+                const int32_t room = static_cast<int32_t>(std::min<int64_t>(
+                    newSize - size_, (static_cast<int64_t>(numPages_) << shift_) - size_));
                 size_ += room;
             }
         }
@@ -544,11 +656,38 @@ namespace gl {
         /// @return Nothing.
         /// @see growTo, blockMove, replaceRange.
         void writeRunAt(int32_t at, const T* src, int32_t n) {
-            assert(n >= 0 && at >= 0 && at + n <= size_
+            assert(n >= 0 && at >= 0 && static_cast<int64_t>(at) + n <= size_
                 && "PagedVector::writeRunAt outside the existing slots");
             if (n == 0) return;
             *dirty_ = DirtyState::Restructured;
             writeBytesAt(at, reinterpret_cast<const char*>(src), n);
+        }
+
+        /// @brief Copy the existing slots `[at, at + n)` into a foreign
+        ///        contiguous buffer — the read mirror of `writeRunAt`.
+        ///
+        /// @details
+        /// One `memcpy` per page span via `contiguousRun`, instead of one page
+        /// resolve per element. @p dst must not alias this vector's pages. A pure
+        /// read: the dirty state is untouched.
+        ///
+        /// @param at  First source slot; `at + n <= size()`.
+        /// @param n   Element count; `>= 0`.
+        /// @param dst Destination for `n` elements; written only when `n > 0`.
+        /// @return Nothing.
+        /// @see writeRunAt, contiguousRun.
+        void copyRunTo(int32_t at, int32_t n, T* dst) const {
+            assert(n >= 0 && at >= 0 && static_cast<int64_t>(at) + n <= size_
+                && "PagedVector::copyRunTo outside the existing slots");
+            int32_t done = 0;
+            while (done < n) {
+                int32_t runLen = 0;
+                const T* run = contiguousRun(at + done, runLen);
+                const int32_t take = std::min(runLen, n - done);
+                std::memcpy(dst + done, run,
+                    static_cast<std::size_t>(take) * sizeof(T));
+                done += take;
+            }
         }
 
         /// @brief Move the existing slots `[src, src + count)` to
@@ -567,14 +706,14 @@ namespace gl {
         /// @see growTo, writeRunAt.
         void moveRange(int32_t src, int32_t dest, int32_t count) {
             if (count <= 0 || src == dest) return;
-            assert(src >= 0 && dest >= 0 && src + count <= size_ && dest + count <= size_
+            assert(src >= 0 && dest >= 0 && static_cast<int64_t>(src) + count <= size_ && static_cast<int64_t>(dest) + count <= size_
                 && "PagedVector::moveRange outside the existing slots");
             *dirty_ = DirtyState::Restructured;
             blockMove(src, dest, count);
         }
 
         /// @brief Drop all elements and free every page (data, level-1
-        ///        directory, and L2 root, per the directory shape).
+        ///        directories at every occupied level, per the directory shape).
         ///
         /// @details
         /// A LIVE mutator — it requires a resident arena like every other page
@@ -595,10 +734,11 @@ namespace gl {
                 for (int32_t p = 0; p < numPages_; ++p)
                     arena_->freePage(dir[p]);
                 arena_->freePage(rootVid_);   // the directory page itself
-            } else if (numPages_ > dirCap) {                     // two-level
+            } else if (numPages_ > dirCap
+                    && numPages_ <= static_cast<int64_t>(dirCap) * dirCap) { // two-level
                 const int32_t* l2 = reinterpret_cast<const int32_t*>(
                     arena_->pageAt(rootVid_));
-                const int32_t l1Count = (numPages_ + dirMask_) >> dirShift_;
+                const int32_t l1Count = static_cast<int32_t>((static_cast<int64_t>(numPages_) + dirMask_) >> dirShift_);
                 for (int32_t li = 0; li < l1Count; ++li) {
                     const int32_t* l1 = reinterpret_cast<const int32_t*>(
                         arena_->pageAt(l2[li]));
@@ -609,6 +749,23 @@ namespace gl {
                     arena_->freePage(l2[li]);   // the level-1 directory page
                 }
                 arena_->freePage(rootVid_);     // the L2 root
+            } else if (numPages_ > dirCap) {
+                const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+                const int32_t* l3 = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
+                for (int64_t base = 0; base < numPages_; base += span) {
+                    const int32_t l2vid = l3[base / span];
+                    const int32_t* l2 = reinterpret_cast<const int32_t*>(arena_->pageAt(l2vid));
+                    const int32_t count = static_cast<int32_t>(std::min<int64_t>(span, numPages_ - base));
+                    for (int64_t first = 0; first < count; first += dirCap) {
+                        const int32_t l1vid = l2[first >> dirShift_];
+                        const int32_t* l1 = reinterpret_cast<const int32_t*>(arena_->pageAt(l1vid));
+                        for (int32_t slot = 0; slot < std::min<int64_t>(dirCap, count - first); ++slot)
+                            arena_->freePage(l1[slot]);
+                        arena_->freePage(l1vid);
+                    }
+                    arena_->freePage(l2vid);
+                }
+                arena_->freePage(rootVid_);
             }
             rootVid_ = kNoVid;
             size_ = 0;
@@ -747,7 +904,11 @@ namespace gl {
                    "raise static_page_bytes or shorten the element run");
             if (n == 0) return size_;
             const int32_t within = size_ & mask_;
-            if (within != 0 && within + n > epp) {
+            const int32_t padding = within != 0 && within + n > epp ? epp - within : 0;
+            assert(static_cast<int64_t>(size_) + padding + n
+                <= std::numeric_limits<int32_t>::max()
+                && "PagedVector element count exceeds int32");
+            if (padding != 0) {
                 // Skip the current page's tail so the run starts fresh; the
                 // filler is never read (the index records the post-pad start)
                 // nor deloaded (the content dump walks per element).
@@ -770,8 +931,9 @@ namespace gl {
         /// @details
         /// Counts the held pages — the data pages plus the directory pages: one
         /// directory page in the single-directory shape, or `ceil(numPages_ /
-        /// dirCap)` level-1 pages plus one L2 root in the two-level shape —
-        /// times `pageBytes`. Unlike `ArenaVector::liveBytes` (a logical element
+        /// dirCap)` level-1 pages plus one L2 root in the two-level shape.
+        /// The third level adds `ceil(numPages_ / dirCap²)` L2 pages and uses
+        /// the root as L3. Multiply the total page count by `pageBytes`. Unlike `ArenaVector::liveBytes` (a logical element
         /// measure) this is the PHYSICAL pages the container pins, which is what
         /// the page-tier reclamation reasons about.
         ///
@@ -785,7 +947,10 @@ namespace gl {
             } else if (numPages_ > dirCap) {
                 const int64_t l1Count =
                     (static_cast<int64_t>(numPages_) + dirMask_) >> dirShift_;
-                held += l1Count + 1;                        // L1 pages + L2 root
+                held += l1Count + 1;                        // L1 pages + root
+                const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+                if (numPages_ > span)
+                    held += (static_cast<int64_t>(numPages_) + span - 1) / span; // L2 pages
             }
             return held * static_cast<int64_t>(arena_->pageBytes());
         }
@@ -797,15 +962,17 @@ namespace gl {
         /// @brief The vid of data page `pageIdx` (`0 <= pageIdx < numPages_`).
         ///
         /// @details
-        /// Three shapes (see the class @details directory ladder):
+        /// Four nonempty shapes (see the class @details directory ladder):
         ///   - one data page (`numPages_ == 1`): its vid IS `rootVid_`, no
         ///     directory page exists;
         ///   - single directory page (`numPages_ <= dirCap`): `rootVid_` is the
         ///     directory page and the vid is its `pageIdx`-th entry;
-        ///   - two-level (`numPages_ > dirCap`): `rootVid_` is the L2 root; the
+        ///   - two-level (`dirCap < numPages_ <= dirCap²`): root is L2; the
         ///     page index splits into the L1-page index (`pageIdx >> dirShift_`)
         ///     and the within-L1 slot (`pageIdx & dirMask_`), one extra `pageAt`
         ///     resolve.
+        ///   - three-level: upper page-index bits select an L2 root first;
+        ///     the remaining bits follow the same L1 lookup.
         ///
         /// @param pageIdx Data-page index.
         /// @return The data page's vid.
@@ -814,7 +981,12 @@ namespace gl {
             const int32_t* root = reinterpret_cast<const int32_t*>(
                 arena_->pageAt(rootVid_));
             if (numPages_ <= dirMask_ + 1) return root[pageIdx];
-            const int32_t l1vid = root[pageIdx >> dirShift_];
+            const int64_t dirCap = static_cast<int64_t>(dirMask_) + 1;
+            if (numPages_ > dirCap * dirCap) {
+                root = reinterpret_cast<const int32_t*>(arena_->pageAt(
+                    root[static_cast<int64_t>(pageIdx) >> (2 * dirShift_)]));
+            }
+            const int32_t l1vid = root[(pageIdx >> dirShift_) & dirMask_];
             return reinterpret_cast<const int32_t*>(
                 arena_->pageAt(l1vid))[pageIdx & dirMask_];
         }
@@ -840,9 +1012,11 @@ namespace gl {
         /// @param bytes Source bytes (`count * sizeof(T)`).
         /// @param count Element count; >= 0.
         void fillRun(const char* bytes, int64_t count) {
+            assert(count >= 0 && count <= std::numeric_limits<int32_t>::max() - size_
+                && "PagedVector element count exceeds int32");
             int64_t done = 0;
             while (done < count) {
-                if (size_ == (numPages_ << shift_))
+                if (size_ == (static_cast<int64_t>(numPages_) << shift_))
                     appendDataVid(arena_->allocPage());
                 const int32_t slot = size_ & mask_;
                 const int32_t epp = mask_ + 1;
@@ -943,14 +1117,15 @@ namespace gl {
 
         /// @brief Record a freshly allocated data-page vid, promoting the
         ///        directory shape (empty -> inline -> single directory page ->
-        ///        two-level directory) as needed.
+        ///        two-level directory -> three-level directory) as needed.
         ///
         /// @details
         /// The `numPages_ == dirCap` case promotes the full single directory
         /// page to two-level by making it L1 page 0 of a fresh L2 root (no entry
-        /// copy) and starting a second L1 page for `vid`. Past two levels
-        /// (`dirCap²` data pages) the three-level `assert` fires — the tripwire
-        /// that the one-level overflow assert used to be, moved up one level.
+        /// copy) and starting a second L1 page for `vid`. At `dirCap²`, an
+        /// L3 root retains the old L2 as child zero and allocates the next
+        /// L2/L1 branch. Directory overflow asserts before an out-of-range
+        /// root access. Growth doors check the independent element-count bound.
         ///
         /// @param vid The new data page's vid.
         void appendDataVid(int32_t vid) {
@@ -990,10 +1165,26 @@ namespace gl {
                 arena_->recordTwoLevelPromotion(numPages_);   // telemetry only
                 return;
             }
-            assert(static_cast<int64_t>(numPages_)
-                       < static_cast<int64_t>(dirCap) * dirCap
-                && "PagedVector exceeded the two-level directory — add the "
-                   "three-level directory for containers past this size");
+            const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+            assert(numPages_ < std::numeric_limits<int32_t>::max()
+                && static_cast<int64_t>(numPages_) < span * dirCap
+                && "PagedVector exceeded the three-level directory");
+            if (numPages_ >= span) {
+                if (numPages_ == span) {
+                    const int32_t oldRoot = rootVid_;
+                    rootVid_ = arena_->allocPage();
+                    reinterpret_cast<int32_t*>(arena_->pageAt(rootVid_))[0] = oldRoot;
+                }
+                int32_t* l3 = reinterpret_cast<int32_t*>(arena_->pageAt(rootVid_));
+                const int32_t l2Index = static_cast<int32_t>(numPages_ / span);
+                if (numPages_ % span == 0) l3[l2Index] = arena_->allocPage();
+                int32_t* l2 = reinterpret_cast<int32_t*>(arena_->pageAt(l3[l2Index]));
+                const int32_t l1Index = (numPages_ >> dirShift_) & dirMask_;
+                if ((numPages_ & dirMask_) == 0) l2[l1Index] = arena_->allocPage();
+                reinterpret_cast<int32_t*>(arena_->pageAt(l2[l1Index]))[numPages_ & dirMask_] = vid;
+                ++numPages_;
+                return;
+            }
             int32_t* l2 = reinterpret_cast<int32_t*>(arena_->pageAt(rootVid_));
             const int32_t l1Index = numPages_ >> dirShift_;
             const int32_t slot = numPages_ & dirMask_;
@@ -1009,11 +1200,13 @@ namespace gl {
         }
 
         /// @brief Free the last data page, demoting the directory shape
-        ///        (two-level -> single directory page -> inline -> empty) as it
+        ///        (three-level -> two-level -> single directory -> inline -> empty) as it
         ///        shrinks.
         ///
         /// @details
-        /// The mirror of `appendDataVid`. A two-level container whose last L1
+        /// The mirror of `appendDataVid`. A third-level container frees emptied
+        /// L1 and L2 pages and restores child-zero L2 at the promotion boundary.
+        /// A two-level container whose last L1
         /// page empties frees that L1 page; at the `dirCap+1 -> dirCap` boundary
         /// it collapses back to a single directory page (L1 page 0, already
         /// holding exactly `dirCap` entries, becomes the directory page; the L2
@@ -1035,6 +1228,24 @@ namespace gl {
                 return;
             }
             if (numPages_ <= dirCap) {            // stays a single directory page
+                --numPages_;
+                return;
+            }
+            const int64_t span = static_cast<int64_t>(dirCap) * dirCap;
+            if (numPages_ > span) {
+                const int32_t freedIdx = numPages_ - 1;
+                const int32_t* l3 = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
+                const int32_t firstL2 = l3[0];
+                const int32_t l2vid = l3[freedIdx / span];
+                if ((freedIdx & dirMask_) == 0) {
+                    const int32_t* l2 = reinterpret_cast<const int32_t*>(arena_->pageAt(l2vid));
+                    arena_->freePage(l2[(freedIdx >> dirShift_) & dirMask_]);
+                }
+                if (freedIdx % span == 0) arena_->freePage(l2vid);
+                if (numPages_ == span + 1) {
+                    arena_->freePage(rootVid_);
+                    rootVid_ = firstL2;
+                }
                 --numPages_;
                 return;
             }

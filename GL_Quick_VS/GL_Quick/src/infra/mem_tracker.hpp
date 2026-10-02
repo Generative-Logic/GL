@@ -201,6 +201,47 @@ namespace gl {
         /// @return Peak attributed bytes.
         int64_t peakTotalBytes();
 
+        /// @brief The physical split of the peak sample's pinned blocks.
+        ///
+        /// @details
+        /// The pinned blocks of the logic blocks sampled at the peak iteration
+        /// divide into live pages (holding container content, derived indexes
+        /// and page padding), free pages parked inside held blocks, and the
+        /// remaining block bytes (byte-bump blocks, spilled block
+        /// directories). `contentBytes` / `indexBytes` are the same peak sums
+        /// the per-structure table uses, so `livePageBytes - contentBytes -
+        /// indexBytes` is the page padding. `containerCount` is the number of
+        /// `LbMemory::visitLiveBytes` terms recorded.
+        struct PhysicalPeak {
+            int64_t livePageBytes = 0;
+            int64_t freePageBytes = 0;
+            int64_t otherBlockBytes = 0;
+            int64_t logicBlocks = 0;
+            int64_t contentBytes = 0;
+            int64_t indexBytes = 0;
+            int containerCount = 0;
+        };
+
+        /// @brief Read the physical split of the peak sample.
+        ///
+        /// @details
+        /// Zero-valued before the first commit. Exposed for the unit tests and
+        /// the aggregate dump.
+        ///
+        /// @return The peak's physical split.
+        PhysicalPeak physicalPeak();
+
+        /// @brief Held-page bytes of one container at the peak sample.
+        ///
+        /// @details
+        /// Looks the container up by the name `LbMemory::visitLiveBytes`
+        /// reports for it and returns the peak sample's sum over the sampled
+        /// logic blocks. Asserts when no term carries that name (Rule 19).
+        ///
+        /// @param name A `visitLiveBytes` container name.
+        /// @return The container's held-page bytes at the peak.
+        int64_t physicalPeakBytesOf(const char* name);
+
         /// @brief Discard every accumulated counter and snapshot.
         ///
         /// @details

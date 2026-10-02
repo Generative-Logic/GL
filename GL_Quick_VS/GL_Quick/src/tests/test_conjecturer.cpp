@@ -3787,3 +3787,70 @@ TEST(conjecturer, template_end_to_end_gauss_empty) {
     ASSERT_TRUE(out.reshuffled_mirrored_list.empty());
 }
 
+
+
+TEST(conjecturer, fold_eight_arguments_roundtrip_both_paths) {
+    conj::Conjecturer c("Gauss");
+    const std::string expression = "(fold[1,3,4,4,8,2,9,10])";
+    const auto encoded = conj::testing::Friend::encodeExpr(c, expression);
+    ASSERT_EQ(conj::testing::Friend::decodeExpr(c, encoded), expression);
+    const auto arguments = conj::testing::Friend::findArgMap(c, expression);
+    const auto encodedArguments = conj::testing::Friend::encodeDefSetMap(c, arguments);
+    ASSERT_EQ(conj::testing::Friend::decodeDefSetMap(c, encodedArguments), arguments);
+    conj::DefSetMap binaryArguments;
+    for (int index = 1; index <= 4; ++index)
+        binaryArguments[std::to_string(index)] = std::make_tuple(
+            std::string("P(x(1)(x(1)(1)))"), false, true);
+    ASSERT_TRUE(conj::testing::Friend::checkDefSets(c, binaryArguments));
+    ASSERT_TRUE(conj::testing::Friend::checkDefSetsInt(c,
+        conj::testing::Friend::encodeDefSetMap(c, binaryArguments)));
+    binaryArguments["5"] = binaryArguments.at("1");
+    ASSERT_FALSE(conj::testing::Friend::checkDefSets(c, binaryArguments));
+    ASSERT_FALSE(conj::testing::Friend::checkDefSetsInt(c,
+        conj::testing::Friend::encodeDefSetMap(c, binaryArguments)));
+    ASSERT_FALSE(conj::testing::Friend::patternInConjecture(c, expression));
+    ASSERT_TRUE(conj::testing::Friend::patternInConjecture(c, "(fold[1,3,4,5,8,2,9,10])"));
+    ASSERT_TRUE(conj::testing::Friend::patternInConjecture(c, "(fold[1,3,5,4,8,2,9,10])"));
+}
+
+TEST(conjecturer, fold_generation_budget_counts_old_operator_occurrences) {
+    conj::Conjecturer c("Gauss");
+    const std::string three = "(in3[9,10,11,4])(in3[12,13,14,5])(interval[1,4,2,9,15])";
+    ASSERT_FALSE(conj::testing::Friend::patternInConjecture(c, three));
+    ASSERT_TRUE(conj::testing::Friend::patternInConjecture(c, three + "(interval[1,4,2,10,16])"));
+    const std::string folded = "(fold[1,3,4,4,8,2,9,10])(in3[11,12,13,4])(in3[14,15,16,5])";
+    ASSERT_FALSE(conj::testing::Friend::patternInConjecture(c, folded));
+}
+
+
+TEST(conjecturer, filter_count_arguments_ignores_repeated_operation_and_set_slots) {
+    conj::Conjecturer c("Gauss");
+    ASSERT_TRUE(conj::testing::Friend::countArgumentsFilter(c, "(fold[1,3,4,4,8,2,9,10])"));
+    ASSERT_TRUE(conj::testing::Friend::countArgumentsFilter(c, "(fXY[9,1,1])"));
+}
+
+TEST(conjecturer, filter_count_arguments_checks_input_output_and_anchor_digit_values) {
+    conj::Conjecturer c("Gauss");
+    ASSERT_FALSE(conj::testing::Friend::countArgumentsFilter(c, "(in3[9,9,10,4])"));
+    ASSERT_FALSE(conj::testing::Friend::countArgumentsFilter(c, "(in3[9,10,9,4])"));
+    ASSERT_FALSE(conj::testing::Friend::countArgumentsFilter(c, "(in3[2,2,9,4])"));
+    ASSERT_TRUE(conj::testing::Friend::countArgumentsFilter(c, "(in3[9,10,11,4])"));
+}
+
+TEST(conjecturer, filter_count_arguments_preserves_incubator_ground_repetitions) {
+    conj::Conjecturer c("IncubatorGauss2");
+    ASSERT_TRUE(conj::testing::Friend::countArgumentsFilter(c, "(fold[1,3,4,4,8,2,2,2])"));
+    ASSERT_TRUE(conj::testing::Friend::countArgumentsFilter(c, "(in3[2,2,2,4])"));
+    ASSERT_FALSE(conj::testing::Friend::countArgumentsFilter(c, "(=[2,2])"));
+}
+
+TEST(conjecturer, anchor_connection_can_share_addition_between_both_fold_operations) {
+    const auto mappings = conj::testing::Friend::createMapAnchor(2, 2);
+    const auto& binaryConnections = mappings.at(4).at({2, 2});
+    const auto matching = std::find_if(binaryConnections.begin(), binaryConnections.end(),
+        [](const auto& connection) { return connection.at(3) == 1 && connection.at(4) == 1; });
+    ASSERT_TRUE(matching != binaryConnections.end());
+    conj::Conjecturer c("Gauss");
+    ASSERT_TRUE(conj::testing::Friend::controlEquality(c,
+        "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](fold[1,3,4,4,8,2,9,10])(in[10,1])))"));
+}

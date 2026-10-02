@@ -220,6 +220,11 @@ by the proving logic (<a href="provenance.html#notinput">§7.8</a>).</li>
 </ul>
 
 <h2 id="pipeline">1.2 &nbsp;The pipeline — artefacts and the prover's place</h2>
+<p>The native executable selects inputs and outputs from the project tree that
+contains it. Moving the executable into another complete project tree moves
+its configuration, definitions, theorem files and proof exports together;
+the location where it was compiled does not select data.</p>
+
 <p>
 <code>python main.py</code> is the entry point; the actual per-batch driving lives
 in <code>run_modes.full_run()</code> (Python). A batch is a fixed eight-stage
@@ -313,7 +318,7 @@ Each stage's on-disk artefact is named so a claim can be checked at the file lev
   <text x="154" y="300" fill="#B084EB" font-size="11" text-anchor="middle" transform="rotate(-90 154 300)">Python — run_modes.full_run() (batch orchestrator)</text>
 </svg>
 <figcaption><b>Overall batch orchestration — the eight-stage main pipeline and its artefacts.</b> The conjecturer feeds
-candidates in; the prover decides them; everything after packages, compresses, and
+candidates in, or a batch reads supplied conjectures; the prover decides them; everything after packages, compresses, and
 independently re-checks. Canonical user-authored inputs are
 <code>files/definitions/</code>, <code>files/config/</code>, and
 <code>externally_provided_theorems.txt</code>; CE simple-fact tables are usually
@@ -328,12 +333,13 @@ Two orchestrators with the same name, different languages: Python
 <code>gl_quick.exe &lt;tag&gt;</code> (stages 2+3+4+5), then runs the Python
 stages 6&ndash;8 itself. Inside the second invocation, C++
 <code>run_modes::fullRun(anchor)</code> is the in-binary sub-orchestrator
-chaining CE filter → prover → compressor → raw proof-graph emission.
+chaining CE filter → prover → compressor → raw proof-graph emission for
+generated batches. Supplied-only FTA skips the conjecturer and compressor.
 <code>run_modes.full_run()</code> also chains batches forward, threading earlier
 batches' <code>theorems.txt</code> into later ones — directly within
 a track (as proved theorems), and as <i>external</i> rules when crossing from a
 main batch into the next incubator. The deductive region of each batch is set
-by config, not by content edits.
+by its configuration and, when generation is disabled, its supplied conjecture list.
 </p>
 
 <p>
@@ -414,7 +420,7 @@ still need). The resulting six-stage shape is below.
 </figure>
 
 <figure>
-<svg viewBox="0 0 760 420" role="img" aria-label="Overall orchestration — two parallel tracks. Incubator track runs IncubatorPeano then IncubatorGauss; main track runs Peano then main Gauss. Within each track the next batch consumes the previous one's theorems directly as proved theorems. Across tracks: main batches deliver theorems directly to the next incubator batch (which loads them as external rules); incubators deliver only simple_facts indirectly via the CE filter; incubator-proved theorems never enter the main pipeline.">
+<svg viewBox="0 0 760 550" role="img" aria-label="Overall orchestration — two parallel tracks. Incubator track runs IncubatorPeano then IncubatorGauss; main track runs Peano, main Gauss, then FTA with supplied conjectures. Within each track the next batch consumes the previous one's theorems directly as proved theorems. Across tracks: main batches deliver theorems directly to the next incubator batch (which loads them as external rules); incubators deliver only simple_facts indirectly via the CE filter; incubator-proved theorems never enter the main pipeline.">
   <defs>
     <marker id="oo-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
@@ -468,53 +474,87 @@ still need). The resulting six-stage shape is below.
   <text x="590" y="190" fill="#EF9F27" font-size="12" text-anchor="start">simple_facts</text>
   <text x="590" y="206" fill="#8B8FA5" font-size="10" text-anchor="start">(indirect, via CE)</text>
 
-  <text x="380" y="380" fill="#8B8FA5" font-size="11" text-anchor="middle">Solid orange = direct (loaded as external rules in incubator).</text>
-  <text x="380" y="394" fill="#8B8FA5" font-size="11" text-anchor="middle">Dashed orange = indirect (simple_facts feed the CE filter, never the prover).</text>
-  <text x="380" y="408" fill="#8B8FA5" font-size="11" text-anchor="middle">Incubator-proved theorems never cross into the main pipeline.</text>
+  <text x="380" y="492" fill="#8B8FA5" font-size="11" text-anchor="middle">Solid orange = direct (loaded as external rules in incubator).</text>
+  <text x="380" y="508" fill="#8B8FA5" font-size="11" text-anchor="middle">Dashed orange = indirect (simple_facts feed the CE filter, never the prover).</text>
+  <text x="380" y="524" fill="#8B8FA5" font-size="11" text-anchor="middle">Incubator-proved theorems never cross into the main pipeline.</text>
+  <path d="M580 360 V402" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#oo-ar)"/>
+  <rect x="480" y="404" width="200" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="580" y="428" fill="#5DCAA5" font-size="13" font-weight="bold" text-anchor="middle">FTA</text>
+  <text x="580" y="450" fill="#8B8FA5" font-size="11" text-anchor="middle">supplied conjectures → proofs</text>
+  <text x="240" y="439" fill="#B084EB" font-size="11" text-anchor="middle">Peano + Gauss + FTA → one Lean project</text>
 </svg>
 <figcaption><b>Overall orchestration.</b> Two parallel tracks (incubator + main) run interleaved by <code>run_modes.full_run()</code> in Python (the entry point <code>main.py</code> is a thin wrapper around it). Within each track, the next batch consumes the previous one's proved theorems directly. Across tracks: main delivers its theorems directly to the next incubator batch, where they are loaded as <i>external</i> rules; incubators deliver only their <code>simple_facts/*.txt</code> to the next main batch — indirectly, via the CE filter, never to the prover. "External" is specifically the term the incubator uses for main-track theorems it loads; within-track inputs are simply proved theorems. Incubator-proved theorems stay inside the incubator track.</figcaption>
 </figure>
 
+<figure id="output-finalization">
+<svg viewBox="0 0 760 280" role="img" aria-label="Both processed proof registries finish first. Main Lean, HTML, and verification run beside incubator HTML and verification in a separate process. Both paths join before the final verifier total.">
+  <defs><marker id="finalize-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="180" y="12" width="400" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="380" y="38" text-anchor="middle" fill="#F0E8DC" font-size="14">Main and incubator processed registries complete</text>
+  <path d="M380 54 V74 H195 V92 M380 74 H565 V92" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
+  <rect x="30" y="94" width="330" height="100" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="195" y="119" text-anchor="middle" fill="#5DCAA5" font-size="14">Main process</text>
+  <text x="195" y="145" text-anchor="middle" fill="#F0E8DC" font-size="13">Lean export and kernel check</text>
+  <text x="195" y="170" text-anchor="middle" fill="#F0E8DC" font-size="13">then main HTML and verification</text>
+  <rect x="400" y="94" width="330" height="100" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="565" y="119" text-anchor="middle" fill="#5DCAA5" font-size="14">Separate incubator process</text>
+  <text x="565" y="145" text-anchor="middle" fill="#F0E8DC" font-size="13">Incubator HTML</text>
+  <text x="565" y="170" text-anchor="middle" fill="#F0E8DC" font-size="13">then incubator verification</text>
+  <path d="M195 194 V214 H380 V231 M565 194 V214 H380" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
+  <rect x="180" y="234" width="400" height="36" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="380" y="257" text-anchor="middle" fill="#F0E8DC" font-size="14">Join both paths and combine verifier totals</text>
+</svg>
+<figcaption><b>Independent output finalization.</b> Both processed graphs are complete before these paths overlap. Each process owns its renderer state and output directory. Main HTML waits for Lean so its proof links reference a completed kernel check. The parent retains the child log, waits for completion even when its own work fails, and rejects a failed child process.</figcaption>
+</figure>
+
 <p>
-A third run mode sits beside the full pipeline: the <b>shortcut mode</b>
-(<code>python main.py --shortcut</code> &rarr; <code>run_modes.shortcut_run()</code>).
-Instead of enumerating conjectures, it proves a <i>hand-maintained</i> list of
-true conjectures (<code>files/shortcut/theorems/conjectures.txt</code>) with the
-whole previously proved corpus loaded as external rules — a snapshot of the
-main pipeline's theorem pool in expanded base form, kept in
-<code>files/shortcut/theorems/externally_provided_theorems.txt</code> and
-refreshed manually after a full run. Base form is deliberate: compact operator
-names are private to a run's registry, so a corpus that crosses runs must
-carry only plain structure, which the prover re-compiles at load. Both run
-modes start from a clean slate — the operator registry and the fact tables
-are wiped at run start, so every run is a pure function of the tracked
-inputs. Counterexample filtering, including mirror refutation, is disabled for
-this hand-maintained list: there are no fact-table passes and no
-conjecturer-written mirror-pairs artifact. The
-conjecturer never runs; the prover is pointed at the two files directly
-(<code>gl_quick.exe FTA --conjectures-file &hellip; --externals-file &hellip;</code>),
-the post-proof compressor is skipped so every granular lemma stays in the pool,
-and the processed graph, the HTML proof graph, and the verifier report all land
-under <code>files/shortcut/</code> — the main pipeline's folders are never
-written. The batch runs under its own anchor, <code>AnchorFTA</code> (a
-byte-copy of <code>AnchorGauss</code>); the corpus keeps its original Gauss and
-Peano anchors and is activated by two cross-anchor connection theorems at the
-top of the conjecture list, which the prover proves itself before anything
-else can fire. This is the vehicle for the FTA lemma shortlist: lemmas are
-added to the conjecture list one by one and each run re-proves the growing
-list against the fixed corpus.
+The <b>shortcut mode</b> (<code>python main.py --shortcut --GPU</code>) replays
+FTA from the same starting state as the full pipeline. Immediately before full
+FTA starts, the pipeline saves its compiler registry, supplied conjectures,
+proved and external theorem pools, fact tables and preceding proof chapters in
+<code>files/shortcut/full_input.zip</code>. The shortcut restores that input and
+uses the same GPU capacities. Earlier theorems keep their original role as
+proved theorems; they are not recompiled from an independent external snapshot.
+</p>
+<figure>
+<svg viewBox="0 0 760 185" role="img" aria-label="Full execution and shortcut replay share exactly the same FTA input">
+  <rect x="15" y="20" width="180" height="50" rx="8" fill="#183E38" stroke="#5DCAA5"/>
+  <text x="105" y="50" fill="#F0E8DC" text-anchor="middle">Peano → Gauss</text>
+  <path d="M195 45 H225" stroke="#5DCAA5" stroke-width="2"/>
+  <rect x="225" y="15" width="280" height="105" rx="8" fill="#282039" stroke="#B084EB"/>
+  <text x="365" y="43" fill="#F0E8DC" text-anchor="middle">Saved FTA input</text>
+  <text x="365" y="68" fill="#D1C8BB" font-size="12" text-anchor="middle">Registry + goals + theorem roles</text>
+  <text x="365" y="92" fill="#D1C8BB" font-size="12" text-anchor="middle">Fact tables + prior proof chapters</text>
+  <path d="M505 45 H545 M505 95 H525 V145 H545" stroke="#B084EB" stroke-width="2" fill="none"/>
+  <rect x="545" y="20" width="200" height="50" rx="8" fill="#183E38" stroke="#5DCAA5"/>
+  <text x="645" y="50" fill="#F0E8DC" text-anchor="middle">Full FTA</text>
+  <rect x="545" y="120" width="200" height="50" rx="8" fill="#183E38" stroke="#5DCAA5"/>
+  <text x="645" y="150" fill="#F0E8DC" text-anchor="middle">Shortcut FTA</text>
+</svg>
+<figcaption><b>One input, two execution paths.</b> The shortcut skips recomputing
+Peano and Gauss. FTA performs the same proof work in either path.</figcaption>
+</figure>
+<p>
+A missing archive or changed definitions, configurations or conjectures require
+<code>python main.py --GPU</code> to refresh the input. Each archive member is
+checked before replay. Shortcut theorem, processed graph, HTML and verifier
+outputs remain under <code>files/shortcut/</code>; the main proof outputs remain
+available. The full pipeline provides the connected Lean export and concrete
+Nat instances. Shortcut replay produces its proof graphs and verifier report
+without running Lean certification.
 </p>
 
 <h2 id="deductive">1.3 &nbsp;The deductive neighbourhood — what a batch explores</h2>
 <p>
-A GL batch does not try to prove a fixed wishlist of theorems. It enumerates
+A generating GL batch enumerates
 the <i>shape</i> of every interesting expression a given configuration allows,
 discards those refuted by obvious counterexamples, and proves what survives. The
 configuration is the lever: change <code>Config&lt;Tag&gt;.json</code> and the
 batch turns its attention to a different deductive corner of the same
 underlying mathematics. The mathematics itself never changes — the axioms
 (MPL definitions + anchor body) are constant. Only the conjecture pool
-shifts.
+shifts. A supplied-only batch such as FTA reads explicit proof obligations
+instead; the prover must derive each one from its inputs.
 </p>
 
 <figure>
@@ -583,8 +623,8 @@ inside one stage are deferred to the owning chapter.
 
 <table>
 <tr><th>Path</th><th>Stage</th><th>Role</th><th>Read by</th></tr>
-<tr><td><code>files/definitions/&lt;Anchor*&gt;.txt</code></td><td>user input</td><td>MPL body of the anchor (its axiomatic claim).</td><td>compiler (prover startup)</td></tr>
-<tr><td><code>files/definitions/&lt;operator&gt;.txt</code></td><td>user input</td><td>MPL definitions of named operators (<code>NaturalNumbers</code>, <code>in</code>, <code>in2</code>, <code>in3</code>, …).</td><td>compiler</td></tr>
+<tr><td><code>files/definitions/&lt;Anchor*&gt;.mpl</code></td><td>user input</td><td>MPL body of the anchor (its axiomatic claim).</td><td>compiler (prover startup)</td></tr>
+<tr><td><code>files/definitions/&lt;operator&gt;.mpl</code></td><td>user input</td><td>MPL definitions of named operators (<code>NaturalNumbers</code>, <code>in</code>, <code>in2</code>, <code>in3</code>, …).</td><td>compiler</td></tr>
 <tr><td><code>files/config/Config&lt;Tag&gt;.json</code></td><td>user input</td><td>Per-batch deductive-neighbourhood policy: anchor name, slot types, enumeration sizes, shape filters, prover iteration budgets, flags.</td><td>every stage</td></tr>
 <tr><td><code>files/GL_binaries/GL_binary_&lt;Tag&gt;.json</code></td><td>—</td><td>Compiled operator registry — head names, arities, bodies, the structural-operator <code>compiledExpressions</code> table. Built at C++ startup, internal to the prover (no longer a separate stage).</td><td>conjecturer + prover</td></tr>
 <tr><td><code>files/GL_binaries/GL_binary_shared.json</code></td><td>—</td><td>Cross-batch singleton: monotonic maxima of the four spontaneous counters (<a href="compilation.html#counters">§8.4</a>). Python-maintained (<code>run_modes.py</code> seed/merge).</td><td>every batch at startup, on shutdown</td></tr>

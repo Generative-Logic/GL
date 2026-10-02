@@ -24,6 +24,8 @@ from .graph import (
     load_theorem_records,
     sha256_file,
 )
+from .flat_integration import build_flat_integration_plan
+from .implication_composition import build_implication_composition_plan, validate_composition_scopes
 from .mpl import (
     Atom,
     Conjunction,
@@ -37,10 +39,55 @@ from .mpl import (
     parse_mpl,
     to_mpl,
 )
-from .types import infer_expression_variables, load_type_environment
+from .types import EQUALITY, infer_expression_variables, load_type_environment
+
+
+# Element positions before the set position of the membership operators that
+# subset implications use (I-267).
+SUBSET_MEMBERSHIP_WIDTH = {"in": 1, "in2": 2, "in3": 3}
+
+
+def is_subset_implication(entry: dict[str, object]) -> bool:
+    """
+    @brief Decide whether one binary entry is a subset implication.
+    @details
+    A subset implication is `E[u_1,u_2] := (op[b..,u_1]) -> (op[b..,u_2])` with
+    `op` one of `in`, `in2`, `in3`: the same distinct bound variables fill the
+    element positions of premise and head, and the set position holds `u_1` in
+    the premise and `u_2` in the head. Two of them, one per direction,
+    integrate a set- or relation-typed `=` goal (I-267).
+    @param entry One GL binary definition.
+    @return True for a subset implication.
+    """
+
+    if entry.get("category") != "implication":
+        return False
+    signature = parse_mpl(str(entry.get("signature", "")))
+    if not isinstance(signature, Atom) or signature.arguments != ("u_1", "u_2"):
+        return False
+    elements = entry.get("elements")
+    if not isinstance(elements, list) or len(elements) != 2:
+        return False
+    premise, head = (parse_mpl(str(element)) for element in elements)
+    if not isinstance(premise, Atom) or not isinstance(head, Atom):
+        return False
+    width = SUBSET_MEMBERSHIP_WIDTH.get(premise.head)
+    if width is None or head.head != premise.head:
+        return False
+    if len(premise.arguments) != width + 1 or len(head.arguments) != width + 1:
+        return False
+    bound = premise.arguments[:width]
+    return (
+        bound == head.arguments[:width]
+        and len(set(bound)) == width
+        and not any(argument.startswith("u_") for argument in bound)
+        and premise.arguments[width] == "u_1"
+        and head.arguments[width] == "u_2"
+    )
 
 
 ACTION_BY_TAG = {
+    "zoom in": "scope_inherit",
     "anchor handling": "anchor_specialize",
     "compilation": "definition_compact",
     "contradiction": "ex_falso",
@@ -50,14 +97,20 @@ ACTION_BY_TAG = {
     "expansion": "definition_expand",
     "expansion for integration": "definition_expand",
     "implication": "implication_apply",
+    "implication composition": "implication_compose",
+    "implication grouping": "implication_group",
+    "contraposition": "implication_contrapose",
     "or theorem": "or_construct",
     "or elimination": "or_eliminate_theorem",
     "or convergence": "or_eliminate",
     "or disintegration": "or_branch",
+    "or branch assumption": "or_integration_assume",
+    "or branch proven": "or_introduce",
     "recursion": "induction_assumption",
     "reformulation for integration >[bound]": "classical_reformulate_bound",
     "reformulation for integration >[]": "classical_reformulate_empty",
     "reformulation for integration and": "integration_conjoin",
+    "reformulation for integration flattened": "definition_construct",
     "premise element": "integration_premise",
     "reformulated from": "theorem_reformulate",
     "symmetry of equality": "equality_symmetric",
@@ -301,7 +354,10 @@ def _definition_from_expansion(row: ProofRow) -> dict[str, object]:
     direction from an expanded implication to its compact atom. A reformulated-
     statement row exposes an existence body by
     matching the target theorem's additional premises against the cited source
-    theorem and retaining the unmatched witness-bearing elements. In both
+    theorem's premises and retaining the unmatched witness-bearing elements.
+    The source head is never a candidate: reformulation keeps it inside the
+    existence together with the moved definition, so a retained premise can
+    only be a source premise. In both
     cases the compact atom fixes parameter order and local names are assigned
     deterministically by first appearance.
     @param row Processed expansion, compilation, or ``reformulated from`` source row.
@@ -361,11 +417,14 @@ def _definition_from_expansion(row: ProofRow) -> dict[str, object]:
             elements.append(source_cursor.premise)
             source_cursor = source_cursor.conclusion
         elements.append(source_cursor)
+        # The head stays in the existence body; only premises can be retained.
+        head_index = len(elements) - 1
 
         unmatched = list(range(len(elements)))
         for target_premise in target_premises:
             solutions: list[tuple[int, dict[str, str]]] = []
-            for element_index in unmatched:
+            candidates = [index for index in unmatched if index != head_index]
+            for element_index in candidates:
                 trial = dict(source_to_target)
                 pending_pairs: list[tuple[Expression, Expression]] = [
                     (elements[element_index], target_premise)
@@ -999,9 +1058,13 @@ def _schema3_action_metadata(
     boundary namespace is accepted only when one ``premise element`` template,
     one matching integration expansion, and one ``validity name`` discharge
     agree on the same compiled implication. Integration reformulations must
-    end in a compiled definition of the required category. A
+    end in a compiled definition of the required category.
     An OR branch must be one checked disjunct of its compact definition, and an
-    OR convergence must cite that same compact definition. A ``reformulated
+    OR convergence must cite that same compact definition at its established
+    parent scope, with branch results belonging to that exact parent. OR
+    integration proves a selected disjunct under the complements of its peers;
+    its parent discharge introduces the compact OR without assuming that goal.
+    A ``reformulated
     from`` row must cite one alpha-resolved theorem, end in a
     compiled existence definition, and carry constructive totality evidence
     for its well-defined set or relation output.
@@ -1077,77 +1140,8 @@ def _schema3_action_metadata(
             assert row.conclusion.expression in premises
             metadata[row.source_line] = {"scope_namespace": namespace}
 
-    or_branch_rows: dict[str, ProofRow] = {}
-    for row in chapter.rows:
-        if row.tag != "or disintegration":
-            continue
-        assert row.namespace != "main" and len(row.dependencies) == 1
-        assert row.namespace not in premise_templates
-        assert row.namespace not in or_branch_rows
-        dependency = row.dependencies[0]
-        assert dependency.namespace == "main"
-        compact = dependency.expression
-        assert isinstance(compact, Atom) and compact.head in binary_entries
-        definition = binary_entries[compact.head]
-        assert definition.get("category") == "or"
-        parameter_map = {
-            f"u_{index + 1}": argument
-            for index, argument in enumerate(compact.arguments)
-        }
-        disjuncts = [
-            map_arguments(
-                parse_mpl(str(element)),
-                lambda name: parameter_map.get(name, name),
-            )
-            for element in definition["elements"]
-        ]
-        assert disjuncts.count(row.conclusion.expression) == 1
-        template_expression = Implication(
-            (),
-            row.conclusion.expression,
-            row.conclusion.expression,
-        )
-        template = ScopedExpression(
-            template_expression,
-            to_mpl(template_expression),
-            row.conclusion.proof_scope,
-        )
-        scope_context = {
-            "namespace": row.namespace,
-            "compact": _scoped_expression_json(dependency.scoped_expression),
-            "template": _scoped_expression_json(template),
-            "definition_head": compact.head,
-            "scope_kind": "or_branch",
-        }
-        scope_contexts.append(scope_context)
-        metadata[row.source_line] = {"scope_namespace": row.namespace}
-        or_branch_rows[row.namespace] = row
-
-    for row in chapter.rows:
-        if row.tag != "or convergence":
-            continue
-        assert row.namespace == "main" and len(row.dependencies) >= 2
-        compact_dependency = row.dependencies[0]
-        compact = compact_dependency.expression
-        assert compact_dependency.namespace == "main"
-        assert isinstance(compact, Atom) and compact.head in binary_entries
-        assert binary_entries[compact.head].get("category") == "or"
-        branch_dependencies = [
-            dependency
-            for dependency in row.dependencies[1:]
-            if dependency.namespace != "main"
-        ]
-        assert branch_dependencies
-        assert all(
-            dependency.namespace in or_branch_rows
-            and or_branch_rows[dependency.namespace].dependencies[0].expression
-            == compact
-            for dependency in branch_dependencies
-        )
-        metadata[row.source_line] = {"or_definition_head": compact.head}
-
     contradiction_assumptions: dict[str, ProofRow] = {}
-    known_scope_namespaces = set(premise_templates) | set(or_branch_rows)
+    known_scope_namespaces = set(premise_templates) | {row.namespace for row in chapter.rows if row.tag == "or disintegration"}
     for row in chapter.rows:
         if (
             row.tag != "task formulation"
@@ -1195,6 +1189,167 @@ def _schema3_action_metadata(
         metadata[row.source_line] = {"scope_namespace": row.namespace}
         contradiction_assumptions[row.namespace] = row
 
+    or_branch_rows: dict[str, ProofRow] = {}
+    or_integration_rows: dict[str, ProofRow] = {}
+    context_by_namespace = {context["namespace"]: context for context in scope_contexts}
+    for row in sorted(
+        (item for item in chapter.rows if item.tag in {"or disintegration", "or branch proven"}),
+        key=lambda item: (
+            len(item.namespace if item.tag == "or disintegration" else item.dependencies[0].namespace),
+            item.source_line,
+        ),
+    ):
+        if row.tag == "or branch proven":
+            assert len(row.dependencies) == 1
+            assert row.namespace == "main" or row.namespace in context_by_namespace
+            compact = row.conclusion.expression
+            assert isinstance(compact, Atom) and compact.head in binary_entries
+            definition = binary_entries[compact.head]
+            assert definition["category"] == "or"
+            parameter_map = {f"u_{index + 1}": argument for index, argument in enumerate(compact.arguments)}
+            disjuncts = [map_arguments(parse_mpl(str(element)), lambda name: parameter_map.get(name, name))
+                        for element in definition["elements"]]
+            selected = row.dependencies[0].expression
+            assert len(disjuncts) >= 2 and disjuncts.count(selected) == 1
+            selected_case = disjuncts.index(selected)
+            namespace = row.dependencies[0].namespace
+            assert namespace == row.namespace + "_boundary_orint_" + to_mpl(compact) + "_(" + to_mpl(selected) + ")"
+            assert namespace not in context_by_namespace
+            peer_assumptions = [element.inner if isinstance(element, Negation) else Negation(element)
+                                for index, element in enumerate(disjuncts) if index != selected_case]
+            template_expression = selected
+            for premise in reversed(peer_assumptions):
+                template_expression = Implication((), premise, template_expression)
+            if row.namespace != "main":
+                parent_template = parse_mpl(context_by_namespace[row.namespace]["template"]["mpl"])
+                parent_layers = []
+                while isinstance(parent_template, Implication):
+                    parent_layers.append((parent_template.bound_variables, parent_template.premise))
+                    parent_template = parent_template.conclusion
+                assert parent_layers
+                for bound_variables, premise in reversed(parent_layers):
+                    template_expression = Implication(bound_variables, premise, template_expression)
+            scope_context = {
+                "namespace": namespace,
+                "compact": _scoped_expression_json(row.conclusion),
+                "template": expression_json(template_expression),
+                "definition_head": compact.head,
+                "scope_kind": "or_integration",
+                "parent_namespace": row.namespace,
+                "selected_case": selected_case,
+            }
+            scope_contexts.append(scope_context)
+            context_by_namespace[namespace] = scope_context
+            or_integration_rows[namespace] = row
+            metadata[row.source_line] = {
+                "or_definition_head": compact.head, "branch_namespace": namespace,
+                "selected_case": selected_case,
+            }
+            for assumption in chapter.rows:
+                if assumption.tag != "or branch assumption" or assumption.namespace != namespace:
+                    continue
+                assert len(assumption.dependencies) == 1
+                dependency = assumption.dependencies[0]
+                assert dependency.namespace == row.namespace and dependency.expression == compact
+                assert dependency.scoped_expression.proof_scope == INTEGRATION_GOAL_SCOPE
+                assert assumption.conclusion.expression in peer_assumptions
+                metadata[assumption.source_line] = {"scope_namespace": namespace}
+            continue
+        assert row.namespace != "main" and len(row.dependencies) == 1
+        assert row.namespace not in premise_templates
+        assert row.namespace not in or_branch_rows
+        dependency = row.dependencies[0]
+        assert row.namespace.startswith(dependency.namespace + "_boundary_")
+        assert dependency.namespace == "main" or dependency.namespace in context_by_namespace, (
+            "OR parent scope is not established")
+        compact = dependency.expression
+        assert isinstance(compact, Atom) and compact.head in binary_entries
+        definition = binary_entries[compact.head]
+        assert definition.get("category") == "or"
+        parameter_map = {
+            f"u_{index + 1}": argument
+            for index, argument in enumerate(compact.arguments)
+        }
+        disjuncts = [
+            map_arguments(
+                parse_mpl(str(element)),
+                lambda name: parameter_map.get(name, name),
+            )
+            for element in definition["elements"]
+        ]
+        assert disjuncts.count(row.conclusion.expression) == 1
+        template_expression = Implication(
+            (),
+            row.conclusion.expression,
+            row.conclusion.expression,
+        )
+        if dependency.namespace != "main":
+            parent_template = parse_mpl(context_by_namespace[dependency.namespace]["template"]["mpl"])
+            parent_layers = []
+            while isinstance(parent_template, Implication):
+                parent_layers.append((parent_template.bound_variables, parent_template.premise))
+                parent_template = parent_template.conclusion
+            assert parent_layers
+            for bound_variables, premise in reversed(parent_layers):
+                template_expression = Implication(bound_variables, premise, template_expression)
+        template = ScopedExpression(
+            template_expression,
+            to_mpl(template_expression),
+            row.conclusion.proof_scope,
+        )
+        scope_context = {
+            "namespace": row.namespace,
+            "compact": _scoped_expression_json(dependency.scoped_expression),
+            "template": _scoped_expression_json(template),
+            "definition_head": compact.head,
+            "scope_kind": "or_branch",
+            "parent_namespace": dependency.namespace,
+        }
+        scope_contexts.append(scope_context)
+        context_by_namespace[row.namespace] = scope_context
+        metadata[row.source_line] = {"scope_namespace": row.namespace}
+        or_branch_rows[row.namespace] = row
+
+    for row in chapter.rows:
+        if row.tag != "or convergence":
+            continue
+        assert len(row.dependencies) >= 2
+        assert row.namespace == "main" or row.namespace in context_by_namespace, (
+            "OR convergence parent scope is not established"
+        )
+        compact_dependency = row.dependencies[0]
+        compact = compact_dependency.expression
+        assert compact_dependency.namespace == row.namespace, (
+            "OR convergence must cite its OR at the exact parent scope"
+        )
+        assert isinstance(compact, Atom) and compact.head in binary_entries
+        assert binary_entries[compact.head].get("category") == "or"
+        branch_dependencies = [
+            dependency
+            for dependency in row.dependencies[1:]
+            if dependency.namespace != "main" and not (
+                dependency.namespace == row.namespace
+                or row.namespace.startswith(dependency.namespace + "_boundary_")
+            )
+        ]
+        assert branch_dependencies
+        assert all(
+            dependency.namespace in or_branch_rows
+            and or_branch_rows[dependency.namespace].dependencies[0].expression
+            == compact
+            and or_branch_rows[dependency.namespace].dependencies[0].namespace == row.namespace
+            for dependency in branch_dependencies
+        )
+        metadata[row.source_line] = {"or_definition_head": compact.head}
+        from .or_convergence import convergence_cases, match_equality_convergence
+        cases = convergence_cases(compact, row.namespace, binary_entries)
+        plan = match_equality_convergence(row.conclusion.expression, row.namespace, cases,
+            [(dependency.expression, dependency.namespace) for dependency in row.dependencies[1:]])
+        if plan is not None:
+            metadata[row.source_line]["or_equality_plan"] = plan
+        else:
+            assert len(row.dependencies) == len(cases) + 1, "unchecked OR equality support"
+
     boundary_namespaces = {
         namespace
         for row in chapter.rows
@@ -1207,6 +1362,7 @@ def _schema3_action_metadata(
     assert boundary_namespaces == (
         set(premise_templates)
         | set(or_branch_rows)
+        | set(or_integration_rows)
         | set(contradiction_assumptions)
     )
 
@@ -1267,6 +1423,18 @@ def _schema3_action_metadata(
                     ],
                 },
             }
+        elif row.tag == "reformulation for integration flattened":
+            assert len(row.dependencies) == 1
+            dependency = row.dependencies[0]
+            assert dependency.namespace == row.namespace
+            assert dependency.scoped_expression.proof_scope == INTEGRATION_GOAL_SCOPE
+            compact = dependency.expression
+            assert isinstance(compact, Atom)
+            metadata[row.source_line] = {
+                "reformulation_definition": compact.head,
+                "flat_integration_plan": build_flat_integration_plan(
+                    row.conclusion.expression, compact, binary_entries),
+            }
         elif row.tag in {
             "reformulation for integration >[bound]",
             "reformulation for integration >[]",
@@ -1276,6 +1444,26 @@ def _schema3_action_metadata(
             cursor = row.conclusion.expression
             while isinstance(cursor, Implication):
                 cursor = cursor.conclusion
+            if (
+                isinstance(cursor, Atom)
+                and cursor.head == EQUALITY
+                and row.tag == "reformulation for integration and"
+            ):
+                # A set- or relation-typed `=` integrates through the
+                # conjunction of its two subset implications.
+                subsets = row.dependencies[0].expression
+                assert isinstance(subsets, Conjunction) and len(subsets.parts) == 2
+                left, right = cursor.arguments
+                forward, backward = subsets.parts
+                assert isinstance(forward, Atom) and isinstance(backward, Atom)
+                assert forward.head == backward.head
+                assert forward.arguments == (left, right)
+                assert backward.arguments == (right, left)
+                assert is_subset_implication(binary_entries[forward.head])
+                metadata[row.source_line] = {
+                    "reformulation_definition": EQUALITY,
+                }
+                continue
             assert isinstance(cursor, Atom) and cursor.head in binary_entries
             expected_category = (
                 "existence"
@@ -1300,10 +1488,13 @@ def _schema3_action_metadata(
             "premise element",
             "or convergence",
             "or disintegration",
+            "or branch assumption",
+            "or branch proven",
             "reformulated from",
             "reformulation for integration >[bound]",
             "reformulation for integration >[]",
             "reformulation for integration and",
+            "reformulation for integration flattened",
             "validity name",
         }
     }
@@ -1312,6 +1503,53 @@ def _schema3_action_metadata(
     )
     assert set(metadata) == expected_lines
     return metadata, scope_contexts
+
+
+def _membership_body_key(
+    expression: Expression,
+    definitions: dict[str, dict[str, object]],
+    unfolding: tuple[str, ...] = (),
+) -> tuple:
+    """
+    @brief Compare membership bodies through exact connective definitions.
+    @details Conjunction and OR compacts are unfolded with their actual ports.
+    Order, polarity and all opaque predicates remain exact; no commutation or
+    logical search is performed. Recursive connective definitions assert.
+    @param expression Membership body or one of its constituent expressions.
+    @param definitions Compiled definitions that give connective bodies.
+    @param unfolding Heads on the current recursive expansion path.
+    @return Immutable structural key preserving the connective tree.
+    @invariant Equal keys justify the same Lean proposition by definition unfolding.
+    """
+
+    if isinstance(expression, Negation):
+        return ("not", _membership_body_key(expression.inner, definitions, unfolding))
+    if isinstance(expression, Conjunction):
+        parts = [_membership_body_key(part, definitions, unfolding) for part in expression.parts]
+        key = parts[-1]
+        for part in reversed(parts[:-1]):
+            key = ("and", part, key)
+        return key
+    if isinstance(expression, Implication):
+        return ("implies", expression.bound_variables,
+                _membership_body_key(expression.premise, definitions, unfolding),
+                _membership_body_key(expression.conclusion, definitions, unfolding))
+    assert isinstance(expression, Atom)
+    if expression.head not in definitions or definitions[expression.head]["category"] not in {"and", "or"}:
+        return ("atom", expression.head, expression.arguments)
+    assert expression.head not in unfolding, "recursive membership connective"
+    definition = definitions[expression.head]
+    assert len(expression.arguments) == int(definition["arity"])
+    parameters = {f"u_{index + 1}": argument for index, argument in enumerate(expression.arguments)}
+    parts = [parse_mpl(str(element)) for element in definition["elements"]]
+    assert len(parts) >= 2
+    assert all(argument in parameters for part in parts for atom in iter_atoms(part) for argument in atom.arguments)
+    keys = [_membership_body_key(map_arguments(part, parameters.__getitem__), definitions, (*unfolding, expression.head))
+            for part in parts]
+    key = keys[0]
+    for part in keys[1:]:
+        key = (definition["category"], key, part)
+    return key
 
 
 def _defined_output_totality(
@@ -1323,9 +1561,11 @@ def _defined_output_totality(
     @brief Certify that one GL definition has a constructive output witness.
     @details
     A well-defined set or relation is represented by forward membership rules
-    from the output into a predicate body and one reverse rule from that exact
-    body back into output membership. The function expands only the compiled
-    implication layer, proves the referenced definition graph acyclic, rejects
+    from the output into a predicate body and one reverse rule from that checked
+    body back into output membership. The function expands the compiled
+    implication layer and compares connective aliases structurally. Positive
+    conjunction swaps carry an explicit transport plan; OR order, grouping,
+    leaves and polarity remain exact. It proves the definition graph acyclic, rejects
     every other occurrence of the output parameter, and records the predicate
     whose Lean comprehension or lambda abstraction is the witness.
     @param definition_head Compiled GL definition whose output must exist.
@@ -1334,6 +1574,8 @@ def _defined_output_totality(
     @return Backend-neutral totality evidence for one set or binary relation output.
     @invariant No recursive definition or one-directional membership contract is accepted.
     """
+
+    from .membership_transport import membership_transport_plan
 
     assert definition_head in binary_entries
     definition = binary_entries[definition_head]
@@ -1435,7 +1677,13 @@ def _defined_output_totality(
             for premises, conclusion in clauses
             if conclusion == membership
         ]
-        if len(backward) != 1 or not forward or backward[0] != forward:
+        if len(backward) != 1 or not forward or len(backward[0]) != len(forward):
+            continue
+        transports = [membership_transport_plan(
+            _membership_body_key(source, binary_entries),
+            _membership_body_key(target, binary_entries),
+        ) for source, target in zip(backward[0], forward)]
+        if any(plan is None for plan in transports):
             continue
         if len(forward) + 1 != len(clauses):
             continue
@@ -1453,6 +1701,8 @@ def _defined_output_totality(
                 "definition_dependency_acyclic": True,
             }
         )
+        if any(plan["kind"] != "identity" for plan in transports):
+            candidates[-1]["reverse_membership_transport"] = transports
 
     assert len(candidates) == 1, (
         f"definition {definition_head!r} does not have one constructive defined output"
@@ -1517,6 +1767,37 @@ def theorem_citations_with_tags(theorem: TheoremRecord) -> list[tuple[str, Expre
                 ):
                     cited_expressions.append((row.tag, dependency.expression))
     return cited_expressions
+
+
+def _citation_source_indices(
+    selection: dict[str, object],
+    theorems: list[TheoremRecord],
+) -> set[int]:
+    """
+    @brief Validate the selected proofs authorized to resolve theorem citations.
+    @details An explicit citation list names one selected source per alpha-equivalent
+    proposition while every selected proof remains in the exported corpus. Without
+    this field all selected sources remain authorized and ambiguity still asserts.
+    @param selection Parsed certificate selection.
+    @param theorems Complete selected theorem records, including equivalent copies.
+    @return Selected source indices authorized as citation references.
+    @invariant Explicit choices cover every selected proposition exactly once and
+    cannot authorize an unselected source.
+    """
+
+    by_index = {theorem.source_index: alpha_key(theorem.expression) for theorem in theorems}
+    explicit = selection.get("citation_source_indices")
+    if explicit is None:
+        return set(by_index)
+    assert isinstance(explicit, list)
+    assert all(type(index) is int for index in explicit)
+    chosen = set(explicit)
+    assert len(chosen) == len(explicit), "duplicate citation source index"
+    assert chosen <= set(by_index), "citation source is not selected"
+    chosen_keys = {by_index[index] for index in chosen}
+    assert len(chosen_keys) == len(chosen), "citation sources are alpha-ambiguous"
+    assert chosen_keys == set(by_index.values()), "citation sources omit a selected proposition"
+    return chosen
 
 
 def _ordered_selected_theorems(
@@ -1598,9 +1879,11 @@ def _ordered_selected_theorems(
             )
         )
 
+    citation_indices = _citation_source_indices(selection, [theorem for _, theorem in resolved])
     selected_by_alpha: dict[str, list[TheoremRecord]] = {}
     for _, theorem in resolved:
-        selected_by_alpha.setdefault(alpha_key(theorem.expression), []).append(theorem)
+        if theorem.source_index in citation_indices:
+            selected_by_alpha.setdefault(alpha_key(theorem.expression), []).append(theorem)
     dependencies: dict[int, set[int]] = {
         theorem.source_index: set() for _, theorem in resolved
     }
@@ -1611,12 +1894,16 @@ def _ordered_selected_theorems(
                     cited_expressions = []
                     if row.tag == "theorem":
                         cited_expressions.append(row.conclusion.expression)
-                    elif row.tag == "or theorem":
+                    elif row.tag in {"or theorem", "compilation"}:
                         cited_expressions.extend(
                             dependency.expression for dependency in row.dependencies
                         )
                     for cited in cited_expressions:
                         matches = selected_by_alpha.get(alpha_key(cited), [])
+                        if row.tag == "compilation" and not matches:
+                            # A locally constructed compilation has no selected
+                            # theorem reference; chapter resolution checks its producer.
+                            continue
                         assert len(matches) == 1, (
                             f"source {theorem.source_index} citation resolves to "
                             f"{len(matches)} selected theorems"
@@ -1641,6 +1928,10 @@ def _ordered_selected_theorems(
                 matches = all_by_alpha.get(alpha_key(cited), [])
                 if not matches:
                     continue
+                matches = [match for match in matches
+                           if match.source_index in citation_indices | imported_indices]
+                assert matches, (
+                    f"source {theorem.source_index} cites an unselected theorem")
                 assert len(matches) == 1, (
                     f"source {theorem.source_index} citation is alpha-ambiguous"
                 )
@@ -1745,12 +2036,13 @@ def _chapter_certificate(
     available: dict[tuple[str, str, str], str] = {}
     theorem_available: dict[tuple[str, str, str], str] = {}
 
-    def local_step_id(dependency) -> str | None:
+    def local_step_id(dependency, exact_only: bool = False) -> str | None:
         """
         @brief Resolve one dependency to an already emitted local step.
         @details Exact citations win; alpha-equivalent theorem rows are the
         second and only alternate local lookup.
         @param dependency Parsed proof-row dependency.
+        @param exact_only Require the exact source pair for an explicit zoom in edge.
         @return Stable step identifier, or None when not emitted yet.
         """
 
@@ -1760,7 +2052,7 @@ def _chapter_certificate(
                 dependency.namespace,
             )
         )
-        if exact is not None:
+        if exact is not None or exact_only:
             return exact
         return theorem_available.get(
             _alpha_expression_key(
@@ -1824,7 +2116,7 @@ def _chapter_certificate(
                 index
                 for index in range(len(pending) - 1, -1, -1)
                 if all(
-                    local_step_id(dependency) is not None
+                    local_step_id(dependency, pending[index].tag == "zoom in") is not None
                     or (
                         pending[index].tag == "compilation"
                         and selected_theorem_reference(dependency.expression)
@@ -1875,7 +2167,7 @@ def _chapter_certificate(
                         )
                         for dependency in row.dependencies
                         if (
-                            local_step_id(dependency) is None
+                            local_step_id(dependency, row.tag == "zoom in") is None
                             and not (
                                 row.tag == "compilation"
                                 and selected_theorem_reference(
@@ -1928,7 +2220,7 @@ def _chapter_certificate(
                 "namespace": dependency.namespace,
             }
             matched_reference = selected_theorem_reference(dependency.expression)
-            resolved_step = local_step_id(dependency)
+            resolved_step = local_step_id(dependency, row.tag == "zoom in")
             if (row.tag == "or theorem"
                     and resolved_step is None
                     and matched_reference is None
@@ -1976,7 +2268,50 @@ def _chapter_certificate(
             "namespace": row.namespace,
             "dependencies": references,
         }
-        if row.tag == "theorem":
+        from .conjunction_refutation import (
+            build_conjunction_refutation_plan, is_conjunction_refutation_expansion)
+        refutation_sources = [item.expression for item in row.dependencies]
+        from .or_introduction import match_or_introduction
+        introduction = (match_or_introduction(row.conclusion.expression, refutation_sources[0], binary_entries or {})
+                        if row.tag == "expansion" and len(refutation_sources) == 1 else None)
+        if introduction is not None:
+            assert row.namespace == row.dependencies[0].namespace
+            step["action"] = "structural_or_introduce"
+            step["introduction"] = introduction
+        elif row.tag == "expansion" and is_conjunction_refutation_expansion(
+                row.conclusion.expression, refutation_sources, binary_entries or {}):
+            from .contraposition import validate_auxiliary_scopes
+            validate_auxiliary_scopes(row.namespace, [item.namespace for item in row.dependencies])
+            step["action"] = "conjunction_refute"
+            step["refutation"] = build_conjunction_refutation_plan(
+                row.conclusion.expression, refutation_sources, binary_entries or {})
+        elif row.tag == "zoom in":
+            assert len(row.dependencies) == 1 and len(references) == 1
+            source = row.dependencies[0]
+            assert row.conclusion == source.scoped_expression
+            assert row.namespace.startswith(source.namespace + "_boundary_")
+            assert _expression_key(source.scoped_expression, source.namespace) in produced_keys
+            assert references[0]["source_kind"] == "local_step"
+        elif row.tag == "implication composition":
+            assert len(row.dependencies) == 2 and len(references) == 2
+            first, second = row.dependencies
+            validate_composition_scopes(row.namespace, first.namespace, second.namespace)
+            step["composition"] = build_implication_composition_plan(
+                row.conclusion.expression, first.scoped_expression.expression,
+                second.scoped_expression.expression)
+        elif row.tag in ("implication grouping", "contraposition"):
+            from .contraposition import (
+                build_contraposition_plan, build_grouping_plan, validate_auxiliary_scopes)
+            assert len(references) == len(row.dependencies)
+            validate_auxiliary_scopes(row.namespace, [item.namespace for item in row.dependencies])
+            sources = [item.scoped_expression.expression for item in row.dependencies]
+            if row.tag == "contraposition":
+                assert len(sources) == 1
+                step["auxiliary"] = build_contraposition_plan(row.conclusion.expression, sources[0])
+            else:
+                step["auxiliary"] = build_grouping_plan(row.conclusion.expression, sources,
+                                                      binary_entries or {})
+        elif row.tag == "theorem":
             theorem_key = alpha_key(row.conclusion.expression)
             matches = [
                 *selected_theorems.get(theorem_key, []),
@@ -2103,7 +2438,15 @@ def binary_entries_with_overrides(
     for _, theorem in resolved_selections:
         for chapter in theorem.chapters:
             for row in chapter.rows:
+                from .conjunction_refutation import is_conjunction_refutation_expansion
+                if row.tag == "expansion" and is_conjunction_refutation_expansion(
+                        row.conclusion.expression, [item.expression for item in row.dependencies], binary_entries):
+                    continue
                 if len(row.dependencies) != 1:
+                    continue
+                from .or_introduction import match_or_introduction
+                if row.tag == "expansion" and match_or_introduction(
+                        row.conclusion.expression, row.dependencies[0].expression, binary_entries) is not None:
                     continue
                 if row.tag == "reformulated from":
                     target_cursor = row.conclusion.expression
@@ -2119,6 +2462,9 @@ def binary_entries_with_overrides(
                     continue
                 if (
                     not isinstance(source, Atom)
+                    # A typed `=` expands to its two subsets by
+                    # extensionality: `=` is atomic, never a definition.
+                    or source.head == EQUALITY
                     or source.head in compiled_overrides
                     or (
                         source.head in binary_entries
@@ -2349,8 +2695,13 @@ def build_certificate(
             )
             adaptation["target_variable_types"] = reference["target_variable_types"]
 
+    citation_indices = _citation_source_indices(
+        selection, [theorem for _, theorem in resolved_selections]
+    )
     selected_references: dict[str, list[dict[str, object]]] = {}
     for selected, theorem in resolved_selections:
+        if theorem.source_index not in citation_indices:
+            continue
         selected_references.setdefault(alpha_key(theorem.expression), []).append(
             {
                 "theorem_id": str(selected["id"]),

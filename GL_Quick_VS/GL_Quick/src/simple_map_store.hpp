@@ -288,6 +288,32 @@ namespace gl {
             }
         }
 
+        /// @brief Whether any child of `parent` satisfies `pred` — an unordered
+        ///        existence probe over the parent's edge chain.
+        ///
+        /// @details
+        /// Walks the chain newest-first and returns at the first match. The
+        /// answer is a boolean OR over the children, so no edge order can change
+        /// it: no decoded-key collection, no sort and no allocation, unlike
+        /// `forEachChild`, whose ordered visit serves walks whose effects depend
+        /// on the order. A parent with no edges has no child to match and
+        /// answers `false`. Callers that need every child, or a visit order, use
+        /// `forEachChild` (D-451).
+        ///
+        /// @tparam Pred A side-effect-free callable `bool pred(Memory* child)`.
+        /// @param parent The parent LB (identity only — never dereferenced).
+        /// @param pred   The per-child test.
+        /// @return `true` iff at least one child of `parent` satisfies `pred`.
+        template <class Pred>
+        bool anyChild(const Memory* parent, Pred&& pred) const {
+            const EdgeHead* h = heads.find(lbKey(parent));
+            if (h == nullptr) return false;
+            for (std::int32_t e = h->lastEdge; e >= 0; e = edges[e].prev) {
+                if (pred(edges[e].child)) return true;
+            }
+            return false;
+        }
+
         /// @brief Drop every edge and chain head at tree teardown.
         ///
         /// @details

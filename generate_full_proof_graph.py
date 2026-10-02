@@ -37,6 +37,8 @@ import copy
 import json
 import os
 import html
+from contextvars import ContextVar
+from functools import lru_cache
 
 import re
 import shutil
@@ -47,6 +49,8 @@ from typing import Dict
 
 from configuration_reader import configuration_reader
 from parameters import debug
+
+_RENDER_CACHE = ContextVar("gl_html_render_cache", default=None)
 
 # =============================================================================
 # License metadata injected into every generated HTML page.
@@ -140,6 +144,21 @@ external_orphan_shapes: set[str] = set()
 
 # Tag descriptions for the proof graph reference page and right-click popups
 TAG_DESCRIPTIONS = {
+    "implication grouping": (
+        "Implication conclusions grouped",
+        "The cited implications have the same complete premise and compatible binders. "
+        "Their conclusions are combined into the displayed conjunction, preserving every source proof."
+    ),
+    "contraposition": (
+        "Contrapositive implication",
+        "The cited implication is reversed with both sides negated. "
+        "All bound variables, fixed parameters and the source scope are preserved."
+    ),
+    "implication composition": (
+        "Implications composed",
+        "Two one-premise implications are joined at their matching intermediate expression. "
+        "The new implication retains both source proofs and holds at their deepest compatible scope."
+    ),
     "implication": (
         "Hash-table inference",
         "A premise was matched against a universally quantified implication rule "
@@ -180,7 +199,7 @@ TAG_DESCRIPTIONS = {
     "task formulation": (
         "Proof premise (root assumption)",
         "A root premise of the theorem under proof, asserted without justification "
-        "at the top of the chapter. In direct proofs, the row's left side is one of "
+        "at the top of the chapter. In single-chapter proofs, the row's left side is one of "
         "the theorem implication's chain premises (or the anchor application, which "
         "is always a premise by structure). In contradiction proofs &mdash; theorems "
         "whose head starts with <code>!</code> &mdash; the un-negated head is also "
@@ -252,6 +271,16 @@ TAG_DESCRIPTIONS = {
         "outermost <code>&gt;[]</code>. The bound variable was stripped because "
         "the slot was already occupied; the verifier infers it from the GL "
         "binary entry and validates the existence-form match."
+    ),
+    "reformulation for integration flattened": (
+        "Reformulated for reverse-disintegration (flat, multi-level)",
+        "A flat integration rule for a goal: the goal's definition tree was "
+        "unfolded through several levels in one implication — ad-hoc "
+        "conjunction/existence products always opened, each user-defined "
+        "compound either kept whole or opened one level, implications and "
+        "disjunctions left whole — with the goal as head and every witness "
+        "bound at its first premise. The verifier re-unfolds the goal from the "
+        "GL binary and matches the premises modulo witness renaming."
     ),
     "expansion for integration": (
         "Expanded for reverse-disintegration",
@@ -328,8 +357,9 @@ TAG_DESCRIPTIONS = {
         "self-contradictory inside the implication's scope. The implication "
         "head is therefore trivially valid &mdash; <i>ex falso quodlibet</i>. "
         "Allows GL to close out branches whose premises lead to inconsistency "
-        "without needing to derive the head separately. Currently confined to "
-        "scope <code>main</code>."
+        "without needing to derive the head separately. The record cites the "
+        "opposing facts at their actual scopes. An ordinary implication closes "
+        "under its scoped premises; the induction form also cites its hypothesis."
     ),
     "origin": (
         "Provenance tracking (non-checker)",
@@ -422,6 +452,7 @@ def _find_matching_paren_local(expr: str, start: int) -> int:
     return -1
 
 
+@lru_cache(maxsize=16384)
 def _alpha_normalize_theorem_expr(expr: str) -> str:
     """Normalize theorem expressions up to variable renaming (alpha-equivalence).
     We replace every bracket-argument token with a stable placeholder by first occurrence.
@@ -484,6 +515,7 @@ def _is_orphan_external(expr: str) -> bool:
     return shape in external_orphan_shapes
 
 
+@lru_cache(maxsize=16384)
 def _strip_i_prefix(expr: str) -> str:
     """Strip 'i' prefix from anchor element names (i0->0, i1->1) for display.
     Works on both bracketed args and readable math text."""
@@ -507,6 +539,9 @@ def _space_commas(s: str) -> str:
 
 # Utility function to wrap clickable substrings starting with '(' or '!(' and ending at space or end-of-string
 def wrap_clickable(text):
+    render_cache = _RENDER_CACHE.get()
+    if render_cache is not None and text in render_cache["clickable"]:
+        return render_cache["clickable"][text]
     def repl(m):
         s = m.group(0)  # the raw token, e.g. "(v7*v8)=(v8*v7)"
         esc = html.escape(s, quote=True)
@@ -557,6 +592,8 @@ def wrap_clickable(text):
     result = result.replace(
         '_integration_goal',
         '<span class="integration-goal-label">_integration_goal</span>')
+    if render_cache is not None:
+        render_cache["clickable"][text] = result
     return result
 
 
@@ -608,6 +645,7 @@ def _apply_order_symbols(text: str) -> str:
     return _ORDER_ATOM_RE.sub(repl, text)
 
 
+@lru_cache(maxsize=16384)
 def _htmlify_readable(text):
     """Convert plain-text readable title to HTML with mathematical notation."""
     # Order relations first, on the plain text: `<` (strict order) must go
@@ -636,21 +674,31 @@ def _htmlify_readable(text):
         r'\(sequence\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
         lambda m: f'{m.group(5)} is a sequence ({m.group(5)}<sup>i</sup>)<sub>i\u2208[{m.group(3)},{m.group(4)}]</sub>',
         h)
-    # sum(i=start..end) -> vertical sigma with bounds above/below, summing i
-    def _fmt_sum(m):
-        lo, hi, fn = m.group(1), m.group(2), m.group(3)
+    # Sums and products share vertical bounds and retain the folded function.
+    def _fmt_fold(m):
+        """@brief Format a readable sum or product with vertical bounds.
+
+        @details The matched accumulation kind chooses the symbol, while the
+        optional function supplies the term; an omitted function denotes the
+        identity. Bounds have already passed through ordinary HTML escaping.
+
+        @param m Match containing kind, lower bound, upper bound and function.
+        @return HTML for the accumulation symbol, bounds and term.
+        """
+        kind, lo, hi, fn = m.group(1), m.group(2), m.group(3), m.group(4)
+        symbol = '\u2211' if kind == 'sum' else '\u220f'
         body = f'{fn}(i)' if fn else 'i'
-        sigma = (
+        symbol_html = (
             '<span class="sm" style="display:inline-flex;flex-direction:column;'
             'align-items:center;vertical-align:middle;margin:0 2px;line-height:1">'
             f'<span style="font-size:0.6em">{hi}</span>'
-            '<span style="font-size:1.8em;line-height:0.8;margin-bottom:8px">\u2211</span>'
+            f'<span style="font-size:1.8em;line-height:0.8;margin-bottom:8px">{symbol}</span>'
             f'<span style="font-size:0.6em;margin-top:8px">i={lo}</span>'
             '</span>'
         )
-        return f'{sigma} {body}'
-    h = re.sub(r'sum\(i=([^.]+)\.\.([^)]+)\)(?: (\w+)\(i\))?', _fmt_sum, h)
-    # enlarge parentheses that directly wrap a sigma block
+        return f'{symbol_html} {body}'
+    h = re.sub(r'(sum|prod)\(i=([^.]+)\.\.([^)]+)\)(?: (\w+)\(i\))?', _fmt_fold, h)
+    # Enlarge parentheses that directly wrap a sum or product block.
     h = re.sub(
         r'\(([^()]*?<span class="sm".*?</span>[^()]*?)\)',
         lambda m: (
@@ -1066,7 +1114,7 @@ def _looks_like_internal_var_token(token: str) -> bool:
         return True
     if re.fullmatch(r"x\d+", base):
         return True
-    if re.fullmatch(r"(?:int|repl)_lev_\d+_\d+", base):
+    if re.fullmatch(r"(?:force|int_\d+|int|repl)_lev_\d+_\d+", base):
         return True
     if re.fullmatch(r"it_\d+_lev_\d+_\d+", base):
         return True
@@ -1430,6 +1478,10 @@ def read_stack(file_path: str, proof_part: str):
     """
     # same sanitizer used when writing
 
+    render_cache = _RENDER_CACHE.get()
+    cache_key = str(file_path)
+    if render_cache is not None and cache_key in render_cache["chapters"]:
+        return [list(row) for row in render_cache["chapters"][cache_key]]
     stack = []
     with open(file_path, "r", encoding="utf-8") as f:
         for raw_line in f:
@@ -1442,6 +1494,8 @@ def read_stack(file_path: str, proof_part: str):
                 stack.append([])  # empty list was written as a blank line
             else:
                 stack.append(line.split("\t"))  # items were joined with tabs
+    if render_cache is not None:
+        render_cache["chapters"][cache_key] = tuple(tuple(row) for row in stack)
     return stack
 
 
@@ -2212,10 +2266,38 @@ def check_induction_condition(theorem, file_path, induction_var, prefix=''):
     return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
 
 
-def direct(theorem, file_path, prefix=''):
-    stack = read_stack(file_path, "direct")
+def single_chapter_proof(theorem, file_path, prefix=''):
+    stack = read_stack(file_path, "single chapter proof")
     rename_stack(stack, theorem)
     return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+
+
+def single_chapter_proof_heading(file_path):
+    """
+    @brief Select the human-facing HTML heading for one single-chapter proof.
+
+    @details The first exported row is the chapter goal. A contradiction tag
+    there means the chapter itself is a contradiction proof; contradiction
+    rows later in the stack are dependencies and do not change the chapter's
+    proof depiction.
+
+    @param file_path Path to the processed single-chapter proof file.
+    @return ``"Contradiction Proof"`` for a contradiction goal row, otherwise
+    ``"Direct Proof"``.
+    @invariant The chapter contains a first row with an expression, namespace,
+    and tag.
+    @see check_theorem_goal_reached in verifier.py for the same goal-row
+    ownership contract.
+    """
+    proof_rows = read_stack(file_path, "single chapter proof heading")
+    assert proof_rows and len(proof_rows[0]) >= 3, (
+        "single chapter proof must contain a goal row with a tag"
+    )
+    return (
+        "Contradiction Proof"
+        if proof_rows[0][2] == "contradiction"
+        else "Direct Proof"
+    )
 
 
 def split_at_plus(s: str) -> tuple[str, str]:
@@ -2312,7 +2394,7 @@ def makes_file_path_map(theorem_list, base_dir=None):
 
     Indexing matches generate_raw_proof_graph/find_ends:
       - induction  -> two files:  <i>_check_zero.txt, <i+1>_check_induction_condition.txt
-      - direct     -> one file:   <i>_direct_proof.txt
+      - single chapter proof -> one file: <i>_single_chapter_proof.txt
       - debug      -> one file:   <i>_debug.txt
       - unknown method -> one file: <i>_unknown_<sanitized>.txt
 
@@ -2340,8 +2422,8 @@ def makes_file_path_map(theorem_list, base_dir=None):
             files.append(base_dir / f"{idx + 1}_check_zero.txt")
             files.append(base_dir / f"{idx + 2}_check_induction_condition.txt")
             idx += 3
-        elif m == "direct":
-            files.append(base_dir / f"{idx}_direct_proof.txt")
+        elif m == "single chapter proof":
+            files.append(base_dir / f"{idx}_single_chapter_proof.txt")
             idx += 1
         elif m == "debug":
             files.append(base_dir / f"{idx}_debug.txt")
@@ -2596,32 +2678,86 @@ def _generate_tags_page(out_dir, common_style):
         f.write(tags_page)
 
 
+def _build_used_by(theorem_list, file_path_map, leading_nums):
+    """@brief Index the chapters that cite each local theorem.
+
+    @details
+    Renamed theorem identities are indexed once in original theorem order.
+    Each citation selects the first matching chapter other than its own,
+    preserving duplicate-identity handling and the historical self exclusion.
+
+    @param theorem_list Ordered theorem, method, and variable records.
+    @param file_path_map Theorem identity to ordered processed chapter paths.
+    @param leading_nums First chapter number for each theorem record.
+    @return Mapping from cited chapter number to its set of citing numbers.
+    @invariant Indexing does not change first-match or chapter-order semantics.
+    @see generate_proof_graph_pages
+    """
+    assert len(theorem_list) == len(leading_nums)
+    candidates = {}
+    for position, (name, _, _) in enumerate(theorem_list):
+        candidates.setdefault(rename_theorem(name), []).append(position)
+    used_by = {}
+    for citing_pos, (citing_name, _, _) in enumerate(theorem_list):
+        citing_num = leading_nums[citing_pos]
+        for path in file_path_map.get(citing_name, []):
+            if not os.path.exists(path):
+                continue
+            for entry in read_stack(path, None):
+                if not entry or len(entry) < 3 or entry[2] != "theorem":
+                    continue
+                matches = candidates.get(rename_theorem(entry[0]), ())
+                for source_pos in matches:
+                    if source_pos != citing_pos:
+                        used_by.setdefault(leading_nums[source_pos], set()).add(citing_num)
+                        break
+    return used_by
+
+
 def generate_proof_graph_pages(config: configuration_reader,
                                proc_dir=None, out_dir=None,
                                sibling_graphs=None):
-    """
-    Generate HTML proof-graph pages for one pipeline.
+    """@brief Render a proof graph with caches confined to this invocation.
 
-    Args:
-        config: visualizer configuration (ConfigVisu).
-        proc_dir: processed-proof-graph directory containing chapter
-            files + global_theorem_list.txt. Defaults to
-            files/processed_proof_graph.
-        out_dir: HTML output directory. Defaults to files/full_proof_graph.
-        sibling_graphs: optional list of sibling pipelines for cross-batch
-            theorem linking. Each entry is a dict with keys:
-                "proc_dir": Path to the sibling's processed proof graph
-                            directory (its global_theorem_list.txt is
-                            loaded for theorem-to-chapter discovery).
-                "out_dir":  Path to the sibling's HTML output directory
-                            (used to compute relative URLs from the
-                            current pipeline's output). The sibling's
-                            HTML must be generated separately — this
-                            function only references it.
-            Used so an incubator chapter citing a Peano-batch external
-            theorem can link to the main pipeline's HTML chapter; the
-            link opens in a new tab.
+    @details
+    Link identities and processed chapter files stay fixed during one render.
+    Repeated cells share rendered strings; chapter reads return independent
+    mutable rows. A nested render or an exception restores the caller's cache.
+
+    @param config Visualizer configuration for the current graph.
+    @param proc_dir Processed chapter directory, or the main graph default.
+    @param out_dir HTML destination, or the main graph default.
+    @param sibling_graphs Peer graph directories for cross-graph links.
+    @return None.
+    @invariant Cached links and chapter contents never survive a render call.
+    @see _generate_proof_graph_pages
     """
+    token = _RENDER_CACHE.set({"clickable": {}, "chapters": {}})
+    try:
+        return _generate_proof_graph_pages(config, proc_dir, out_dir, sibling_graphs)
+    finally:
+        _RENDER_CACHE.reset(token)
+
+
+def _generate_proof_graph_pages(config: configuration_reader,
+                                proc_dir=None, out_dir=None,
+                                sibling_graphs=None):
+    """@brief Generate all index, legend, proof, and Lean twin pages.
+
+    @details
+    Builds complete local and sibling link maps before rendering the ordered
+    theorem pages. The public entry point supplies the optional per-call cache;
+    direct calls execute the same rendering without caching mutable context.
+
+    @param config Visualizer configuration for the current graph.
+    @param proc_dir Processed chapter directory, or the main graph default.
+    @param out_dir HTML destination, or the main graph default.
+    @param sibling_graphs Peer graph directories for cross-graph links.
+    @return None.
+    @invariant Page order, chapter identities, and citation targets are stable.
+    @see generate_proof_graph_pages
+    """
+
     global theorem_to_file, theorem_shape_to_file
     global sibling_theorem_to_file, sibling_theorem_shape_to_file
     expression_utils.set_configuration(config)
@@ -2690,25 +2826,7 @@ def generate_proof_graph_pages(config: configuration_reader,
             _file_idx += 1
 
     # Build "used by" reverse-dependency map: leading_num -> list of citing leading_nums
-    used_by: dict[int, set] = {}
-    for citing_pos, (citing_name, _, _) in enumerate(theorem_list):
-        citing_num = leading_nums[citing_pos]
-        for fp in file_path_map.get(citing_name, []):
-            if not os.path.exists(fp):
-                continue
-            stack = read_stack(fp, None)
-            for entry in stack:
-                if not entry or len(entry) < 3 or entry[2] != "theorem":
-                    continue
-                # entry is a marker row: the theorem expression is in entry[0]
-                # find which chapter it belongs to
-                cited_disp = rename_theorem(entry[0])
-                for src_pos, (src_name, _, _) in enumerate(theorem_list):
-                    if src_pos == citing_pos:
-                        continue
-                    if rename_theorem(src_name) == cited_disp:
-                        used_by.setdefault(leading_nums[src_pos], set()).add(citing_num)
-                        break
+    used_by = _build_used_by(theorem_list, file_path_map, leading_nums)
 
     # Build GL binary map from per-tag JSON files (check next to proc_dir first, then default)
     gl_binaries_dir = Path(proc_dir).parent / "GL_binaries"
@@ -3513,10 +3631,11 @@ def generate_proof_graph_pages(config: configuration_reader,
                 f"  <div class=\"step-output\">{check_induction_condition(name, file_path_map[name][2], var, f'c{chapter_num}s2')}</div>",
             ])
 
-        elif method.lower() == "direct":
+        elif method.lower() == "single chapter proof":
+            proof_heading = single_chapter_proof_heading(file_path_map[name][0])
             body.extend([
-                "  <h2>Direct Proof</h2>",
-                "  <div class='step-output'>", direct(name, file_path_map[name][0]), "  </div>",
+                f"  <h2>{proof_heading}</h2>",
+                "  <div class='step-output'>", single_chapter_proof(name, file_path_map[name][0]), "  </div>",
             ])
         elif method.lower() == "debug":
             body.extend([
@@ -3555,7 +3674,7 @@ def generate_proof_graph_pages(config: configuration_reader,
             body.extend([
                 "  <h2>Proved, not broadcast (level-refused registration)</h2>",
                 "  <div class='step-output'>",
-                direct(name, file_path_map[name][0]),
+                single_chapter_proof(name, file_path_map[name][0]),
                 "  </div>",
             ])
         # Chapter statistics footer

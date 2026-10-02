@@ -34,6 +34,7 @@
 #include "typed_cold_map.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <set>
 #include <string>
@@ -111,9 +112,9 @@ namespace gl {
         ///        bit 1 = `allowOrDisintegration`, bits 2+ = the firing's
         ///        witness-generation `iteration + 1` — 0 means "nothing
         ///        carried", decoding to iteration -1).
-        TypedColdMap<int64_t, int32_t> disintegrationSignals_;
-        TypedColdMap<int64_t, int32_t>::KeysView disintegrationSignalsKeys;
-        TypedColdMap<int64_t, int32_t>::ValuesView disintegrationSignalsValues;
+        TypedColdMap<int64_t, int64_t> disintegrationSignals_;
+        TypedColdMap<int64_t, int64_t>::KeysView disintegrationSignalsKeys;
+        TypedColdMap<int64_t, int64_t>::ValuesView disintegrationSignalsValues;
 
         /// @brief Bind the three columns + their deload facets to the LB's
         ///        deloadable arena and real deload-dirty flag.
@@ -144,7 +145,10 @@ namespace gl {
         /// @brief Pack the two firing-time bools plus the witness-generation
         ///        iteration into the stored value.
         ///
-        /// @details Bits 0-1 carry the two bools; bits 2+ carry
+        /// @details Bits 0-2 carry disintegration and recursion flags;
+        /// bit 3 carries OR-source continuation; bit 4 carries the
+        /// integrated mark (the head of an integration rule's firing,
+        /// D-444); bits 5+ carry
         /// `iteration + 1`, so the all-zero value keeps meaning "nothing
         /// carried" (decoding to iteration -1, the non-firing default the
         /// absorb maps to generation 0). `iteration` is the firing's
@@ -155,18 +159,51 @@ namespace gl {
         /// @param dnd       `doNotDisintegrate`.
         /// @param aod       `allowOrDisintegration`.
         /// @param iteration The witness-generation stamp; `>= -1`.
-        /// @return The packed int32.
-        static int32_t packSignals(bool dnd, bool aod, int32_t iteration) {
+        /// @param rh The induction-head flag.
+        /// @param orSource The residual OR continues exclusion processing.
+        /// @param integrationDepth Original integration assignment; -1 means none.
+        /// @param integrated The statement is the head of an integration rule's firing.
+        /// @return Flags/generation in the low word and depth plus one in the high word.
+        static int64_t packSignals(bool dnd, bool aod, int32_t iteration,
+                                   bool rh = false, bool orSource = false, int32_t integrationDepth = -1,
+                                   bool integrated = false) {
             assert(iteration >= -1 && "packSignals: iteration below -1");
-            return static_cast<int32_t>((dnd ? 1 : 0) | (aod ? 2 : 0))
-                | ((iteration + 1) << 2);
+            assert(iteration < (INT32_MAX >> 5) && "packed iteration capacity exceeded");
+            assert(integrationDepth >= -1 && integrationDepth < INT_MAX);
+            return static_cast<int64_t>((dnd ? 1 : 0) | (aod ? 2 : 0)
+                                        | (rh ? 4 : 0) | (orSource ? 8 : 0)
+                                        | (integrated ? 16 : 0))
+                | ((iteration + 1) << 5)
+                | (static_cast<int64_t>(integrationDepth + 1) << 32);
         }
 
         /// @brief Unpack the iteration half of a packed signal value.
-        /// @param packed The stored int32.
+        /// @param packed The stored 64-bit signal.
         /// @return The iteration (`-1` when the writer carried none).
-        static int32_t unpackIteration(int32_t packed) {
-            return (packed >> 2) - 1;
+        static int32_t unpackIteration(int64_t packed) {
+            return (static_cast<int32_t>(packed & 0xffffffffLL) >> 5) - 1;
+        }
+
+        /// @brief Unpack the integrated mark of a packed signal value.
+        ///
+        /// @details Bit 4 of the low word (`packSignals`): the statement was
+        /// deposited as the head of an integration rule's firing. Absent or
+        /// zero values decode to false.
+        ///
+        /// @param packed The stored 64-bit signal.
+        /// @return True iff the integrated bit is set.
+        /// @see packSignals, setDisintegrationSignal.
+        static bool unpackIntegrated(int64_t packed) {
+            return (packed & 16) != 0;
+        }
+
+        /// @brief Read a saved outer-expansion integration depth from a signal.
+        /// @details The high word carries depth plus one; zero denotes an
+        /// ordinary arrival with no parked-expansion assignment.
+        /// @param packed Complete internal signal value.
+        /// @return Assigned depth, or -1 when no assignment was carried.
+        static int32_t unpackIntegrationDepth(int64_t packed) {
+            return static_cast<int32_t>(static_cast<uint64_t>(packed) >> 32) - 1;
         }
 
         /// @brief Insert one statement (id-form pair + levels) — set semantics.
@@ -251,22 +288,38 @@ namespace gl {
         /// @param dnd       `doNotDisintegrate`.
         /// @param aod       `allowOrDisintegration`.
         /// @param iteration The firing's witness-generation stamp; -1 = none.
+        /// @param rh        `recursionHead` — the statement is the head fired
+        ///                  by the block's induction implication; bit 2,
+        ///                  last-write like the other two bools.
+        /// @param orSource Sticky OR-source continuation, independent of case permission.
+        /// @param integrationDepth Original assignment; real values min-merge independently.
+        /// @param integrated Sticky integrated mark: the statement is the head
+        ///        of an integration rule's firing (D-444);
+        ///        OR-merged like `orSource`, so the stored value is independent
+        ///        of the write order.
         void setDisintegrationSignal(int64_t key, bool dnd, bool aod,
-                                     int32_t iteration) {
+                                     int32_t iteration, bool rh = false, bool orSource = false, int32_t integrationDepth = -1,
+                                     bool integrated = false) {
             const int32_t id = disintegrationSignals_.lookup(key);
             if (id != 0) {
-                const int32_t oldIt =
-                    unpackIteration(disintegrationSignals_.valueAt(id));
+                const int64_t old = disintegrationSignals_.valueAt(id);
+                const int32_t oldDepth = unpackIntegrationDepth(old);
+                if (oldDepth >= 0 && (integrationDepth < 0 || oldDepth < integrationDepth))
+                    integrationDepth = oldDepth;
+                const int32_t oldIt = unpackIteration(old);
                 // min over real generations; -1 (none) loses to any real one.
                 const int32_t mergedIt =
                     (oldIt == -1) ? iteration
                     : (iteration == -1) ? oldIt
                     : (oldIt < iteration ? oldIt : iteration);
                 disintegrationSignals_.upsert(key,
-                    packSignals(dnd, aod, mergedIt));
+                    packSignals(dnd, aod, mergedIt, rh,
+                        orSource || (old & 8) != 0, integrationDepth,
+                        integrated || unpackIntegrated(old)));
                 return;
             }
-            disintegrationSignals_.upsert(key, packSignals(dnd, aod, iteration));
+            disintegrationSignals_.upsert(key, packSignals(dnd, aod, iteration, rh, orSource, integrationDepth,
+                integrated));
         }
 
         /// @brief Read one statement's firing-time disintegration signals — the
@@ -284,7 +337,7 @@ namespace gl {
         std::pair<bool, bool> getDisintegrationSignal(int64_t key) const {
             const int32_t id = disintegrationSignals_.lookup(key);
             if (id == 0) return std::make_pair(false, false);
-            const int32_t packed = disintegrationSignals_.valueAt(id);
+            const int64_t packed = disintegrationSignals_.valueAt(id);
             return std::make_pair((packed & 1) != 0, (packed & 2) != 0);
         }
 
@@ -312,19 +365,34 @@ namespace gl {
         ///            absorb's `-1 → 0` mapping keeps such deposits at
         ///            generation 0).
         /// @see getDisintegrationSignal(int64_t) const — the pair-returning oracle.
+        /// @param rh Optional recursion-head output.
+        /// @param orSource Optional OR-source continuation output.
+        /// @param integrationDepth Optional original expansion assignment output.
+        /// @param integrated Optional integrated-mark output (`false` when
+        ///            `key` absent).
         void getDisintegrationSignal(int64_t key, bool& dnd, bool& aod,
-                                     int32_t& iteration) const {
+                                     int32_t& iteration, bool* rh = nullptr,
+                                     bool* orSource = nullptr, int32_t* integrationDepth = nullptr,
+                                     bool* integrated = nullptr) const {
             const int32_t id = disintegrationSignals_.lookup(key);
             if (id == 0) {
                 dnd = false;
                 aod = false;
+                if (rh != nullptr) *rh = false;
+                if (orSource != nullptr) *orSource = false;
                 iteration = -1;
+                if (integrationDepth != nullptr) *integrationDepth = -1;
+                if (integrated != nullptr) *integrated = false;
                 return;
             }
-            const int32_t packed = disintegrationSignals_.valueAt(id);
+            const int64_t packed = disintegrationSignals_.valueAt(id);
             dnd = (packed & 1) != 0;
             aod = (packed & 2) != 0;
+            if (rh != nullptr) *rh = (packed & 4) != 0;
+            if (orSource != nullptr) *orSource = (packed & 8) != 0;
             iteration = unpackIteration(packed);
+            if (integrationDepth != nullptr) *integrationDepth = unpackIntegrationDepth(packed);
+            if (integrated != nullptr) *integrated = unpackIntegrated(packed);
         }
 
         /// @brief Whether the statements column is empty.

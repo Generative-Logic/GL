@@ -23,6 +23,7 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
+#include "project_paths.hpp"
 #include "conjecturer.hpp"
 #include <json.hpp>
 #include <fstream>
@@ -3557,8 +3558,18 @@ bool Conjecturer::prohibitedHeadsGood(const std::string& conjecture) const {
     return true;
 }
 
-/// @brief Reject if the total argument count of `conjecture`
-///        exceeds `parameters.max_number_args_expr`.
+/// @brief Reject repeated digit arguments within an ordinary conjecture atom.
+///
+/// @details Digit arguments are exactly the slots whose configured definition
+/// set is `(1)`. Operation and set parameters may repeat after anchor connection.
+/// Incubator atoms retain repeated digit values for ground arithmetic, except
+/// equality, whose identical operands remain excluded in every mode.
+///
+/// @param conjecture Candidate implication chain or atom; empty text has no arguments.
+/// @return True when every checked atom satisfies digit-argument uniqueness.
+/// @invariant Definition-set metadata determines eligibility, not token spelling
+/// or the input/output classification used by findDigitArgs.
+/// @see controlEquality; I-257.
 bool Conjecturer::countArgumentsFilter(const std::string& conjecture) const {
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<ChainEntry> chain;
@@ -3567,31 +3578,21 @@ bool Conjecturer::countArgumentsFilter(const std::string& conjecture) const {
     for (auto& e : chain) allExprs.push_back(std::get<0>(e));
     allExprs.push_back(head);
 
-    bool incubator = config_.parameters.incubator_mode;
-    for (auto& expr : allExprs) {
-        auto args = ce::getArgs(expr);
-        if (!incubator) {
-            std::set<std::string> s(args.begin(), args.end());
-            if (s.size() != args.size()) return false;
-        } else {
-            std::string name = ce::extractExpression(expr);
-            if (name == "=") {
-                std::set<std::string> s(args.begin(), args.end());
-                if (s.size() != args.size()) return false;
-            } else if (config_.data.find(name) != config_.data.end() && !config_.data.at(name).definition_sets.empty()) {
-                auto& ds = config_.data.at(name).definition_sets;
-                std::vector<std::string> nonElement;
-                for (int i = 0; i < (int)args.size(); ++i) {
-                    auto it = ds.find(std::to_string(i + 1));
-                    if (it == ds.end() || std::get<0>(it->second) != "(1)")
-                        nonElement.push_back(args[i]);
-                }
-                std::set<std::string> s(nonElement.begin(), nonElement.end());
-                if (s.size() != nonElement.size()) return false;
-            } else {
-                std::set<std::string> s(args.begin(), args.end());
-                if (s.size() != args.size()) return false;
-            }
+    for (const auto& expr : allExprs) {
+        const auto args = ce::getArgs(expr);
+        if (args.empty()) continue;
+        const std::string name = ce::extractExpression(expr);
+        const auto description = config_.data.find(name);
+        assert(description != config_.data.end());
+        const auto& definitionSets = description->second.definition_sets;
+        std::set<std::string> digitArguments;
+        for (std::size_t index = 0; index < args.size(); ++index) {
+            const auto slot = definitionSets.find(std::to_string(index + 1));
+            assert(slot != definitionSets.end());
+            if (std::get<0>(slot->second) != "(1)") continue;
+            const bool inserted = digitArguments.insert(args[index]).second;
+            if (!inserted && (!config_.parameters.incubator_mode || name == "="))
+                return false;
         }
     }
     return true;
@@ -6458,7 +6459,7 @@ std::vector<std::string> Conjecturer::generateNegatedPremiseVariants(const std::
 ///
 /// @details
 /// Steps performed:
-/// 1. Resolve `projectRoot_` from `__FILE__` so the
+/// 1. Resolve `projectRoot_` from the running executable so the
 ///    config-loader can locate `files/config/Config<Tag>.json`
 ///    via the standard search path.
 /// 2. Call `loadConfiguration` to populate `config_`.
@@ -6492,7 +6493,7 @@ std::vector<std::string> Conjecturer::generateNegatedPremiseVariants(const std::
 ///       classifications, the int-path lookup tables, and
 ///       `projectRoot_` are all populated.
 Conjecturer::Conjecturer(const std::string& anchorId)
-    : projectRoot_(std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path())
+    : projectRoot_(gl::projectRoot())
 {
     config_ = loadConfiguration(anchorId);
     buildCoreExprMapAdapter();

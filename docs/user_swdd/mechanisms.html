@@ -192,45 +192,88 @@ substrate; §4.2 is the core, traced end to end on a real Gauss theorem.</p>
 <h3 id="disint-a">4.1.1 &nbsp;Pass A — structural</h3>
 <p>
 <code>disintegrateExprCore2</code> splits an <code>and</code> / <code>existence</code>
-into its element expressions and recurses. No fresh variables, nothing to gate.
-A <i>negated</i> existence <code>!(existence&lt;N&gt;[…])</code> — “no witness exists” — is a universal in
-disguise and splits into its two <i>existence implications</i>, <code>left → !right</code> and
-<code>right → !left</code>. Like the OR's K rules (1a below) these are not built on the spot: the
-compiler stores them once on the existence's registry row as compact <code>implication&lt;N&gt;[u_…]</code>
-atoms over the existence's own tokens, and disintegration instantiates each compact as a product
-<i>statement</i> of the negated existence whose expansion IS the rule.
+into its element expressions and recurses. Existence witnesses are temporary until admission.
+A <i>negated</i> existence <code>!(existence&lt;N&gt;[…])</code> — “no witness exists” — splits
+into its <i>existence implications</i> (compiled once on the existence's registry row as
+compact <code>implication&lt;N&gt;[u_…]</code> atoms) — but only the <i>body direction</i>
+<code>body → !typing</code> is instantiated: it fires where the body is known and refutes
+the witness's typing; the typing direction <code>typing → !body</code>, which instantiated
+the negated body once per typed term and was never a premise, is skipped at the door —
+and only when both elements are <i>named</i> operators — the Peano predecessor existence over <code>in</code> / <code>in2</code>, say,
+whose negation is refuted through exactly those rules. An existence with a <i>numbered</i>
+element — a nested <code>existence&lt;N&gt;</code>, a generated <code>and&lt;N&gt;</code> —
+has no implications, and its negation is a stored statement only: with them, the
+typing-premise rules instantiated the negated body over every typed term at every
+quantifier level (a negated triple existence became a cube of negated conjunctions on
+typing evidence alone).
 </p>
 
-<h3 id="disint-b">4.1.2 &nbsp;Pass B — operator-aware</h3>
-<p>
-<code>disintegrateExpr2</code> mints fresh iteration variables — <code>it_…</code>
-(algebra) or <code>int_…</code> (integration) — to stand for unknowns. A fresh
-variable may not enter the result until <i>admitted</i> (§4.2). Pass&nbsp;B fires
-only when <code>!parameters.compressor_mode &amp;&amp; !parameters.ban_disintegration</code>
-(<b>I-7</b>) — the single flag also gates back-reformulation and hypothetical
-disintegration. Its freshness check rides <code>savedStartInt</code> — a counter
-that must stay monotonic; a parallel counter breaks it (<b>I-17</b>).
-</p>
-
+<h3 id="disint-b">4.1.2 &nbsp;Temporary expansion and permanent admission</h3>
+<p>A failed universal implication with exactly one bound variable supplies a
+counterexample: every premise holds and its conclusion is false, all for the
+same witness. The negative compact remains the source. It admits one
+<code>int_&lt;depth&gt;_lev_…</code> witness without demand when its assigned depth is within the configured limit, its source has no algebraic witness input, and any enclosing witness is admitted.
+Source-and-scope receipts prevent repeated creation. Nested ordinary witnesses
+still require admission, and purity is unchanged.
+Zero- and multiple-witness negative implications remain stored facts.</p>
 <figure>
-<svg viewBox="0 0 760 200" role="img" aria-label="Pass A structural vs Pass B operator-aware disintegration">
-  <defs><marker id="d-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
-  <rect x="300" y="14" width="160" height="38" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="380" y="38" fill="#F0E8DC" font-size="12" text-anchor="middle">compound arrives</text>
-  <path d="M340 52 L210 80" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#d-ar)"/>
-  <path d="M420 52 L548 80" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#d-ar)"/>
-  <rect x="36" y="84" width="330" height="100" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
-  <text x="201" y="106" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">Pass A · disintegrateExprCore2</text>
-  <text x="201" y="128" fill="#F0E8DC" font-size="10.5" text-anchor="middle">split into elements, recurse</text>
-  <text x="201" y="150" fill="#8B8FA5" font-size="10" text-anchor="middle">no fresh vars — nothing to gate</text>
-  <text x="201" y="170" fill="#8B8FA5" font-size="10" text-anchor="middle">structural only</text>
-  <rect x="394" y="84" width="330" height="100" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
-  <text x="559" y="106" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">Pass B · disintegrateExpr2</text>
-  <text x="559" y="128" fill="#F0E8DC" font-size="10.5" text-anchor="middle">mints it_ / int_ unknowns</text>
-  <text x="559" y="150" fill="#B084EB" font-size="10" text-anchor="middle">each must be admitted (§4.2)</text>
-  <text x="559" y="170" fill="#8B8FA5" font-size="10" text-anchor="middle">gated by I-7 · freshness I-17</text>
+<svg viewBox="0 0 760 100" role="img" aria-label="One depth-eligible counterexample witness admitted while nested witnesses retain ordinary admission">
+<g fill="#262938" stroke="#5DCAA5"><rect x="10" y="18" width="220" height="60" rx="8"/><rect x="268" y="18" width="235" height="60" rx="8"/><rect x="540" y="18" width="210" height="60" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="120" y="43">Failed one-variable implication</text><text x="120" y="64">¬∀x (P(x) → Q(x) → R(x))</text><text x="385" y="43">Depth-eligible int_ witness x</text><text x="385" y="64">P(x), Q(x), ¬R(x)</text><text x="645" y="43">Nested witnesses</text><text x="645" y="64">Ordinary admission</text></g>
+<g fill="none" stroke="#5DCAA5"><path d="M230 48H268M260 42L268 48L260 54"/><path d="M503 48H540M532 42L540 48L532 54"/></g>
 </svg>
-<figcaption><b>Two passes.</b> Pass A unpacks structure; Pass B introduces unknowns
-that the admission gate must clear.</figcaption>
+<figcaption>The original negated universal is recorded as an expansion; its
+published facts cite it through disintegration. The exception is local to this
+one witness within the integration-depth budget from a source without algebraic witness inputs; it neither forces nested existences nor relaxes purity.</figcaption>
+</figure>
+<p>A negated disjunction is a conjunction of the complemented leaves:
+<code>NOT (A OR B)</code> gives <code>NOT A</code> and <code>NOT B</code>.
+Disintegration expands it without OR admission or a case branch, cancels double
+negation, and preserves the source scope and proof history. This structural step
+introduces no witness; witness-bearing children still use their own admission.</p>
+<p>The prover first expands an existence with reusable temporary placeholders.
+Admission checks the same algebra, integration and single-input rules and budgets.
+Only accepted witnesses receive permanent numbers. Read-only admission checks inspect the required fields directly; update payloads are copied only when applying successful admission. Admitting an inner witness
+also admits every enclosing witness. The accepted structure is then published with
+its full history. An OR cannot open or park inside an unresolved existence.</p>
+<figure>
+<svg viewBox="0 0 760 190" role="img" aria-label="Temporary expansion, admission, permanent publication and parked source replay">
+<defs><marker id="mint-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#5DCAA5"/></marker></defs>
+<g fill="#262938" stroke="#5DCAA5"><rect x="15" y="25" width="170" height="55" rx="8"/><rect x="245" y="25" width="170" height="55" rx="8"/><rect x="475" y="25" width="265" height="55" rx="8"/><rect x="245" y="125" width="245" height="45" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="100" y="48">Temporary expansion</text><text x="100" y="67">No permanent number</text><text x="330" y="57">Admission and closure</text><text x="607" y="48">Mint accepted witnesses</text><text x="607" y="67">Publish products and history</text><text x="368" y="153">Discard expansion; park existence</text></g>
+<g fill="none" stroke="#5DCAA5" marker-end="url(#mint-arrow)"><path d="M185 52H245"/><path d="M415 52H475"/><path d="M330 80V125"/><path d="M245 149H100V80"/></g>
+<g fill="#C6BFB3" font-size="11"><text x="422" y="42">accepted</text><text x="340" y="106">unresolved</text><text x="115" y="140">demand → internal mail</text></g>
+</svg>
+<figcaption>Replay carries the source existence through ordinary mail absorption and admission. Demand matching uses a derived lookup of marked expressions, then orders the matching keys for ordinary replay. Equality matching checks both the demand key and the source arguments before ordering affected sources. Replacements and wakeups keep their order; empty old keys are removed together after rewriting. Measurements report permanent allocations, mail history and parked-source container storage separately.</figcaption>
+</figure>
+
+<h3>Shared instructions during witness discovery</h3>
+<p>Witness paths read a shared prepared instruction. Each path carries its own
+substitutions and constructs the fields it visits. A consumer that extends the
+instruction or needs a concrete OR graph materializes that path's view.</p>
+<figure>
+<svg viewBox="0 0 760 145" role="img" aria-label="One prepared instruction with independent witness views">
+<g fill="#262938" stroke="#5DCAA5"><rect x="265" y="10" width="230" height="40" rx="8"/><rect x="30" y="92" width="290" height="40" rx="8"/><rect x="440" y="92" width="290" height="40" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="12"><text x="380" y="35">Shared prepared instruction</text><text x="175" y="117">Witness A: its own substitutions</text><text x="585" y="117">Witness B: its own substitutions</text></g>
+<g stroke="#5DCAA5" fill="none" marker-end="url(#mint-arrow)"><path d="M340 50L175 92"/><path d="M420 50L585 92"/></g>
+</svg>
+<figcaption>Views share read-only structure. Materializing or extending one child
+does not alter the parent or its sibling. Every view ends with the expansion.</figcaption>
+</figure>
+
+<h3>Lookups for replay and cleanup</h3>
+<p>Demand keys are grouped by their marked expression. Completed constructions
+are grouped by source and scope. Each lookup finds the affected entries; ordinary
+admission and completion checks still decide what happens.</p>
+<figure>
+<svg viewBox="0 0 760 150" role="img" aria-label="Derived lookups select demand and parked-source entries">
+<g fill="#262938" stroke="#5DCAA5"><rect x="10" y="12" width="185" height="45" rx="8"/><rect x="270" y="12" width="210" height="45" rx="8"/><rect x="555" y="12" width="195" height="45" rx="8"/><rect x="10" y="92" width="185" height="45" rx="8"/><rect x="270" y="92" width="210" height="45" rx="8"/><rect x="555" y="92" width="195" height="45" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="12"><text x="102" y="39">New parked expression</text><text x="375" y="39">Marked-expression lookup</text><text x="652" y="39">Demand and mail replay</text><text x="102" y="119">Completed source + scope</text><text x="375" y="119">Source-to-park lookup</text><text x="652" y="119">Exact-scope cleanup</text></g>
+<g stroke="#5DCAA5" fill="none" marker-end="url(#mint-arrow)"><path d="M195 35H270"/><path d="M480 35H555"/><path d="M195 115H270"/><path d="M480 115H555"/></g>
+</svg>
+<figcaption>The indexes preserve existing ordering and proof decisions. They hold
+lookup entries on the block arena, reconstruct after canonical reload or cloning,
+survive raw eviction, and clear with scope cleanup or discharge.</figcaption>
 </figure>
 
 <!-- ===================== 4.2 ===================== -->
@@ -253,7 +296,85 @@ forthcoming static-memory (ASIC) build a single well-defined drain point. Admiss
 decisions, the proved theorems, and every proof are unchanged.
 </p>
 
+<p><b>Integration marker keys exclude relations with two inputs and no output.</b>
+Positive equality is the exception. Typing (<code>in</code>) in both polarities
+and negative equality remain excluded. The same rule governs key creation,
+admission lookup and replay from known facts. Unary predicates such as
+<code>prime</code>, other input counts, and predicates with outputs such as
+<code>in2</code> and <code>in3</code> retain their other eligibility rules.</p>
+<p>Excluded expressions remain signed constituents and required construction
+premises. Thus an order bound alone cannot bind a factor through a marker key,
+but deriving the factorization still requires all its bounds.</p>
+<figure><svg viewBox="0 0 760 154" role="img" aria-label="Integration marker eligibility: two inputs and no output excluded, positive equality allowed">
+<rect x="10" y="40" width="200" height="48" rx="6" fill="#e8eef5"/>
+<text x="110" y="69" text-anchor="middle" fill="#172534">Signed constituent</text>
+<path d="M210 64 H260 M250 58 L260 64 L250 70" stroke="#526878" fill="none"/>
+<rect x="270" y="5" width="480" height="64" rx="6" fill="#fff0d9"/>
+<text x="510" y="29" text-anchor="middle" fill="#172534">Two inputs, no output; typing; negative equality</text>
+<text x="510" y="53" text-anchor="middle" fill="#172534">No marker key (positive equality excepted)</text>
+<rect x="270" y="79" width="480" height="64" rx="6" fill="#e1f1e8"/>
+<text x="510" y="103" text-anchor="middle" fill="#172534">Positive equality and other eligible predicates</text>
+<text x="510" y="127" text-anchor="middle" fill="#172534">Apply the remaining marker-key gates</text>
+</svg></figure>
+<p><b>Recursive replay preserves sibling instructions.</b> Each loop visits its
+original instruction list. Before recording a consumed value, it reloads the
+current stored map, so instructions added by the preceding replay survive.
+Those additions are available for later matches.</p>
+<figure><svg viewBox="0 0 760 96" role="img" aria-label="Replay keeps its original iteration list and writes the current map">
+<rect x="5" y="15" width="205" height="60" rx="6" fill="#e8eef5"/>
+<text x="107" y="40" text-anchor="middle" fill="#172534">Next original instruction</text>
+<text x="107" y="62" text-anchor="middle" fill="#172534">from snapshot</text>
+<path d="M210 45 H255 M245 39 L255 45 L245 51" stroke="#526878" fill="none"/>
+<rect x="265" y="15" width="230" height="60" rx="6" fill="#e1f1e8"/>
+<text x="380" y="40" text-anchor="middle" fill="#172534">Reload current map</text>
+<text x="380" y="62" text-anchor="middle" fill="#172534">Record value and save</text>
+<path d="M495 45 H540 M530 39 L540 45 L530 51" stroke="#526878" fill="none"/>
+<rect x="550" y="15" width="205" height="60" rx="6" fill="#e8eef5"/>
+<text x="652" y="40" text-anchor="middle" fill="#172534">Replay may add siblings</text>
+<text x="652" y="62" text-anchor="middle" fill="#172534">under the same key</text>
+</svg></figure>
 <h3 id="admit-paths">4.2.1 &nbsp;The two admission paths</h3>
+<p><b>Repeated fixed arguments can request a witness.</b> An interval whose lower
+and upper endpoints are both zero can supply a demand for its interval set.
+Creating this demand still requires an eligible predicate and exactly one
+unfilled argument occurrence. Equality of already fixed arguments is allowed,
+both when the demand is created and when equal names are later canonicalized.</p>
+<figure><svg viewBox="0 0 760 105" role="img" aria-label="Equal interval endpoints retain the ordinary witness admission checks">
+<rect x="5" y="15" width="215" height="65" rx="6" fill="#e8eef5"/>
+<text x="112" y="42" text-anchor="middle" fill="#172534">Lower endpoint = 0</text>
+<text x="112" y="65" text-anchor="middle" fill="#172534">Upper endpoint = 0</text>
+<path d="M220 47 H260 M250 41 L260 47 L250 53" stroke="#526878" fill="none"/>
+<rect x="270" y="15" width="215" height="65" rx="6" fill="#fff0d9"/>
+<text x="377" y="42" text-anchor="middle" fill="#172534">Ordinary eligibility checks</text>
+<text x="377" y="65" text-anchor="middle" fill="#172534">One unfilled set argument</text>
+<path d="M485 47 H525 M515 41 L525 47 L515 53" stroke="#526878" fill="none"/>
+<rect x="535" y="15" width="220" height="65" rx="6" fill="#e1f1e8"/>
+<text x="645" y="42" text-anchor="middle" fill="#172534">Register interval demand</text>
+<text x="645" y="65" text-anchor="middle" fill="#172534">Match an existence source</text>
+</svg></figure>
+<p><b>The five-premise exception is not a theorem-length shortcut.</b>
+For ordinary output-slot demands, the arithmetic route requires more than the
+configured number of positive <code>in3</code> premises and an <code>in3</code>
+conclusion. The separate long-rule exception applies only to a product of
+disintegration with no anchor and at least five premises (the configured
+threshold). An argument-position <code>u_</code> prefix identifies such a
+disintegration product. An anchored order theorem cannot qualify merely because
+its anchor brings the premise count to five. The independent local-template
+criterion and other demand routes retain their own checks.</p>
+<figure><svg viewBox="0 0 760 145" role="img" aria-label="The long-rule admission exception requires five premises, no anchor and a disintegration product">
+<rect x="10" y="20" width="190" height="70" rx="6" fill="#e8eef5"/>
+<text x="105" y="49" text-anchor="middle" fill="#172534">At least five premises</text>
+<text x="105" y="72" text-anchor="middle" fill="#172534">Configured threshold</text>
+<path d="M200 55 H230 M220 49 L230 55 L220 61" stroke="#526878" fill="none"/>
+<rect x="240" y="20" width="260" height="70" rx="6" fill="#fff0d9"/>
+<text x="370" y="49" text-anchor="middle" fill="#172534">No anchor AND</text>
+<text x="370" y="72" text-anchor="middle" fill="#172534">product of disintegration</text>
+<path d="M500 55 H530 M520 49 L530 55 L520 61" stroke="#526878" fill="none"/>
+<rect x="540" y="20" width="210" height="70" rx="6" fill="#e1f1e8"/>
+<text x="645" y="49" text-anchor="middle" fill="#172534">Long-rule exception</text>
+<text x="645" y="72" text-anchor="middle" fill="#172534">may install demand</text>
+<text x="380" y="125" text-anchor="middle" fill="currentColor">An anchored theorem fails this exception regardless of its length.</text>
+</svg></figure>
 <p>
 A Pass-B fire that mints a fresh variable is gated by two paths, <b>first-match-wins</b>:
 </p>
@@ -276,34 +397,56 @@ whose premise carries a variable at an operator <i>input</i> slot that also
 feeds the rule's head installs an <b>input-slot demand key</b>: when the
 other premises match live facts, the instantiated key demands exactly the
 witness shape an existence's disintegration would otherwise park. Because a
-fired key lands at the shallowest scope of its matched premises while the
+fired key lands at the deepest scope of its matched premises while the
 disintegration may run inside a case-split branch, the Pass-B probe checks
 the deposit scope <i>and its ancestor scopes</i> (never siblings). This is
 what lets an order fact like <i>x &le; y</i> surrender its additive witness
-inside an or-branch &mdash; the C8 difference-closure chain.
+inside an or-branch &mdash; the C8 difference-closure chain. A second,
+structural producer serves short consumers that the premise-count rule
+excludes: a <i>received theorem</i> whose only operator premise sits next to
+compound relations (an order or divisibility fact) installs an input-slot
+demand key for that premise as long as at least two of its other arguments
+are bound by those relations &mdash; the shape of
+<i>a &lt; b &and; a + k = b &rArr; k &ne; 0</i>, which is how the D2
+uniqueness case split obtains its difference witness. Successor-witness
+shapes (one bound argument) stay excluded so that not every ordered term
+demands a predecessor.
 </p>
-<p>
-Fail both → the variable is buffered in <code>pendingRejections</code> (algebra) /
-<code>pendingRejectionsIntegration</code> (integration). A cascade-admission loop
-retries; if it still can't admit, the rejection is committed (§4.2.2).
+<p>An induction hypothesis can also need an <i>object</i> before its later
+premises can bind. Inside a recursion step, a positive premise of the step's
+own chain becomes a demand when it lacks exactly one argument: an operator
+missing its result, or a defined predicate such as &ldquo;<i>Q</i> is a
+sequence on [0,&nbsp;<i>m</i>]&rdquo; missing <i>Q</i>. The missing object is
+prepared for <i>construction</i>, not only admission. The demand wakes the
+parked existence that supplies it (for reverse F3, the restriction of the
+longer sequence to [0,&nbsp;<i>m</i>]). Two-place relations such as the
+orders, negated premises and every chain outside a recursion step stay
+undemanded: a relation demand re-instantiated for every arriving witness is
+exactly the witness pump the marker route avoids.
 </p>
-
-<h3 id="admit-rej">4.2.2 &nbsp;Rejected maps</h3>
-<p>
-A failed fresh variable is <b>never silently dropped</b> — a lost fact is unsound
-silence (<b>I-19</b>). It is committed to <code>rejectedMap</code> (algebra,
-<code>it_</code>) or <code>rejectedMapIntegration</code> (integration,
-<code>int_</code>), keyed by the <i>marked form</i> (the constituent with its output
-arg replaced by the token <code>"marker"</code>). The integration value keeps
-everything needed to replay the fire verbatim later:
+<p>The recursion step then advances its hypothesis as facts arrive. An arriving
+operator fact binds its result; an arriving predicate fact binds whichever
+argument a demand marks, so the woken restriction re-keys the hypothesis with
+itself. In the re-keyed hypothesis, each premise that now
+lacks exactly one argument becomes a new demand, again prepared for
+construction when it is positive: for reverse F3, the restriction's value at
+<i>m</i> and its folds up to the induction variable and up to <i>m</i>.
 </p>
-<table>
-<tr><th><code>rejectedMapIntegration</code> entry</th><th>Holds</th></tr>
-<tr><td>key</td><td>marked form, e.g. <code>(in3[a,marker,b,4])</code> at its <code>validityName</code></td></tr>
-<tr><td><code>concreteConstituent</code></td><td>the body element with the <code>int_</code> var intact</td></tr>
-<tr><td><code>siblings</code></td><td>all other body elements of the compound (incl. <code>(in[…])</code> typing)</td></tr>
-<tr><td><code>compoundExpression</code></td><td>the originating compound — for provenance</td></tr>
-</table>
+<p>If neither admission route accepts the witness, the expansion is discarded after
+enclosing-chain and shared-expression closure. The existence remains available for demand.</p>
+<h3 id="admit-rej">4.2.2 &nbsp;Rejected maps hold source existences</h3>
+<p>Both rejected maps keep concrete marked demand keys and source scope. A wake
+sends the existence to internal mail; ordinary disintegration checks admission again.
+An unresolved inner existence keeps concrete outer arguments once those outer
+witnesses are admitted. Otherwise its enclosing existence remains parked.</p>
+<table><tr><th>Stored information</th><th>Purpose</th></tr>
+<tr><td>Source existence and scope</td><td>Reconstruct the expansion when demand arrives</td></tr>
+<tr><td>Generation, construction flags and levels</td><td>Preserve admission policy and derivation depth</td></tr>
+<tr><td>Deferred equality steps</td><td>Reconstruct rewritten-source provenance when it becomes live</td></tr>
+<tr><td>Successful source/scope construction</td><td>Prevent repeat minting in one scope</td></tr></table>
+<p>Ancestor parks remain available to other scopes. Each demanding scope gets fresh
+witnesses. Replaying an inherited carrier keeps it non-local and cannot relay it again. Its history records <code>zoom in</code> for the source first, followed by
+its own disintegration. No expanded product list or witness-name table is retained.</p>
 
 <h3 id="admit-shapes">4.2.3 &nbsp;Five maps, three key shapes</h3>
 <p>
@@ -331,6 +474,92 @@ store concrete instances.</li>
 </ul>
 
 <h3 id="admit-eq">4.2.4 &nbsp;Equivalence classes</h3>
+<p>Equality maintenance keeps two views. Application classes drive the existing
+expression substitutions. A separate complete view joins the scope's own classes
+with every visible ancestor class, including independent classes. It has its own
+record of changed representatives; inherited copies do not become additional
+application events.</p>
+<figure><pre>Application classes at this scope ──► expression multiplication
+                │
+                ▼
+Parent's complete view ──► complete view at this scope  (rebuilt only when a class's
+                                  │                    membership changes; all rebuilt
+                                  │                    views written in one pass)
+                                  │
+                                  ├──► expression, rule and admission identities
+                                  ├──► construction, goal and watch identities
+                                  └──► complete views of descendants
+
+Changed identities ──► remove obsolete rules ──► install replacements ──► wake matches
+Immediate existence wake ──► possible demand? ──► match sources ──► full eligibility checks
+Changed representatives ──► affected comparison queue for each scope
+Next comparison ──► rebuild that scope's queued views in the existing order
+Changed representatives ──► affected watch and goal identities, parked sources and settled inherited negations
+Pending arrivals ──► retain full inherited-negation refresh
+Ancestor candidates ──► existing shape exclusions ──► sort ──► already imported? ──► import new records
+Watch dependencies ──► select once across cores ──► preserve run and expression order
+Identifier query ──► shared canonical chooser ──► text only
+Proof query ──► shared canonical chooser ──► text, equality evidence and supporting levels
+Equality between members already in one class ──► own class keeps its pair level and origin
+Membership changes ──► complete class views, evidence and OR-cache maintenance
+Equality-pair key ──► temporary row index ──► existing level row or append
+Ordered level rows ──► unchanged level precedence and serialized class
+Scope closes ──► retire its canonical records and descendant projections
+Ancestor and sibling scopes ──► keep cached forms and pending updates</pre>
+<figcaption>The two views share the existing memory pool and preserve equality
+evidence at its original scope. Canonical comparisons use the complete view at
+the comparison scope; ordinary multiplication keeps its application classes.</figcaption></figure>
+<p>An immediate existence wake first checks whether any permitted demand route could apply. Missing demand avoids building parked-source comparisons. Ancestor algebra demand and standalone operator inputs remain available; integration uses its ordinary exact-scope demand routes. Every surviving source still passes its full budget, completion and history checks. Wakes deferred during equality maintenance are retained until that maintenance settles.</p>
+<p>Name-and-scope indexes select records affected by an equality change. An
+unchanged component retains its cached identities. When original and normalized text are identical, one dependency walk records their shared names; future equality changes still find the same affected records. Ancestor records keep their
+owner while both compared forms are normalized at the descendant comparison
+scope. Completed construction kinds are recorded at the canonical source and
+scope; queued raw deliveries keep their own pending state. A separate index
+connects each canonical source to those deliveries. Source and demand identities finish updating before queued wakeups run; repeated wakes are combined. Replacing one value preserves other values excluded by the existing Anchor rule. Proof bridges cite inherited equalities where they were established. Compact-rule replacement keeps its existing shape eligibility even though the ownership registry also records other expansion sources.</p>
+<p>Adding a dependency while its equality is unchanged selects only newly added
+or replaced records. Insertion revisions let the posting walk stop before the
+older records; removing a record does not recheck the survivors. A changed
+equality still selects every live record that depends on it.</p>
+<p>The completed-expression check compares stored canonical identities and reads
+the original record's completion flag. It does not enumerate hypothetical
+expression variants. Literal goal names and ordinary expression multiplication
+retain their roles.</p>
+<p>Comparison views are refreshed from queued changes. When a representative
+changes, name-and-scope postings select its affected comparisons. Newly requested
+views enter the same queue. A lookup rebuilds only the queued views at its target
+scope, in the existing expression order. It does not rescan every class on each
+lookup. Changes only to equality evidence retain the comparison text while the
+separate evidence consumers receive their required updates.</p>
+<p>Closing a scope removes its canonical dependency records and comparison views, including ancestor records projected into that closing scope. Surviving ancestor and sibling views retain their cached forms, dependency revisions and pending updates. Private token and shape names remain allocated until discharge or canonical release. Other replay lookups retain their existing reconstruction on scope cleanup.</p>
+<p>Watch and parked-source identities, and imported ancestor negations, are refreshed
+only for names whose canonical representative changed once arrivals are settled.
+While statement arrivals are pending, inherited-negation refresh keeps its full
+member list so new negations appear at the existing class-update seam. Changes to
+equality evidence keep settled text identities in place. Source writes are still synchronized
+on every refresh, including when no representative changed, and newly arriving
+ancestor negations keep their separate import path. Equality levels, locality,
+proof information and OR-cache updates retain their normal processing. Goal dependencies synchronize even when the representative-change list is empty.</p>
+<p>The temporary equality-level accumulator uses an exact pair-key index to find each row. New pairs append in the same order; replacing a pair retains its row position, and existing levels keep their precedence when classes overlap. The index shares the accumulator's scratch memory and is discarded with it. Serialized classes and equality histories still come from the original ordered columns. Complete-view rebuilding remains broader work: unchanged components are currently recognized after reconstruction and history merging.</p>
+<p>Watch dependencies select each affected expression at its own scope once across all predicate runs. The existing index also records whether an original expression is already present at that scope, avoiding repeated linear searches through long runs. Previously imported records are updated before new imports are checked. The processing order is preserved. An identifier query uses the same canonical chooser as a proof query but constructs only the expression text; proof queries still assemble their equality evidence and supporting levels.</p>
+<p>Ancestor import applies its existing positive-statement and negated-equality
+exclusions before collecting and sorting candidates. Eligible negations retain
+the same source order, ownership and canonicalization. Shared statement indexes
+continue to contain every statement needed by their other consumers.</p>
+<p>A presence check can finish at an exact source-owned key without building the
+other comparison entries. Admission probes take this shortcut only after the
+existing eligibility checks pass; otherwise they search equivalent source keys.
+Committed admission updates still process every matching original demand.</p>
+<p>Admission chains distinguish fixed arguments from placeholders. Fixed arguments
+use the complete scoped classes; placeholders keep their binding role. If a
+canonical fixed name collides with a placeholder, the existing variable renaming
+separates them before the marker demand is created. Fixed-argument metadata
+survives even when that argument no longer occurs in the remaining premises.</p>
+<p>The same binding distinction applies when existing algebra-demand values are
+updated or compared in a descendant scope. The source owner stays unchanged;
+both compared forms use the complete classes at the comparison scope.</p>
+<p>Replay selects the argument group to mark before normalizing fixed arguments.
+Repeated occurrences of the same original variable remain shared. Equal fixed
+names cannot capture a separate placeholder or enlarge the selected marker group.</p>
 <p>
 When <code>(=[a,b])</code> is admitted, <code>a</code> and <code>b</code> join an
 <code>EquivalenceClass</code> at the current scope. The class is owned
@@ -372,21 +601,24 @@ branch class has absorbed equality content from an ancestor, so the proof-graph
 walker never receives a false branch-local dependency.</li>
 <li><b>Deposits canonical only.</b> The deposit door rewrites every
 non-goal, non-equality, non-anchor arrival to its class-canonical form under the
-classes at its own scope before anything else runs, and ends the deposit when
-that form is already known — one form per fact per scope enters, and the class
-multiplication regenerates the variants from it. Equalities stay raw (they define
+classes at its own scope after the raw admission checks, and ends the deposit when
+that form is already known — one form per fact per scope enters, and class
+multiplication regenerates variants only for used cores. Equalities stay raw (they define
 the classes and close literal goals), goals stay raw (the end-of-burst goal
 sanitize handles them), anchors stay raw (a scope identity).</li>
-<li><b>Rules canonical only.</b> Statements are multiplied across a class
-(every variant registered — hash fodder), but hash memory holds rules only for
+<li><b>Rules canonical only.</b> Used statements are multiplied
+across a class, while unused encoded statements retain their stored form. Hash memory holds rules only for
 the canonical form of a compact implication: the rule-install loop
 canonicalizes a compact before installing it and expands the canonical form
 instead of a stale-named one (registered with an <code>equality1</code> row
 citing the compact and the equalities); a class that forms later removes the
 rules it made stale and expands the canonical form in the same apply. Removal
-is exact — every whole key, subkey, remaining-args edge and chain carries the
-full list of the rules that installed it, and a rule leaves by re-running its
-own key enumeration — and is finished once per apply.</li>
+is exact for whole keys, subkeys with three or more premises, remaining-args
+edges and chains: each carries the full list of the rules that installed it.
+One- and two-premise subkeys contain an empty nine-byte record, with no owners
+or signatures, and stay until their hash memory is reset. Their presence permits
+growth; the live whole-key and rule indexes still decide whether a rule fires.
+Removal re-runs the rule’s own key enumeration and finishes once per apply.</li>
 <li><b>No descendant copies.</b> A statement known at a scope is fully
 visible at every descendant, so every registration door refuses a deposit
 whose expression an ancestor scope already knows — one shared ancestor-scan
@@ -399,6 +631,75 @@ statement population an or-branch adds to the search universe is therefore
 only what the branch itself genuinely derives — the dedup that collapsed the
 multiplicative-theorem induction blow-up.</li>
 </ul>
+
+<figure><svg viewBox="0 0 760 150" role="img" aria-label="Normalized subkey storage and lifetime">
+<rect x="10" y="10" width="730" height="55" rx="6" fill="#e1f1e8"/>
+<text x="375" y="33" text-anchor="middle" fill="#172534">1–2 premises → empty nine-byte record; one staged item per key</text>
+<text x="375" y="54" text-anchor="middle" fill="#172534">Accept by presence; retain until hash-memory reset</text>
+<rect x="10" y="80" width="730" height="55" rx="6" fill="#e8eef5"/>
+<text x="375" y="103" text-anchor="middle" fill="#172534">3+ premises → signatures and exact owner pairs</text>
+<text x="375" y="124" text-anchor="middle" fill="#172534">Check signatures; erase when the final owner leaves</text>
+</svg></figure>
+<p><b>Unused encoded expressions stay stored; only premise use multiplies.</b>
+Each logical block tracks its current premise cores with polarity
+(<i>used as a premise</i>). That signed membership is the only reason a
+stored row is rewritten by the equivalence classes and the only reason a row
+is sent to the GPU. A goal, a negated fact or a contradiction seed never makes
+a core used.</p>
+<p>An unused expression enters in canonical form, then remains unchanged while
+unused. Later class changes neither rewrite it nor remove it through class
+cleanup. When its core becomes a premise, the existing equality pass processes
+the stored row before cleanup. Known facts, levels and proof history remain
+paired; ordinary scope and block teardown still remove statements.</p>
+<p><b>Goals and negations are watched, not multiplied.</b> Two small ledgers
+per block hold, for every goal and every known negated fact, its canonical form
+under all classes visible at its scope (its own scope's and every ancestor's).
+A class merge re-keys them. Once per step, before the contradiction and goal
+sweeps, a drain compares each new arrival with the ledgers — a positive fact
+against the negations, a negated fact or a goal against the stored facts of its
+core — and, on a match, writes the one exact twin the sweeps need as a derived
+row with a single equality bridge (a goal also gets its literal spelling back,
+so the theorem head keeps the conjecture's text). The exact sweeps and the
+proof checker are unchanged: the same contradictions and goals are found, and
+the certificate cites the same kind of rows, without keeping every negation in
+every spelling.</p>
+<figure aria-label="Watched goals and negations, exact twins on demand"><svg viewBox="0 0 740 200" role="img">
+<rect x="5" y="20" width="195" height="120" rx="6" fill="#e8eef5"/>
+<text x="102" y="50" text-anchor="middle" fill="#17212b" font-size="14">Used as a premise?</text>
+<text x="102" y="78" text-anchor="middle" fill="#17212b" font-size="13">yes → class products,</text>
+<text x="102" y="100" text-anchor="middle" fill="#17212b" font-size="13">GPU upload</text>
+<text x="102" y="124" text-anchor="middle" fill="#17212b" font-size="13">no → stored row kept</text>
+<text x="210" y="85" fill="currentColor">→</text>
+<rect x="240" y="5" width="235" height="150" rx="6" fill="#e8eef5"/>
+<text x="357" y="35" text-anchor="middle" fill="#17212b" font-size="14">Watch ledgers per scope</text>
+<text x="357" y="64" text-anchor="middle" fill="#17212b" font-size="13">goals + negated facts</text>
+<text x="357" y="89" text-anchor="middle" fill="#17212b" font-size="13">canonical under all</text>
+<text x="357" y="114" text-anchor="middle" fill="#17212b" font-size="13">visible classes; re-keyed</text>
+<text x="357" y="139" text-anchor="middle" fill="#17212b" font-size="13">at every merge</text>
+<text x="485" y="85" fill="currentColor">→</text>
+<rect x="515" y="20" width="220" height="120" rx="6" fill="#e8eef5"/>
+<text x="625" y="50" text-anchor="middle" fill="#17212b" font-size="14">Per-step drain</text>
+<text x="625" y="78" text-anchor="middle" fill="#17212b" font-size="13">canonical pair found →</text>
+<text x="625" y="100" text-anchor="middle" fill="#17212b" font-size="13">exact twin + equality bridge</text>
+<text x="625" y="124" text-anchor="middle" fill="#17212b" font-size="13">then the exact sweeps fire</text>
+<text x="370" y="188" text-anchor="middle" fill="#17212b" font-size="12">Equality and anchor shapes keep their dedicated handling</text>
+</svg></figure>
+
+<p><b>OR convergence follows statement order.</b> Registration, equivalence
+products retain their existing list order when
+feeding OR convergence. The first applicable deposit supplies the retained
+contradiction witness when the history limit is reached. Repeatability requires
+a repeatable input sequence; it does not require an additional expression sort.</p>
+<figure aria-label="Statement order selects a capped OR witness"><svg viewBox="0 0 740 75" role="img">
+<rect x="5" y="15" width="200" height="45" rx="6" fill="#e8eef5"/>
+<text x="105" y="43" text-anchor="middle" fill="#17212b" font-size="14">Existing statement order</text>
+<text x="219" y="43" fill="currentColor">→</text>
+<rect x="253" y="15" width="195" height="45" rx="6" fill="#e8eef5"/>
+<text x="350" y="43" text-anchor="middle" fill="#17212b" font-size="14">OR convergence</text>
+<text x="468" y="43" fill="currentColor">→</text>
+<rect x="505" y="15" width="230" height="45" rx="6" fill="#e8eef5"/>
+<text x="620" y="43" text-anchor="middle" fill="#17212b" font-size="14">First retained witness</text>
+</svg></figure>
 
 <h3 id="admit-rev">4.2.5 &nbsp;The revival loop — a Gauss trace</h3>
 <p>
@@ -418,15 +719,25 @@ algebra side: integration revival does <i>not</i> cascade through
 admission entry — an admission key is a demand template, and a demand is never
 spent by being met, so the rule stays live for future matches (<b>I-22</b>).
 </p>
+<p>
+The key match has a <b>scope half</b>. When the new key is below a park,
+both wakes also inspect its strict ancestor scopes. The product and siblings
+are released <i>into the key's scope</i>, and the ancestor park is <b>kept</b>.
+Each released expression gets one <b>zoom in</b> history row that cites the
+identical expression at the exact ancestor scope. The parent's derivation
+stays there; recording the transfer does not read or copy that derivation.
+A product already known at the key's scope or above is not released again.
+The two or-head park maps retain their exact-scope rule.
+</p>
 
 <figure>
-<svg viewBox="0 0 760 250" role="img" aria-label="The reject to revive loop">
+<svg viewBox="0 0 760 330" role="img" aria-label="The reject to revive loop">
   <defs><marker id="rv-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#B084EB"/></marker></defs>
-  <rect x="300" y="18" width="160" height="44" rx="8" fill="#262938" stroke="#EF9F27"/><text x="380" y="38" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">rejectedMapIntegration</text><text x="380" y="54" fill="#8B8FA5" font-size="9.5" text-anchor="middle">parked entry</text>
+  <rect x="300" y="18" width="160" height="44" rx="8" fill="#262938" stroke="#EF9F27"/><text x="380" y="38" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">rejectedMapIntegration</text><text x="380" y="54" fill="#8B8FA5" font-size="9.5" text-anchor="middle">parked entry, at ITS scope</text>
   <path d="M300 48 L150 82" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
   <path d="M460 48 L610 82" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
   <rect x="36" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="150" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">equi-class rewrite</text><text x="150" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">applyEquivalenceClassTo…</text>
-  <rect x="496" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="610" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">new admission key</text><text x="610" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">revisitRejectedIntegration2</text>
+  <rect x="496" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="610" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">new admission key</text><text x="610" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">revisitRejected(Integration)2</text>
   <path d="M150 140 L320 176" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
   <text x="212" y="166" fill="#8B8FA5" font-size="8.5" text-anchor="middle">demanded: mail</text>
   <path d="M100 140 L100 236 L36 236 L36 40 L300 40" fill="none" stroke="#B084EB" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#rv-ar)"/>
@@ -436,69 +747,41 @@ spent by being met, so the rule stays live for future matches (<b>I-22</b>).
   <rect x="270" y="178" width="220" height="46" rx="8" fill="#262938" stroke="#E879F9"/><text x="380" y="199" fill="#E879F9" font-size="10.5" font-weight="bold" text-anchor="middle">sameIterationInternalMail</text><text x="380" y="216" fill="#8B8FA5" font-size="9" text-anchor="middle">absorb top of next cycle, status=1</text>
   <path d="M490 201 L560 201 L560 240 L380 240 L380 226" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#rv-ar)"/>
   <text x="635" y="205" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">fires</text>
+  <rect x="496" y="246" width="228" height="74" rx="8" fill="#262938" stroke="#EF9F27" stroke-dasharray="4 3"/><text x="610" y="263" fill="#EF9F27" font-size="9.5" font-weight="bold" text-anchor="middle">key at the park's scope: park erased</text><text x="610" y="279" fill="#8B8FA5" font-size="9" text-anchor="middle">key below it: released into the key's scope, park kept</text><text x="610" y="305" fill="#8B8FA5" font-size="9" text-anchor="middle">zoom in: unchanged expression at source</text>
 </svg>
 <figcaption><b>Reject → rewrite → re-admit → fire.</b> The loop that turns “can't
 yet” into “done later”; the dashed box is the scope rule of the key match, the dashed
 arrow the rewrite of an undemanded park back into the map under its new key.</figcaption>
 </figure>
 
-<div class="ex">
-<span class="lab">Worked trace — a Gauss revival, end to end</span>
-<p style="margin:4px 0 0">Theorem <span class="st">sequence[1,4,2,X,Y] → sequence[1,4,2,9,11]</span>
-under <span class="st">limitSequence ∧ in2[9,12,3]</span>. Anchor mapping puts
-<span class="st">4=+</span>.</p>
-<ol>
-<li><b>Cycle N — reject.</b> A compound <span class="st">sequence[1,4,2,X,Y]</span>
-lands at <span class="st">v=main</span>. Pass&nbsp;B unfolds it and mints integration
-witness <span class="st">int_lev_2_42</span> for an inner existential. One body
-element is <span class="st">(in3[a,int_lev_2_42,b,4])</span>. Both admission probes
-miss (no template for these concrete <span class="st">a,b</span>). It's buffered;
-the cascade can't admit; committed:
-<br><span class="st">rejectedMapIntegration[(in3[a,marker,b,4])@main]</span> = { concrete
-<span class="st">(in3[a,int_lev_2_42,b,4])</span>, siblings
-<span class="st">[(in[int_lev_2_42,1])]</span>, compound
-<span class="st">sequence[1,4,2,X,Y]</span> }. Nothing visible was added — the proof
-is stuck on this rung.</li>
-<li><b>Cycle N+k — equi rewrite.</b> Another block proves
-<span class="st">(=[X,9])</span>. Class <span class="st">{X,9}</span> forms at
-<span class="st">v=main</span>. <code>applyEquivalenceClassToRejectedMapIntegration</code>
-fires: the rmi key contains <span class="st">a=X</span>; rewrite →
-<span class="st">(in3[9,marker,b,4])</span>; probe
-<span class="st">admissionMapIntegration[(in3[u_9,marker,u_b,u_4])]</span> →
-<b>MATCH</b> (an earlier compound's integration template registered it), so this park
-is demanded: erase the rmi entry and mail the rewritten compound
-<span class="st">sequence[1,4,2,9,Y]</span> to <code>sameIterationInternalMail</code> with an
-<span class="st">equality1</span> origin <span class="st">[pre, (=[X,9])]</span>; leave the
-admission entry. (Had the probe missed, the entry would instead have been re-keyed in
-place to <span class="st">(in3[9,marker,b,4])</span> with its texts rewritten and an
-<span class="st">equality1</span> row <span class="st">[pre, (=[a,9])]</span> for the
-rewritten constituent, waiting for a key.)</li>
-<li><b>Cycle N+k+1 — absorb &amp; prove.</b> Top-of-burst absorb at
-<code>status=1</code> → <code>disintegrateExpr2</code> re-expands the compound, the
-admission probe now matches, the two atoms land at
-<span class="st">v=main</span>, <code>updateAdmissionMapIntegration</code> fires on
-each, downstream integration picks them up, the enclosing
-<span class="st">sequence→sequence</span> implication's premise chain is now
-satisfied, head <span class="st">sequence[1,4,2,9,11]</span> derives and moves to
-<span class="st">theorems.txt</span>.</li>
-<li><b>What the verifier re-checks.</b> The chapter row for
-<span class="st">(in3[9,int_lev_2_42,b,4])</span> is tagged
-<span class="st">equality1</span> with source
-<span class="st">(in3[a,int_lev_2_42,b,4])</span> and equality
-<span class="st">(=[a,9])</span>: same core, arity 4, the one differing arg
-(position 0) is covered by the supplied equality → row passes
-(<a href="provenance.html">Chapter&nbsp;7</a>).</li>
-</ol>
-</div>
+<div class="ex"><span class="lab">A parked existence resumes with its original depth</span><ol>
+<li>An eligible expansion discovers a witness construction whose integration demand is missing. It stores the concrete source existence, scope, original assigned depth, supporting levels and any deferred equality steps. No permanent witness name or witness history is created yet.</li>
+<li>A later equality can re-key that source. Its original depth assignment survives. A matching demand queues the source on internal mail; an ancestor source remains available for separate descendant scopes.</li>
+<li>Absorption reconstructs the eligible construction and mints fresh witnesses at the saved depth. It does not recompute the limit from a nested source containing witnesses created during the original expansion. Source/scope receipts suppress repeated completion.</li>
+<li>History records the actual disintegration and any required equality or scope-transfer evidence. An integration-bearing result stays local as a fact; its evidence remains available to audit an exported conclusion.</li></ol></div>
 
 <!-- ===================== 4.3 ===================== -->
 <h2 id="integ">4.3 &nbsp;Integration</h2>
+<p><b>Construction demand has a consumer.</b> A supplied operator premise is recorded and unpacked. Grid startup does not replace its output with a marker to request alternative results. Explicit goals and installed rule premises, including induction hypotheses, still prepare the constructions they need.</p>
+<figure><svg viewBox="0 0 760 150" role="img" aria-label="A known premise supplies facts; explicit goals and rule premises supply integration demand">
+<defs><marker id="integration-consumer-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#52677d"/></marker></defs>
+<rect x="20" y="16" width="280" height="46" rx="6" fill="#edf4fa" stroke="#52677d"/><text x="160" y="44" text-anchor="middle" fill="#172534">Known operator premise</text>
+<path d="M300,39 H430" stroke="#52677d" fill="none" marker-end="url(#integration-consumer-arrow)"/><rect x="440" y="16" width="300" height="46" rx="6" fill="#edf4fa" stroke="#52677d"/><text x="590" y="44" text-anchor="middle" fill="#172534">Record and unpack its facts</text>
+<rect x="20" y="88" width="280" height="46" rx="6" fill="#eef8ef" stroke="#52677d"/><text x="160" y="116" text-anchor="middle" fill="#172534">Explicit goal or rule premise</text>
+<path d="M300,111 H430" stroke="#52677d" fill="none" marker-end="url(#integration-consumer-arrow)"/><rect x="440" y="88" width="300" height="46" rx="6" fill="#eef8ef" stroke="#52677d"/><text x="590" y="116" text-anchor="middle" fill="#172534">Prepare integration demand</text>
+</svg></figure>
+
 <p>
 Integration is disintegration run backwards: reassemble a compound from its
 constituents so the whole can be asserted as a conclusion. The two are a matched
 pair — the consumer-side output-slot registration integration performs
 (<code>updateAdmissionMap</code>) is exactly what populates the admission maps
-disintegration consults (§4.2.1). Reassembly uses
+disintegration consults (§4.2.1). A demand filed when a rule is installed lives
+at the installing rule's own scope: a rule that exists only inside a case
+branch demands only inside that branch (and below), never at the block's
+main scope &mdash; otherwise a hypothetical case's negation could open
+case-split cohorts at main, the loop behind a runaway burst on the D2
+induction blocks before this was fixed. Reassembly uses
 <code>expandSignatureForIntegration</code> / <code>buildIntegrationInstruction</code>
 (both via the single binder rule, <b>I-4</b>) and is staged in a scoped child block:
 each step emits a <code>validity name</code> row (the scope it's bound to) and an
@@ -523,6 +806,117 @@ preparatory reformulation tags appear: <code>… and</code>, <code>… &gt;[boun
 <figcaption><b>The handshake.</b> One direction fires the parts; the other rebuilds
 the whole and registers the shapes the first will be allowed to mint.</figcaption>
 </figure>
+<p>
+<b>Equality of sets and relations.</b> <code>=</code> is atomic for numbers:
+nothing smaller proves it. For a goal <code>A = B</code> whose sides are sets,
+GL instead integrates the two subsets: <code>∀x (x∈A → x∈B)</code> and
+<code>∀x (x∈B → x∈A)</code> (with <code>in2</code> / <code>in3</code> for binary
+and ternary relations). Each subset opens its own subproof, and once both are
+proved the conjunction yields <code>A = B</code>. Which case applies is decided on
+the spot when the goal arrives: the goal's logic block records the types of its
+variables, and a subgoal inherits its type from the definition that produced it —
+the implication of its subproof or the OR of its case split — following the
+enclosing scopes upward when that definition leaves the type open. A goal
+whose type cannot be found stops the run. The equality that results is
+the ordinary <code>=</code>: equivalence classes, rewriting and citations treat
+it like any other equality, so equal sets merge into one class. The verifier
+accepts such a step only when it names two genuine subset implications, and the
+Lean export proves it with extensionality: two sets are equal when each contains
+the other.
+</p>
+<p>
+<b>Implications inside an and wait for their plain siblings.</b> To prove an and,
+GL integrates each part. An implication part is proved in its own subproof, and
+a subproof is expensive. When the same and also holds a plain part with fixed
+arguments (an atomic, negated or compound statement), the implication's subproof
+waits until that plain part is known at the scope or above it, up to the
+scope's equalities. Until then the implication is parked in
+<code>rejectedMapSubproof</code> under the first unknown plain part. Its key is
+the canonical text, so equal spellings share one entry. Its value is the
+instruction exactly as it came, because the and's own integration rule waits
+for that text. Every row that becomes known, and every change of a scope's
+equalities, is checked against the parked keys once per step; an equality
+change also moves a key to its new canonical text. A match reopens the parked implications as stored, or parks one
+again under the and's next unknown part. The and itself never waits. In the
+fold step of F3 this keeps both subproofs of every wrong accumulator closed;
+only accumulators with <code>g(10)=14</code> open theirs.
+</p>
+<figure>
+<svg viewBox="0 0 760 214" role="img" aria-label="An implication inside an and parks under the unknown plain sibling and reopens when the sibling becomes known">
+  <defs><marker id="sp-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#8B8FA5"/></marker></defs>
+  <rect x="20" y="20" width="220" height="70" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="130" y="42" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">and (per accumulator g)</text>
+  <text x="130" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">implication32[2,11,g] ∧ in2[10,14,g]</text>
+  <text x="130" y="75" fill="#8B8FA5" font-size="9.5" text-anchor="middle">∧ implication33[I,3,g,11,5]</text>
+  <rect x="290" y="20" width="200" height="70" rx="8" fill="#262938" stroke="#EF9F27"/>
+  <text x="390" y="42" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">rejectedMapSubproof</text>
+  <text x="390" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">key: canonical in2[10,14,g]</text>
+  <text x="390" y="75" fill="#8B8FA5" font-size="9.5" text-anchor="middle">value: both implications as given</text>
+  <rect x="540" y="20" width="200" height="70" rx="8" fill="#262938" stroke="#B084EB"/>
+  <text x="640" y="42" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">subproofs open</text>
+  <text x="640" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">only for g with</text>
+  <text x="640" y="75" fill="#8B8FA5" font-size="9.5" text-anchor="middle">in2[10,14,g] known</text>
+  <path d="M242 55 L286 55" stroke="#8B8FA5" stroke-width="1.6" marker-end="url(#sp-ar)"/>
+  <path d="M492 55 L536 55" stroke="#8B8FA5" stroke-width="1.6" marker-end="url(#sp-ar)"/>
+  <text x="264" y="112" fill="#8B8FA5" font-size="10" text-anchor="middle">plain part unknown: park</text>
+  <text x="514" y="112" fill="#8B8FA5" font-size="10" text-anchor="middle">part becomes known: reopen</text>
+  <rect x="120" y="132" width="520" height="56" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="380" y="154" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">once per step: newly known rows meet the parked keys</text>
+  <text x="380" y="174" fill="#8B8FA5" font-size="9.5" text-anchor="middle">matched literally or through the scope's equalities; wrong accumulators stay parked</text>
+</svg>
+<figcaption><b>Waiting implications.</b> The subproof of an implication inside an
+and opens only after the and's plain parts are known, so wrong candidates never
+open theirs.</figcaption>
+</figure>
+<p>
+<b>Work for a solved task is removed.</b> Every piece of integration work — an
+admission entry, a parked implication, an installed rule, an algebra
+permission, an opened subproof — remembers the task that started it: the first
+expression GL set out to build at that scope. Work started on behalf of that
+work inherits the same task. A task is solved when its expression becomes known
+at its scope or above, up to the scope's equalities; a task that asks for one
+value, such as the result of a fold, is solved when any value becomes known.
+Only a value that an integration built counts: one fired in the block by a rule
+some task's integration installed, or one that arrived by mail marked as built
+that way. A value a lemma supplies leaves the task running, because the
+integration's own copy can carry a link the proof still needs.
+Once per step, the work of every solved task is removed in one sweep, just
+before settled subproofs retire. Work that a second task also reached is kept
+for that task. Facts, proof history and the record that the work was prepared
+stay, so nothing reopens. In the fold step of F3 the fold's value is found
+early; the subproof of the losing accumulator, which used to grow until the end
+of the block, closes at that point. Request generation reads only a prefix of a
+block's statements (the statement window, see the prover page), so a block made
+smaller keeps its later facts inside that window longer. In the same F3 block
+this lets three other candidate subproofs continue a search the window used to
+cut off, which costs more time than the wipe saves there.
+</p>
+<figure>
+<svg viewBox="0 0 760 214" role="img" aria-label="Integration work remembers the task that started it; when the task is solved, one sweep removes the work no other task reached">
+  <defs><marker id="ftw-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#8B8FA5"/></marker></defs>
+  <rect x="20" y="20" width="220" height="70" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="130" y="42" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">task</text>
+  <text x="130" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">value of fold[…, marker] at main</text>
+  <text x="130" y="75" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the expression GL set out to build</text>
+  <rect x="290" y="20" width="200" height="70" rx="8" fill="#262938" stroke="#B084EB"/>
+  <text x="390" y="42" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">derived work</text>
+  <text x="390" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">entries · parks · rules · keys</text>
+  <text x="390" y="75" fill="#8B8FA5" font-size="9.5" text-anchor="middle">subproofs — each names its task</text>
+  <rect x="540" y="20" width="200" height="70" rx="8" fill="#262938" stroke="#EF9F27"/>
+  <text x="640" y="42" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">task solved</text>
+  <text x="640" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">an integration built a value</text>
+  <text x="640" y="75" fill="#8B8FA5" font-size="9.5" text-anchor="middle">at its scope or above</text>
+  <path d="M242 55 L286 55" stroke="#8B8FA5" stroke-width="1.6" marker-end="url(#ftw-ar)"/>
+  <path d="M492 55 L536 55" stroke="#8B8FA5" stroke-width="1.6" marker-end="url(#ftw-ar)"/>
+  <text x="264" y="112" fill="#8B8FA5" font-size="10" text-anchor="middle">inherits the task</text>
+  <text x="514" y="112" fill="#8B8FA5" font-size="10" text-anchor="middle">checked once per step</text>
+  <rect x="120" y="132" width="520" height="56" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="380" y="154" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">one sweep removes the task's derived work</text>
+  <text x="380" y="174" fill="#8B8FA5" font-size="9.5" text-anchor="middle">work another task reached stays; facts and proof history stay</text>
+</svg>
+<figcaption><b>Finished tasks.</b> Work started for a task ends with the task, so
+a losing candidate's subproof no longer outlives the answer.</figcaption>
+</figure>
 
 <!-- ===================== 4.4 ===================== -->
 <h2 id="branch">4.4 &nbsp;Branching &amp; contradiction</h2>
@@ -533,108 +927,175 @@ An <code>or&lt;N&gt;</code> is a compiled disjunction (De Morgan:
 </p>
 
 <h3 id="branch-split">4.4.1 &nbsp;Splitting an OR</h3>
-<p>Two kinds of statement reach the splitter: a compiled OR fact, and — by
-De&nbsp;Morgan — the <em>negation of an AND-bodied operator</em>: an asserted
-<code>!(op[…])</code> whose definition body is a conjunction is the disjunction
-of its negated conjuncts (each at its true polarity, double negations
-cancelled), assembled at runtime with the negated statement itself serving as
-the cohort identity — no new operator is compiled. From here on both are
-consumed identically.</p>
+<p>An OR inside an existence can be processed only after every enclosing witness is admitted. Until then it creates no OR fact, exclusion source, case or park. An unconditional case-opening signal does not bypass witness admission.</p>
+<figure><svg viewBox="0 0 760 115" role="img" aria-label="Enclosing witnesses must be admitted before ordinary OR processing">
+<g fill="none" stroke="currentColor"><rect x="5" y="20" width="220" height="70" rx="8"/><rect x="270" y="20" width="220" height="70" rx="8"/><rect x="535" y="20" width="220" height="70" rx="8"/><path d="M225 55 H260 l-8 -5 m8 5 l-8 5 M490 55 H525 l-8 -5 m8 5 l-8 5"/></g>
+<g fill="currentColor" text-anchor="middle" font-size="15"><text x="115" y="49">OR inside an existence</text><text x="115" y="72">Still unresolved</text><text x="380" y="49">All enclosing witnesses</text><text x="380" y="72">admitted</text><text x="645" y="49">Ordinary OR processing</text><text x="645" y="72">Demand and depth gates</text></g>
+</svg></figure>
+
+<p>Positive logical entities of category <code>or</code> use on-demand exclusion and case processing. A negated conjunction with a public predicate name supplies ordinary exclusion implications at its source scope: if <code>P = A &and; B</code>, then <code>&not;P</code> supplies <code>A &rArr; &not;B</code> and <code>B &rArr; &not;A</code>. Generated conjunctions such as <code>and987</code> stay ordinary negative facts. Neither kind enters the OR source store or creates residual disjunctions, case scopes or parks.</p>
+<figure>
+<svg viewBox="0 0 760 132" role="img" aria-label="Negated named conjunctions supply ordinary exclusion rules at the source scope without opening cases">
+  <defs><marker id="named-and-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="12" y="14" width="214" height="60" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="119" y="38" fill="#F0E8DC" font-size="12" text-anchor="middle">&not;strictOrder(a,b)</text>
+  <text x="119" y="58" fill="#8B8FA5" font-size="10" text-anchor="middle">negated named conjunction</text>
+  <path d="M228 44 H267" stroke="#5DCAA5" marker-end="url(#named-and-arrow)"/>
+  <rect x="274" y="14" width="266" height="60" rx="8" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="407" y="38" fill="#F0E8DC" font-size="12" text-anchor="middle">a &ne; b &rArr; &not;preorder(a,b)</text>
+  <text x="407" y="58" fill="#F0E8DC" font-size="12" text-anchor="middle">preorder(a,b) &rArr; a = b</text>
+  <path d="M542 44 H581" stroke="#5DCAA5" marker-end="url(#named-and-arrow)"/>
+  <rect x="588" y="14" width="160" height="60" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="668" y="38" fill="#F0E8DC" font-size="12" text-anchor="middle">Ordinary hash rules</text>
+  <text x="668" y="58" fill="#8B8FA5" font-size="10" text-anchor="middle">no case scopes</text>
+  <text x="380" y="109" fill="#8B8FA5" font-size="11" text-anchor="middle">Original scope and expansion/disintegration proof history travel with the rules.</text>
+</svg>
+<figcaption><b>Named conjunctions preserve their exclusion step.</b> The ordinary disintegration and locality gates apply; OR case admission is independent.</figcaption>
+</figure>
 <p>Splitting first treats every contiguous nested OR as one logical level:
 <code>(D₁∨D₂)∨D₃</code> becomes the ordered leaf cohort
 <code>D₁, D₂, D₃</code> in the same cycle. The original outer compiled OR remains
-the branch, provenance, and bookkeeping identity. Splitting then does two things
-at once:</p>
+the branch, provenance, and bookkeeping identity. Exclusion and case scheduling have separate lifecycles:</p>
 <ul class="inv">
-<li><b>1a · K mutual-exclusion implications, at the parent scope.</b> For each
-disjunct <code>D_i</code>, the rule “if every other disjunct is false then
-<code>D_i</code>” (<code>K=2</code> collapses to <code>!A→B</code> /
-<code>!B→A</code>). <b>Unconditional</b>, and its <code>disintegration</code> origin
-is recorded <i>above</i> the admission gate so the OR stays auditable even if 1b is
-skipped. Since the or-implications change the K rules (and the 1a′ family) are not built on the spot: the compiler stores them once on the OR's registry row as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens, and disintegration instantiates each compact positionally (repeated arguments allowed) as a product <i>statement</i> of the OR — registered at the parent scope, mailed like any statement — whose expansion IS the rule. The chapter shows compact ← disintegration ← OR, then rule ← expansion ← compact.</li>
-<li><b>1a′ · Single-exclusion implications (compiled-OR cohorts with K ≥ 3).</b>
-For each disjunct <code>D_i</code>, the rule “if <code>D_i</code> is false then
-the REST as a disjunction” — <code>!D_i → (D₁∨…∨D_{i−1}∨D_{i+1}∨…)</code> with a
-genuine reduced (K−1)-ary OR operator as its head, pre-registered at the
-single-threaded seams (never minted mid-burst). A K rule from 1a needs K−1
-negative facts to fire; this one fires on ONE — the step that turns a lone
-reductio seed into a live case split. Its fired heads never open branch scopes
-by themselves: the rule family is recognized by shape at every install and its
-disjunction heads always PARK in 1b's rejection buffer, opening only when a
-registered demand names one of the surviving disjuncts. Cohorts born from
-negated-conjunction sources keep the 1a-only behavior.</li>
+<li><b>1a &middot; Exclusion on demand.</b> An admitted OR stores one source and watches the complements of its leaves. For <code>A &or; B &or; C</code>, known <code>&not;A</code> produces <code>B &or; C</code>; also knowing <code>&not;B</code> produces <code>C</code>. Matching shares the existing equality chooser and cached normal forms, including equality and inequality refuters. A firing records the equality justification for any refuter whose spelling changes. Only affected tokens, watched signed cores, and needed descendant scopes are revisited. A newly materialized canonical fact can wake an OR already checked in the same processing cycle. The source, facts, and equalities must have comparable scopes; the deepest participating scope receives the result.</li>
+<li><b>Residual continuation and retirement.</b> A firing at the source scope removes the source and all its postings. A firing below it keeps the ancestor source for other branches. A residual travels in internal mail and becomes a source after the ordinary deposit accepts it, even when ordinary disintegration is suppressed. This continuation does not grant case-opening permission. Only a selected firing records its exclusion compact and expanded rule as proof history; neither is installed as a runtime rule or known compact.</li>
+<li><b>Exclusion remains available after case release.</b> The original OR source and its postings stay available while its cohort processes the cases. A late complete-conjunction refutation can reduce an inherited OR in the current case. Reduction at the source's own scope retires it; reduction in a descendant keeps it available for other cases. Canonical duplicate reconciliation and owning-scope cleanup remain unchanged.</li>
 <li><b>1b · branch scopes, opened on demand, released one at a time.</b> A
-cohort opens on either of two routes: the firing rule is itself a product of
-an earlier disintegration (such heads open unconditionally), or some
-disjunct's <i>product template</i> — what the disjunct would contribute once
-split, e.g. an existence disjunct's witness fact with the witness slot marked
-— is already a registered admission demand. Everything else PARKS in a
-rejection buffer keyed by those product templates and wakes by mail the
-moment a matching demand registers, re-running the whole opening decision.
-(A dedicated demand route lets long operator-only rules that fail the regular
-admission gates register such demands, tagged so ordinary witness generation
-never sees them.) An open cohort mints ONLY one branch at creation — the
-admitted disjunct when a demand named it, otherwise the top-ranked one:
+cohort with remaining proof work opens when the firing rule carries
+disintegration permission, or when a registered whole-compound demand names
+a missing disjunct. Algebraic requests for a disjunct's product alone do not
+open cases. Such requests still participate in ordinary algebra processing
+and can wake a parked OR for another opening check; that check still requires
+disintegration permission or a whole-compound demand. Opening retains that demand
+for every other eligible OR source while the fact is missing. A later check
+removes it when the fact is known at the same scope or an ancestor; a sibling
+case does not satisfy it. Each source still opens at most once at its parent
+scope. An OR one of whose disjuncts already holds at its scope (known there or
+at an ancestor, or literally true, such as a conjunction of reflexive
+equalities) is neither split into cases nor parked for a later opening: the
+branch of that disjunct would be the parent scope itself, so the split could
+only conclude what the parent already proves, and a disjunct that holds keeps
+holding. For the same reason an open split is retired as soon as its live or
+queued disjunct comes to hold at the parent scope. An open cohort queues
+all cases. The release step mints one branch — the disjunct named by the
+whole-compound demand when disintegration permission is absent, otherwise the top-ranked one:
 disjuncts are ordered most structurally complicated first, bare equalities
-after, equalities carrying an anchor argument dead last. Each branch scope
+after (a conjunction made only of equalities counts as an equality),
+equalities carrying an anchor argument dead last. Each branch scope
 (<code>…_ordis_…</code>, interned by the deposit door from its seed) opens
 with <code>D_i</code> asserted as its seed (delivered through internal mail, so a compound disjunct
 decomposes like any statement); the remaining disjuncts wait in a pending
 queue. The next branch releases only when the live one <i>resolves</i> — it
 derives a goal the prover is trying to prove on that chain, or its asserted
 disjunct is refuted and the branch retires. A resolved branch does not keep
-working: once every goal on its chain is known at the branch or above, the
-end-of-burst freeze sweep <i>freezes</i> it — its scope and every scope below
-it stop feeding request generation, while every fact, bookkeeping row and
-history line stays (nothing is wiped, no goal is erased). And a logic block
-with no goals at all opens, parks and releases no or branch. Demand-gated opening plus one
+working: its relevant goals are those at the branch itself and every ancestor
+through main. An inherited OR received from an ancestor can enter this same processing when the recipient has an explicit goal or active contradiction work. It keeps its external status; demand and depth still control case opening. Selected exclusions cite their compact implications in proof history, keeping the full proof chain. Active contradiction blocks keep cases with no explicit goals
+working toward contradiction. Otherwise, at Phase 3 entry, a branch with no such
+goals, or with all relevant goals already known at the branch or above, is excluded from further inference together
+with its descendants. This decision is fixed for the phase; live siblings and
+parent-scope processing continue. History is still absorbed and emitted. The
+shared closure sweep at the end of phases 1 and 3 queues resolved subtrees for <i>wipeout</i>.
+Phase-1 closure finishes before GPU request construction. Runtime facts, classes, rules and local subgoals are removed; booked case
+contributions and proof history stay. Goals above the branch close when the
+case conclusions converge at their parent scope. Only the derivation-level
+sets of currently proved goals are kept separately, so a later sibling
+refutation can finish their case convergence after the runtime rows are gone. And a logic block
+with neither explicit goals nor active contradiction work opens, parks and releases no or branch. Demand-gated opening plus one
 live branch per cohort is the explosion protection. The other disjuncts'
-negations are not seeded in <code>_ordis_</code>; the parent-scope rules from
-1a remain inherited. The OR nesting cap (<code>max_or_depth</code>) still
-bounds branch-scope depth; the 1a rules emit at any depth.</li>
-<li><b>0 · one equi form per scope — the or-uniqueness gate.</b> Upstream of
+negations are not seeded in <code>_ordis_</code>; the original source remains available for late exclusion. Independent sources at other parent scopes retain their own eligibility. The OR nesting cap (<code>max_or_depth</code>) still
+bounds branch-scope depth; exclusion matching remains eligible at every depth.</li>
+<li><b>0 · one OR processing representative per scope.</b> Upstream of
 1a and 1b, at the deposit door itself: when an <code>or&lt;N&gt;</code>
 statement arrives whose equivalence class already has a fully-processed
-representative at that scope — same operator, spellings equal under the same
-canonicalization the deposit door applies — the newcomer stays a
+representative at that scope — same operator and equality-canonical form, also allowing a compiled interchangeable digit pair — the newcomer stays a
 <i>passive</i> statement. It registers and is multiplied by the equivalence
 classes like any fact, and nothing else happens: no rule emission, no cohort,
 no parking, on every arrival path. Each scope keeps a small ledger of the or
 statements it has fully processed; each entry carries the or's canonical
-spelling next to its original one and is re-keyed whenever an equality
+processing identity next to its original spelling and is re-keyed whenever an equality
 changes the classes at that scope, so the probe is a single lookup that
 stays correct as the classes grow. Paths that deliberately re-run an or's
 consumption (a parked or's revival, an equivalence-class rewrite of a parked
 or) clear the ledger row first. Two cohorts that opened <i>before</i> their
 spellings became equal are collapsed at the end of the burst: the one with
 the most statements already derived under its branch scopes survives, the
-others stop scheduling and their live branches are wiped — resolved branches
-and all history stay, and anything removed re-derives under the survivor.
+others stop scheduling and their live branches are wiped — completed case
+records and all history stay, and anything removed re-derives under the survivor.
 Without this gate, or processing was
 self-feeding: every new equi spelling of one or got the full consumption,
 which minted statements and equalities, which minted more spellings.</li>
 </ul>
 
+<p><b>Symmetry is checked once from the definition.</b> A numbered OR with exactly two digit-valued parameters is marked when swapping them preserves its signed disjunct multiset. Equality may reverse its arguments; other predicates keep theirs ordered. For trichotomy, a &lt; b, a = b, b &lt; a are the same alternatives after exchanging a and b. Free parameters, binding and repeated disjuncts are preserved.</p>
 <figure>
-<svg viewBox="0 0 760 210" role="img" aria-label="OR split into parent-scope rules and per-branch scopes">
+<svg viewBox="0 0 760 150" role="img" aria-label="Reversed symmetric OR statements share one processing identity while keeping their proof expressions">
+<rect x="10" y="15" width="215" height="95" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+<text x="118" y="47" text-anchor="middle" fill="#F0E8DC" font-size="14">OR(a,b) and OR(b,a)</text>
+<text x="118" y="76" text-anchor="middle" fill="#8B8FA5" font-size="12">Both remain usable facts</text>
+<path d="M230 62 H270" stroke="#5DCAA5" stroke-width="2"/>
+<rect x="275" y="15" width="205" height="95" rx="8" fill="#1C1F2B" stroke="#EF9F27"/>
+<text x="378" y="47" text-anchor="middle" fill="#F0E8DC" font-size="14">One processing identity</text>
+<text x="378" y="76" text-anchor="middle" fill="#8B8FA5" font-size="12">Within the same parent scope</text>
+<path d="M485 62 H525" stroke="#5DCAA5" stroke-width="2"/>
+<rect x="530" y="15" width="220" height="95" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+<text x="640" y="47" text-anchor="middle" fill="#F0E8DC" font-size="14">One OR computation</text>
+<text x="640" y="76" text-anchor="middle" fill="#8B8FA5" font-size="12">Exclusion and admitted cases</text>
+<text x="380" y="137" text-anchor="middle" fill="#8B8FA5" font-size="12">The retained source keeps its original expression, ordered leaves and proof history.</text>
+</svg>
+<figcaption>Nested OR consumption and residual continuation use the same symmetry identity. When equality makes open cohorts equivalent, the cohort with more branch statements survives; ties use the smaller signature. Original proof evidence remains available.</figcaption>
+</figure>
+<figure>
+<svg viewBox="0 0 760 164" role="img" aria-label="Case release preserves OR exclusion so late evidence can reduce an inherited source">
+<defs><marker id="persistent-exclusion-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+<rect x="10" y="12" width="210" height="76" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+<text x="115" y="39" text-anchor="middle" fill="#F0E8DC" font-size="13">Admitted OR source</text>
+<text x="115" y="65" text-anchor="middle" fill="#8B8FA5" font-size="11">A or B or C, with exact scope</text>
+<path d="M222 50 H256" stroke="#5DCAA5" marker-end="url(#persistent-exclusion-arrow)"/>
+<rect x="264" y="12" width="214" height="76" rx="8" fill="#1C1F2B" stroke="#EF9F27"/>
+<text x="371" y="39" text-anchor="middle" fill="#F0E8DC" font-size="13">First case released</text>
+<text x="371" y="65" text-anchor="middle" fill="#8B8FA5" font-size="11">Keep source and its postings</text>
+<path d="M480 50 H514" stroke="#5DCAA5" marker-end="url(#persistent-exclusion-arrow)"/>
+<rect x="522" y="12" width="228" height="76" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+<text x="636" y="39" text-anchor="middle" fill="#F0E8DC" font-size="13">Original cohort continues</text>
+<text x="636" y="65" text-anchor="middle" fill="#8B8FA5" font-size="11">Remaining cases and history stay</text>
+<text x="380" y="117" text-anchor="middle" fill="#8B8FA5" font-size="12">Late refutation reduces the inherited OR inside the current case.</text>
+<text x="380" y="145" text-anchor="middle" fill="#8B8FA5" font-size="11">Own-scope reduction retires; descendant reduction keeps the ancestor source.</text>
+</svg>
+<figcaption>Case release and exclusion remain available together. The original cohort keeps its case order and identity.</figcaption>
+</figure>
+<p><b>Scope and proof boundary:</b> late evidence must be visible at the reduction scope. A sibling case cannot supply it. The existing selected-exclusion proof records the source OR and the actual refuters. Residuals continue through ordinary admission and can coexist with the original cohort; the case-depth limit and branch-resolution rules remain unchanged.</p>
+<p>Lean replays a residual deduction by assuming that residual is false, reconstructing each surviving alternative, and contradicting the original OR together with the recorded refuters. Every original alternative is accounted for with its exact arguments and sign.</p>
+<p>This replay applies equally to two or more alternatives: each binary step preserves the original grouping, and a negated alternative retains its polarity.</p>
+
+<p>Exclusion first selects compatible refuters and their scopes. A separate
+materialization step consumes those choices immediately, applies the remaining
+scope restrictions, and constructs the checked proof history and internal mail.
+Selection itself produces no facts or source retirement.</p>
+
+<figure>
+<svg viewBox="0 0 760 310" role="img" aria-label="OR cases remain active in contradiction blocks until refuted or their explicit goals resolve">
   <defs><marker id="or-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="300" y="14" width="160" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="380" y="32" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">or&lt;N&gt; head</text><text x="380" y="47" fill="#8B8FA5" font-size="9" text-anchor="middle">D₁ ∨ … ∨ D_K</text>
   <path d="M330 54 L190 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#or-ar)"/>
   <path d="M430 54 L560 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#or-ar)"/>
   <rect x="30" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
-  <text x="190" y="110" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">1a · K mutual-exclusion rules</text>
-  <text x="190" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">(¬D_others → D_i) and, K≥3: (¬D_subset → OR of rest)</text>
-  <text x="190" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">unconditional · subset-exclusion heads always park</text>
-  <text x="190" y="178" fill="#EF9F27" font-size="9.5" text-anchor="middle">disintegration origin hoisted above the gate</text>
+  <text x="190" y="110" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">1a · On-demand exclusion sources</text>
+  <text x="190" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">A or B or C + known not A → B or C</text>
+  <text x="190" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">select refuters and scopes → checked proof and mail</text>
+  <text x="190" y="178" fill="#EF9F27" font-size="9.5" text-anchor="middle">own-scope firing retires; child firing keeps parent</text>
+  <text x="380" y="224" fill="#5DCAA5" font-size="11" text-anchor="middle">Phase 3: exclude resolved goal chains; empty contradiction cases stay live</text>
   <rect x="410" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
   <text x="570" y="110" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">1b · branch scopes, demand-gated + sequenced</text>
-  <text x="570" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">no demand → parked; starter D_i first, rest queued</text>
-  <text x="570" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">next releases when the live branch resolves · resolved → frozen</text>
+  <text x="570" y="131" fill="#F0E8DC" font-size="9.5" text-anchor="middle">disintegration or compound demand; algebra alone parks</text>
+  <text x="570" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">opening keeps missing demand; each source opens once</text>
   <text x="570" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">equalities last · anchor-arg equalities dead last</text>
+  <rect x="90" y="244" width="580" height="54" rx="8" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="380" y="265" fill="#F0E8DC" font-size="11" text-anchor="middle">Inherited OR: recipient goal or active contradiction permits processing</text>
+  <text x="380" y="285" fill="#8B8FA5" font-size="10" text-anchor="middle">X and ¬X refute one case; main-scope contradiction closes the block</text>
 </svg>
 <figcaption><b>One flat cohort, two outputs.</b> Nested OR syntax is recursively
 flattened before either side is emitted. The outer signature keeps the cohort
-auditable; the leaf branch scopes are where the case analysis happens.</figcaption>
+auditable; the leaf branch scopes are where the case analysis happens. Branch refutations and their proof history travel on the current output channel, survive input clearing, and advance the ordinary retirement and release sequence.</figcaption>
 </figure>
 
 <div class="note">
@@ -646,7 +1107,7 @@ signature. Flattening stops at any non-OR operator, so it changes only
 disjunction syntax, not other definitions.
 </div>
 
-<p><b>1c · The introduction half.</b> The K rules of 1a consume a disjunction
+<p><b>1c · The introduction half.</b> The exclusion sources of 1a consume a disjunction
 that is already known; nothing above produces one from a single true disjunct.
 That half emits at a different site: when the prover installs a compiled
 implication whose <i>premise</i> is a disjunction (for example an enumeration
@@ -690,7 +1151,7 @@ cannot cross into an equal signature under another parent.</figcaption>
 <p>Branches recombine in one of two shapes, detected by <code>classifyOrScope</code>:</p>
 <table>
 <tr><th><code>_orint_</code> — one branch proves</th><th><code>_ordis_</code> — all converge</th></tr>
-<tr><td>A single branch proves the goal's head. The proof may already exist at any ancestor of the goal; the shallowest known source supplies levels and provenance without being copied into the branch. The OR is emitted at the exact goal's parent scope — computed by peeling the last <code>_boundary_</code> segment off the goal name (not blindly <code>main</code>). <code>cleanUpOrIntegrationBranches</code> wipes only direct integration children with that exact parent and outer signature; equal signatures under another parent remain live.</td><td>Every branch independently reaches the same <code>C</code>. The cohort is the exact pair <code>(parent, original OR signature)</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, cohort)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[cohort]</code>, <code>C</code> is promoted to that parent via <code>sameIterationInternalMail</code> and only the converged copy collapsed. Equal signatures under different parents never share branches; each cohort stays live for further convergences. A branch whose asserted disjunct is refuted at an ancestor is a dead branch — everything it derives is ex falso — and is retired at the end of the burst: subtree wiped, its entry dropped from every booked run, the cohort count reduced, and convergence re-checked over the survivors. The equivalence-class machinery consults the same refutation evidence up front: a changed class living at or below a refuted branch is skipped rather than back-applied across the statement registry, since every rewrite it would produce dies with the branch in the same burst. A convergence of the shrunk cohort still accounts for every branch in the exported proof: each retired branch contributes its refutation as a reductio ingredient instead of a branch derivation, and the verifier checks both forms.</td></tr>
+<tr><td>A single branch proves the goal's head. The proof may already exist at any ancestor of the goal; the shallowest known source supplies levels and provenance without being copied into the branch. The OR is emitted at the exact goal's parent scope — computed by peeling the last <code>_boundary_</code> segment off the goal name (not blindly <code>main</code>). <code>cleanUpOrIntegrationBranches</code> wipes only direct integration children with that exact parent and outer signature; equal signatures under another parent remain live.</td><td>Every branch independently reaches the same <code>C</code>. The cohort is the exact pair <code>(parent, original OR signature)</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, cohort)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[cohort]</code>, <code>C</code> is promoted to that parent together with its history through the current output channel during mail absorption; other calls retain <code>sameIterationInternalMail</code>. Only the converged expression is collapsed at this step. Equal signatures under different parents never share branches. Booked contributions and proof history remain available when a resolved branch later joins the ordered subtree wipe. A branch whose asserted disjunct is refuted at an ancestor is a dead branch — everything it derives is ex falso — and is retired at the end of the burst: subtree wiped, its entry dropped from every booked run, the cohort count reduced, and convergence re-checked over the survivors. The equivalence-class machinery consults the same refutation evidence up front: a changed class living at or below a refuted branch is skipped rather than back-applied across the statement registry, since every rewrite it would produce dies with the branch in the same burst. A convergence of the shrunk cohort still accounts for every branch in the exported proof: each retired branch contributes its refutation as a reductio ingredient instead of a branch derivation, and the verifier checks both forms.</td></tr>
 </table>
 
 <h3 id="branch-contra">4.4.3 &nbsp;Full contradiction discharge</h3>
@@ -870,22 +1331,18 @@ that to one cycle.
 </p>
 
 <!-- ===================== 4.7 ===================== -->
-<h2 id="cascade">4.7 &nbsp;The pending-rejection cascade</h2>
-<p>
-A Pass-B mint that fails its admission probe is not immediately committed to
-<code>rejectedMap</code>; first the prover tries a <b>cascade</b>. The
-buffered variable is held in <code>pendingRejections</code> (or
-<code>pendingRejectionsIntegration</code> on the integration side), and the
-cascade re-runs the admission probe each time the admission map gains a new
-entry that <i>might</i> match. Only if the cascade exhausts without success
-is the rejection committed.
-</p>
+<h2 id="cascade">4.7 &nbsp;Admission closure before publication</h2>
+<p>Admitting an inner witness also admits its complete enclosing chain. The
+shared-expression cascade coadmits dependent witnesses until the selected set stops
+growing. Permanent names are assigned only to admitted witnesses. Publication and
+OR processing wait for this closure; unresolved expansions are discarded and their
+source existences are parked.</p>
 
 <figure>
-<svg viewBox="0 0 760 270" role="img" aria-label="Pending-rejection cascade — buffer, retry on new admission, commit on exhaust">
+<svg viewBox="0 0 760 270" role="img" aria-label="Admission closure followed by source parking">
   <defs><marker id="pr-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="22" y="22" width="160" height="44" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
-  <text x="102" y="42" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">Pass B mints it_</text>
+  <text x="102" y="42" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">Temporary witness</text>
   <text x="102" y="58" fill="#8B8FA5" font-size="9" text-anchor="middle">probe admission</text>
 
   <path d="M182 44 L208 44" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
@@ -897,48 +1354,40 @@ is the rejection committed.
   <path d="M308 44 L334 44" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
 
   <rect x="334" y="14" width="200" height="60" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
-  <text x="434" y="34" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">pendingRejections</text>
-  <text x="434" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">buffer + key, siblings</text>
-  <text x="434" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">retry on every new admission</text>
+  <text x="434" y="34" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">Expansion-local slots</text>
+  <text x="434" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">definitions and parent slots</text>
+  <text x="434" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">coadmit enclosing witnesses</text>
 
   <path d="M534 44 L560 44" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
 
   <rect x="560" y="14" width="180" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
-  <text x="650" y="34" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">cascade retry</text>
-  <text x="650" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">new admission arrived?</text>
-  <text x="650" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">re-probe each pending</text>
+  <text x="650" y="34" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">admission closure</text>
+  <text x="650" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">inner witness admitted?</text>
+  <text x="650" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">complete the witness chain</text>
 
   <path d="M650 74 L650 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
 
   <rect x="540" y="104" width="200" height="46" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
-  <text x="640" y="124" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">hit — emit, drop from buffer</text>
-  <text x="640" y="140" fill="#8B8FA5" font-size="9" text-anchor="middle">like a fresh fire</text>
+  <text x="640" y="124" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">coadmit and mint</text>
+  <text x="640" y="140" fill="#8B8FA5" font-size="9" text-anchor="middle">publish after closure</text>
 
   <path d="M334 76 L334 168" stroke="#B084EB" stroke-width="1.4" stroke-dasharray="3 2" marker-end="url(#pr-ar)"/>
 
   <rect x="220" y="172" width="240" height="46" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
   <text x="340" y="192" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">cascade exhausts</text>
-  <text x="340" y="208" fill="#8B8FA5" font-size="9" text-anchor="middle">commit to rejectedMap{,Integration}</text>
+  <text x="340" y="208" fill="#8B8FA5" font-size="9" text-anchor="middle">park the source existence</text>
 
-  <text x="380" y="252" fill="#8B8FA5" font-size="11" text-anchor="middle">The cascade is the buffer that turns "can't admit yet" into a deterministic later attempt.</text>
-  <text x="380" y="268" fill="#8B8FA5" font-size="11" text-anchor="middle">Direct commit to rejectedMap on first miss would lose admissions that arrive seconds later in the same cycle.</text>
+  <text x="380" y="252" fill="#8B8FA5" font-size="11" text-anchor="middle">Admitting an inner witness admits its complete enclosing chain.</text>
+  <text x="380" y="268" fill="#8B8FA5" font-size="11" text-anchor="middle">Discard unresolved expansions after admission closure.</text>
 </svg>
-<figcaption><b>Buffer → retry → commit.</b> The cascade is what lets a single
-prove pass close iteration ladders that older versions of GL needed multiple
-big-iteration restarts to reach.</figcaption>
+<figcaption>Enclosing-chain and shared-expression closure precede publication and source parking.</figcaption>
 </figure>
 
-<h3>4.7.1 &nbsp;Why the cascade matters for the single-pass model</h3>
-<p>
-Before the cascade existed, a Pass-B variable that couldn't admit on first
-probe was committed to <code>rejectedMap</code> immediately. If an admission
-arriving later in the <i>same cycle</i> would have admitted it, the rejection
-was wasted work — the prover would revive it via
-<code>revisitRejected2</code> only on the next cycle. The cascade collapses
-this latency: every admission arrival inside one cycle revisits the pending
-buffer, and only on cycle end (when no new admissions can arrive at the same
-LB) does the residual buffer commit to the rejected map.
-</p>
+<h3>4.7.1 &nbsp;Closure and later demand</h3>
+<p>Closure resolves witness dependencies within the current expansion. A later
+demand finds the parked existence and sends it through internal mail for fresh
+expansion and admission. Successful source/scope receipts suppress repeated minting,
+while unresolved nested sources remain eligible.</p>
 
 <div class="key">
 <b>The interplay with the revival loop.</b> Once committed,
@@ -965,6 +1414,42 @@ v3 or later</b> and a <b>commercial license</b>; this document and the proof
 artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
+
+<section id="admission-purity">
+<h2>Pure premises before a new construction</h2>
+<p>Ordinary admission requires pure premises in every scope, including an OR branch. An iteration-bearing argument is pure only when it is a registered product of recursion. An algebraic witness can still participate in ordinary inference, but cannot demand another construction through an ordinary marker. The separate integration demand for a missing compound premise keeps its justification-specific exception.</p>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 170" role="img" aria-label="Ordinary admission checks purity in every scope; pure premises proceed to construction budgets, impure premises produce no demand">
+<g fill="#eff6ff" stroke="#64748b" stroke-width="2"><rect x="10" y="45" width="245" height="75" rx="10"/><rect x="315" y="45" width="240" height="75" rx="10"/><rect x="620" y="10" width="290" height="65" rx="10"/><rect x="620" y="95" width="290" height="65" rx="10"/></g>
+<g fill="#172554" font-family="sans-serif" font-size="17" text-anchor="middle"><text x="132" y="76">Ordinary missing-premise</text><text x="132" y="102">match, in any scope</text><text x="435" y="88">All premise arguments pure?</text><text x="765" y="48">Yes: check construction budgets</text><text x="765" y="133">No: no admission demand</text></g>
+<g stroke="#64748b" stroke-width="2" fill="none"><path d="M255,82 H315 M555,82 H590 V42 H620 M590,82 V127 H620"/></g></svg>
+<p>A supplied conjecture must be proved before later batches can use it. For example, successor cancellation can derive a sum equal to an existing value directly, avoiding an intermediate sum witness in an enumeration interval proof.</p>
+</section>
+
+<section id="flat-integration">
+<h2>Induction witnesses and flat integration</h2>
+<p>The induction hypothesis is unpacked through the integration witness path without waiting for demand. Its defining facts can then satisfy a flat integration rule: one additional rule joins the nested definition's premises into the complete goal. Existing step-by-step integration remains available.</p>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 260" role="img" aria-label="Induction facts feed a flat integration rule, whose missing ground premise can open the required OR split">
+<defs><marker id="d1-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<g fill="#eff6ff" stroke="#64748b" stroke-width="2"><rect x="10" y="20" width="260" height="90" rx="10"/><rect x="330" y="20" width="260" height="90" rx="10"/><rect x="650" y="20" width="260" height="90" rx="10"/><rect x="330" y="170" width="260" height="70" rx="10"/></g>
+<g fill="#172554" font-family="sans-serif" font-size="17" text-anchor="middle"><text x="140" y="53">Induction hypothesis</text><text x="140" y="83">Admitted witness facts</text><text x="460" y="53">Flat integration rule</text><text x="460" y="83">All recorded premises</text><text x="780" y="53">Complete goal</text><text x="780" y="83">Checked construction</text><text x="460" y="199">One missing ground premise</text><text x="460" y="224">Demand opens a matching OR</text></g>
+<g stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#d1-arrow)"><path d="M270,65 H325"/><path d="M590,65 H645"/><path d="M460,110 V165"/></g></svg>
+<p>Generated conjunction and existence wrappers open automatically. Each configured conjunction or existence compound can remain whole or open one level, producing distinct premise combinations with correctly bound witnesses. The verifier checks the construction; Lean reconstructs the goal from the cited premises.</p>
+<p>Each nested choice retains its own immutable return point. Exploring a later sibling cannot change where an earlier choice resumes: every combination includes every required sibling, even when both contain further choices. A shortened premise list is not a definition construction and is rejected.</p>
+<p>Integration demand rules require at least six non-anchor premises and may use the hypothesis's iteration witnesses. Other demand rules retain their existing purity requirement and four-premise threshold. A fact already known in the current scope or an ancestor creates no missing-premise demand; a stale demand opens no branch.</p>
+</section>
+
+<section id="or-parent-delivery"><h2>Delivering the common branch result</h2><p>When the final OR branch supplies a conclusion during mail absorption, the parent proof goes to the output channel together with its history. Clearing the consumed input therefore leaves the new proof available for the next drain. Both branch derivations remain the evidence for convergence.</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 180" role="img" aria-label="Input snapshot is consumed and cleared while the converged parent statement and proof history are retained in the output channel"><defs><marker id="or-output-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 Z" fill="#64748b"/></marker></defs><g fill="#eff6ff" stroke="#64748b" stroke-width="2"><rect x="10" y="25" width="250" height="100" rx="10"/><rect x="335" y="25" width="250" height="100" rx="10"/><rect x="660" y="25" width="250" height="100" rx="10"/></g><g fill="#172554" font-family="sans-serif" font-size="17" text-anchor="middle"><text x="135" y="63">Input snapshot</text><text x="135" y="92">Consume, then clear</text><text x="460" y="63">Both branches contribute</text><text x="460" y="92">Converge at the parent</text><text x="785" y="63">Output channel</text><text x="785" y="92">Statement + proof history</text></g><g stroke="#64748b" stroke-width="2" marker-end="url(#or-output-arrow)"><path d="M260,75 H328"/><path d="M585,75 H653"/></g></svg><p>Before the burst, output is the same-iteration channel. After the burst, output is the next-iteration channel. Convergence outside mail absorption keeps its established delivery schedule.</p></section>
+<section id="conjunction-refutation"><h2>Firing direct supporting rules</h2><p>For a singleton relation containing only (0,n), a direct rule requires both x=n and i unequal to 0, then concludes that (i,x) is not in the relation. A second rule uses x unequal to n and i=0. Neither route first creates the negative equality conjunction.</p><p>The original contrapositive remains available when its negative conjunction premise is obtained independently. Every direct rule still requires all its guards. The compiler uses the existing single-premise consumer boundary; other owning implications keep their guarded helpers.</p><svg viewBox="0 0 920 155" role="img" aria-label="Firing direct supporting rules"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Owning implication available</text><text x="150" y="77" text-anchor="middle" fill="#172635">Install prepared direct rules</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Every guard is available</text><text x="460" y="77" text-anchor="middle" fill="#172635">Ordinary implication firing</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Final conclusion derived</text><text x="770" y="77" text-anchor="middle" fill="#172635">No intermediate fact needed</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">Both source rules remain auditable in proof history; only the direct helper is installed.</text></svg></section>
+<section id="witness-depth"><h2>Forced witnesses and integration depth</h2>
+<p>Assumptions and the existing forced routes introduce <code>force_lev_…</code> witnesses. Ordinary integration creates <code>int_&lt;depth&gt;_lev_…</code> witnesses. The original outer expression assigns one depth to the entire expansion: zero when it contains no integration witness, otherwise one more than the deepest integration witness it contains. Forced and algebraic names do not contribute.</p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" role="img" aria-label="Structural disintegration continues independently of the integration-witness minting limit">
+<defs><marker id="wdepth-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#5DCAA5"/></marker></defs>
+<g fill="#262938" stroke="#5DCAA5" stroke-width="1.5"><rect x="15" y="80" width="190" height="70" rx="8"/><rect x="265" y="15" width="245" height="75" rx="8"/><rect x="265" y="145" width="245" height="75" rx="8"/><rect x="555" y="80" width="190" height="70" rx="8"/></g>
+<g fill="#F0E8DC" font-family="sans-serif" font-size="13" text-anchor="middle"><text x="110" y="108">Original expression</text><text x="110" y="132">One depth assignment</text><text x="387" y="44">Structural disintegration</text><text x="387" y="68">Independent implications continue</text><text x="387" y="174">Ordinary integration witnesses</text><text x="387" y="198">Depth allowed; no algebra inputs</text><text x="650" y="108">Eligible but undemanded</text><text x="650" y="132">Park source + assigned depth</text></g>
+<g fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#wdepth-arrow)"><path d="M205 98L265 55"/><path d="M205 132L265 180"/><path d="M510 179L555 133"/></g>
+</svg><figcaption>The default maximum witness depth is one. Reaching the limit stops new ordinary integration witnesses, while structural extraction continues. Ordinary integration also requires a source with no existing algebraic witness input; otherwise it neither mints nor parks that construction or its dependent descendants. Forced witnesses and algebraic calculations retain their existing routes. A parked construction keeps its original assignment when demand later permits minting.</figcaption></figure>
+<p>Circulating facts and compact rules containing an ordinary integration witness stay in their owning logic block. Forced witnesses may travel under the usual scope and routing rules. Internal replay and proof-history transport remain available. Canonical names prefer ordinary values, then forced witnesses, then integration witnesses by numeric depth, then algebraic witnesses; lexical order breaks remaining ties.</p><p>A replay created while an input mailbox is being read goes to the output mailbox with its saved depth and proof history. Clearing the consumed input therefore preserves the newly queued construction.</p>
+</section>
 
 </main>
 </body>

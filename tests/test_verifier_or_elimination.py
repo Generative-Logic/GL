@@ -75,8 +75,8 @@ OR900_ENTRY = {
 
 def _state(globals_rows=None, or_entry=OR900_ENTRY):
     rows = globals_rows if globals_rows is not None else [
-        (VARIANT_A, "direct", "-1"),
-        (VARIANT_B, "direct", "-1"),
+        (VARIANT_A, "single chapter proof", "-1"),
+        (VARIANT_B, "single chapter proof", "-1"),
         (OR_THM, "or theorem", "-1"),
     ]
     state = make_state_with_globals(rows)
@@ -108,7 +108,7 @@ def test_positive_reversed_guard_order():
 @register
 def test_unresolved_citation_rejected():
     state = _state(globals_rows=[
-        (VARIANT_A, "direct", "-1"),
+        (VARIANT_A, "single chapter proof", "-1"),
         (OR_THM, "or theorem", "-1"),
     ])
     assert_failure(check_or_elimination, _line(), [], state)
@@ -118,8 +118,8 @@ def test_unresolved_citation_rejected():
 def test_polarity_flip_rejected():
     variant_b_neg = VARIANT_B.replace("(>[](=[i0,w2])", "(>[]!(=[i0,w2])")
     state = _state(globals_rows=[
-        (VARIANT_A, "direct", "-1"),
-        (variant_b_neg, "direct", "-1"),
+        (VARIANT_A, "single chapter proof", "-1"),
+        (variant_b_neg, "single chapter proof", "-1"),
         (OR_THM, "or theorem", "-1"),
     ])
     assert_failure(check_or_elimination,
@@ -131,8 +131,8 @@ def test_two_premise_difference_rejected():
     variant_b_two = VARIANT_B.replace("(preorder[N,*,w2,w1])",
                                       "(preorder[N,+,w2,w1])")
     state = _state(globals_rows=[
-        (VARIANT_A, "direct", "-1"),
-        (variant_b_two, "direct", "-1"),
+        (VARIANT_A, "single chapter proof", "-1"),
+        (variant_b_two, "single chapter proof", "-1"),
         (OR_THM, "or theorem", "-1"),
     ])
     assert_failure(check_or_elimination,
@@ -155,8 +155,8 @@ def test_unbound_side_premise_rejected():
         "(>[w1](in[w1,N])(>[w3](in[w3,N])")
     or_thm_extra = or_thm_extra[:-1] + ")"
     state = _state(globals_rows=[
-        (VARIANT_A, "direct", "-1"),
-        (VARIANT_B, "direct", "-1"),
+        (VARIANT_A, "single chapter proof", "-1"),
+        (VARIANT_B, "single chapter proof", "-1"),
         (or_thm_extra, "or theorem", "-1"),
     ])
     assert_failure(check_or_elimination,

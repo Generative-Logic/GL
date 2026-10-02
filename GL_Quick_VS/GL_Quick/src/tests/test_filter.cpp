@@ -22,29 +22,18 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
-/// @file
-/// @brief Phase-5 unit tests for the CE-filter module.
-///
-/// @details
-/// The CE-filter ExpressionAnalyzer member-function bodies
-/// (`readSimpleFacts`, `saveFilteredConjectures`, `loadFactsForCEFiltering`,
-/// `addConjectureForCEFiltering`, `releaseCEBatchMemory`) require a fully
-/// constructed `ExpressionAnalyzer` plus disk fixtures, which is too heavy
-/// for the <30 s test budget. This phase covers the value-only pieces:
-/// `ContradictionItem` default + parameterized construction and equality
-/// behaviour.
-///
-/// Instance-method coverage lands in Phase 7+ once `ExpressionAnalyzer`
-/// is documented and a synthetic-config scaffold can be wired up.
+// Counterexample-filter value types, mirror pairs and selected output routing.
 
 #include "test_harness.hpp"
 
 #include "../filter.hpp"
+#include "../prover.hpp"
 #include "../parameters.hpp"
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -293,4 +282,37 @@ TEST(filter, load_mirror_pairs_duplicate_rows_deduplicated) {
     std::remove(path.string().c_str());
     ASSERT_EQ(partners.at("srcA").size(), static_cast<std::size_t>(1));
     ASSERT_EQ(partners.at("mirA").size(), static_cast<std::size_t>(1));
+}
+
+TEST(filter, filtered_conjectures_follow_selected_output_directory) {
+    namespace fs = std::filesystem;
+    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    const auto readBytes = [](const fs::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>());
+    };
+    // Two test-owned directories: the save lands in the one selected at the
+    // time of the call and nowhere else. The live files/theorems output is
+    // never read or written by a unit test.
+    const fs::path firstDir = fs::temp_directory_path()
+        / "gl_test_filtered_conjectures_output";
+    const fs::path secondDir = fs::temp_directory_path()
+        / "gl_test_filtered_conjectures_output_second";
+    analyzer.filteredConjecturesDirectory = firstDir;
+    analyzer.saveFilteredConjectures({"(first)", "(second)"});
+    std::ifstream output(firstDir / "filtered_conjectures.txt");
+    std::string first, second, extra;
+    ASSERT_TRUE(static_cast<bool>(std::getline(output, first)));
+    ASSERT_TRUE(static_cast<bool>(std::getline(output, second)));
+    ASSERT_EQ(first, std::string("(first)"));
+    ASSERT_EQ(second, std::string("(second)"));
+    ASSERT_FALSE(static_cast<bool>(std::getline(output, extra)));
+    output.close();
+    const std::string firstBefore = readBytes(firstDir / "filtered_conjectures.txt");
+    analyzer.filteredConjecturesDirectory = secondDir;
+    analyzer.saveFilteredConjectures({});
+    ASSERT_EQ(fs::file_size(secondDir / "filtered_conjectures.txt"),
+              static_cast<uintmax_t>(0));
+    ASSERT_EQ(readBytes(firstDir / "filtered_conjectures.txt"), firstBefore);
 }

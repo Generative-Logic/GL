@@ -46,12 +46,12 @@ from tests.test_harness import (  # noqa: E402
 
 
 _GOAL_THM = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
-             "direct", "ref")
+             "single chapter proof", "ref")
 
 
 def _goal_passing_first_line():
     """A first chapter row that satisfies check_theorem_goal_reached for
-    the ``direct_proof`` chapter type with ``_GOAL_THM`` (head is
+    the ``single_chapter_proof`` chapter type with ``_GOAL_THM`` (head is
     ``(in[v1,N])``)."""
     return make_proof_line("(in[v1,N])", "main", "task formulation")
 
@@ -66,30 +66,30 @@ def test_theorem_goal_reached_no_chapter_thm():
     chapter = [make_proof_line("(in[v1,N])", "main", "task formulation")]
     assert_chapter_meta_fail(
         chapter, "theorem goal reached",
-        chapter_thm=None, chapter_type="direct_proof",
+        chapter_thm=None, chapter_type="single_chapter_proof",
     )
 
 
 @register
 def test_theorem_goal_reached_first_line_wrong_expression():
-    """direct_proof: first line's expression differs from theorem head."""
+    """single_chapter_proof: first line's expression differs from theorem head."""
     chapter = [make_proof_line("(eq[v1,v2])", "main", "task formulation")]
     assert_chapter_meta_fail(
         chapter, "theorem goal reached",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
 @register
 def test_theorem_goal_reached_first_line_wrong_namespace():
-    """direct_proof: first line's namespace is not main."""
+    """single_chapter_proof: first line's namespace is not main."""
     chapter = [make_proof_line(
         "(in[v1,N])",
         "main_boundary_orint_X_((=[a,b]))",
         "task formulation")]
     assert_chapter_meta_fail(
         chapter, "theorem goal reached",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -121,7 +121,7 @@ def test_self_reference_theorem_cites_itself():
     ]
     assert_chapter_meta_fail(
         chapter, "self-reference",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -142,7 +142,7 @@ def test_self_reference_via_two_rows():
     ]
     assert_chapter_meta_fail(
         chapter, "self-reference",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
     )
 
@@ -186,7 +186,7 @@ def test_self_reference_ignores_tag_mismatch():
     ]
     assert_chapter_meta_fail(
         chapter, "self-reference",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=1,
     )
 
@@ -217,7 +217,7 @@ def test_anchor_handling_trace_two_roots_both_vars_traced():
     chapter = [_goal_passing_first_line(), root1, root2, user]
     assert_chapter_meta_pass(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -241,7 +241,7 @@ def test_anchor_handling_trace_second_root_var_orphaned():
     chapter = [_goal_passing_first_line(), root1, root2, user]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -265,7 +265,7 @@ def test_anchor_handling_trace_copy_var_untraceable():
     chapter = [_goal_passing_first_line(), anchor_handling, user]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -288,7 +288,7 @@ def test_anchor_handling_trace_compound_user_uncovered():
     chapter = [_goal_passing_first_line(), anchor_handling, middle, user]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -313,7 +313,7 @@ def test_anchor_handling_trace_multi_user_all_uncovered():
     chapter = [_goal_passing_first_line(), anchor_handling, user1, user2]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
     )
 
@@ -333,7 +333,7 @@ def test_anchor_handling_trace_dangling_source():
     chapter = [_goal_passing_first_line(), anchor_handling, user]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -352,7 +352,7 @@ def test_anchor_handling_trace_indirect_chain_drops_copy():
     chapter = [_goal_passing_first_line(), anchor_handling, user]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -372,7 +372,7 @@ def test_anchor_handling_trace_user_in_isolated_row():
     chapter = [_goal_passing_first_line(), anchor_handling, user]
     assert_chapter_meta_fail(
         chapter, "anchor handling trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -398,7 +398,7 @@ def test_contradiction_trace_no_paths_to_seed():
     chapter = [_goal_passing_first_line()] + _build_unreachable_contradiction()
     assert_chapter_meta_fail(
         chapter, "contradiction trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -415,7 +415,7 @@ def test_contradiction_trace_rest_too_short():
     chapter = [_goal_passing_first_line(), contr]
     assert_chapter_meta_fail(
         chapter, "contradiction trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -426,7 +426,7 @@ def test_contradiction_trace_two_contradictions_both_dangling():
     chapter.extend(_build_unreachable_contradiction("(seed_B)"))
     assert_chapter_meta_fail(
         chapter, "contradiction trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
     )
 
@@ -448,7 +448,7 @@ def test_contradiction_trace_seed_present_but_no_chain():
                in_line, neg_in_line, seed]
     assert_chapter_meta_fail(
         chapter, "contradiction trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -467,7 +467,7 @@ def test_contradiction_trace_different_seed_expression():
     chapter = [_goal_passing_first_line(), contr, seed]
     assert_chapter_meta_fail(
         chapter, "contradiction trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -491,7 +491,7 @@ def test_contradiction_trace_seed_in_wrong_namespace():
     chapter = [_goal_passing_first_line(), contr, seed_impostor]
     assert_chapter_meta_fail(
         chapter, "contradiction trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -529,7 +529,7 @@ def test_vacuous_truth_trace_well_formed_row_passes():
     chapter = [_goal_passing_first_line()] + _build_unreachable_vacuous()
     assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -546,7 +546,7 @@ def test_vacuous_truth_trace_rest_too_short():
     chapter = [_goal_passing_first_line(), vac]
     assert_chapter_meta_fail(
         chapter, "vacuous truth trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -559,7 +559,7 @@ def test_vacuous_truth_trace_two_well_formed_rows_both_pass():
     chapter.extend(_build_unreachable_vacuous("(lb_key_B)"))
     assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -584,7 +584,7 @@ def test_vacuous_truth_trace_lb_key_present_but_unreachable_passes():
                in_line, neg_in_line, lb_present]
     assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -602,7 +602,7 @@ def test_vacuous_truth_trace_lb_key_completely_absent_passes():
     chapter = [_goal_passing_first_line(), vac]
     assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -629,7 +629,7 @@ def test_vacuous_truth_trace_with_dangling_sources_passes():
     chapter = [_goal_passing_first_line(), vac, in_line, neg_line]
     assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -649,7 +649,7 @@ def test_origin_unreferenced_dependency():
     chapter = [_goal_passing_first_line(), impl_line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -665,7 +665,7 @@ def test_origin_multiple_unreferenced_deps():
     chapter = [_goal_passing_first_line(), impl_line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
     )
 
@@ -681,7 +681,7 @@ def test_origin_implication_with_bad_rest0():
     chapter = [_goal_passing_first_line(), impl_line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -695,7 +695,7 @@ def test_origin_multiplied_from_bad_rest0():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -709,7 +709,7 @@ def test_origin_reformulated_from_bad_rest0():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -723,7 +723,7 @@ def test_origin_simple_unreferenced_inside_disintegration():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -737,7 +737,7 @@ def test_origin_unreferenced_in_expansion():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -757,7 +757,7 @@ def test_origin_chained_unreferenced():
     chapter = [_goal_passing_first_line(), a, b]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -776,7 +776,7 @@ def test_origin_unreferenced_in_disintegration_chain():
     chapter = [_goal_passing_first_line(), disint, expansion]
     assert_chapter_meta_fail(
         chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -805,7 +805,7 @@ def _state_with_typed_atomics(**type_pairs):
 @register
 def test_defset_consistency_conjunction_var_two_types():
     """Single conjunction expression `(&(t1[x])(t2[x]))`: x at t1 (TypeA)
-    AND at t2 (TypeB). _merge_maps fires _DefsetMismatch."""
+    AND at t2 (TypeB). _DefsetGroups fires _DefsetMismatch."""
     state = _state_with_typed_atomics(t1="(TypeA)", t2="(TypeB)")
     line = make_proof_line(
         "(&(t1[x])(t2[x]))", "main", "task formulation",
@@ -813,7 +813,7 @@ def test_defset_consistency_conjunction_var_two_types():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         state=state,
     )
 
@@ -829,7 +829,7 @@ def test_defset_consistency_implication_var_two_types():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         state=state,
     )
 
@@ -844,7 +844,7 @@ def test_defset_consistency_negated_conjunction_var_two_types():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         state=state,
     )
 
@@ -863,7 +863,7 @@ def test_defset_consistency_two_rows_each_with_internal_conflict():
     chapter = [_goal_passing_first_line(), line_a, line_b]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
         state=state,
     )
@@ -880,7 +880,7 @@ def test_defset_consistency_three_way_conjunction_collide():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         state=state,
     )
 
@@ -897,7 +897,7 @@ def test_defset_consistency_rest_expression_internal_conflict():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         state=state,
     )
 
@@ -913,7 +913,7 @@ def test_defset_consistency_three_rows_independent_violations():
         ))
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=3,
         state=state,
     )
@@ -940,9 +940,115 @@ def test_defset_consistency_same_leaf_var_repeated_with_clash():
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
         chapter, "definition set consistency",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         state=state,
     )
+
+
+# `=` is typed by its arguments (I-267): it joins its two
+# sides and fixes neither; they are elements only when nothing else types them.
+
+@register
+def test_defset_consistency_set_equality_is_consistent():
+    """`(=[A,B])` between two sets: `=` joins, no `(1)` is forced."""
+    state = _state_with_typed_atomics(tset="P(1)")
+    line = make_proof_line(
+        "(&(&(tset[A])(tset[B]))(=[A,B]))", "main", "task formulation",
+    )
+    chapter = [_goal_passing_first_line(), line]
+    assert_chapter_meta_pass(
+        chapter, "definition set consistency",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+        state=state,
+    )
+
+
+@register
+def test_defset_consistency_equality_joining_set_and_element_clashes():
+    """`=` between a set and an element joins two different types."""
+    state = _state_with_typed_atomics(tset="P(1)", tel="(1)")
+    line = make_proof_line(
+        "(&(&(tset[A])(tel[b]))(=[A,b]))", "main", "task formulation",
+    )
+    chapter = [_goal_passing_first_line(), line]
+    assert_chapter_meta_fail(
+        chapter, "definition set consistency",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+        state=state,
+    )
+
+
+@register
+def test_defset_consistency_equality_chain_joins_transitively():
+    """`a = b` and `b = c` put `a` and `c` into one group: a set `a` and an
+    element `c` clash although no single `=` relates them."""
+    state = _state_with_typed_atomics(tset="P(1)", tel="(1)")
+    line = make_proof_line(
+        "(&(&(tset[a])(=[a,b]))(&(=[b,c])(tel[c])))", "main",
+        "task formulation",
+    )
+    chapter = [_goal_passing_first_line(), line]
+    assert_chapter_meta_fail(
+        chapter, "definition set consistency",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+        state=state,
+    )
+
+
+@register
+def test_defset_consistency_equality_joins_through_a_bound_variable():
+    """A bound `x` fixed to an element and equal to the free `A` types `A`
+    as an element; a set `A` then clashes."""
+    state = _state_with_typed_atomics(tset="P(1)", tel="(1)")
+    line = make_proof_line(
+        "(&(tset[A])(>[x](tel[x])(=[x,A])))", "main", "task formulation",
+    )
+    chapter = [_goal_passing_first_line(), line]
+    assert_chapter_meta_fail(
+        chapter, "definition set consistency",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+        state=state,
+    )
+
+
+@register
+def test_defset_consistency_bound_names_stay_apart_across_binders():
+    """The same bound name at two sibling binders is two variables: one a
+    set, one an element, no clash — also when `=` joins each locally."""
+    state = _state_with_typed_atomics(tset="P(1)", tel="(1)")
+    line = make_proof_line(
+        "(&(>[x](tset[x])(=[x,A]))(>[x](tel[x])(=[x,b])))", "main",
+        "task formulation",
+    )
+    chapter = [_goal_passing_first_line(), line]
+    assert_chapter_meta_pass(
+        chapter, "definition set consistency",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+        state=state,
+    )
+
+
+@register
+def test_defset_derivation_lets_equality_join_inside_a_composite():
+    """A composite whose `=` joins a set formal with a second formal types the
+    second as a set; a formal only `=` touches takes `=`'s `(1)`."""
+    from verifier import _try_derive_from_elements
+    resolved = {
+        "tset": {"1": "P(1)"},
+        "=": {"1": "(1)", "2": "(1)"},
+    }
+    spec = {
+        "signature": "(composite[u_1,u_2,u_3,u_4])",
+        "elements": ["(tset[u_1])", "(=[u_1,u_2])", "(=[u_3,u_4])"],
+    }
+    assert _try_derive_from_elements(spec, resolved) == {
+        "1": "P(1)", "2": "P(1)", "3": "(1)", "4": "(1)"}
+    clash = {
+        "signature": "(clash[u_1,u_2])",
+        "elements": ["(tset[u_1])", "(=[u_1,u_2])", "(tel[u_2])"],
+    }
+    assert _try_derive_from_elements(
+        clash, dict(resolved, tel={"1": "(1)"})) is None
 
 
 # ===========================================================================
@@ -975,7 +1081,7 @@ def test_cycle_two_node():
     chapter = [_goal_passing_first_line(), a, b, a_rule, b_rule]
     assert_chapter_meta_fail(
         chapter, "origin chain termination",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
     )
 
@@ -1006,7 +1112,7 @@ def test_cycle_three_node():
     chapter = [_goal_passing_first_line(), a, b, c] + rules
     assert_chapter_meta_fail(
         chapter, "origin chain termination",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=3,
     )
 
@@ -1038,7 +1144,7 @@ def test_cycle_four_node():
     chapter = [_goal_passing_first_line(), a, b, c, d] + rules
     assert_chapter_meta_fail(
         chapter, "origin chain termination",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=4,
     )
 
@@ -1057,7 +1163,7 @@ def test_cycle_self_loop():
     chapter = [_goal_passing_first_line(), a, rule]
     assert_chapter_meta_fail(
         chapter, "origin chain termination",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 
 
@@ -1085,7 +1191,7 @@ def test_cycle_with_foundation_outside():
     chapter = [_goal_passing_first_line(), a, b, c] + rules
     assert_chapter_meta_fail(
         chapter, "origin chain termination",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=2,
     )
 
@@ -1118,7 +1224,7 @@ def test_cycle_dual_pair():
     chapter = [_goal_passing_first_line(), a, b, c, d] + rules
     assert_chapter_meta_fail(
         chapter, "origin chain termination",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
         expected_failures=4,
     )
 
@@ -1262,6 +1368,51 @@ def test_registry_consistency_atomic_entries_ignored():
     assert success == 0 and failure == 0, (
         f"anchor entries (category != spontaneous) must not be checked; "
         f"got success={success} failure={failure}")
+
+
+
+# ===========================================================================
+#  meta: origin is scope-aware (external review)
+# ===========================================================================
+
+_CHILD = "main_boundary_contradiction_!(=[a,b])"
+
+
+@register
+def test_origin_rejects_a_nested_assumption_cited_at_main():
+    """``(=[a,b])`` exists only inside a nested subproof; citing it at main
+    (here to derive ``(=[b,a])`` by symmetry) is an origin failure."""
+    nested = make_proof_line("(=[a,b])", _CHILD, "task formulation")
+    symmetry = make_proof_line("(=[b,a])", "main", "symmetry of equality",
+                               "(=[a,b])", "main")
+    assert_chapter_meta_fail(
+        [_goal_passing_first_line(), nested, symmetry], "origin",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+    )
+
+
+@register
+def test_origin_rejects_a_sibling_scope_dependency():
+    """A fact derived in one branch is not available in a sibling branch."""
+    left = make_proof_line("(=[a,b])", "main_boundary_left", "task formulation")
+    right = make_proof_line("(=[b,a])", "main_boundary_right", "symmetry of equality",
+                            "(=[a,b])", "main_boundary_right")
+    assert_chapter_meta_fail(
+        [_goal_passing_first_line(), left, right], "origin",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+    )
+
+
+@register
+def test_origin_accepts_a_fact_inherited_from_an_enclosing_scope():
+    """A fact derived at main is available inside a nested subproof."""
+    outer = make_proof_line("(=[a,b])", "main", "task formulation")
+    inner = make_proof_line("(=[b,a])", _CHILD, "symmetry of equality",
+                            "(=[a,b])", _CHILD)
+    assert_chapter_meta_pass(
+        [_goal_passing_first_line(), outer, inner], "origin",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+    )
 
 
 if __name__ == "__main__":

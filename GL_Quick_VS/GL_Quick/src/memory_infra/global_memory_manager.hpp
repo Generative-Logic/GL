@@ -70,6 +70,116 @@ namespace gl {
     /// default. Append-only: a future pool adds a new enumerator.
     enum class PoolKind { Main, Persistent, Mail, Lb };
 
+    /// @brief What a granted pool block is used for — the key of a pool's
+    ///        purpose attribution.
+    ///
+    /// @details
+    /// The pool itself only knows how many blocks are granted. The memory
+    /// playbook needs to know WHICH consumer holds them at the pool's
+    /// high-water instant: persistent logic-block state, the per-worker scratch
+    /// arenas, the sealed producer-to-consumer pages, or the CUDA route's host
+    /// arenas. Every `LbArena` carries one purpose (set before its first block,
+    /// `LbArena::setPurpose`) and passes it on every grant and return, so the
+    /// manager can keep one in-use counter per purpose under the mutex it
+    /// already holds. An arena that never set a purpose counts as
+    /// `Unattributed` — a visible residual row, never a silent omission.
+    ///
+    /// Observability only (Rule 16): no prover, deload or steward decision
+    /// reads a purpose counter. Append-only: a new consumer class adds an
+    /// enumerator before `Count`.
+    ///
+    /// @see `GlobalMemoryManager::attribution`, `poolPurposeName`.
+    enum class PoolPurpose : uint8_t {
+        Unattributed = 0,   ///< Any arena that never set a purpose.
+        LbState,            ///< A logic block's own statified state (`LbMemory`, `intToBeProved`).
+        ScratchString,      ///< `scratchArenas()` — per-worker string scratch.
+        ScratchGen,         ///< `genScratchArenas()` — per-worker container scratch.
+        Sealed,             ///< `SealedPageSet` handoff pages (phase-2 records, stumps, deferred drains).
+        GpuHost,            ///< CUDA-route host arenas drawn from the pool.
+        LbShell,            ///< `LbStore` slots holding the `Memory` node objects.
+        Count               ///< Array bound, never a purpose.
+    };
+
+    /// @brief Number of `PoolPurpose` values that name a real purpose.
+    constexpr int kPoolPurposeCount = static_cast<int>(PoolPurpose::Count);
+
+    /// @brief Printable name of a pool purpose — the column label of the
+    ///        attribution report.
+    ///
+    /// @details
+    /// Stable lowercase identifiers used as `key=value` names in the
+    /// diagnostics log and as row labels in the memory log, so a later reader
+    /// can grep one purpose across batches.
+    ///
+    /// @param purpose A real purpose (not `Count`); asserts otherwise.
+    /// @return A static string literal.
+    const char* poolPurposeName(PoolPurpose purpose);
+
+    /// @brief The prover step a pool grant happened in — the second key of the
+    ///        pool attribution.
+    ///
+    /// @details
+    /// The prover sets the current step at its single-threaded seams
+    /// (`GlobalMemoryManager::setAttributionPhase`). The manager then keeps, per
+    /// step, the highest block count reached while that step was current and
+    /// the purpose split at that instant. That answers "in which step does the
+    /// pool peak, and what fills it then" without any per-grant timestamp.
+    /// `Outside` covers everything not inside a hash-burst iteration (analyzer
+    /// construction, counterexample setup, compressor setup, chapter export).
+    /// The three CUDA sub-steps split the processor's single phase-2 window into
+    /// host projection, device execution with sealing, and the finalize window
+    /// that applies the sealed records to the logic blocks.
+    ///
+    /// Observability only (Rule 16). Append-only before `Count`.
+    ///
+    /// @see `GlobalMemoryManager::setAttributionPhase`, `poolPhaseName`.
+    enum class PoolPhase : uint8_t {
+        Outside = 0,        ///< Not inside a hash-burst iteration.
+        Phase1,             ///< Mail pull, absorption and standard processing.
+        Phase2Execute,      ///< Phase-2 executor window (processor route; CUDA producers).
+        Phase2Projection,   ///< CUDA: host projection of a chunk's logic blocks.
+        Phase2Device,       ///< CUDA: upload, device execution and host sealing.
+        Phase2Finalize,     ///< Phase-2 finalize window (both routes).
+        Phase3,             ///< Post-burst standard processing.
+        Barrier,            ///< End-of-iteration seams (commit, drains, discharge).
+        Count               ///< Array bound, never a phase.
+    };
+
+    /// @brief Number of `PoolPhase` values that name a real step.
+    constexpr int kPoolPhaseCount = static_cast<int>(PoolPhase::Count);
+
+    /// @brief Printable name of a prover step — the row label of the
+    ///        per-step attribution report.
+    ///
+    /// @param phase A real step (not `Count`); asserts otherwise.
+    /// @return A static string literal.
+    const char* poolPhaseName(PoolPhase phase);
+
+    /// @brief One consistent snapshot of a pool's purpose and step
+    ///        attribution — the value `GlobalMemoryManager::attribution`
+    ///        returns.
+    ///
+    /// @details
+    /// All counts are in blocks of the owning pool. `peakBlocks` is the pool's
+    /// lifetime high-water; `atPeak` is the purpose split at the instant the
+    /// high-water was last raised, so the row sums to `peakBlocks`.
+    /// `purposePeak` is each purpose's own high-water, reached at possibly
+    /// different instants (never summed). `phasePeak[s]` is the highest block
+    /// count reached while step `s` was current, and `phaseAtPeak[s]` its
+    /// purpose split (each row sums to its `phasePeak`). `inUse` is the current
+    /// split and sums to the current `blocksInUse`.
+    ///
+    /// @invariant `sum(atPeak) == peakBlocks`; `sum(phaseAtPeak[s]) ==
+    ///            phasePeak[s]`; `sum(inUse) == blocksInUse()` at snapshot time.
+    struct PoolAttribution {
+        int64_t peakBlocks = 0;
+        int64_t inUse[kPoolPurposeCount] = {};
+        int64_t atPeak[kPoolPurposeCount] = {};
+        int64_t purposePeak[kPoolPurposeCount] = {};
+        int64_t phasePeak[kPoolPhaseCount] = {};
+        int64_t phaseAtPeak[kPoolPhaseCount][kPoolPurposeCount] = {};
+    };
+
     /// @brief Sizing triple of the statification memory hierarchy: one
     ///        program-start pool, carved into equal blocks, carved into equal
     ///        pages.
@@ -100,6 +210,20 @@ namespace gl {
     };
 
 
+    struct SharedSealedBlock;
+
+    /// @brief Exclusive output slice inside a shared physical sealed block.
+    /// @details The pool owns allocation metadata; a leased slice belongs to one
+    /// filling or sealed output. Its link is private to that output until release.
+    /// @invariant Payload never overlaps another slice and stays address-stable.
+    struct SealedSlice {
+        SharedSealedBlock* block = nullptr;
+        SealedSlice* next = nullptr;
+        int32_t used = 0;
+        int32_t capacity = 0;
+        bool leased = false;
+    };
+
     /// @brief Process-wide dispenser of fixed-size memory blocks carved from
     ///        ONE program-start reservation — the root of the statification
     ///        memory hierarchy.
@@ -107,6 +231,10 @@ namespace gl {
     /// @details
     /// `init` makes a single reservation of `poolBytes` (the software model
     /// of the ASIC's fixed SRAM): never freed during the run, never grown.
+    /// The reservation is address space; each block is committed when it is
+    /// first carved and stays committed, so the pool's commit charge is its
+    /// carve high-water (`peakBlocksInUse() * blockBytes()`), not `poolBytes`
+    /// (D-418).
     /// Per-LB memory managers call `acquireBlock` when they need storage and
     /// `releaseBlock` when an LB deloads to SSD or is destroyed; both run
     /// under an internal mutex because LBs are processed in parallel.
@@ -141,15 +269,37 @@ namespace gl {
     /// @see `LbArena` (the per-LB consumer), `StaticMemoryConfig`.
     class GlobalMemoryManager {
     public:
+        /// @brief Maximum contiguous payload of a shared sealed slice.
+        /// @details Sixteen aligned slices share one ordinary pool block. Larger
+        /// output allocations retain the existing whole-block byte-arena path.
+        /// @return Positive payload capacity for this manager's fixed geometry.
+        int32_t sealedSliceCapacity() const;
+
+        /// @brief Lease one exclusive sealed-output slice.
+        /// @details A synchronized free list shares physical blocks across sets.
+        /// A block remains owned by the pool until its last live slice returns.
+        /// @return Empty leased slice whose payload follows its header.
+        /// @invariant No heap allocation and no cross-slice payload access.
+        SealedSlice* acquireSealedSlice();
+
+        /// @brief Return a slice after its output has been consumed.
+        /// @details The caller poisons only its own used payload first. Empty
+        /// backing blocks return through ordinary Sealed-purpose accounting.
+        /// @param slice Live slice leased from this manager.
+        /// @return Nothing.
+        /// @invariant Returning one slice never invalidates a live peer.
+        void releaseSealedSlice(SealedSlice* slice);
+
         GlobalMemoryManager() = default;
 
-        /// @brief Frees the reservation (test instances only — the
+        /// @brief Returns the reservation (test instances only — the
         ///        process-wide instance lives until process exit).
         ///
         /// @details
         /// Deliberately does NOT assert `blocksInUse() == 0`: at process
         /// exit LBs are reclaimed by the OS rather than walked, so the
         /// process-wide instance legitimately dies with blocks outstanding.
+        /// A manager that was never initialized holds no reservation.
         ~GlobalMemoryManager();
 
         GlobalMemoryManager(const GlobalMemoryManager&) = delete;
@@ -160,7 +310,10 @@ namespace gl {
         /// @brief Make the one reservation and carve it into blocks.
         ///
         /// @details
-        /// Asserts `isValidStaticMemoryConfig` on the triple. Idempotent
+        /// Asserts `isValidStaticMemoryConfig` on the triple. The pool base
+        /// is aligned to 4096 bytes for registered CUDA transfer blocks. The
+        /// reservation is address space only; blocks are committed when
+        /// first carved (D-418). Idempotent
         /// when called again with a byte-identical config (run modes may
         /// construct more than one `ExpressionAnalyzer` per process);
         /// asserts on a mismatching re-init — two different sizings in one
@@ -185,20 +338,29 @@ namespace gl {
         /// demand. Exhaustion — every block carved and none recycled — is an
         /// assert naming `static_pool_bytes`; there is no fallback path.
         ///
+        /// The grant is counted under `purpose` for the attribution report
+        /// (`attribution`), in the same mutex section as the pool count.
+        ///
+        /// @param purpose The consumer class the block serves; the returning
+        ///                call must pass the same purpose.
         /// @return Pointer to the granted block of `blockBytes()` bytes.
         ///         Physical identity must not influence any observable
         ///         (I-107).
-        char* acquireBlock();
+        char* acquireBlock(PoolPurpose purpose = PoolPurpose::Unattributed);
 
         /// @brief Return a granted block to the recycle queue.
         ///
         /// @details
         /// Thread-safe (mutex). Asserts the pointer lies inside the pool,
         /// is block-aligned, and is currently granted (double release and
-        /// foreign pointers are bugs we want at their origin).
+        /// foreign pointers are bugs we want at their origin). The return is
+        /// subtracted from `purpose`'s in-use count, which must stay
+        /// non-negative (a purpose mismatch between grant and return asserts).
         ///
-        /// @param block A pointer previously returned by `acquireBlock`.
-        void releaseBlock(char* block);
+        /// @param block   A pointer previously returned by `acquireBlock`.
+        /// @param purpose The purpose the block was granted under.
+        void releaseBlock(char* block,
+                          PoolPurpose purpose = PoolPurpose::Unattributed);
 
         /// @brief Grant `count` blocks under ONE mutex acquisition — the bulk
         ///        raw-image reload / eviction grant.
@@ -219,11 +381,13 @@ namespace gl {
         /// array so directory spill (which does re-enter) happens after the
         /// lock is released.
         ///
-        /// @param count Blocks to grant; >= 1.
-        /// @param out   Caller array of at least `count` `char*`; filled with
-        ///              the granted block pointers. Physical identity must not
-        ///              influence any observable (I-107).
-        void acquireBlocks(int32_t count, char** out);
+        /// @param count   Blocks to grant; >= 1.
+        /// @param out     Caller array of at least `count` `char*`; filled
+        ///                with the granted block pointers. Physical identity
+        ///                must not influence any observable (I-107).
+        /// @param purpose The consumer class the blocks serve (attribution).
+        void acquireBlocks(int32_t count, char** out,
+                           PoolPurpose purpose = PoolPurpose::Unattributed);
 
         /// @brief Return `count` blocks under ONE mutex acquisition — the bulk
         ///        raw-image eviction / teardown release.
@@ -237,10 +401,39 @@ namespace gl {
         /// acquisition instead of one per block — the release half of the
         /// per-block mutex traffic the bulk grant exists to remove.
         ///
-        /// @param blocks Array of `count` pointers previously returned by
-        ///               `acquireBlock` / `acquireBlocks`.
-        /// @param count  Blocks to return; >= 1.
-        void releaseBlocks(char* const* blocks, int32_t count);
+        /// @param blocks  Array of `count` pointers previously returned by
+        ///                `acquireBlock` / `acquireBlocks`.
+        /// @param count   Blocks to return; >= 1.
+        /// @param purpose The purpose the blocks were granted under.
+        void releaseBlocks(char* const* blocks, int32_t count,
+                           PoolPurpose purpose = PoolPurpose::Unattributed);
+
+        /// @brief Set the prover step that subsequent grants are attributed
+        ///        to.
+        ///
+        /// @details
+        /// Called by the prover at its single-threaded seams (phase starts,
+        /// the CUDA chunk sub-steps, the barrier, and back to `Outside` after
+        /// the kernel). Thread-safe (takes the pool mutex), so a worker grant
+        /// racing the switch lands in one step or the other, never torn. The
+        /// step's high-water starts from the current block count, so a step
+        /// that grants nothing still reports the level it ran at.
+        ///
+        /// Observability only (Rule 16): nothing reads the step back to
+        /// decide anything.
+        ///
+        /// @param phase The step now current; not `Count`.
+        void setAttributionPhase(PoolPhase phase);
+
+        /// @brief Snapshot the pool's purpose and step attribution.
+        ///
+        /// @details
+        /// Thread-safe (mutex); returns a copy, so the caller may print it
+        /// while grants continue. See `PoolAttribution` for the meaning of
+        /// each field and the sum invariants.
+        ///
+        /// @return The attribution snapshot.
+        PoolAttribution attribution() const;
 
         /// @brief Bytes per block (the grant unit).
         ///
@@ -310,9 +503,9 @@ namespace gl {
         ///
         /// @details
         /// One line: the promotion count + the peak data-page high-water. A
-        /// forced-small-page run reports a non-zero count (real containers
-        /// spilled into the two-level directory); the production 8 KiB page
-        /// reports ~zero. Observability only.
+        /// non-zero count means real containers outgrew one directory page and
+        /// spilled into the two-level directory (thousands per batch at the
+        /// production 2 KiB page). Observability only.
         void reportPageStats() const;
 
         /// @brief Grants counted since the last `resetGrantLedger` — the
@@ -361,6 +554,30 @@ namespace gl {
         ///        armed this iteration (both are completed lifecycles,
         ///        not failures).
         void disarmGrantTrigger();
+
+        /// @brief Install the grant-time pressure valve: the pager's
+        ///        backpressure on block grants.
+        ///
+        /// @details
+        /// Before a grant would leave fewer than `floorBlocks` blocks free,
+        /// the granting thread calls `valve` once, outside the pool mutex,
+        /// and grants afterwards whatever the valve achieved: when nothing
+        /// could be freed, a genuinely full pool still asserts at the wall
+        /// (Rule 19). The production valve evicts one idle logic block behind
+        /// the open window's cursor (`MemorySteward::relieveGrantPressure`),
+        /// so growth inside a claimed logic block is throttled to the
+        /// eviction rate instead of outrunning it
+        /// (D-422). A valve that grants from this pool
+        /// itself does not re-enter the valve (per-thread guard). An empty
+        /// `valve` clears the hook. Installation and clearing happen on one
+        /// thread while no other thread grants from this pool.
+        ///
+        /// @param valve Pressure relief to run before a grant below the floor;
+        ///              empty clears.
+        /// @param floorBlocks Free blocks a grant must leave; ignored when
+        ///                    `valve` is empty.
+        /// @return Nothing.
+        void setPressureValve(std::function<void()> valve, int64_t floorBlocks);
 
         /// @brief Install (or clear, with an empty function) the FORENSIC
         ///        EXHAUSTION REPORTER — a diagnostic callback `grantLocked`
@@ -601,8 +818,25 @@ namespace gl {
         ///        accounting-free core shared by both grant paths. Caller
         ///        holds `mutex_`.
         ///
+        /// @details
+        /// A fresh carve commits the block (`commitAddressSpace`); a
+        /// recycled block is already committed.
+        ///
         /// @return The granted block.
         char* grantLocked();
+
+        /// @brief Run the pressure valve when a grant of `count` blocks would
+        ///        leave fewer free blocks than the valve's floor.
+        ///
+        /// @details
+        /// Lock-free check on `blocksInUseHint_`; below the floor, copies the
+        /// valve under `mutex_` and calls it outside the mutex, unless this
+        /// thread is already inside a valve call (the re-entry is the outer
+        /// call's own relief). No valve installed is a defined no-op.
+        ///
+        /// @param count Blocks the caller is about to grant.
+        /// @return Nothing.
+        void relievePressureBeforeGrant(int64_t count);
 
         /// @brief Validate and un-flag a returned block, park it on the
         ///        recycle queue; the accounting-free core shared by both
@@ -611,7 +845,18 @@ namespace gl {
         /// @param block The block being returned.
         void returnLocked(char* block);
 
+        /// @brief Book `count` fresh grants under `purpose`: raise the pool,
+        ///        purpose and step high-waters and snapshot the purpose split
+        ///        at each new high. Caller holds `mutex_` and has already
+        ///        advanced `blocksInUse_`.
+        ///
+        /// @param purpose The purpose of the granted blocks.
+        /// @param count   Blocks just granted; >= 1.
+        void noteGrantLocked(PoolPurpose purpose, int64_t count);
+
         mutable std::mutex mutex_;
+        std::mutex sealedMutex_;
+        SharedSealedBlock* sealedAvailable_ = nullptr;
         char* pool_ = nullptr;
         StaticMemoryConfig cfg_{ 0, 0, 0 };
         int64_t totalBlocks_ = 0;
@@ -619,7 +864,19 @@ namespace gl {
         std::deque<char*> recycled_;       // returned blocks awaiting re-grant
         std::vector<bool> granted_;        // per-block grant flag (assert aid)
         int64_t blocksInUse_ = 0;
+        // Relaxed copy of blocksInUse_ for the lock-free valve check, written
+        // under mutex_ wherever blocksInUse_ changes.
+        std::atomic<int64_t> blocksInUseHint_{ 0 };
+        // Grant-time pressure valve (D-422): empty =
+        // none installed; read under mutex_, called outside it.
+        std::function<void()> pressureValve_;
+        std::atomic<int64_t> pressureFloorBlocks_{ -1 };
         int64_t peakBlocksInUse_ = 0;
+        // Purpose / step attribution (process documentation, Rule 16; never a
+        // prover input). Guarded by mutex_, updated in the grant and return
+        // sections that already hold it.
+        PoolPhase currentPhase_ = PoolPhase::Outside;
+        PoolAttribution attribution_{};
         // Two-level page-directory telemetry (process documentation, Rule 16 /
         // I-44; never a prover input). Atomic so the single-threaded container
         // write side records without taking the pool mutex.

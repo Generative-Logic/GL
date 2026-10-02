@@ -303,23 +303,30 @@ namespace gl {
     ///
     /// @details
     /// Bits 0-2 carry the flag code (`kMailStatementFlagNone` or
-    /// `kMailStatementFlagExternalDisintegrate`); bits 3+ carry
-    /// `iteration + 1`, so the all-zero value keeps meaning "nothing carried"
-    /// (flag none, iteration -1). The iteration is the sender-side
-    /// disintegration's witness-generation stamp (I-171), carried across the
-    /// cross-LB seam so a flag-5 receiver mints its `it_` witnesses at the
-    /// same generation the sender's disintegration used.
+    /// `kMailStatementFlagExternalDisintegrate`); bit 3 carries the
+    /// integrated mark (the sender registered the statement as the head of
+    /// one of its integration rules' firings, D-444);
+    /// bits 4+ carry `iteration + 1`, so the all-zero value keeps meaning
+    /// "nothing carried" (flag none, not integrated, iteration -1). The
+    /// iteration is the sender-side disintegration's witness-generation
+    /// stamp (I-171), carried across the cross-LB seam so a flag-5 receiver
+    /// mints its `it_` witnesses at the same generation the sender's
+    /// disintegration used.
     ///
-    /// @param flagCode  The flag code; one of the two constants above.
-    /// @param iteration The witness-generation stamp; `>= -1` (-1 = none).
+    /// @param flagCode   The flag code; one of the two constants above.
+    /// @param iteration  The witness-generation stamp; `>= -1` (-1 = none).
+    /// @param integrated The integrated mark (default false).
     /// @return The packed int32 side-column value.
-    /// @see unpackMailStatementFlagCode, unpackMailStatementFlagIteration.
-    inline int32_t packMailStatementFlag(int32_t flagCode, int32_t iteration) {
+    /// @see unpackMailStatementFlagCode, unpackMailStatementFlagIteration,
+    ///      unpackMailStatementFlagIntegrated.
+    inline int32_t packMailStatementFlag(int32_t flagCode, int32_t iteration,
+                                         bool integrated = false) {
         assert((flagCode == kMailStatementFlagNone
                 || flagCode == kMailStatementFlagExternalDisintegrate)
             && "packMailStatementFlag: unknown flag code");
         assert(iteration >= -1 && "packMailStatementFlag: iteration below -1");
-        return flagCode | ((iteration + 1) << 3);
+        assert(iteration < (INT32_MAX >> 4) && "packMailStatementFlag: iteration capacity exceeded");
+        return flagCode | (integrated ? 8 : 0) | ((iteration + 1) << 4);
     }
 
     /// @brief Unpack the flag-code half of a packed mail-statement flag value.
@@ -335,13 +342,27 @@ namespace gl {
     /// @return The witness-generation stamp (`-1` when the writer carried none).
     /// @see packMailStatementFlag.
     inline int32_t unpackMailStatementFlagIteration(int32_t packed) {
-        return (packed >> 3) - 1;
+        return (packed >> 4) - 1;
+    }
+
+    /// @brief Unpack the integrated mark of a packed mail-statement flag value.
+    ///
+    /// @details Bit 3 (`packMailStatementFlag`): the sender registered the
+    /// statement as the head of one of its integration rules' firings. The
+    /// all-zero value (nothing carried) decodes to false.
+    ///
+    /// @param packed The stored int32.
+    /// @return True iff the integrated bit is set.
+    /// @see packMailStatementFlag, mergeMailStatementFlag.
+    inline bool unpackMailStatementFlagIntegrated(int32_t packed) {
+        return (packed & 8) != 0;
     }
 
     /// @brief Merge a new packed mail-statement flag value onto an existing one.
     ///
     /// @details Flag codes 5-win (a relay marking never downgrades to none);
-    /// iterations min-merge over real generations, with -1 (none) losing to
+    /// the integrated mark OR-merges; iterations min-merge over real
+    /// generations, with -1 (none) losing to
     /// any real one — the same order-free deterministic fold
     /// `ColdMail::setDisintegrationSignal` applies, so multiple ancestors'
     /// blobs folding into one inbox yield a write-order-independent value.
@@ -364,7 +385,9 @@ namespace gl {
             (oldIt == -1) ? newIt
             : (newIt == -1) ? oldIt
             : (oldIt < newIt ? oldIt : newIt);
-        return packMailStatementFlag(code, mergedIt);
+        return packMailStatementFlag(code, mergedIt,
+            unpackMailStatementFlagIntegrated(oldPacked)
+                || unpackMailStatementFlagIntegrated(newPacked));
     }
 
     /// @brief Id-form of one mail origin line -- `(tag, packed dependency keys)`,

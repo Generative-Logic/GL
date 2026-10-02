@@ -12,24 +12,24 @@ and a commercial license — see https://generative-logic.com/license.
 # Pipeline · Incubator `[DRAFT]`
 
 > **Input:** `files/config/ConfigIncubator<Tag>.json` + MPL definitions.
-> **Output:** `files/theorems_incubator/theorems.txt` + `files/theorems_incubator/*` (separate theorem tree). Downstream consumers use the output to (re)populate `files/simple_facts/*.txt` tables.
-> **Owner:** `run_modes.py` → `incubator_run`; shares prover and conjecturer code with the main pipeline.
+> **Output:** `files/incubator/theorems/theorems.txt` and the separate raw/processed proof trees under `files/incubator/`. Downstream consumers use the output to (re)populate `files/simple_facts/*.txt` tables.
+> **Owner:** `run_modes.py` → `full_run` / `_run_batch`; shares prover and conjecturer code with the main pipeline.
 
 ---
 
 ## What the incubator is
 
-A parallel pipeline that runs the same machinery as the main pipeline, but over a small *finite* anchor — `AnchorIncubator` with 14 arguments, 9 of which pin the constants `0..8`:
+A pipeline that runs the same machinery as the main pipeline with a finite vocabulary of named numeral parameters. The wide `AnchorIncubator8` has 14 arguments, nine of which name the constants `0..8`:
 
 ```text
-(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])
+(AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])
 ```
 
-Because the model is finite (the constants are fully enumerated), the incubator's purpose is not theorem discovery in the main-pipeline sense — it's *autonomous ground-level arithmetic* inside that model. Every proof it produces is a statement that is either true (provable) or false (disprovable via contradiction) about the `{0, 1, 2, 3, 4, 5, 6, 7, 8}` finite model.
+The underlying natural-number carrier is not asserted finite: the anchor retains `NaturalNumbers` and adds named successors. The incubator enumerates a bounded family of ground-level arithmetic and set-characterization conjectures over that vocabulary, proving them from the anchor or disproving them by contradiction. The narrow `AnchorIncubator3` names only `0..3`; `IncubatorGauss3` includes the two- and three-element enumeration-set/interval theorems.
 
 The incubator's output then becomes the CE filter's input (`files/simple_facts/simple_facts_peano_<n>.txt`) — the incubator is the producer of the fact tables the main pipeline consumes.
 
-Current status (from `MEMORY.md project_incubator_status.md`):
+Historical status for an earlier incubator configuration (not a current acceptance count):
 
 - 345 / 483 conjectures proved/disproved (71%).
 - 47 positives, 298 negatives.
@@ -79,11 +79,11 @@ Used to be the master flag. As of 2026-04-29 it no longer gates Pass B (that's `
 
 ### Mail topology — incubator-derived rules reach only the anchor LB
 
-Every incubator conjecture starts with the anchor premise, so the root sentinel has one child — the anchor LB `(AnchorIncubatorN[…])`, which holds every conjecture goal — and every other LB (premise LBs of nested conjectures, contradiction twins) hangs below it. The incubator's own theorem rules are `anchor → head`: the anchor LB fires them and mails the heads down through its per-step delta, so an LB below the anchor gains nothing from installing the rule itself. Installing them everywhere was the dominant incubator runtime (`DOOR_INSTALL_IMPLICATION` under the phase-1 mail absorb: 76–96 % of phase-1 worker time per batch).
+Every incubator conjecture starts with the anchor premise, so the root sentinel has one child — the anchor LB `(AnchorIncubatorN[…])`, which holds every conjecture goal — and every other LB (premise LBs of nested conjectures, contradiction twins) hangs below it. Ordinary single-premise rules are `anchor → fact`: the anchor LB fires them and mails the heads down through its per-step delta, avoiding redundant rule installation below it. Positive anchor-to-anchor bridges are different: copied source anchors are created only in descendant LBs, so their bridge rules must also reach those consumers.
 
-Under [D-332](../40_decisions.md#d-332) / [I-220](../30_invariants.md#i-220) an LB strictly below the anchor LB registers its mail ancestors only up to the anchor LB (`collectMailAncestors`), never the root sentinel. The root's log — the in-run compacts of the deferred-compaction drain, the `updateGlobalDirect` / `updateGlobal` theorem-origin rows, and the load-time batch of theorems proved by earlier incubator batches — therefore has one reader, the anchor LB, at the unchanged two-cycle / burst-1 timing.
+Under [D-332](../40_decisions.md#d-332) / [I-220](../30_invariants.md#i-220) an LB strictly below the anchor LB registers its mail ancestors only up to the anchor LB (`collectMailAncestors`), never the root sentinel. The root's log — the in-run compacts of the deferred-compaction drain, the `updateGlobalSingleChapter` / `updateGlobal` theorem-origin rows, and the load-time batch of theorems proved by earlier incubator batches — therefore has one reader, the anchor LB, at the unchanged two-cycle / burst-1 timing.
 
-**Nested incubator-derived rules go below the anchor too.** `anchorOnlyRule` keeps at the anchor LB the single-premise theorems and the two-premise "evaluation facts" (operator second premise, equality head connecting the operator's output to an anchor slot value — the operator premise is derivable at the anchor; a theorem loaded from an earlier incubator batch keeps that batch's anchor as its first premise, bridged in-run by the cross-anchor conjecture). Any other nested shape (`anchor → (EnumerationSet3[…] → interval[…])` and the like, the IncubatorGauss3 case) is stored in the anchor LB's log as well — at load via `broadcastTheorems`'s `nestedStore`, in-run via the compaction drain's second `mailOut` deposit — so the premise LBs below the anchor receive it.
+**Anchor bridges and nested incubator-derived rules go below the anchor too.** `anchorOnlyRule` keeps at the anchor LB single-premise theorems whose head is not a positive anchor, and the two-premise "evaluation facts" (operator second premise, equality head connecting the operator's output to an anchor slot value — the operator premise is derivable at the anchor; a theorem loaded from an earlier incubator batch keeps that batch's anchor as its first premise). A positive `Anchor* → Anchor*` bridge and any other nested shape (`anchor → (EnumerationSet3[…] → interval[…])` and the like) are stored in the anchor LB's log — at load via `broadcastTheorems`'s `nestedStore`, in-run via the compaction drain's second `mailOut` deposit — so the premise LBs below the anchor receive them. The bridge fires normally on the copied batch anchor and records an `implication` origin for the copied external anchor. The existing `axed_anchor_exception` controls admission of that positive head; routing neither synthesizes a copy nor bypasses that gate.
 
 **The externals are not narrowed.** The externally provided theorems (the hand-written pool lemmas: fold, sequence, the ES2 / ES3 rules) are multi-premise and fire in the premise LBs below the anchor with those LBs' own premises; the ES2 / ES3 LBs compute their results from them. `broadcastTheorems` therefore stores the externals batch in the anchor LB's log (`incubatorAnchorLb`, `store` parameter) and self-injects the anchor LB, so the anchor LB and every LB below it receive the externals exactly as before. The D-29 gate's clause (2) keeps filtering the disintegration of those external-rule firings by a local premise.
 
@@ -139,7 +139,7 @@ The incubator triggers the conjecturer's nse=1 path (`singleExprAnchorConnection
 - Skips the operator-head checks (`check_input_variables_theorem_operator_head`, `evaluate_operator_exprs2`) that assume nse ≥ 2.
 - Keeps `check_input_variables_order`, `pattern_in_conjecture`, `control_equality`.
 
-This produces direct `Anchor → head` conjectures. Combined with the incubator's finite model, each conjecture can be exhaustively tested.
+This produces direct `Anchor → head` conjectures over the configured numeral vocabulary. The proof search is bounded; the natural-number carrier is not a finite model and unresolved conjectures need not be false.
 
 ---
 
@@ -155,7 +155,7 @@ A conjecture is disproved by `try_contradiction`:
 
 - A separate LB is spawned with the conjecture's negation as its goal.
 - This LB runs the prover with `primedForContradiction = true` — which keeps the LB alive in `deactivateRecursively` even when it has no `toBeProved` entries.
-- If the LB derives a contradiction (both `X` and `!X` for some `X`), the original conjecture is marked false; the contradiction LB broadcasts via direct `updateGlobalDirect`.
+- If the LB derives a contradiction (both `X` and `!X` for some `X`), the original conjecture is marked false; the contradiction LB broadcasts via direct `updateGlobalSingleChapter`.
 - Tagged `contradiction` in the proof graph.
 
 Negative detection requires the intermediate values stay within the model range. For a conjecture involving `4 + 3 = 7` in a `{0..5}` model, the computation `4 + 3` is *not in range* — the contradiction chain breaks because intermediate facts do not exist. Fix: expand anchor with more elements (memory file ).
@@ -167,7 +167,7 @@ Negative detection requires the intermediate values stay within the model range.
 The incubator has its own theorem storage:
 
 ```
-files/theorems_incubator/
+files/incubator/theorems/
     conjectures.txt
     reshuffled_conjectures.txt
     reshuffled_mirrored_conjectures.txt
@@ -219,7 +219,7 @@ Incubator-only transformation. An operator-equality theorem of the form `(=[+[a,
 
 ## Pipeline position
 
-Invoked as a separate Python entry point: `run_modes.incubator_run`. The main pipeline's `main.py` calls `full_run` which orchestrates both — incubator first (if configured), then main. Per memory file, the two paths are unified under one `full_run` entry, both enabled for the canonical multi-batch run.
+The main pipeline's `main.py` calls `run_modes.py` / `full_run`, which orchestrates each configured incubator group before its corresponding main batch through `_run_batch`. There is no separate `incubator_run` entry point.
 
 ---
 
@@ -246,7 +246,7 @@ Invoked as a separate Python entry point: `run_modes.incubator_run`. The main pi
 
 ## Open questions
 
-- **OPEN-19 — RESOLVED.** The j-copy strategy in [`incubator_to_simple_facts.py`](../../incubator_to_simple_facts.py) has two rules (per the script's header comment at `:35–38` and implementation at `:142–190`):
+- **OPEN-19 — RESOLVED.** The j-copy strategy in [`incubator_to_simple_facts.py`](../../incubator_to_simple_facts.py) has two rules:
  1. **Anchor-matching coverage**: always emit j0/j1 variants for every fact, up to `max_j=2`. This ensures the CE filter's hash-request generator can match anchor-related rules regardless of which j-copy slot the anchor pins.
  2. **Repetition-break**: when a fact has repeated i-value arguments (e.g. `(in3[i4,i4,i0,+])`), emit j-copy variants that break the repetition (e.g. `(in3[i4,j4,i0,+])`). This enables rules that require two different-looking arguments to match — without distinct copies, the hash engine would never fire them on the fact table. Matches the note about the CE-mode request generator needing distinct fact entries.
 - **OPEN-20 — RESOLVED.** `compressed_out_theorems.txt` holds **eliminated external theorems** — theorems from `compressed_external_theorems.txt` that the compressor determined were redundant and eliminated from the external-theorem pool. Written at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp); appended to at [`run_modes.cpp`](../../GL_Quick_VS/GL_Quick/src/run_modes.cpp) via *"Append eliminated externals to compressed_out_theorems.txt"*. Purpose: audit trail — "what did the compressor remove?" Referenced by [`run_modes.py`](../../run_modes.py) (Python orchestrator). Main pipeline has no equivalent because its `compressed_external_theorems.txt` is rebuilt each run rather than accumulated.

@@ -225,7 +225,7 @@ closed. **Root cause — proven end-to-end with the dump retargeted at
 3. The theorem still emits through the primed contradiction twin
  (`dischargeContradiction`, chapter `39_direct_proof.txt` tag
  `contradiction`) — the twin route does no level accounting.
-4. The emission drain (`updateGlobalDirect` → `deactivateUnnecessary`)
+4. The emission drain (`updateGlobalSingleChapter` → `deactivateUnnecessary`)
  retires the twins and recursion auxiliaries but deliberately refuses
  bubble-up deactivation while a main-scope goal remains — and the
  parent-side goal-erase that DOES exist on this drain misses by design:

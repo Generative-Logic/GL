@@ -275,6 +275,22 @@ cycles run first to bring rule cascades to steady state before the budgeted main
 iterations.
 </p>
 
+<h3 id="shared-processing">Shared processing before and after the hashburst</h3>
+<p>Phases 1 and 3 complete the same local processing sequence. After input mail is absorbed, hypothesis reactions add their copy equalities before class application. Existing discharge and outgoing publication process their results immediately. The call then retires closed cases, releases waiting cases and wipes closed scopes once. Phase 1 finishes this cleanup before GPU request construction. The earlier reactions can change proof timing and reveal additional theorems.</p>
+<figure><svg viewBox="0 0 760 184" role="img" aria-label="Phases 1 and 3 share hypothesis reaction, inference and scope cleanup">
+<g fill="#1C1F2B" stroke="#5DCAA5"><rect x="10" y="16" width="255" height="66" rx="8"/><rect x="280" y="16" width="195" height="66" rx="8"/><rect x="490" y="16" width="255" height="66" rx="8"/><rect x="10" y="104" width="735" height="62" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="137" y="42">Phase 1: shared processing</text><text x="137" y="64">closed scopes removed</text><text x="377" y="42">Phase 2: GPU hashburst</text><text x="377" y="64">uses surviving state</text><text x="617" y="42">Phase 3: shared processing</text><text x="617" y="64">consume captured results</text><text x="377" y="130">Absorb → hypothesis reaction → class application → discharge → publish</text><text x="377" y="151">Sanitize → retire cases → release next cases → union wipe → sweep</text></g>
+<path d="M265 49 H280 M475 49 H490" stroke="#5DCAA5" stroke-width="2"/>
+</svg><figcaption>Each shared call finishes its local lifecycle before returning to the scheduler.</figcaption></figure>
+
+<h3 id="cuda-projection-keys">CUDA projection key storage</h3>
+<p>Before allocating the projection, the host counts the distinct key bytes and prefix transitions it needs. Each logic block shares identical key bytes among its projected tables, while each table retains its own entries, owners and membership. Reverse lookups refer to key bytes already held in the forward blobs. Construction shards still write into disjoint slices and adjust offsets when their used data is compacted.</p>
+<svg viewBox="0 0 760 166" role="img" aria-label="Separate projection maps reference shared immutable key bytes and reverse lookup references forward blobs">
+<g fill="none" stroke="#6e9e8d" stroke-width="2"><rect x="14" y="18" width="212" height="116" rx="8"/><rect x="274" y="18" width="212" height="116" rx="8"/><rect x="534" y="18" width="212" height="116" rx="8"/><path d="M226 76 H274 M486 76 H534"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="120" y="44">Source maps stay separate</text><text x="120" y="70">Count unique keys / prefixes</text><text x="120" y="96">Scope and owners retained</text><text x="380" y="44">One immutable key store</text><text x="380" y="70">Entries refer to shared bytes</text><text x="380" y="96">Reverse keys use forward blobs</text><text x="640" y="44">GPU reads the same content</text><text x="640" y="70">Exact prefix capacities</text><text x="640" y="96">Same lookup and output order</text></g></svg>
+<p>In the projection-only measurement (28 September 2026), the largest host projection fell from 3,113.3 to 1,615.4 MiB, a 48.1 percent reduction, with identical proof files in two full runs. At that stage, the native main pool reached about 5,888&ndash;5,895 MiB of its 6,144 MiB capacity.</p>
+<p>This reduces representation size without changing native proof tables, scope, predicate masks or result order. The counting pass uses temporary arena storage; its runtime and memory costs are measured with the full workload.</p>
+
 <h3 id="cuda-filter-classes">2.2.1 &nbsp;CUDA filter classes</h3>
 <p>
 In the explicit CUDA route, several processor-order request-generator calls can
@@ -284,10 +300,13 @@ match. The host gives such calls one immutable class. The GPU filters and stably
 orders the statement rows once for that class, then each original call reads the
 same count and offset. The calls themselves are not merged: their original
 ordinals continue through growth, duplicate removal, provenance ordering, and
-the final canonical stream.
+the final canonical stream. Each class span is sorted independently by decoded-name
+rank and original statement index, both with full 32-bit width. This preserves
+lexical order and equal-name stability for large uploaded blocks.
 </p>
 
 <figure>
+<p>The processor and GPU retain the first <code>maxNumberFilteredStatements</code> eligible statements per filter call, before sorting. The default is 16,384. The positive setting may be at most 65,535, matching the existing position encoding. Calls share a filtered result only when this limit and the other five selectors agree. This bounds search work; later eligible statements can still fall outside the configured prefix.</p>
 <svg viewBox="0 0 760 190" role="img" aria-label="Exact duplicate CUDA filter calls share one compact statement span while retaining their original call identities">
   <defs>
     <marker id="gpu-fc-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
@@ -303,7 +322,7 @@ the final canonical stream.
   <path d="M163 86 L224 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-fc-ar)"/>
   <rect x="226" y="38" width="150" height="96" rx="8" fill="#20232F" stroke="#5DCAA5"/>
   <text x="301" y="60" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">exact class table</text>
-  <text x="301" y="84" fill="#8B8FA5" font-size="9" text-anchor="middle">five fields compared</text>
+  <text x="301" y="84" fill="#8B8FA5" font-size="9" text-anchor="middle">six fields compared</text>
   <text x="301" y="102" fill="#8B8FA5" font-size="9" text-anchor="middle">12, 13 → class A</text>
   <text x="301" y="119" fill="#8B8FA5" font-size="9" text-anchor="middle">14 → class B</text>
 
@@ -311,8 +330,8 @@ the final canonical stream.
   <rect x="439" y="38" width="145" height="96" rx="8" fill="#262938" stroke="#B084EB"/>
   <text x="511" y="60" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">GPU once per class</text>
   <text x="511" y="84" fill="#8B8FA5" font-size="9" text-anchor="middle">predicate → scan</text>
-  <text x="511" y="102" fill="#8B8FA5" font-size="9" text-anchor="middle">stable compact span</text>
-  <text x="511" y="119" fill="#8B8FA5" font-size="9" text-anchor="middle">first 8,192 rows</text>
+  <text x="511" y="102" fill="#8B8FA5" font-size="9" text-anchor="middle">32-bit rank + index</text>
+  <text x="511" y="119" fill="#8B8FA5" font-size="9" text-anchor="middle">first configured N rows</text>
 
   <path d="M584 86 L645 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-fc-ar)"/>
   <rect x="647" y="38" width="95" height="96" rx="8" fill="#20232F" stroke="#EF9F27"/>
@@ -379,16 +398,16 @@ of both determinism and the parallelism in <a href="parallel.html">Chapter&nbsp;
 
 <h2 id="enter">2.3 &nbsp;How a theorem enters — and the <code>status</code> modes</h2>
 <p>
-A statement reaches a block through one of three load paths. Each is precompiled
-first (<code>precompileStructuralOperators</code> — <a href="substrate.html#compile">§3.5</a>;
-this is invariant <b>I-1</b>, and skipping it asserts inside disintegration), then
-funnels through <code>addTheoremToMemory</code> into <code>addToHashMemory</code>,
-the rule store.
+Compiled statements reach a block through initial conjecture registration or
+mail absorption. Structural operators are precompiled before either path
+(<a href="substrate.html#compile">§3.5</a>). Both paths deposit expressions through
+<code>addExprToMemoryBlock</code>; implication products enter the rule store
+through <code>addToHashMemory</code>.
 </p>
 <ul class="inv">
-<li><b>External theorems.</b> <code>compressed_external_theorems.txt</code> (and a
-prior batch's proved set) loaded at the top of <code>analyzeExpressions</code> →
-precompile → <code>addTheoremToMemory</code> (installed as given rules).</li>
+<li><b>External theorems.</b> The external and prior-batch theorem lists are
+loaded before analysis, then precompiled and broadcast after the warm-up proof
+iterations. Mail absorption installs their rule fuel.</li>
 <li><b>Conjectures to prove.</b> Each CE survivor registered via
 <code>addTheoremToMemory(conj, body, 0, false, …)</code> — the <code>false</code>
 means “goal, not given”: premises become rules, the head becomes a
@@ -401,7 +420,7 @@ below it.</li>
 </ul>
 
 <figure>
-<svg viewBox="0 0 760 250" role="img" aria-label="Three load paths funnelling into addToHashMemory with its two insert sites">
+<svg viewBox="0 0 760 250" role="img" aria-label="Initial conjecture deposits and absorbed mail feed the same expression deposit door and rule store">
   <defs>
     <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
@@ -422,8 +441,8 @@ below it.</li>
   <path d="M220 200 L286 200 L286 134 L316 134" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar3)"/>
 
   <rect x="316" y="98" width="176" height="48" rx="9" fill="#262938" stroke="#5DCAA5"/>
-  <text x="404" y="119" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">addTheoremToMemory</text>
-  <text x="404" y="136" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+ createAuxyImplication</text>
+  <text x="404" y="119" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">addExprToMemoryBlock</text>
+  <text x="404" y="136" fill="#8B8FA5" font-size="9.5" text-anchor="middle">initial deposit / mail absorption</text>
 
   <path d="M492 122 L520 122" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar3)"/>
   <rect x="520" y="74" width="220" height="98" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
@@ -441,6 +460,24 @@ below it.</li>
   (<a href="substrate.html#hash">§3.2</a>).</figcaption>
 </figure>
 
+<figure id="initial-deposit-staging">
+<svg viewBox="0 0 760 116" role="img" aria-label="Each initial compound deposit stages its rule writes, then flushes all four hash-memory instances before registration continues.">
+  <defs><marker id="seed-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="10" y="22" width="205" height="58" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="112" y="46" text-anchor="middle" fill="#F0E8DC" font-size="13">Initial compound deposit</text>
+  <text x="112" y="66" text-anchor="middle" fill="#8B8FA5" font-size="11">premise, goal, or contradiction seed</text>
+  <path d="M215 51 H252" stroke="#5DCAA5" marker-end="url(#seed-arrow)"/>
+  <rect x="255" y="22" width="225" height="58" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="367" y="46" text-anchor="middle" fill="#F0E8DC" font-size="13">Stage all installed rule records</text>
+  <text x="367" y="66" text-anchor="middle" fill="#8B8FA5" font-size="11">original expression and rule order</text>
+  <path d="M480 51 H517" stroke="#5DCAA5" marker-end="url(#seed-arrow)"/>
+  <rect x="520" y="22" width="230" height="58" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="635" y="46" text-anchor="middle" fill="#F0E8DC" font-size="13">Flush, then continue registration</text>
+  <text x="635" y="66" text-anchor="middle" fill="#8B8FA5" font-size="11">all four hash-memory instances</text>
+</svg>
+<figcaption><b>Initial rule-index batching.</b> A compound seed can install many rules. Its staging window rebuilds each touched index once before the caller continues, using the same mechanism as compressor seeding. Nested removals keep their required flushes. Expression order, proof history, and capacity limits stay unchanged.</figcaption>
+</figure>
+
 <p>
 <code>addStatement</code> is the central ingestion primitive. Given an expression,
 target block, levels, validity, and a <code>local</code> flag, it: (1) pushes the
@@ -452,10 +489,38 @@ one-sided sibling inequalities (<b>I-12</b>); (3) deposits into
 (4) if <code>local</code>, also the <code>intLocalEncodedStatements{,Delta}</code>
 registries and the <code>intLocalEncodedStatementsSet</code> index; (5) appends to
 <code>newStatements</code>; (6) for <code>"main"</code>
-validity, pushes to <code>mailOut.statements</code>. It returns
-<code>vector&lt;ExpressionWithValidity&gt;</code> — every deposit, including
+validity, pushes to <code>mailOut.statements</code>. It appends encoded rows to the caller-owned
+<code>PagedVector&lt;IntEncodedExpr&gt;</code> — every deposit, including
 cross-scope ones, rides this one channel carrying its actual scope (<b>I-25</b>).
 </p>
+
+<figure>
+<svg viewBox="0 0 800 196" role="img" aria-label="Inequality expansion checks the target scope, registers a child, finishes it on an arena stack, then resumes its parent">
+  <defs><marker id="inequality-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0 0 L7 3 L0 6" fill="#5DCAA5"/></marker></defs>
+  <rect x="10" y="16" width="180" height="60" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="100" y="41" text-anchor="middle" fill="#F0E8DC" font-size="13">Check target scope</text>
+  <text x="100" y="61" text-anchor="middle" fill="#8B8FA5" font-size="11">skip if already refuted</text>
+  <path d="M190 46 H215" stroke="#5DCAA5" marker-end="url(#inequality-arrow)"/>
+  <rect x="218" y="16" width="166" height="60" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="301" y="41" text-anchor="middle" fill="#F0E8DC" font-size="13">Register next variant</text>
+  <text x="301" y="61" text-anchor="middle" fill="#8B8FA5" font-size="11">same levels and history</text>
+  <path d="M384 46 H410" stroke="#5DCAA5" marker-end="url(#inequality-arrow)"/>
+  <rect x="413" y="16" width="174" height="60" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="500" y="41" text-anchor="middle" fill="#F0E8DC" font-size="13">Push child frame</text>
+  <text x="500" y="61" text-anchor="middle" fill="#8B8FA5" font-size="11">worker scratch arena</text>
+  <path d="M587 46 H612" stroke="#5DCAA5" marker-end="url(#inequality-arrow)"/>
+  <rect x="615" y="16" width="175" height="60" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="702" y="41" text-anchor="middle" fill="#F0E8DC" font-size="13">Complete child</text>
+  <text x="702" y="61" text-anchor="middle" fill="#8B8FA5" font-size="11">depth-first traversal</text>
+  <path d="M702 76 V126 H587" fill="none" stroke="#5DCAA5" marker-end="url(#inequality-arrow)"/>
+  <rect x="218" y="96" width="369" height="60" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="402" y="121" text-anchor="middle" fill="#F0E8DC" font-size="13">Publish parent output and resume its scan</text>
+  <text x="402" y="141" text-anchor="middle" fill="#8B8FA5" font-size="11">the next sibling follows the completed child</text>
+  <path d="M218 126 H100 V76" fill="none" stroke="#5DCAA5" marker-end="url(#inequality-arrow)"/>
+  <text x="400" y="183" text-anchor="middle" fill="#8B8FA5" font-size="12">Canonical refresh excludes the same refuted scopes; normal retirement preserves proof history.</text>
+</svg>
+<figcaption><b>Inequality closure.</b> Each live variant expands one endpoint at a time. Suspended work lives in explicit scratch frames, so a large equality class cannot deepen the native call stack through this expansion. The scope is checked before scanning and again before publication, including branches already queued for retirement. Traversal order and the parent's bookkeeping after its child finishes are retained.</figcaption>
+</figure>
 
 <p>
 Every deeper deposit site threads a 4th argument, <code>int status</code> — a mode
@@ -469,7 +534,7 @@ it is worth knowing as a reference:
 <tr><td><b>0</b></td><td>local derivation, force-deep</td><td>yes (deep)</td><td>yes</td><td>Pass&nbsp;B deferred emissions, OR-branch seeds, CE admission</td></tr>
 <tr><td><b>1</b></td><td>local derivation, normal</td><td>yes</td><td>yes</td><td>canonical produce-and-absorb: <code>addStatement</code> main branch, fixpoint deposits, head writes, <b>integration-revival absorb</b></td></tr>
 <tr><td><b>2</b></td><td>goal / <code>intToBeProved</code> insert</td><td>no — <code>prepareIntegration</code> runs instead</td><td>yes (goal)</td><td>new head registered to prove; OR-branch head</td></tr>
-<tr><td><b>3</b></td><td>external mail absorb</td><td><b>rule carriers only</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb — a compact <code>(implication&lt;N&gt;[…])</code> re-disintegrates to recover the rule, and a negated compact existence <code>!(existence&lt;N&gt;[…])</code> re-disintegrates to install its universal rule; a plain fact is first canonicalized under the recipient's equivalence classes (at most one <code>int_</code>/<code>it_</code> member per class reaches the hashburst — the same judgement the registry filter uses), then absorbed</td></tr>
+<tr><td><b>3</b></td><td>external mail absorb</td><td><b>rule carriers and eligible OR sources</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb — a compact <code>(implication&lt;N&gt;[…])</code> re-disintegrates to recover the rule, and a negated compact existence <code>!(existence&lt;N&gt;[…])</code> re-disintegrates to install its universal rule; an eligible positive OR resumes case and exclusion processing at the recipient; a plain fact is first canonicalized under the recipient's equivalence classes (at most one <code>force_</code>/<code>int_</code>/<code>it_</code> member per class reaches the hashburst — the same judgement the registry filter uses), then absorbed</td></tr>
 <tr><td><b>4</b></td><td>fast-path fact load</td><td>no</td><td>no (levels only)</td><td>simple-facts bootstrap at grid setup</td></tr>
 <tr><td><b>5</b></td><td>flag-5 relay arrival</td><td><b>yes — witness minting on</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb when the statement's mail flag column reads 5: a positive existence compact whose products the SENDER could not admit is re-disintegrated HERE, where the demand may live; the carrier registers non-local, admitted products local</td></tr>
 </table>
@@ -478,7 +543,8 @@ it is worth knowing as a reference:
 <b>The canonical door.</b> Before any of these paths runs (and after the
 ancestor-known refusal of the raw text), every deposit except a goal, a positive
 or negated equality, or an anchor predicate is rewritten to its class-canonical
-form under the equivalence classes at the deposit's <i>own</i> scope — normal
+form under the complete equivalence classes at the deposit's <i>own</i> scope,
+including all equalities inherited from its ancestors — normal
 names included, the representative being the same one the admission keys collapse
 onto. Only canonical forms are admitted: if the canonical form is already known at
 this scope or an ancestor the deposit ends there; otherwise the canonical form
@@ -490,7 +556,11 @@ with the mail when the result is local), the canonical form gets one <code>equal
 citing the raw form and the equalities that fired, and the level run gains the
 equalities' levels. The class multiplication still fans the canonical form out into
 its variants, so a literal goal still closes. Mail rows are offered raw — the door
-is the one canonicalizer.
+is the one canonicalizer. Ordinary equality multiplication retains its separate
+application classes and required expression variants, including their proof and
+matching roles; those products are not restricted to canonical-only storage.
+Cleanup runs after multiplication closes and considers complete classes at each
+affected descendant scope.
 </p>
 
 <div class="key">
@@ -549,7 +619,7 @@ carries, and a negated compact existence <code>!(existence&lt;N&gt;[…])</code>
 universal in De-Morgan clothing — installs its universal rule (witness-free, so
 it cannot mint fresh names). A plain mail fact is absorbed as a statement
 without disintegration — re-expanding a fact would mint fresh
-<code>it_</code>/<code>int_</code> names and overflow the static
+<code>it_</code>/<code>int_</code>/<code>force_</code> names and overflow the static
 <code>MAX_NAME_IDS</code> cap. The split is enforced at the call-site gate: any
 other shape reaching the disintegration path under status 3 trips the
 tripwire assert, so the absorb path is never a silent skip. Origin is taken
@@ -639,7 +709,7 @@ LB from active to inactive — they differ in scope:
 
 <table>
 <tr><th>Function</th><th>Scope</th><th>Trigger</th></tr>
-<tr><td><code>deactivateRecursively</code></td><td>A conditional global prune: a post-order walk from the batch root (no root argument), flipping a node inactive only when all its children are already inactive, it holds no main-scope goal (<code>mainValidityCount == 0</code>), and it is not <code>primedForContradiction</code>.</td><td>Once per iteration after the post-burst drains; also after a theorem promotes and after an OR convergence. (Formerly emission-only, which left goal-free blocks active when their last goal closed after the batch's final emission.)</td></tr>
+<tr><td><code>deactivateRecursively</code></td><td>A conditional global prune: a post-order walk from the batch root (no root argument), flipping a node inactive only when all its children are already inactive, it holds no main-scope goal (<code>mainValidityCount == 0</code>), and it is not <code>primedForContradiction</code>.</td><td>Once per iteration after the post-burst drains; also once right after an iteration's theorem drains whenever a theorem promoted — one sweep for all of that iteration's targeted walks, not one per theorem. (Formerly emission-only, which left goal-free blocks active when their last goal closed after the batch's final emission.)</td></tr>
 <tr><td><code>deactivateUnnecessary</code></td><td>Targeted: only LBs tied to a specific theorem (its proof tree) — its induction auxiliaries and, at the theorem's final chain node, both of the settled head's contradiction twins.</td><td>After a single theorem promotes — keeps siblings alive. The twin retirement here closes the one-to-three-burst lag of the goal-closure retirement path, which fires only when the broadcast theorem re-fires on the chain block.</td></tr>
 </table>
 
@@ -786,6 +856,35 @@ artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
 
+<section id="induction-head"><h2>Consuming the induction hypothesis</h2><p>A head fired by the recursion step's own induction implication carries an explicit signal through processor or GPU evaluation and internal mail. That signal selects deep disintegration: forced witnesses and their defining facts are admitted without demand; newly created algebra-side witness products are dropped. The products-of-recursion set is unchanged. <a href="mechanisms.html#flat-integration">The integration diagram</a> shows how those facts feed the additional flat goal rules.</p></section>
+
+<section><h2>Case analysis inside contradiction blocks</h2><p>An active contradiction block can run admitted OR cases even when it has no explicit goal rows. Such cases remain live rather than being treated as already complete. Opposite registered facts refute their case, whose retirement releases the next case; a contradiction at the block's main scope closes the whole contradiction block. Ordinary explicit-goal resolution, case depth limits and proof history remain in force.</p></section>
+<section id="implication-vacuity"><h2>Impossible implication premises</h2>
+<p>An implication subproof may assume premises that cannot hold together. When one fact in that scope opposes a fact there or in an ancestor, the prover records the exact goal as following from that contradiction. Normal implication closure then proves the implication and removes its temporary scope. Facts in siblings or deeper child scopes cannot supply this closure; the parent context remains available.</p>
+<svg viewBox="0 0 760 150" role="img" aria-label="Opposing visible facts prove the scoped head, then normal implication closure records the implication and removes its temporary scope">
+<g fill="#1d2636" stroke="#7EA2C4"><rect x="10" y="20" width="210" height="70" rx="8"/><rect x="275" y="20" width="210" height="70" rx="8"/><rect x="540" y="20" width="210" height="70" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="14"><text x="115" y="47">Opposing visible facts</text><text x="115" y="70">one at the exact scope</text><text x="380" y="47">Record the scoped goal</text><text x="380" y="70">cite both derivations</text><text x="645" y="47">Close the implication</text><text x="645" y="70">remove its scope</text><text x="380" y="130">Verifier checks scope and premise ancestry · Lean checks contradiction elimination</text></g>
+<g stroke="#7EA2C4" fill="none" stroke-width="2"><path d="M220 55h45m-8-6 8 6-8 6M485 55h45m-8-6 8 6-8 6"/></g></svg>
+</section>
+<section id="existence-convergence-limit"><h2>One conclusion, supported in each case</h2><p>OR bookkeeping keeps the parent conclusion fixed and records each case’s actual fact together with its equality justification. An endpoint fact E(n), with local i = n, supports E(i) without adding another existence statement to that case. Case completion and release use the same support. Each equality stays inside its own case.</p><svg viewBox="0 0 760 140" role="img" aria-label="Old case E(i) and endpoint E(n) with local equality both support the fixed parent conclusion E(i)"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="190" y="28">Old case: E(i)</text><text x="560" y="28">Endpoint: E(n), i = n</text><text x="190" y="65">Exact support ↓</text><text x="560" y="65">Local equality support ↓</text><text x="380" y="104">Bookkeeping: both cases support E(i)</text><text x="380" y="132">Publish E(i) at the parent</text></g></svg></section>
+<section id="demanded-equality-copy"><h2>A demanded result can request a second name</h2><p>The final graph head must match an existing integration admission key. If its witness is tied to a fixed value by a positive equality premise, that value can receive its ordinary second name. A visible equality is reused. The declaration stays within the compatible rule and demand scopes, and every other premise remains necessary for ordinary firing.</p><svg viewBox="0 0 760 130" role="img" aria-label="A demand for g(i,p) identifies p as the witness; p equals a requests a copy of a; all premises then yield a shared graph witness"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="380" y="26">Existing integration demand: g(i, marker)</text><text x="380" y="62">Premise p = a → request a = a_copy</text><text x="380" y="98">a = a_copy and i = n → g(i, a_copy)</text><text x="380" y="123">Collect that same natural value with the original integration instruction</text></g></svg></section>
+<section id="conjunction-or-introduction"><h2>Introducing an OR from a conjunction</h2>
+<p>When an OR alternative is a positive conjunction, its introduction rule takes each conjunct as an ordered premise. Nested positive conjunctions unfold in place; negative conjunctions remain whole signed premises. Ordinary firing still needs every premise. Case processing retains the original alternative.</p>
+<svg viewBox="0 0 760 100" role="img" aria-label="Both equality premises introduce the appended graph alternative"><g fill="#F0E8DC" text-anchor="middle" font-size="17"><text x="180" y="35">p = a AND i = n</text><text x="565" y="35">p = a → i = n → append OR</text><text x="380" y="78">Bind each variable before its first use · keep every signed conjunct</text></g><path d="M320 30h65m-8-6 8 6-8 6" stroke="#7EA2C4" fill="none"/></svg>
+</section>
+<section id="unary-composition"><h2>Composing implications and admitting witnesses</h2>
+<p>A producer with one or more ordered premises and a consumer with exactly one premise can produce an additional implication only when their complete sets of bound variables match one-to-one through the intermediate expression and survive in the result. A bound variable cannot become a fixed parameter or collapse into another variable. The result retains both source proofs and holds at their deepest compatible scope. Repeated results are processed once, and a cycle cannot survive without independent supporting rules.</p>
+<p>A composition is created only when the second rule's head can serve an existing integration admission demand. Matching treats the witness as a marker while retaining the index as a bound variable. A later demand wakes already installed rules; a later rule inspects existing demands. The matching demand must also be compatible with the result's scope.</p>
+<p>New rules enter the composition queue immediately. Their ordinary inference indexes are updated together when that queue finishes, before admission checks or inference resume.</p>
+<svg viewBox="0 0 760 220" role="img" aria-label="An ordered producer chain and unary consumer with a common binder set compose only when their final head serves an existing integration demand; new demands wake existing consumers">
+<g fill="#1d2636" stroke="#7EA2C4"><rect x="10" y="20" width="210" height="70" rx="8"/><rect x="275" y="20" width="210" height="70" rx="8"/><rect x="540" y="20" width="210" height="70" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="15"><text x="115" y="48">A₁, …, Aₖ imply B</text><text x="115" y="73">first source proof</text><text x="380" y="48">B implies C</text><text x="380" y="73">second source proof</text><text x="645" y="48">A₁, …, Aₖ imply C</text><text x="645" y="73">both sources recorded</text><text x="380" y="130">Same argument mapping · compatible scopes · supporting levels retained</text></g>
+<g stroke="#7EA2C4" fill="none" stroke-width="2"><path d="M220 55h45m-8-6 8 6-8 6M485 55h45m-8-6 8 6-8 6"/></g><g fill="#F0E8DC" text-anchor="middle" font-size="15"><text x="380" y="160">Only if C matches an existing integration admission demand</text><text x="380" y="184">New demand → wake existing consumers · new rule → inspect demands</text><text x="380" y="208">One common binder set · queue finishes → indexes flush → inference</text></g></svg>
+<p>An existing integration demand for a result can then supply ordinary admission permission for the corresponding premise witness. For an appended graph, demand for a new graph value can release the already-known old graph value. Forward inference transfers that pair; the original integration instruction constructs the target existence. Admission itself does not assert a fact backwards.</p>
+</section>
+<section><h2>Depth limits apply to witness creation</h2><p>Ordinary integration witnesses carry their construction depth. At the configured limit, disintegration still extracts independent implications and facts, but it cannot mint another ordinary integration witness. Forced routes use a separate witness class. Parked constructions retain their original assignment for later replay. <a href="mechanisms.html#witness-depth">See the witness and replay diagram.</a></p></section>
+<section id="induction-numbers-only"><h2>Induction admission needs a clean original</h2><p>An induction chain demands the missing objects of its hypothesis. When a disintegration produces such an object, the chain moves forward only if the expression being disintegrated has plain numbers or <code>rec</code> as its arguments. An original that names a constructed object, such as a sequence built earlier in the block, still yields its products, but they do not advance the induction chain, and an induction demand alone does not admit a new witness for it. The arriving expression itself, integration preparation and forced construction are unchanged. This limits search; it does not refute the rejected candidate. A second rule keeps the hypothesis from feeding on itself: an object built when the hypothesis&rsquo; own conclusion is unpacked never answers the hypothesis&rsquo; demands, so the chain cannot ask for a new task about that object in turn.</p><svg viewBox="0 0 760 130" role="img" aria-label="A disintegration product moves the induction chain only when its original has number arguments only"><g fill="#1d2636" stroke="#7EA2C4"><rect x="10" y="20" width="230" height="70" rx="8"/><rect x="265" y="20" width="230" height="70" rx="8"/><rect x="520" y="20" width="230" height="70" rx="8"/></g><g fill="#F0E8DC" text-anchor="middle" font-size="15"><text x="125" y="48">Original expression</text><text x="125" y="73">disintegrated</text><text x="380" y="48">Product matches</text><text x="380" y="73">an induction key</text><text x="635" y="48">Chain moves forward</text><text x="635" y="73">only if all arguments are numbers</text></g><g stroke="#7EA2C4" fill="none" stroke-width="2"><path d="M240 55h20m-8-6 8 6-8 6M495 55h20m-8-6 8 6-8 6"/></g><g fill="#F0E8DC" text-anchor="middle" font-size="14"><text x="380" y="118">9, 11 and rec pass · a constructed name such as int_0_lev_6_8 stops the chain here</text></g></svg></section>
+<section id="bounded-host-projection"><h2>Bounded host construction for GPU projection</h2><p>The GPU work chunk and complete immutable device image stay the same. The host constructs consecutive groups of whole logic blocks, targeting 128 MiB of column storage per window; an individually larger block receives its exact measured window. One set of construction threads serves the whole chunk. While one window is being built, an upload thread copies the previous one to the GPU and keeps its source statement ordinals and name/rule lookup data for scheduling and sealing, then the window is released: at most two windows are alive, together no larger than one former 256 MiB window. Memory is returned once per chunk.</p><svg viewBox="0 0 900 180" role="img" aria-label="Bounded host windows feed a complete device image and retain host sealing lookups"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="15" y="40" width="240" height="95" rx="8"/><rect x="330" y="15" width="550" height="65" rx="8"/><rect x="330" y="100" width="550" height="60" rx="8"/><path d="M255 65 H300 V48 H330 M255 110 H300 V130 H330"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="135" y="70">Two measured windows</text><text x="135" y="95">Build one, upload the other</text><text x="135" y="120">Release after upload</text><text x="605" y="42">Complete immutable GPU image</text><text x="605" y="65">Unchanged chunks, tasks and inference</text><text x="605" y="125">Retained names, rules and source ordinals</text><text x="605" y="148">Schedule and seal after complete upload</text></g></svg></section>
 </main>
 </body>
 </html>

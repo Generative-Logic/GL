@@ -185,16 +185,50 @@
     "max_size_expression": 6
   },
   "fold": {
-    "arity": 7,
+    "arity": 8,
     "definition_sets": {
-      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false],
-      "4": ["P(x(1)(1))", false], "5": ["(1)", false], "6": ["(1)", true], "7": ["(1)", true]
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(1))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "5": [
+        "P(x(1)(1))",
+        false
+      ],
+      "6": [
+        "(1)",
+        false
+      ],
+      "7": [
+        "(1)",
+        true
+      ],
+      "8": [
+        "(1)",
+        true
+      ]
     },
     "full_mpl": "fold.mpl",
-    "short_mpl": "(fold[N,s,+,f,n,m,p])",
+    "short_mpl": "(fold[N,s,+,op,f,n,m,p])",
     "max_count_per_conjecture": 0,
-    "input_args": ["m"],
-    "output_args": ["p"],
+    "input_args": [
+      "m"
+    ],
+    "output_args": [
+      "p"
+    ],
     "max_size_expression": 2
   },
   "residual": {
@@ -354,7 +388,8 @@
     "\\(interval\\[(?!1,)\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
     "\\(interval\\[\\d+,(?!4,)\\d+,\\d+,\\d+,\\d+\\]\\)",
     "\\(interval\\[\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
-    "\\(interval\\[\\d+,\\d+,\\d+,(?!6,)(?!7,)\\d+,\\d+\\]\\)"
+    "\\(interval\\[\\d+,\\d+,\\d+,(?!6,)(?!7,)\\d+,\\d+\\]\\)",
+    "\\(interval\\[([^,]+),[^,]+,[^,]+,[^,]+,\\1\\]\\)"
   ],
   "only_in_head": [
     "(=["

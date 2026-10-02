@@ -13,6 +13,8 @@ and a commercial license — see https://generative-logic.com/license.
 
 > Rung-by-rung path toward the Fundamental Theorem of Arithmetic. Each rung is a self-contained subfolder with a human-notation proof file (`proof_NN_<slug>.md`) and an append-only `current_proof_state.md` that records the GL prover's progress against that rung. When a rung's directed conjectures all close, the rung is marked **closed** here and the in-flight subfolder freezes; subsequent prover work moves to the next rung.
 
+
+
 The ladder exists because FTA is too large a step from Peano + Gauss in a single jump. Each rung exercises one new piece of OR / case-split / induction machinery, validates it on a smaller theorem, and leaves the infrastructure available for the next rung. By the time the ladder reaches FTA, every required mechanism has been exercised at least once.
 
 ---

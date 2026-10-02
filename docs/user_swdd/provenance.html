@@ -189,15 +189,19 @@ different observability:
 <ul class="inv">
 <li><b>Malformed dependency inside an emitted chapter row.</b> The row
 claims a citation the verifier cannot reconcile against the rule's
-shape — the verifier <b>fails</b> the row, and the theorem with it.</li>
+shape — an inequality offered as equality evidence, say — the verifier
+<b>fails</b> the row, and the theorem with it.</li>
 <li><b>Missing origin for an emitted derived expression.</b> The chapter
 walker (§7.3) cannot extend the dependency chain backward; the chapter is
-truncated or the cited row references something with no provenance entry
-— again <b>visible</b>, again caught.</li>
+truncated or the cited row references something with no provenance entry at
+the cited scope or an enclosing one (an assumption of a nested subproof is
+not available outside it) — again <b>visible</b>, again caught.</li>
 <li><b>A theorem or chapter that never enters the verifier's input.</b>
-The verifier reads the processed proof graph; anything filtered out
-upstream (or never registered in the global theorem index) is invisible
-unless a separate registry-to-chapter completeness check exists. This is
+The verifier reads the processed proof graph. Every theorem registered in
+the global theorem index must arrive with exactly the chapters its proof
+method names: a missing, stray or misnumbered chapter fails the
+<i>chapter coverage</i> check. A fact filtered out upstream before it was
+ever registered stays invisible. This is
 why the prover side maintains <code>exprOriginMap</code> conservatively:
 the better protection is to never let a derived fact escape without its
 origin alongside.</li>
@@ -294,6 +298,25 @@ A hard <b>TRIPWIRE</b> at entry asserts if the
 <code>hypothetical_disintegration</code> sentinel scope ever reaches the walker — it
 is a throwaway structural probe and must never appear in a chapter.
 </p>
+<p><b>Zoom in records scope inheritance.</b> A child row cites exactly the same
+expression at its original ancestor scope. Both endpoint scopes are kept in the
+chapter, and the parent derivation remains a separate checked chain. The verifier
+requires that exact source pair; a child row cannot count as its own parent.</p>
+<figure>
+<svg viewBox="0 0 760 165" role="img" aria-label="Zoom in preserves an ancestor expression and records its unchanged child copy">
+<defs><marker id="zoom-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+<rect x="34" y="28" width="240" height="76" rx="9" fill="#262938" stroke="#EF9F27"/>
+<text x="154" y="53" text-anchor="middle" fill="#EF9F27" font-size="13">E at ancestor scope P</text>
+<text x="154" y="79" text-anchor="middle" fill="#8B8FA5" font-size="10">original derivation retained</text>
+<path d="M274 66 L486 66" stroke="#5DCAA5" stroke-width="2" marker-end="url(#zoom-ar)"/>
+<text x="380" y="51" text-anchor="middle" fill="#5DCAA5" font-size="13">zoom in</text>
+<rect x="486" y="28" width="240" height="76" rx="9" fill="#262938" stroke="#5DCAA5"/>
+<text x="606" y="53" text-anchor="middle" fill="#5DCAA5" font-size="13">E at child scope C</text>
+<text x="606" y="79" text-anchor="middle" fill="#8B8FA5" font-size="10">one exact parent dependency</text>
+<text x="380" y="136" text-anchor="middle" fill="#8B8FA5" font-size="11">Same expression · strict ancestor-to-descendant transfer · no parent-history read</text>
+</svg>
+<figcaption>The transfer has its own row; the parent's derivation keeps its original tag and scope.</figcaption>
+</figure>
 <figure>
 <svg viewBox="0 0 760 230" role="img" aria-label="The chapter walker: lift, barrier, cycle filter, contradiction fallback">
   <defs><marker id="bs-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
@@ -301,10 +324,10 @@ is a throwaway structural probe and must never appear in a chapter.
   <path d="M182 116 L216 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
   <rect x="216" y="70" width="312" height="108" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
   <text x="372" y="92" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">buildStack — walk origins backward</text>
-  <text x="372" y="113" fill="#8B8FA5" font-size="9" text-anchor="middle">① lift to shallowest-with-origin   ② OR-branch barrier</text>
+  <text x="372" y="113" fill="#8B8FA5" font-size="9" text-anchor="middle">① lift, preserving zoom in endpoints   ② OR barrier</text>
   <text x="372" y="129" fill="#8B8FA5" font-size="9" text-anchor="middle">③ path-cycle filter (+ goal in path)</text>
   <text x="372" y="148" fill="#8B8FA5" font-size="9" text-anchor="middle">④ no origin? → __contradiction__ block (only LB switch)</text>
-  <text x="372" y="164" fill="#8B8FA5" font-size="9" text-anchor="middle">⑤ theorem citation must not cycle with already-written chapters</text>
+  <text x="372" y="164" fill="#8B8FA5" font-size="9" text-anchor="middle">⑤ theorem citation must not cycle with fixed or written dependencies</text>
   <path d="M528 116 L562 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
   <rect x="562" y="92" width="170" height="48" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="647" y="113" fill="#F0E8DC" font-size="10.5" text-anchor="middle">chapter rows</text><text x="647" y="130" fill="#8B8FA5" font-size="9" text-anchor="middle">truthful scope, no cycles</text>
   <text x="372" y="42" fill="#8B8FA5" font-size="10.5" text-anchor="middle">Backtracking: a failed candidate rolls back; TRIPWIRE asserts on the hypothetical-disintegration sentinel.</text>
@@ -470,9 +493,12 @@ chapter. Two chapters can therefore each ground themselves in the other's
 theorem while every per-chapter check passes: within each chapter the cited
 theorem is bedrock, yet globally the pair justifies only itself. Two layers
 close this gap. The exporter prevents it: mechanism 5 (§7.3) consults the
-usage graph of already-written chapters and rejects any theorem citation
-that would close a cross-chapter cycle, falling back to an alternative
-origin exactly as this filter does. The verifier independently proves it:
+usage graph containing fixed synthetic dependencies and already-written
+chapters, and rejects any theorem citation that would close a cross-chapter cycle, falling back to an alternative
+origin exactly as this filter does. In particular, a reformulated existence
+theorem already depends on its original theorem before either chapter is
+written; the original cannot use that reformulation to justify itself. The
+verifier independently proves it:
 the global <code>theorem usage termination</code> check builds the directed
 graph "the chapter of theorem A cites theorem B" over all proven theorems
 and fails every theorem that lies on a cycle. Per-chapter acyclicity (this
@@ -587,7 +613,7 @@ depends on the origin map, the map has stopped being documentation.</figcaption>
 
 <h2 id="leanexport">7.9 &nbsp;Independent Lean certificate</h2>
 <p>
-The processed Peano, Gauss, and FTA shortcut proof graphs can be translated into typed neutral
+The processed Peano, Gauss, and FTA full-run proof graphs can be translated into typed neutral
 certificates and checked by Lean 4. This path is downstream of GL: it reads an existing graph
 and does not run the prover. The certificate retains theorem, chapter, row,
 dependency, action, source-hash, and exclusion records; the Lean renderer emits
@@ -604,7 +630,7 @@ but the object theory presented to it stays in this ordinary predicate fragment.
 <b>Every row is checked by an explicit proof term built from its own citation,
 not by search over everything above it.</b> A rule firing is replayed literally:
 the row applies the rule GL cited to the premises GL cited, in the rule's own
-premise order. The 136 Gauss and FTA integration-goal definition expansions
+premise order. The Gauss and FTA integration-goal definition expansions
 introduce their outer parameters explicitly and close the definitionally equal
 unfolded sides with <code>Iff.rfl</code>; no generated line ends in an
 unrestricted <code>simp</code> tactic. Equality substitution eliminates the named equalities in order,
@@ -614,9 +640,10 @@ the proposed reverse equality and passes that result directly to the one cited
 disequality. A scoped task-formulation row returns its own introduced scope
 premise directly. An <code>equality2</code> row chains its two cited equalities
 with equality transitivity in certificate order. A contradiction row applies
-the cited negation to its cited positive complement; when that negation belongs
-to a recorded contradiction scope, the row first introduces exactly that scope
-premise. During a premise-element action, the cited implication is the recorded
+the cited negation to its cited positive complement. When a child assumption
+is being refuted, the row introduces exactly that assumption and applies each
+fact to its own recorded context. One fact may come from an ancestor; facts
+from sibling scopes cannot be combined. During a premise-element action, the cited implication is the recorded
 scope template and the row returns the unique matching introduced premise. An
 implication action applies its cited rule and supplies the cited premises in
 that rule's order; scoped citations are first specialized to the recorded scope,
@@ -631,7 +658,11 @@ and returns that branch assumption directly, making the exported identity
 implication visible. A constructed-OR theorem now shows its case split and
 left-associated disjunction constructors directly, ending with the cited parent
 that proves the final alternative from the preceding negations. OR convergence
-similarly splits the cited compact OR and applies the matching branch result;
+similarly splits every case of the cited compact OR with the definition's
+left-associated grouping and applies its matching recorded branch result.
+Each case requires exactly one dependency; missing, extra or mismatched
+branch evidence is rejected. For example, <code>(A ∨ B) ∨ C</code> produces
+three separately checked cases, preserving the grouping;
 compact-existence branches visibly unpack their witness before that application.
 Theorem-reformulation rows likewise show the constructed set or relation and
 apply their single cited source theorem directly to it and the recorded premise.
@@ -641,13 +672,29 @@ applies the two branch interfaces.
 Equality-substitution rows similarly name and eliminate every cited equality in
 order, then return the rewritten cited source; no unrelated equality is searched.
 Disintegration rows show their exact conjunction path, shared decoded existence
-witness, or classical implication from a cited negated pair, including inside
+or one-variable counterexample witness, a conjunction of complemented disjuncts
+from a negated OR, or an exclusion implication from a cited negated conjunction, including inside
 recorded scopes. The renderer and all three generated proof modules contain no
-<code>grind</code>. The difference matters: before explicit replay, a passing build showed only that
+<code>grind</code>. For an exclusion from a larger conjunction, every recorded
+premise and the excluded counterexample reconstruct the original conjunction
+tree, with literal polarity and no missing or extra premises.
+The difference matters: before explicit replay, a passing build showed only that
 each row followed from <em>something</em> already derived. It now shows that
 GL's recorded justification is the one that works, and a wrong or incomplete
 citation breaks the build instead of passing quietly.
 </div>
+<figure>
+<svg viewBox="0 0 760 126" role="img" aria-label="A left-associated three-case disjunction is replayed with one recorded proof for each case">
+  <rect x="255" y="8" width="250" height="34" rx="7" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="380" y="30" text-anchor="middle" fill="#F0E8DC" font-size="14">(A ∨ B) ∨ C</text>
+  <path d="M380 42 L140 72 M380 42 L380 72 M380 42 L620 72" stroke="#5DCAA5" fill="none"/>
+  <text x="140" y="91" text-anchor="middle" fill="#5DCAA5" font-size="12">A → recorded proof</text>
+  <text x="380" y="91" text-anchor="middle" fill="#5DCAA5" font-size="12">B → recorded proof</text>
+  <text x="620" y="91" text-anchor="middle" fill="#5DCAA5" font-size="12">C → recorded proof</text>
+  <text x="380" y="119" text-anchor="middle" fill="#8B8FA5" font-size="11">Every case is covered; the original case grouping and citations are retained.</text>
+</svg>
+<figcaption>OR convergence replays each recorded case, including a refutation when a case is impossible.</figcaption>
+</figure>
 <p>
 Restricting the context immediately found one such row. Its two cited premises
 were existence facts that GL states about a single witness inside one proof
@@ -657,73 +704,87 @@ witness is now introduced once and shared by every row that speaks about it,
 which is what makes that row provable from its own citation.
 </p>
 <p>
-The current full Peano selection contains all 64 theorems in the live graph,
-138 chapters, and 3,107 source rows with an empty exclusion list — possible since the
-inter-chapter theorem-usage cycle was eliminated from the proof graph
-(mechanism 5 in §7.3 prevents it at export; the <code>theorem usage
-termination</code> check proves it). The historical 65-theorem selection,
-which excluded the former two-theorem cycle, remains tracked as a record.
-The dependent Gauss certificate pins the full Peano certificate by hash and
-adds all 29 Gauss main theorems, 33 chapters, and 1,511 rows. Together those
-two base modules check 93 public theorems and 4,618 row facts.
+Each full run selects every theorem in its live Peano, Gauss and FTA graph
+with empty exclusion lists. Its certificates record the actual theorem,
+chapter and row counts. The <code>theorem usage termination</code> check rejects
+inter-chapter citation cycles. The historical selection that excluded an older
+two-theorem cycle remains a separate fixture. The dependent Gauss certificate
+pins Peano by hash; FTA pins its preceding certificates in the same way. The
+connected project checks every selected proof and its concrete Nat instance.
 Induction is equally visible: each public theorem accepts the relational
 induction principle as an explicit proposition premise instead of importing it
 through an axiom. The generated typing and zero helpers apply their named rules,
 the successor case returns its named assumption, induction-hypothesis steps
 apply that hypothesis to their introduced premises, and the public theorem
-applies the resulting induction property explicitly. Generated source containing
+applies the resulting induction property explicitly. If a base or successor
+proof assumes the opposite of its conclusion, its caller introduces that exact
+assumption and discharges the resulting contradiction. This does not add an
+assumption to the public theorem. Generated source containing
 an admission shortcut or <code>grind</code> is rejected before the Lean build.
 </p>
-<p>
-The FTA shortlist adds a separate generated scope of 79 theorems, 109 chapters,
-and 2,835 rows, needing no internal support theorems. Its certificate pins 19
-Peano and two Gauss theorems as external facts. Four
-Peano citations differ only by universal-premise order or by renamed compiled
-definitions; the certificate checks the permutation, variable bijection, and
-exact definition bodies before accepting each adaptation. Each FTA theorem then
-receives its required complete, universally quantified target theorems as
-explicit Lean proposition parameters. Each row specializes them at its current
-FTA anchor. It never calls the live generated Peano or Gauss theorem proofs.
-</p>
-<p>
-FTA-local definitions live under <code>GLExport.FTA</code>. The exporter creates
-only a definition delta, the FTA theorem module, and its manifest, so the reviewed
-Peano and Gauss files remain byte-identical. FTA passes its certificate/renderer
-tests and separate kernel compile through the 19 pinned Peano and two pinned
-Gauss theorem propositions; the Gauss module import supplies shared definitions
-only, while internal FTA theorem calls forward the explicit propositions
-required by their dependency closure. FTA does not consume Peano or Gauss proof
-rows. Across all three exports the renderer emits and kernel-checks 172 public
-theorems, 280 chapters, and 7,453 row facts. The default pinned Lean target
-contains the live 93-theorem Peano/Gauss base and its 4,618 row facts; FTA stays
-in a separately compiled interface module.
-</p>
-<p>
-A direct compile of the separate FTA module passes. Its induction premise is an
-explicit schema over an arbitrary FTA anchor, and its external parameters are
-complete theorem propositions. A zero-arity definition compaction can therefore
-introduce the proposition's arbitrary context and replay the cited earlier FTA
-theorem there. No Peano or Gauss proof content is imported.
-</p>
+<p>The full run exports one connected proof chain: Peano, Gauss, then FTA.
+FTA calls the actual earlier theorem proofs at its own structure. The
+independent shortcut remains available for development and does not produce a
+Lean certificate.</p>
+<p>Induction is required for the fixed domain, zero, and successor of a theorem.
+When a compiled proposition quantifies over an anchor structure, its induction
+premise is inside that same quantifier. An anchor definition alone is never
+asserted to imply induction.</p>
+<figure><svg viewBox="0 0 760 110" role="img" aria-label="Connected abstract proofs are instantiated with verified natural-number anchors and induction">
+<text x="25" y="30" fill="currentColor">Peano proofs → Gauss proofs → FTA proofs</text>
+<text x="25" y="65" fill="currentColor">Lean Nat: arithmetic relations + verified anchors + induction</text>
+<text x="25" y="100" fill="currentColor">↓ Every exported theorem instantiated on Nat; one kernel build</text>
+</svg></figure>
+<p>The concrete model uses Lean's Nat, ordinary addition and multiplication,
+and the usual successor. It proves the anchor predicates and supplies induction
+using Nat.rec. Every public theorem has a concrete instance with those inputs
+discharged. The default build checks all these instances, so an impossible
+structure hypothesis cannot be hidden behind a successful abstract replay.</p>
+<p>A case split inside a contradiction retains the outer assumptions and
+uses the same witnesses. Closing the inner case discharges its own assumption
+only. Repeated equivalent prior theorem statements select one recorded proof
+explicitly, while all original public declarations remain checked.</p>
+<p>Child proofs retain the parent's free parameters even when their own goal
+does not mention them: an ancestor fact still takes those parameters as
+arguments. A scoped equality copy first introduces its binders and assumptions,
+then closes by reflexivity.</p>
+<figure><svg viewBox="0 0 760 125" role="img" aria-label="An ancestor fact and its complement in a child refute only the child assumption; sibling evidence is rejected">
+<text x="25" y="27" fill="currentColor" font-size="13">Parent parameters + assumptions + shared witness → child assumption</text>
+<text x="25" y="56" fill="currentColor">Ancestor fact + cited child complement → contradiction inside the child</text>
+<text x="25" y="85" fill="currentColor">Discharge child assumption → retain parent context and the same witness</text>
+<text x="25" y="114" fill="currentColor">Check exact ancestry and binder order; sibling facts cannot be combined.</text>
+</svg></figure>
 <p>
 Gauss integration scopes are represented by ordinary universal quantifiers.
-For the eight reformulated existence theorems, the renderer constructs the
+For reformulated existence theorems, the renderer constructs the
 defined set or relation as a predicate lambda, proves its defining condition,
 and applies the cited GL theorem to that concrete witness. This is the GL
 well-defined-output contract made constructive; it adds neither an existence
 axiom nor a dependent GL type family.
 </p>
+<p>The two directions of a defining predicate may put the same conjunction
+components in opposite order. For the appended graph, one direction uses
+<code>i = n ∧ p = a</code> and the other uses <code>p = a ∧ i = n</code>.
+The exporter records the swap and generates its proof: project both components,
+then construct the required pair inside the same OR case. It checks the plan
+again before rendering. Signs, repeated and fixed arguments, grouping and OR
+case order stay exact. Lean checks the resulting term under its ordinary rules.</p>
+<figure><svg viewBox="0 0 760 125" role="img" aria-label="The exporter proves a conjunction swap inside the endpoint OR case">
+<text x="25" y="27" fill="currentColor">Old graph case: keep its membership proof</text>
+<text x="25" y="59" fill="currentColor">Endpoint case: p = a ∧ i = n → project → i = n ∧ p = a</text>
+<path d="M380 70 L380 87" stroke="#5DCAA5" fill="none"/>
+<text x="380" y="110" text-anchor="middle" fill="currentColor">Rebuild the same OR case → Lean kernel checks the explicit proof</text>
+</svg><figcaption>The output witness retains its defining predicate; the exporter proves the required transport.</figcaption></figure>
 <p>
-The official release regenerates all three exports in dependency order, runs
-the certificate/renderer suite for their declared interfaces and the pinned
-Peano/Gauss Lean build, and then copies the
+The official release requires the full run's connected export, rechecks its
+Peano, Gauss, FTA, and Nat modules with one pinned Lean build, and copies the
 generated certificates, modules, project files, and manifests byte-for-byte.
 The private recovery snapshot copies the same current results but never invokes
 the exporter. The host-local <code>.lake/</code> build cache belongs to neither
 package.
 </p>
 <figure>
-<svg viewBox="0 0 760 310" role="img" aria-label="Processed GL proof graph translated through typed Peano, Gauss, and FTA certificates into ordinary-type Lean modules; Peano and Gauss use the default build and FTA uses a separate kernel compile through pinned external theorem interfaces">
+<svg viewBox="0 0 760 310" role="img" aria-label="One full-run proof graph yields connected Peano, Gauss, and FTA certificates; one Lean build checks their proofs and every concrete Nat instance">
   <defs>
     <marker id="le-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker>
   </defs>
@@ -732,18 +793,17 @@ package.
   <rect x="290" y="60" width="180" height="96" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="380" y="84" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">typed certificates</text><text x="380" y="104" fill="#D6D8E1" font-size="9.5" text-anchor="middle">Peano 2 + Gauss/FTA 3</text><text x="380" y="122" fill="#D6D8E1" font-size="9.5" text-anchor="middle">hashed acyclic dependency order</text><text x="380" y="140" fill="#D6D8E1" font-size="9.5" text-anchor="middle">one action per source row</text>
   <path d="M470 108 L556 108" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#le-ar)"/>
   <rect x="560" y="72" width="170" height="72" rx="10" fill="#17352F" stroke="#5DCAA5" stroke-width="2"/><text x="645" y="98" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">Lean kernel</text><text x="645" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">ordinary predicate theory</text>
-  <text x="380" y="184" fill="#D6D8E1" font-size="11" text-anchor="middle">exported: 172 theorems · 280 chapters · 7,453 row facts</text>
-  <text x="380" y="203" fill="#5DCAA5" font-size="10.5" text-anchor="middle">Peano + Gauss build · separate FTA kernel compile</text>
+  <text x="380" y="184" fill="#D6D8E1" font-size="11" text-anchor="middle">exported: 173 theorems · 285 chapters · 7,646 row facts</text>
+  <text x="380" y="203" fill="#5DCAA5" font-size="10.5" text-anchor="middle">Peano → Gauss → FTA · 173 Nat instances · one kernel build</text>
   <text x="380" y="224" fill="#8B8FA5" font-size="10" text-anchor="middle">explicit rows + induction · ordinary scopes · constructive witnesses</text>
   <path d="M645 144 L645 262 L540 262" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#le-ar)"/>
   <rect x="220" y="238" width="320" height="48" rx="9" fill="#262938" stroke="#B084EB"/><text x="380" y="258" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">official release + private snapshot</text><text x="380" y="276" fill="#8B8FA5" font-size="9.5" text-anchor="middle">copy certificates · modules · project · manifests</text>
 </svg>
 <figcaption><b>Second checker, preserved boundary.</b> The neutral certificate
-preserves every source-row audit trail; the live Peano/Gauss modules pass the
-pinned Lean build, while FTA passes its separate compile through pinned complete
-external-theorem propositions.
-Release generation happens only in the official-release
-protocol; the snapshot preserves the already generated bytes.</figcaption>
+preserves every source-row audit trail. One pinned Lean build checks the
+connected Peano, Gauss, and FTA proofs and all their concrete Nat instances.
+The full run generates these artifacts; release and recovery snapshots
+preserve the generated bytes.</figcaption>
 </figure>
 
 <div class="note">
@@ -768,6 +828,50 @@ artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
 
+<section id="flat-construction"><h2>Flat integration certificates</h2><p>A flattened integration row records a rule that constructs its goal from a permitted unfolding of the goal's definition. Its cited integration template describes the goal; it supplies no assumed theorem. The checker validates every premise and witness, and Lean uses explicit conjunction and existential constructors in the recorded premise order. <a href="mechanisms.html#flat-integration">See the construction diagram.</a></p></section>
+
+<section id="negative-conjunction-expansion">
+<h2>Checking a negated conjunction</h2>
+<p>The verifier substitutes the definition's arguments and reconstructs its
+conjunction using binary nesting. It then checks the negation of that complete
+body against the recorded expansion. Every constituent retains its sign, and
+the source fact and scope must match. Empty or single-constituent conjunction
+definitions are rejected.</p>
+<figure><svg viewBox="0 0 760 120" role="img" aria-label="Five ordered definition constituents become one negated binary conjunction for comparison with the proof row">
+<rect x="10" y="20" width="260" height="74" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+<text x="140" y="48" text-anchor="middle" fill="#F0E8DC" font-size="14">Definition constituents in order</text>
+<text x="140" y="75" text-anchor="middle" fill="#5DCAA5" font-size="16">A, B, C, D, E</text>
+<path d="M270 57 H310 M300 51 L310 57 L300 63" stroke="#5DCAA5" fill="none"/>
+<rect x="320" y="20" width="430" height="74" rx="8" fill="#1C1F2B" stroke="#5DCAA5"/>
+<text x="535" y="48" text-anchor="middle" fill="#F0E8DC" font-size="14">Reconstruct and compare with the proof row</text>
+<text x="535" y="75" text-anchor="middle" fill="#5DCAA5" font-size="16">&#xAC;((((A &#x2227; B) &#x2227; C) &#x2227; D) &#x2227; E)</text>
+</svg><figcaption>The checker preserves the whole body, including repeated or
+negative constituents. Omitting or changing a constituent fails verification.</figcaption></figure>
+</section>
+<section id="or-expansion-polarity"><h2>OR expansion keeps polarity</h2><p>A negative disjunct produces a double negation when the OR is written as a negated conjunction. The Lean replay explicitly cancels that double negation, matching the recorded formula. All four combinations of positive and negative disjuncts are checked by the kernel.</p></section>
+<section id="demanded-copy-proof"><h2>Recording the shared endpoint witness</h2><p>A demand controls when the prover requests a second name. The proof records the existing variable-copy declaration, ordinary equality consequences and ordinary rule firing. Integration collects the same alias from graph membership and natural membership; the demand itself is not a proof premise.</p><svg viewBox="0 0 760 85" role="img" aria-label="The copy declaration supports both graph and natural membership, which share one existential witness"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="380" y="30">a = a_copy → graph membership and natural membership</text><text x="380" y="65">Both facts use a_copy → one existential witness</text></g></svg></section>
+<section id="conjunction-introduction-proof"><h2>Checking conjunction alternatives</h2>
+<p>A structural OR-introduction row cites the compact implication containing that OR premise. The checker selects the exact alternative and verifies its complete ordered conjuncts and scoped binders. Lean introduces those premises, constructs their conjunction, and inserts it into the recorded OR position.</p>
+<svg viewBox="0 0 760 90" role="img" aria-label="Ordered premises build exactly one conjunction alternative, then introduce the OR"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="125" y="35">Assume A, then B</text><text x="380" y="35">Construct A AND B</text><text x="640" y="35">Select OR alternative</text><text x="380" y="77">The compact definition fixes the conjuncts, signs, order and OR position</text></g><path d="M225 30h45m-8-6 8 6-8 6M490 30h40m-8-6 8 6-8 6" stroke="#7EA2C4" fill="none"/></svg>
+</section>
+<section id="composition-proof"><h2>Proofs of composed implications</h2>
+<p>An implication-composition row cites both original implications with their own scopes. The verifier checks their intermediate argument match and the exact scope of the result. Lean introduces each binder group and premise in order, applies all premises to the first implication to obtain the intermediate fact, then applies the second. A dependency from a sibling scope is rejected. Either source can cite a registered theorem at the main scope; both citations must resolve and both participate in the check for circular theorem dependencies.</p>
+<svg viewBox="0 0 760 110" role="img" aria-label="Each binder group and producer premise is introduced, then the complete premise chain is passed through the two cited implications to produce the conclusion">
+<g fill="#1d2636" stroke="#7EA2C4"><rect x="15" y="20" width="170" height="55" rx="8"/><rect x="290" y="20" width="180" height="55" rx="8"/><rect x="575" y="20" width="170" height="55" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="15"><text x="100" y="53">Assume A₁, …, Aₖ</text><text x="380" y="53">First proof gives B</text><text x="660" y="53">Second proof gives C</text></g>
+<g fill="none" stroke="#7EA2C4" stroke-width="2"><path d="M185 47h95m-8-6 8 6-8 6M470 47h95m-8-6 8 6-8 6"/></g><text x="380" y="100" fill="#F0E8DC" text-anchor="middle" font-size="14">Both source binders map one-to-one onto the complete result binder</text></svg>
+<p>The verifier also requires a one-to-one match of both complete binder sets and the result binder: bound-to-fixed specialization and collapsing two bound variables are rejected. The composition proof travels with outgoing history, so another block receiving a derived fact can also check the rule that produced it. The active source-support records drive composition. The proof-history map records what happened and is never consulted to decide which rules may be composed.</p></section>
+<section id="conjunction-refutation"><h2>Checking composed supporting rules</h2><p>The checker first proves the guarded helper by assuming the whole conjunction and contradicting the selected member. It then checks an ordinary implication composition between that helper and the original owning implication.</p><p>Lean replays both steps explicitly. Bound variables correspond one-to-one, fixed parameters stay fixed, and sources have compatible scopes. The intermediate rule is proof documentation and does not enter runtime rule memory. The direct composed rule receives ordinary compilation and firing history.</p><svg viewBox="0 0 920 155" role="img" aria-label="Checking composed supporting rules"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Prove the guarded helper</text><text x="150" y="77" text-anchor="middle" fill="#172635">Exact parts and signed guard</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Compose with original owner</text><text x="460" y="77" text-anchor="middle" fill="#172635">Existing checked composition</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Certify the direct rule</text><text x="770" y="77" text-anchor="middle" fill="#172635">Ordinary runtime installation</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">No new proof tag or unchecked theorem is introduced.</text></svg></section>
+<section id="compiled-contraposition"><h2>Prepared contrapositives</h2>
+<p>One explicit exception preserves the existing search boundary: a negated existence may refute a candidate's membership in its domain, but contraposition does not turn domain membership into negative body facts for every candidate.</p>
+<p>Forward definitions keep their separate conclusions. During compilation, implications from the same definition family with the same complete premise can also supply a grouped conclusion. Every combination covering all bound variables is prepared, including larger covering combinations.</p>
+<svg viewBox="0 0 760 190" role="img" aria-label="Separate forward rules produce a prepared grouped rule and its contrapositive, activated only with the source family">
+<rect x="10" y="15" width="210" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="115" y="45" text-anchor="middle" fill="#172635">f(i,p) implies i in I</text><text x="115" y="78" text-anchor="middle" fill="#172635">f(i,p) implies p in N</text>
+<path d="M220 60 H270" stroke="#678" stroke-width="2"/><rect x="270" y="15" width="210" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="375" y="45" text-anchor="middle" fill="#172635">Group both conclusions</text><text x="375" y="78" text-anchor="middle" fill="#172635">Keep both source proofs</text>
+<path d="M480 60 H530" stroke="#678" stroke-width="2"/><rect x="530" y="15" width="220" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="640" y="45" text-anchor="middle" fill="#172635">Negated typing conjunction</text><text x="640" y="78" text-anchor="middle" fill="#172635">implies not f(i,p)</text>
+<text x="380" y="145" text-anchor="middle" fill="currentColor">Prepared compact → own statement → ordinary rule expansion.</text><text x="380" y="175" text-anchor="middle" fill="currentColor">Forward definitions and construction obligations stay intact.</text></svg>
+<p>At disintegration, the prover substitutes actual arguments into prepared templates in the source scope. Each result has its own compact statement and ordinary rule expansion, like an implication attached to an existence. This preserves its normal ownership through mail, equality rewriting and removal; the fixed domain and range remain parameters. Grouping cites every contributing implication; contraposition cites the exact grouped or original implication. The verifier checks the substitutions and scopes, and Lean replays the derivations. Facts from separate cases cannot be combined.</p></section>
+<section id="or-equality-evidence"><h2>Equality evidence inside each OR case</h2><p>Convergence cites the actual fact from each case. When its arguments differ from the common conclusion, it also cites positive equalities visible there. The checker validates the substitution and Lean repeats it before leaving the case. Evidence survives case cleanup; no extra runtime copy of the conclusion is needed.</p><svg viewBox="0 0 760 120" role="img" aria-label="Actual case fact and local equality are checked inside the case before OR elimination"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="380" y="27">Case: actual E(n) + cited i = n</text><text x="380" y="58">Checked substitution inside this case</text><text x="380" y="88">E(i) is justified for this case</text><text x="380" y="116">Every case accounted for → OR elimination</text></g></svg></section>
 </main>
 </body>
 </html>

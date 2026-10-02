@@ -50,6 +50,8 @@
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -106,6 +108,13 @@ TEST(steward, diagnostics_log_appends_to_the_common_run_file) {
     while (std::getline(in, line))
         if (line == marker) { found = true; break; }
     ASSERT_TRUE(found);
+}
+
+TEST(steward, reports_its_ssd_policy) {
+    gl::MemorySteward paging(/*allowSsdDeload=*/true);
+    gl::MemorySteward residentOnly(/*allowSsdDeload=*/false);
+    ASSERT_TRUE(paging.allowsSsdDeload());
+    ASSERT_FALSE(residentOnly.allowsSsdDeload());
 }
 
 TEST(steward, resident_only_mode_claims_without_deload_or_io_threads) {
@@ -885,6 +894,46 @@ TEST(steward, worker_valve_fires_below_emergency_floor_on_pure_grant_path) {
     for (char* b : held) pressure.releaseBlock(b);
 }
 
+TEST(steward, grant_valve_evicts_one_behind_cursor_victim) {
+    // relieveGrantPressure (D-422): no window open is a
+    // no-op; with the window open it evicts the behind-cursor victim once,
+    // counted like the claim-time valve, and never the kept LB.
+    const std::string dir = freshStewardDir("test_steward_grant_valve");
+    gl::Memory victim;
+    victim.setExprKey("(grant_valve_victim)");
+    victim.isActive = true;
+    victim.intEncodedStatements.push_back(stewardExpr(61));
+    gl::Memory kept;
+    kept.setExprKey("(grant_valve_kept)");
+    kept.isActive = true;
+    kept.intEncodedStatements.push_back(stewardExpr(62));
+
+    gl::MemorySteward s;
+    ASSERT_EQ(s.emergencyFloorBlocks(),
+              gl::steward::kReserveBlocks / gl::steward::kEmergencyFloorDivisor);
+    s.setReserveBlocksForTest(40);
+    ASSERT_EQ(s.emergencyFloorBlocks(), int64_t(40 / gl::steward::kEmergencyFloorDivisor));
+
+    const int64_t emg0 = gl::deloadStats().emergencyEvictCount.load();
+    s.relieveGrantPressure(dir);
+    ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0, int64_t(0));
+    ASSERT_TRUE(victim.lbMemory.manager.resident());
+
+    std::vector<gl::Memory*> order = { &victim, &kept };
+    std::atomic<std::size_t> cursor{ 2 };   // keepLo = 1: victim at 0 evictable
+    s.beginPhaseWindow(/*phase=*/1, &cursor, &order, /*workers=*/1, dir);
+    s.relieveGrantPressure(dir);
+    ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0, int64_t(1));
+    ASSERT_FALSE(victim.lbMemory.manager.resident());
+    ASSERT_EQ(victim.stewardClaim.load(),
+              static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
+    ASSERT_TRUE(kept.lbMemory.manager.resident());
+    // Nothing left to evict: a further call is a defined no-op.
+    s.relieveGrantPressure(dir);
+    ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0, int64_t(1));
+    s.endPhaseWindow();
+}
+
 TEST(steward, io_thread_count_clamps_and_overrides) {
     // The executor-pool sizing policy: workers / kIoThreadsPerWorkers clamped
     // to [kIoThreadsMin, kIoThreadsMax]; a nonzero override forces the count
@@ -1427,7 +1476,12 @@ TEST(steward, exhaustion_reporter_census_runs_under_pool_mutex) {
             // no-re-entry audit made executable.
             gl::printExhaustionCensus(grid, &s, inUse, total);
         });
+    std::ostringstream report;
+    auto* previousBuffer = std::cerr.rdbuf(report.rdbuf());
     pool.invokeExhaustionReporterForTest();
+    std::cerr.rdbuf(previousBuffer);
+    ASSERT_TRUE(report.str().find("[EXHAUSTION] census over 3 grid LBs") != std::string::npos);
+    ASSERT_TRUE(report.str().find("scratch arenas:") != std::string::npos);
     // (The census's UNATTRIBUTED line goes negative in THIS fixture — the
     // grid LBs' blocks live on the process pool while the counters passed in
     // are the private pool's. In production both come from the same main

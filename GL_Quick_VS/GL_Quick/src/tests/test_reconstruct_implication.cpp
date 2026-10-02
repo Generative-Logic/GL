@@ -183,9 +183,9 @@ TEST(prover_span_twins, get_global_key_span_matches_vector) {
     }
 }
 
-// dischargeToBeProved Part B: the proven-direct theorems ride a shared
-// SealedPageSet as UpdateGlobalDirectRec records. The drain's index-sort on
-// updateGlobalDirectLess orders by (theorem bytes, level verdict TRUE first,
+// dischargeToBeProved Part B: the proven single-chapter theorems ride a shared
+// SealedPageSet as UpdateGlobalSingleChapterRec records. The drain's index-sort on
+// updateGlobalSingleChapterLess orders by (theorem bytes, level verdict TRUE first,
 // producer chain) — every key a pure function of proof state. The dispatch
 // coreId is deliberately ABSENT from the order (a scheduling race outcome:
 // ordering same-theorem records by it let the worker race pick the
@@ -206,22 +206,22 @@ TEST(prover_span_twins, update_global_direct_sealed_drain_matches_sorted) {
         { "(=[a,b])", 0, false },
     };
     for (const auto& r : input) {
-        ps.appendRecord(gl::ExpressionAnalyzer::UpdateGlobalDirectRec{
+        ps.appendRecord(gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec{
             gl::SealedString::copyFrom(ps, r.thm.data(),
                 static_cast<int32_t>(r.thm.size())),
             r.coreId, nullptr, r.verdict });
     }
 
-    // Gather + index-sort via updateGlobalDirectLess (the drain's replay order).
-    std::vector<const gl::ExpressionAnalyzer::UpdateGlobalDirectRec*> refs;
-    ps.forEachRecord<gl::ExpressionAnalyzer::UpdateGlobalDirectRec>(
-        [&](const gl::ExpressionAnalyzer::UpdateGlobalDirectRec& r) {
+    // Gather + index-sort via updateGlobalSingleChapterLess (the drain's replay order).
+    std::vector<const gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec*> refs;
+    ps.forEachRecord<gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec>(
+        [&](const gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec& r) {
             refs.push_back(&r);
         });
     std::vector<int> idx(refs.size());
     for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = static_cast<int>(i);
     std::sort(idx.begin(), idx.end(), [&](int a, int b) {
-        return gl::ExpressionAnalyzer::updateGlobalDirectLess(
+        return gl::ExpressionAnalyzer::updateGlobalSingleChapterLess(
                    *refs[static_cast<std::size_t>(a)],
                    *refs[static_cast<std::size_t>(b)]) < 0;
     });
@@ -390,7 +390,7 @@ TEST(prover_span_twins, expand_signature_scratch_matches_heap) {
         "or", { "(=[u_a,u_b])", "!(=[u_c,u_d])" }, "(sig[u_a,u_b,u_c,u_d])", 4));
     // rename branches: u_ stripped, int_lev kept-or-c_ (both paths agree), plain -> c_.
     cases.push_back(gl::LogicalEntity(
-        "and", { "(P[u_a,int_lev_0,plain])", "(Q[u_b])" }, "(sig[u_a,u_b])", 2));
+        "and", { "(P[u_a,int_0_lev_0,plain])", "(Q[u_b])" }, "(sig[u_a,u_b])", 2));
 
     for (const gl::LogicalEntity& le : cases) {
         const std::string oracle = expandSignatureOracle(ea, le);
@@ -579,7 +579,10 @@ TEST(prover_span_twins, find_digit_args_matches_heap) {
     gl::ExpressionAnalyzer ea("Peano");
     const std::vector<std::string> cases = {
         "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))",  // anchor + operator
-        "(>[1,2](AnchorPeano[1,2,3,4,5,6])(=[1,2]))",         // anchor + equality
+        // Equality cases are well typed: `=` now joins its arguments' types
+        // (I-267) and a set/number join asserts.
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(=[2,6]))", // anchor + equality
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))", // digit equality
         "(AnchorPeano[1,2,3,4,5,6])",                          // anchor alone
         "(>[1,2]!(in[1,2])(in[2,1]))",                        // negated premise (strip path)
         "(>[1,2,3](in2[1,2,3])(in[1,2]))",                    // chained operators
@@ -605,7 +608,8 @@ TEST(prover_span_twins, find_digit_args_span_matches_string) {
     gl::ExpressionAnalyzer ea("Peano");
     const std::vector<std::string> cases = {
         "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))",  // anchor + operator
-        "(>[1,2](AnchorPeano[1,2,3,4,5,6])(=[1,2]))",         // anchor + equality
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(=[2,6]))", // anchor + equality
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))", // digit equality
         "(AnchorPeano[1,2,3,4,5,6])",                          // anchor alone
         "(>[1,2]!(in[1,2])(in[2,1]))",                        // negated premise (strip path)
         "(>[1,2,3](in2[1,2,3])(in[1,2]))",                    // chained operators

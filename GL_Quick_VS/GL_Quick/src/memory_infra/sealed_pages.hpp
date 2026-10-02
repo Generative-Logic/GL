@@ -30,10 +30,13 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <type_traits>
 
 namespace gl {
+
+    template <typename T> class SealedSpanBuilder;
 
     /// @brief Intrusive link header of one record on a `SealedPageSet`'s
     ///        record chain — a single forward pointer, nothing else.
@@ -88,8 +91,9 @@ namespace gl {
     /// while tasks run), giving lock-free exclusive ownership during the
     /// parallel phase.
     ///
-    /// Blocks come from the cold grant path (`acquireBlock`) on the set's
-    /// own per-task `LbArena`; the pool's exhaustion assert is the sizing
+    /// Small output allocations use exclusive slices shared across pool blocks;
+    /// larger contiguous allocations use the set's own per-task `LbArena`. All
+    /// blocks come from the cold grant path (`acquireBlock`); the pool's exhaustion assert is the sizing
     /// backstop (staging volume is work-content-dependent; an artificial
     /// per-set cap would be tuning disguised as safety). The set is freed
     /// the instant the drain consumes it — before any deload seam — so it is
@@ -144,8 +148,10 @@ namespace gl {
             assert(global != nullptr && global->initialized());
             assert((global_ == nullptr || global_ == global)
                 && "SealedPageSet rebind to a different pool");
-            if (global_ == nullptr)
+            if (global_ == nullptr) {
+                bump_.setPurpose(PoolPurpose::Sealed);  // pool attribution
                 bump_.bind(global);  // cold per-task page arena
+            }
             global_ = global;
         }
 
@@ -153,12 +159,11 @@ namespace gl {
         ///        only.
         ///
         /// @details
-        /// Same exact-length, never-straddles-a-page discipline as the hot
-        /// scratch arena's `allocBytes`. The first allocation acquires the
-        /// first page.
+        /// Small requests use exclusive slices of shared backing blocks. Larger
+        /// requests retain the private byte arena and its full-block limit.
+        /// Payload addresses stay stable across peer allocation and release.
         ///
-        /// @param bytes Exact length of the new allocation; > 0, at most
-        ///              one page.
+        /// @param bytes Exact length of the new allocation; > 0, at most one block.
         /// @return Pointer to `bytes` writable bytes, stable until
         ///         `freePages`.
         char* alloc(int32_t bytes);
@@ -199,9 +204,17 @@ namespace gl {
 
         /// @brief Blocks currently held (telemetry).
         ///
-        /// @return Retained block count.
+        /// @return Distinct backing blocks touched by this set; shared blocks may
+        /// also be counted by peers. Pool attribution counts physical blocks once.
         int32_t blocksHeld() const {
-            return static_cast<int32_t>(bump_.blocksHeld());
+            int32_t count = static_cast<int32_t>(bump_.blocksHeld());
+            for (const SealedSlice* slice = slices_; slice; slice = slice->next) {
+                bool seen = false;
+                for (const SealedSlice* prior = slices_; prior != slice; prior = prior->next)
+                    if (prior->block == slice->block) { seen = true; break; }
+                if (!seen) ++count;
+            }
+            return count;
         }
 
         /// @brief Total bytes allocated into the set (telemetry; includes
@@ -363,7 +376,8 @@ namespace gl {
 
         GlobalMemoryManager* global_ = nullptr;
         State state_ = State::Filling;
-        LbArena bump_;                 // cold per-task page arena — bump storage
+        LbArena bump_;                 // large contiguous output allocations
+        SealedSlice* slices_ = nullptr; // exclusive small-output slices
         int64_t bytesAllocated_ = 0;
         void*   recordHead_ = nullptr;   // first SealedRecordNode, or null
         void*   recordTail_ = nullptr;   // last SealedRecordNode, or null
@@ -567,8 +581,8 @@ namespace gl {
     /// `alignof(T) - 1` and aligns the run base up — the view is then a real
     /// aligned `const T*`, indexable and iterable like any array. The whole
     /// run must fit one page (the `SealedString` one-page limit, asserted in
-    /// `SealedPageSet::alloc`); the staging runs are single digits of elements,
-    /// far inside a page.
+    /// `SealedPageSet::alloc`). A builder may fill this same owned run across
+    /// multiple device downloads without publishing a partial view.
     ///
     /// @invariant `data()` is readable for exactly `size()` elements until the
     ///            owning set is freed; `operator[]` / iteration assert the set
@@ -576,6 +590,7 @@ namespace gl {
     /// @see `SealedString` (the byte sibling), `SealedPageSet`.
     template <typename T>
     class SealedSpan {
+        friend class SealedSpanBuilder<T>;
     public:
         static_assert(std::is_trivially_copyable<T>::value,
             "SealedSpan<T> requires a trivially copyable element type — the "
@@ -679,6 +694,87 @@ namespace gl {
         const T* ptr_ = nullptr;
         int32_t len_ = 0;
         const SealedPageSet* owner_ = nullptr;
+    };
+
+    /// @brief Assemble one immutable span from consecutive downloaded fragments.
+    ///
+    /// @details
+    /// The complete destination is reserved once on the caller's filling page
+    /// set. Each append copies already-decided content, and finish publishes a
+    /// read-only span only after every reserved element has arrived.
+    template <typename T>
+    class SealedSpanBuilder {
+        SealedPageSet* owner_;
+        T* destination_{ nullptr };
+        int32_t count_{ 0 };
+        int32_t written_{ 0 };
+        bool finished_{ false };
+
+    public:
+        /// @brief Reserve the exact final span before receiving fragments.
+        ///
+        /// @details
+        /// Uses the existing aligned single-span ownership contract. Zero
+        /// elements represent a complete empty stream and need no allocation.
+        ///
+        /// @param set Owning page set, still filling.
+        /// @param count Exact final number of elements, nonnegative.
+        /// @return An unpublished span builder with no consumed elements.
+        SealedSpanBuilder(SealedPageSet& set, int32_t count)
+            : owner_(&set), count_(count) {
+            static_assert(std::is_trivially_copyable<T>::value);
+            assert(set.filling());
+            assert(count >= 0);
+            if (count == 0) return;
+            const uint64_t bytes = static_cast<uint64_t>(count) * sizeof(T) + alignof(T) - 1;
+            assert(bytes <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max()));
+            char* raw = set.alloc(static_cast<int32_t>(bytes));
+            const auto aligned = (reinterpret_cast<std::uintptr_t>(raw) + alignof(T) - 1)
+                & ~static_cast<std::uintptr_t>(alignof(T) - 1);
+            destination_ = reinterpret_cast<T*>(aligned);
+        }
+
+        SealedSpanBuilder(const SealedSpanBuilder&) = delete;
+        SealedSpanBuilder& operator=(const SealedSpanBuilder&) = delete;
+
+        /// @brief Copy the next consecutive fragment into reserved storage.
+        ///
+        /// @details
+        /// Source buffers can be reused immediately after the copy. An empty
+        /// fragment is a defined no-op; overrun and append-after-finish assert.
+        ///
+        /// @param source Complete fragment data; null only for zero elements.
+        /// @param count Fragment element count, within remaining reservation.
+        /// @return Nothing.
+        void append(const T* source, int32_t count) {
+            assert(!finished_ && owner_->filling());
+            assert(count >= 0 && count <= count_ - written_);
+            if (count == 0) return;
+            assert(source != nullptr);
+            std::memcpy(destination_ + written_, source,
+                static_cast<std::size_t>(count) * sizeof(T));
+            written_ += count;
+        }
+
+        /// @brief Publish the completely assembled immutable span once.
+        ///
+        /// @details
+        /// Incomplete publication is an invalid write-state assertion. The page
+        /// set remains filling so other records can finish before Phase 2 ends.
+        ///
+        /// @return Immutable view of every assembled element.
+        SealedSpan<T> finish() {
+            assert(!finished_ && owner_->filling());
+            assert(written_ == count_);
+            finished_ = true;
+            SealedSpan<T> result;
+            if (count_ > 0) {
+                result.ptr_ = destination_;
+                result.len_ = count_;
+                result.owner_ = owner_;
+            }
+            return result;
+        }
     };
 
 }

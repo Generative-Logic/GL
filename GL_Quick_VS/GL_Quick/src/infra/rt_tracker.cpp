@@ -22,6 +22,8 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
+#include "infra/hashburst_dump.hpp"
+#include <cstdlib>
 #include "infra/rt_tracker.hpp"
 
 #include "memory.hpp"
@@ -203,6 +205,34 @@ RTTracker::RTTracker(const Memory& body, int triggerSeconds, int minPercentage)
       min_percentage_(minPercentage),
       hashburst_index_(g_currentHashburstIndex),
       ever_dumped_(false) {
+    audit_target_ = [] {
+#ifdef _WIN32
+        size_t required = 0;
+        const errno_t result = getenv_s(&required, nullptr, 0, "GL_FTA_BLOWUP_TRACE");
+        assert(result == 0);
+        return required != 0;
+#else
+        return std::getenv("GL_FTA_BLOWUP_TRACE") != nullptr;
+#endif
+    }()
+        && gl::hashburst_dump::isTargetLB(body);
+    static const std::string selectedAuditChain = [] {
+#ifdef _WIN32
+        size_t required = 0;
+        errno_t result = getenv_s(&required, nullptr, 0, "GL_RT_AUDIT_CHAIN");
+        assert(result == 0);
+        if (required == 0) return std::string();
+        std::string value(required, '\0');
+        result = getenv_s(&required, value.data(), value.size(), "GL_RT_AUDIT_CHAIN");
+        assert(result == 0 && required == value.size());
+        value.resize(required - 1);
+        return value;
+#else
+        const char* value = std::getenv("GL_RT_AUDIT_CHAIN");
+        return value == nullptr ? std::string() : std::string(value);
+#endif
+    }();
+    chain_audit_ = auditChainSelects(chain_human_, selectedAuditChain);
     for (int i = 0; i < kRowCacheSize; ++i) row_cache_[i] = -1;
     // Publish ourselves as this thread's active tracker so RT_SCOPE_HERE
     // and RT_REFRESH_HERE in inner functions can reach us.
@@ -228,6 +258,50 @@ RTTracker::~RTTracker() {
     // all bursts. Charge the tail first so the last open window (a
     // tracker that never dumped has never charged) is attributed.
     chargeElapsedToTop_();
+    if (audit_target_) {
+        static std::mutex auditMutex;
+        std::lock_guard<std::mutex> lock(auditMutex);
+        FILE* out = nullptr;
+#ifdef _WIN32
+        const errno_t openResult = fopen_s(&out, ".debug/traps.log", "a");
+        assert(openResult == 0);
+#else
+        out = std::fopen(".debug/traps.log", "a");
+#endif
+        assert(out);
+        static uint64_t call = 0; ++call;
+        std::fprintf(out, "[FTA-RT-CALL] call=%llu burst=%d depth=%d root=%s chain=%s\n",
+            call, hashburst_index_, peak_open_depth_, section_count_ ? sections_[0].label : "empty", chain_human_.c_str());
+        for (int i = 0; i < section_count_; ++i) {
+            const Section& row = sections_[i];
+            std::fprintf(out, "[FTA-RT] call=%llu index=%d parent=%d ns=%lld hits=%d iterations=%lld label=%s\n",
+                call, i, row.parentIdx, row.self_ns, row.hits, row.iterations, row.label);
+        }
+        std::fclose(out);
+    }
+    if (chain_audit_) {
+        // The chain-selected audit owns its file, so no other writer can hold
+        // it; rows use the GL_FTA_BLOWUP_TRACE audit's format.
+        static std::mutex chainAuditMutex;
+        std::lock_guard<std::mutex> lock(chainAuditMutex);
+        FILE* out = nullptr;
+#ifdef _WIN32
+        const errno_t openResult = fopen_s(&out, ".debug/rt_audit.log", "a");
+        assert(openResult == 0);
+#else
+        out = std::fopen(".debug/rt_audit.log", "a");
+#endif
+        assert(out);
+        static uint64_t call = 0; ++call;
+        std::fprintf(out, "[FTA-RT-CALL] call=%llu burst=%d depth=%d root=%s chain=%s\n",
+            call, hashburst_index_, peak_open_depth_, section_count_ ? sections_[0].label : "empty", chain_human_.c_str());
+        for (int i = 0; i < section_count_; ++i) {
+            const Section& row = sections_[i];
+            std::fprintf(out, "[FTA-RT] call=%llu index=%d parent=%d ns=%lld hits=%d iterations=%lld label=%s\n",
+                call, i, row.parentIdx, row.self_ns, row.hits, row.iterations, row.label);
+        }
+        std::fclose(out);
+    }
     accumulateAggregate_();
     // Drop the thread-local pointer so subsequent RT_SCOPE_HERE /
     // RT_REFRESH_HERE calls on this thread are no-ops until the next
@@ -781,6 +855,40 @@ void dumpRtAggregate(const std::string& path) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(kRetryDelayMs));
     }
+}
+
+/// @brief Whether a selected audit chain names a tracker's block.
+///
+/// @details
+/// Normalizes a leaf-to-root selection (` <- ` separators, as `[RT-LB]` rows
+/// print it) into the tracker's root-to-leaf form (` -> `) and compares every
+/// byte; no partial, prefix or substring match selects (Rule 12).
+///
+/// @param chainHuman The tracker's root-to-leaf chain.
+/// @param selected The `GL_RT_AUDIT_CHAIN` value, possibly empty.
+/// @return True exactly when @p selected names the same complete chain.
+bool RTTracker::auditChainSelects(const std::string& chainHuman,
+                                  const std::string& selected) {
+    if (selected.empty()) return false;
+    const std::string arrow = " <- ";
+    if (selected.find(arrow) == std::string::npos) return selected == chainHuman;
+    std::vector<std::string> elements;
+    std::size_t begin = 0;
+    for (;;) {
+        const std::size_t at = selected.find(arrow, begin);
+        if (at == std::string::npos) {
+            elements.push_back(selected.substr(begin));
+            break;
+        }
+        elements.push_back(selected.substr(begin, at - begin));
+        begin = at + arrow.size();
+    }
+    std::string rootToLeaf;
+    for (std::size_t i = elements.size(); i-- > 0;) {
+        rootToLeaf += elements[i];
+        if (i > 0) rootToLeaf += " -> ";
+    }
+    return rootToLeaf == chainHuman;
 }
 
 std::string RTTracker::buildChainHuman_(const Memory& body) {

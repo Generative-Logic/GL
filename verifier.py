@@ -31,6 +31,8 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Set, Tuple, Optional
 
+from assertion_guard import require_assertions
+
 
 # ---------------------------------------------------------------------------
 #  Data structures
@@ -387,13 +389,13 @@ def load_global_theorem_list(base_dir: str) -> Tuple[Dict[str, dict],
 
         ``<theorem-expression> TAB <theorem-type> TAB <theorem-ref>``
 
-    where ``<theorem-type>`` is one of ``direct`` /
-    ``reformulated`` / ``induction`` / ``or_theorem`` /
-    ``incubator_back_reformulation`` and ``<theorem-ref>`` is the
-    proof method (``direct`` /
-    ``reformulated statement`` / ``or theorem``) OR — for induction
-    rows — the induction variable name (consumed by
-    ``check_recursion``).
+    where ``<theorem-type>`` is the proof method: ``single chapter proof``,
+    ``induction``, ``reformulated statement``, ``incubator back
+    reformulation``, ``or theorem``, ``or elimination``, ``proved not
+    broadcast``, or debug-only ``debug``. ``<theorem-ref>`` is ``-1`` for a
+    single-chapter proof, the induction variable name for induction rows
+    (consumed by ``check_recursion``), or the source theorem for a derived
+    chapter kind.
 
     Returns two views over the same data:
 
@@ -441,13 +443,96 @@ def load_global_theorem_list(base_dir: str) -> Tuple[Dict[str, dict],
 # ---------------------------------------------------------------------------
 #  Build chapter → theorem mapping
 #
-#  Walk global_theorem_list in order, consume chapter files sequentially.
-#  "induction" theorems consume 3 chapters (induction_typing + check_zero +
-#  check_induction_condition, in that exact order — typing first because both
-#  the zero-case and the successor-step proofs cite (in[ind_var, N]) and that
-#  typing must be established before either citation makes sense).
-#  All other types consume 1 chapter.
+#  Every theorem of global_theorem_list owns the chapter files its proof
+#  method names, numbered consecutively in list order: "induction" theorems
+#  own 3 (induction_typing + check_zero + check_induction_condition, in that
+#  exact order — typing first because both the zero-case and the
+#  successor-step proofs cite (in[ind_var, N]) and that typing must be
+#  established before either citation makes sense); every other method owns 1.
 # ---------------------------------------------------------------------------
+
+# The chapter files process_proof_graphs.py (_build_fname_list) writes for each
+# proof method, mirrored here: the verifier imports nothing from the producer.
+_CHAPTER_SUFFIXES: Dict[str, Tuple[str, ...]] = {
+    "induction": ("induction_typing", "check_zero", "check_induction_condition"),
+    "single chapter proof": ("single_chapter_proof",),
+    "debug": ("debug",),
+    "reformulated statement": ("reformulated_statement",),
+    "incubator back reformulation": ("back_reformulated_statement",),
+    "or theorem": ("or_theorem",),
+    "or elimination": ("or_elimination",),
+    "proved not broadcast": ("proved_not_broadcast",),
+}
+
+
+def expected_chapter_files(
+    theorem_list: List[Tuple[str, str, str]],
+) -> List[Tuple[str, Tuple[str, str, str], bool]]:
+    """@brief List every chapter file the theorem manifest calls for, in order.
+
+    @details
+    Mirrors the producer's naming (``process_proof_graphs.py``,
+    ``_build_fname_list``): the chapters are numbered from 0 in
+    manifest order, and each theorem's proof method fixes the suffixes
+    of its chapters (``_CHAPTER_SUFFIXES``). A method the verifier does
+    not know names one chapter, as the producer does
+    (``<index>_unknown_<method>.txt``), and is flagged so the coverage
+    check fails it: an unknown proof method has no checker.
+
+    @param theorem_list  Ordered ``(expr, type, ref)`` triples of the
+                         primary manifest.
+    @return  ``(filename, theorem triple, method known)`` per expected
+             chapter, in chapter order.
+    """
+    expected: List[Tuple[str, Tuple[str, str, str], bool]] = []
+    index = 0
+    for triple in theorem_list:
+        method = triple[1].lower()
+        suffixes = _CHAPTER_SUFFIXES.get(method)
+        if suffixes is None:
+            safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
+            expected.append((f"{index}_unknown_{safe}.txt", triple, False))
+            index += 1
+            continue
+        for suffix in suffixes:
+            expected.append((f"{index}_{suffix}.txt", triple, True))
+            index += 1
+    return expected
+
+
+def check_chapter_coverage(chapter_files: List[str],
+                           theorem_list: List[Tuple[str, str, str]],
+                           state: "VerifierState") -> None:
+    """@brief Record whether the chapter files prove exactly the manifest.
+
+    @details
+    One ``chapter coverage`` check per expected chapter
+    (``expected_chapter_files``): it passes when the file is present
+    and the theorem's proof method is known. One failing check per
+    present chapter file the manifest does not call for. A missing
+    chapter therefore fails verification instead of leaving its
+    theorem unproved, and a stray or misnumbered chapter cannot stand
+    in for the expected one.
+
+    @param chapter_files  Chapter filenames present in the primary
+                          directory.
+    @param theorem_list   Ordered triples of the primary manifest
+                          (never the sibling lists of
+                          ``--include-globals``, whose chapters live
+                          elsewhere).
+    @param state          Verifier state; the ``chapter coverage``
+                          counter is updated.
+    """
+    expected = expected_chapter_files(theorem_list)
+    present = set(chapter_files)
+    expected_names = {name for name, _, _ in expected}
+    counter = state.counter_for("chapter coverage")
+    for name, _triple, known in expected:
+        counter.record(known and name in present)
+    for name in chapter_files:
+        if name not in expected_names:
+            counter.record(False)
+
 
 def build_chapter_theorem_map(
     chapter_files: List[str],
@@ -456,14 +541,16 @@ def build_chapter_theorem_map(
     """@brief Assign every chapter file to the theorem it proves.
 
     @details
-    Walks ``theorem_list`` and ``chapter_files`` in lockstep,
-    consuming chapter files in declaration order:
+    Every present chapter whose filename is the one the manifest calls
+    for (``expected_chapter_files``) maps to its theorem. The mapping
+    is by exact filename, so a missing, stray or misnumbered chapter
+    never shifts the assignment of the chapters after it:
 
-    - **Non-induction theorems** consume exactly ONE chapter file
-      (``direct_proof.txt`` /
+    - **Non-induction theorems** own exactly ONE chapter file
+      (``single_chapter_proof.txt`` /
       ``reformulated_statement.txt`` / ``or_theorem.txt`` /
-      ``back_reformulated_statement.txt``).
-    - **Induction theorems** consume exactly THREE chapter files, in
+      ``back_reformulated_statement.txt`` / ...).
+    - **Induction theorems** own exactly THREE chapter files, in
       this order:
         1. ``<i>_induction_typing.txt`` — proves
            ``(in[ind_var, N])``, the typing gate the prover requires
@@ -479,60 +566,19 @@ def build_chapter_theorem_map(
     Returns ``chapter_filename → (theorem_expr, theorem_type,
     theorem_ref)``. Each induction theorem maps all THREE of its
     chapter files to the same triple, so per-chapter context lookup
-    in ``verify_chapter`` is a simple dict lookup.
+    in ``verify_chapter`` is a simple dict lookup. Whether every
+    expected chapter is present, and every present chapter expected,
+    is ``check_chapter_coverage``'s verdict.
 
-    **Structural invariant.** Each induction row must have exactly
-    three consecutive chapter files at the expected filename
-    suffixes. Violation raises ``AssertionError`` — the verifier's
-    "airtight or it fails loudly" stance (I-19: asserts are
-    first-class).
-
-    @param chapter_files  Sorted list of chapter filenames (per
-                          ``chapter_sort_key`` ordering).
-    @param theorem_list   Ordered theorem list from
-                          ``load_global_theorem_list``.
-    @return  Map filename → ``(expr, type, ref)`` covering every
-             consumed chapter. A short tail of unmatched chapter
-             files (filenames beyond what the theorem list consumes)
-             is silently dropped — they may exist in a partial
-             pipeline run.
-
-    @invariant I-19 — induction-triple structure asserted, not
-    softened. Misaligned filenames crash early rather than confusing
-    downstream checkers.
+    @param chapter_files  Chapter filenames present in the directory.
+    @param theorem_list   Ordered triples of the primary manifest.
+    @return  Map filename → ``(expr, type, ref)`` for every present
+             expected chapter.
     """
-    mapping: Dict[str, Tuple[str, str, str]] = {}
-    ci = 0
-    for thm_expr, thm_type, thm_ref in theorem_list:
-        if ci >= len(chapter_files):
-            break
-        if thm_type == "induction":
-            # Structural invariant: three consecutive chapters at the right
-            # suffixes, in the order typing → check_zero → check_induction_condition.
-            assert ci + 2 < len(chapter_files), (
-                f"induction theorem {thm_expr!r} missing three chapters "
-                f"(available: {chapter_files[ci:ci+3]})"
-            )
-            assert chapter_files[ci].endswith("_induction_typing.txt"), (
-                f"induction chapter at index {ci} must be *_induction_typing.txt, "
-                f"got {chapter_files[ci]!r}"
-            )
-            assert chapter_files[ci + 1].endswith("_check_zero.txt"), (
-                f"induction chapter at index {ci + 1} must be *_check_zero.txt, "
-                f"got {chapter_files[ci + 1]!r}"
-            )
-            assert chapter_files[ci + 2].endswith("_check_induction_condition.txt"), (
-                f"induction chapter at index {ci + 2} must be "
-                f"*_check_induction_condition.txt, got {chapter_files[ci + 2]!r}"
-            )
-            mapping[chapter_files[ci]]     = (thm_expr, thm_type, thm_ref)
-            mapping[chapter_files[ci + 1]] = (thm_expr, thm_type, thm_ref)
-            mapping[chapter_files[ci + 2]] = (thm_expr, thm_type, thm_ref)
-            ci += 3
-        else:
-            mapping[chapter_files[ci]] = (thm_expr, thm_type, thm_ref)
-            ci += 1
-    return mapping
+    present = set(chapter_files)
+    return {name: triple
+            for name, triple, _known in expected_chapter_files(theorem_list)
+            if name in present}
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +650,7 @@ def disintegrate_implication_head(expr: str) -> str:
       partial state, which downstream checkers reject as
       structurally wrong).
 
-    Used by ``check_theorem_goal_reached`` for ``direct_proof`` /
+    Used by ``check_theorem_goal_reached`` for ``single_chapter_proof`` /
     ``check_zero`` / ``check_induction_condition`` chapter types to
     extract the proof's target from the theorem; used by
     ``check_validity_name`` to extract the head of an
@@ -1980,7 +2026,7 @@ def check_theorem_goal_reached(
       namespace ``"main"``, rest length ≥ 2. Stub-accepted with
       True (the OR theorem's structural witness is the existence
       theorem already proved upstream).
-    - ``direct_proof`` / ``check_zero`` /
+    - ``single_chapter_proof`` / ``check_zero`` /
       ``check_induction_condition``: first row's namespace must be
       ``"main"`` AND its expression must equal the innermost head
       of the theorem (via ``disintegrate_implication_head``).
@@ -2060,10 +2106,10 @@ def check_theorem_goal_reached(
             return False
         return first.expression == thm_expr
 
-    # direct proof, check_zero, check_induction_condition — plus the
+    # single-chapter proof, check_zero, check_induction_condition — plus the
     # proved-not-broadcast tier, whose chapter is an ordinary direct walk:
     # extract head from theorem, compare with first line
-    if chapter_type in ("direct_proof", "check_zero", "check_induction_condition",
+    if chapter_type in ("single_chapter_proof", "check_zero", "check_induction_condition",
                         "proved_not_broadcast"):
         if first.namespace != "main":
             return False
@@ -2835,8 +2881,12 @@ def _check_existence_disintegration(line: ProofLine,
     1. **Sibling count.** The expanded existence origin may emit
        one or two disintegration rows; more than two is invalid (an
        existence has exactly two children: left + right). The
-       function collects siblings (same tag, namespace, and origin)
-       and rejects if the count is 0 or >2.
+       function collects siblings (same tag, the PRODUCT's namespace
+       ``line.namespace``, and the same compound at the same compound
+       scope) and rejects if the count is 0 or >2. The product scope
+       may be a strict descendant of the compound scope (the
+       ``check_disintegration`` namespace rule), so siblings are
+       gathered at the product's scope, not the compound's.
 
     2. **Compound parses.** ``_parse_existence_expansion(compound)``
        must yield a valid ``(bound_vars, left, right)`` triple. The
@@ -2883,7 +2933,7 @@ def _check_existence_disintegration(line: ProofLine,
     siblings = [
         ch_line for ch_line in chapter
         if (ch_line.tag == 'disintegration'
-            and ch_line.namespace == compound_ns
+            and ch_line.namespace == line.namespace
             and len(ch_line.rest) >= 2
             and ch_line.rest[0] == compound
             and ch_line.rest[1] == compound_ns)
@@ -3047,6 +3097,11 @@ def _try_expand(binary_entry: dict, right_expr: str,
     # changeable argument at its (single) premise. Additive: the
     # full-implication form above remains the primary acceptance path.
     if cat == 'implication' and binaries is not None and len(elements) >= 2:
+        from proof_export.or_introduction import match_or_introduction
+        from proof_export.mpl import parse_mpl
+        for registry in binaries:
+            if match_or_introduction(parse_mpl(left_expr), parse_mpl(right_expr), registry) is not None:
+                return True
         norm_left = _normalize_with_unchangeables(left_expr, unch)
         for premise_elem in elements[:-1]:
             intro_disjuncts = _or_disjuncts_from_compiled(
@@ -3133,6 +3188,65 @@ def _build_implication_fullbind(premises: List[str], head: str,
     return result
 
 
+def _counterexample_children(compact: str, compound: str,
+                             entry: dict) -> Optional[List[str]]:
+    """@brief Check a one-witness negative implication and return its children.
+
+    @details Reconstruct the entire quantified chain with one shared witness,
+    keeping every free argument literal. Zero/multiple binders, changed signs,
+    changed parameter relationships and malformed expansions are rejected.
+    Returning None is the checker's defined invalid-proof verdict.
+    @param compact Negated implication instance cited by the expansion.
+    @param compound Recorded negated universal with its concrete witness binder.
+    @param entry Compiled implication definition.
+    @return Ordered premises and negated head, or None for an invalid proof.
+    @invariant No child is independently alpha-renamed; witness sharing is exact.
+    """
+    if not compact.startswith('!(') or entry.get('category') != 'implication':
+        return None
+    elements = entry.get('elements', [])
+    sig_args = _extract_args(entry.get('signature', ''))
+    actual_args = _extract_args(compact)
+    locals_ = {a for element in elements for a in _extract_args(element)
+               if not a.startswith('u_')}
+    if len(elements) < 2 or len(sig_args) != len(actual_args) or len(locals_) != 1:
+        return None
+    binders = [a for group in re.findall(r'\(>\[([^\]]*)\]', compound)
+               for a in group.split(',') if a]
+    if len(binders) != 1 or binders[0] in actual_args:
+        return None
+    subst = dict(zip(sig_args, actual_args))
+    subst[next(iter(locals_))] = binders[0]
+    instantiated = [_replace_arg_safe_multi(e, subst) for e in elements]
+    expected = '!' + _build_implication_fullbind(
+        instantiated[:-1], instantiated[-1], set(actual_args))
+    if compound != expected:
+        return None
+    return [*instantiated[:-1], _negate_expr(instantiated[-1])]
+
+
+def _negated_or_children(compact: str, entry: dict) -> Optional[List[str]]:
+    """@brief Validate and instantiate the conjuncts of a negated OR compact.
+
+    @details Every disjunct is negated with double-negation cancellation.
+    Free arguments retain their positions and repetitions; no witness is bound.
+    None is the checker's defined verdict for an inapplicable or invalid source.
+    @param compact Negative compact application cited by the expansion.
+    @param entry Compiled OR definition.
+    @return Ordered negated disjuncts, or None for a source outside this rule.
+    """
+    if not compact.startswith('!(') or entry.get('category') != 'or':
+        return None
+    signature = _extract_args(entry.get('signature', ''))
+    arguments = _extract_args(compact)
+    elements = entry.get('elements', [])
+    if len(signature) != len(arguments) or len(elements) < 2:
+        return None
+    substitution = dict(zip(signature, arguments))
+    return [_negate_expr(_replace_arg_safe_multi(element, substitution))
+            for element in elements]
+
+
 def check_expansion(line: ProofLine, chapter: List[ProofLine],
                     state: VerifierState) -> bool:
     """@brief Verify an ``expansion`` row expands a compact to a compound shape.
@@ -3152,9 +3266,11 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
     3. **Origin presence.** The compact (``rest[0]``) must appear as
        a left-side expression somewhere in the chapter — proves the
        compact was derived/cited before being expanded.
-    4. **Negated-existence special case.** If ``rest[0]`` starts
-       with ``!``, the inner expression must be an existence-category
-       compact. Build the two FullBind implications
+    4. **Negated compounds.** A negative OR expands into the conjunction
+       of literal complemented disjuncts. A one-witness negative implication
+       reconstructs its whole quantified chain. A negative conjunction
+       reconstructs its negated body. For a negative existence, build the
+       two FullBind implications
        ``(left → !right)`` and ``(right → !left)`` and accept if
        ``line.expression`` matches either (modulo normalize-with-
        unchangeables). A ``line.expression`` that is itself a compact
@@ -3173,6 +3289,28 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
     if len(line.rest) < 2:
         return False
 
+    from proof_export.conjunction_refutation import (
+        build_conjunction_refutation_plan, is_conjunction_refutation_expansion)
+    from proof_export.contraposition import validate_auxiliary_scopes
+    from proof_export.mpl import parse_mpl
+    if (len(line.rest) % 2 == 0 and line.expression.startswith('(>[')
+            and line.rest[0].startswith('(')):
+        try:
+            target = parse_mpl(line.expression)
+            sources = [parse_mpl(line.rest[index]) for index in range(0, len(line.rest), 2)]
+        except (AssertionError, ValueError):
+            return False
+        for binary in state.binaries_for_chapter():
+            if not is_conjunction_refutation_expansion(target, sources, binary):
+                continue
+            try:
+                validate_auxiliary_scopes(line.namespace, line.rest[1::2])
+                build_conjunction_refutation_plan(target, sources, binary)
+                return all(any(row.expression == expression and row.namespace == scope for row in chapter)
+                           for expression, scope in zip(line.rest[::2], line.rest[1::2]))
+            except (AssertionError, KeyError, ValueError):
+                return False
+
     right_expr = line.rest[0]
     right_ns = line.rest[1]
 
@@ -3188,6 +3326,13 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
     if right_expr.startswith('!'):
         inner_expr = right_expr[1:]  # strip leading !
         core = _extract_core_name(inner_expr)
+        for binary in state.binaries_for_chapter():
+            children = _negated_or_children(right_expr, binary.get(core, {}))
+            if children is not None and line.expression == _build_and_from_elements(children):
+                return True
+            if core in binary and _counterexample_children(
+                    right_expr, line.expression, binary[core]) is not None:
+                return True
         for binary in state.binaries_for_chapter():
             if core not in binary:
                 continue
@@ -3233,9 +3378,9 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
         # --- Negated-AND De-Morgan expansion: !(name[args]) whose entry is
         # category 'and'. The producer (the prover's negated-AND De-Morgan
         # door) emits the negation of the substituted definition body —
-        # '!(&' + the conjuncts verbatim, each at its own polarity + ')' —
-        # which is byte-identical to the De Morgan or-form over the negated
-        # conjuncts. Compare modulo the usual normalization with the
+        # a left-nested binary conjunction, preserving each conjunct's polarity.
+        # Its negation is the De Morgan or-form over the complemented leaves.
+        # Compare modulo the usual normalization with the
         # instance args unchangeable.
         for binary in state.binaries_for_chapter():
             if core not in binary:
@@ -3250,7 +3395,9 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
             subst = dict(zip(sig_args, actual_args))
             elements = [_replace_arg_safe_multi(e, subst)
                         for e in entry['elements']]
-            expected = '!(&' + ''.join(elements) + ')'
+            if len(elements) < 2:
+                continue
+            expected = '!' + _build_and_from_elements(elements)
             unch = set(actual_args)
             if (_normalize_with_unchangeables(line.expression, unch)
                     == _normalize_with_unchangeables(expected, unch)):
@@ -3375,17 +3522,30 @@ def check_disintegration(line: ProofLine, chapter: List[ProofLine],
       structure plus compound shape).
     - ``"or"``: dispatch to ``_check_or_disintegration_implication``
       (mutual-exclusion sub-implication shape).
+    - Negative ``"or"``: require the exact complemented conjunction and
+      literal projected member. Negative ``"implication"``: validate one
+      shared witness across the entire expansion and its projected children.
 
     Other categories (no expansion rule) → reject.
 
     **Algorithm.**
 
     1. ``len(rest) >= 2`` required.
-    2. Namespace match: ``line.namespace == rest[1]``.
+    2. Namespace rule: the compound's scope ``rest[1]`` is
+       ``line.namespace`` itself OR a strict ``_boundary_``-aware
+       ancestor of it (``_ns_matches_or_strict_prefix(rest[1],
+       line.namespace)``). A compound valid at an ancestor scope holds
+       at every descendant, and instantiating it there — a conjunct
+       of an ``and``, an ``existence`` with a witness fresh in the
+       sub-scope — is ordinary elimination; the producer is the
+       ancestor-park release (a product parked at ``main`` and
+       demanded only inside an or branch registers in the branch
+       with its ``main`` provenance copied). A sibling or descendant
+       compound scope is rejected.
     3. Locate the matching ``expansion`` row in the chapter whose
        LEFT side is ``rest[0]`` and whose right scope equals
-       ``rest[1]``. From it, read the compact (``rest[0]`` of the
-       expansion).
+       ``rest[1]`` (the compound's own scope). From it, read the
+       compact (``rest[0]`` of the expansion).
     4. Iterate binaries for the chapter; for each that defines the
        compact's core, dispatch on category as above.
 
@@ -3393,6 +3553,10 @@ def check_disintegration(line: ProofLine, chapter: List[ProofLine],
     @param chapter  All chapter rows (for expansion lookup).
     @param state    Global state (for binary lookup).
     @return  True iff the disintegration is structurally valid.
+
+    @invariant D-33 / D-58 — the ancestor-scope widening shape shared
+    with ``check_equality1`` and ``check_implication``
+    (``D-341``, I-16-consented 2026-08-26).
     """
     if len(line.rest) < 2:
         return False
@@ -3400,7 +3564,7 @@ def check_disintegration(line: ProofLine, chapter: List[ProofLine],
     compound = line.rest[0]
     compound_ns = line.rest[1]
 
-    if line.namespace != compound_ns:
+    if not _ns_matches_or_strict_prefix(compound_ns, line.namespace):
         return False
 
     # Find expansion line where compound is left side
@@ -3454,6 +3618,21 @@ def check_disintegration(line: ProofLine, chapter: List[ProofLine],
                     if neg_core not in binary:
                         continue
                     entry = binary[neg_core]
+                    children = _negated_or_children(compact, entry)
+                    if (children is not None
+                            and compound == _build_and_from_elements(children)
+                            and line.expression in children):
+                        return True
+                    if entry.get('category') == 'implication':
+                        children = _counterexample_children(compact, compound, entry)
+                        if children is not None:
+                            siblings = [row.expression for row in chapter
+                                        if row.tag == 'disintegration'
+                                        and row.namespace == line.namespace
+                                        and row.rest[:2] == [compound, compound_ns]]
+                            if (line.expression in children
+                                    and all(child in children for child in siblings)):
+                                return True
                     if entry.get('category') != 'and':
                         continue
                     sig_args = _extract_args(entry.get('signature', ''))
@@ -3660,7 +3839,7 @@ def check_task_formulation(line: ProofLine, chapter: List[ProofLine],
     use freely at scope ``"main"``. The verifier disintegrates the
     chapter's theorem and checks membership.
 
-    **Direct-proof case.** ``line.expression`` must appear in the
+    **Ordinary-premise case.** ``line.expression`` must appear in the
     disintegrated theorem's premise list.
 
     **Contradiction-proof case.** When the theorem's head starts
@@ -3763,6 +3942,83 @@ def _ns_matches_or_strict_prefix(src_ns: str, tgt_ns: str) -> bool:
     return tgt_ns.startswith(src_ns + "_boundary_")
 
 
+_SIMPLE_ATOM_RE = re.compile(r"(!?)\((=|\w+)\[([^\[\]()]*)\]\)")
+
+
+def _simple_atom(expr: str) -> Optional[Tuple[bool, str, List[str]]]:
+    """@brief Parse an atom, a negated atom, an equality or a negated equality.
+
+    @details
+    Recognises exactly the shapes ``(op[a1,...,an])`` and
+    ``!(op[a1,...,an])``, where ``op`` is a word-character operator
+    name or ``=`` and no argument contains a bracket or a parenthesis.
+    Every other shape -- implications, conjunctions, nested terms --
+    is not a simple atom. The equality-family checkers build on this
+    parse so that the operator and the polarity of an expression are
+    compared exactly: ``_extract_core_name`` returns ``""`` for every
+    negation, equality and implication alike and cannot tell them apart.
+
+    @param expr  An MPL expression.
+    @return  ``(negated, operator, args)`` for a simple atom (empty
+             argument strings dropped, as ``_extract_args`` does);
+             ``None`` for every other shape. Both outcomes are part of
+             the contract.
+    """
+    m = _SIMPLE_ATOM_RE.fullmatch(expr)
+    if m is None:
+        return None
+    return m.group(1) == "!", m.group(2), [a for a in m.group(3).split(",") if a]
+
+
+def _equality_args(expr: str, negated: bool = False) -> Optional[Tuple[str, str]]:
+    """@brief Return the two sides of exactly ``(=[a,b])`` (or ``!(=[a,b])``).
+
+    @details
+    An expression is equality evidence only when it parses as a simple
+    atom with operator ``=``, exactly two arguments and the requested
+    polarity. Inequalities, other binary relations and compound
+    expressions are not, whatever their first argument group holds.
+
+    @param expr     An MPL expression.
+    @param negated  ``False`` for a positive equality, ``True`` for a
+                    negated equality.
+    @return  ``(a, b)`` when ``expr`` is that equality; ``None``
+             otherwise. Both outcomes are part of the contract.
+    """
+    atom = _simple_atom(expr)
+    if atom is None or atom[0] != negated or atom[1] != "=" or len(atom[2]) != 2:
+        return None
+    return atom[2][0], atom[2][1]
+
+
+def check_zoom_in(line: ProofLine, chapter: List[ProofLine],
+                  state: VerifierState) -> bool:
+    """@brief Verify exact expression inheritance from a strict ancestor scope.
+
+    @details A zoom in row has one dependency: the identical expression at a
+    strict ancestor validity. The exact source pair must have its own chapter
+    row; an expression-only lookup would incorrectly let the child justify
+    itself. Ordinary origin-chain and definition-set checks still apply.
+
+    @param line Result expression at the child scope and its sole source pair.
+    @param chapter Rows containing the source derivation at its recorded scope.
+    @param state Verifier state; no mutable state is consulted by this checker.
+    @return True only for an unchanged expression with a real strict-ancestor source.
+    @invariant Same-scope, sibling, descendant, and missing source pairs are rejected.
+    """
+    if len(line.rest) != 2:
+        return False
+    source_expression, source_scope = line.rest
+    if source_expression != line.expression or source_scope == line.namespace:
+        return False
+    if not _ns_matches_or_strict_prefix(source_scope, line.namespace):
+        return False
+    return any(
+        row.expression == source_expression and row.namespace == source_scope
+        for row in chapter
+    )
+
+
 def check_equality1(line: ProofLine, chapter: List[ProofLine],
                     state: VerifierState) -> bool:
     """@brief Verify an ``equality1`` row substitutes args via equalities.
@@ -3792,12 +4048,16 @@ def check_equality1(line: ProofLine, chapter: List[ProofLine],
 
     **Structural rule.**
 
-    - ``rest`` must have at least 4 entries (source + 1 equality
-      with their scopes).
-    - Each equality's expression must have arity 2 to contribute to
-      the substitution set (arity-1 or larger equalities are
-      silently ignored).
-    - Source and result must share core name and argument count.
+    - ``rest`` holds the source and at least one equality, each with
+      its scope: an even length of at least 4.
+    - Every cited equality is exactly a positive equality
+      ``(=[a,b])`` (``_equality_args``); an inequality, another
+      binary relation or a compound expression is no substitution
+      evidence and rejects the row.
+    - Source and result are simple atoms (``_simple_atom``: an atom,
+      a negated atom, an equality or a negated equality) with the
+      same polarity, the same operator and the same number of
+      arguments.
     - For each position where source/result args differ, the pair
       ``(source_arg, result_arg)`` must appear in the cited equality
       set.
@@ -3811,39 +4071,36 @@ def check_equality1(line: ProofLine, chapter: List[ProofLine],
     @invariant D-33 — cross-scope deposit rule.
     """
     # rest layout: source, ns, eq1, ns, [eq2, ns, ...]
-    if len(line.rest) < 4:
+    if len(line.rest) < 4 or len(line.rest) % 2:
         return False
 
     source_expr, source_ns = line.rest[0], line.rest[1]
     if not _ns_matches_or_strict_prefix(source_ns, line.namespace):
         return False
 
-    # Collect equalities
+    # Collect the cited equalities; each must be a positive equality.
     eq_set: set = set()
-    i = 2
-    while i + 1 < len(line.rest):
+    for i in range(2, len(line.rest), 2):
         eq_expr, eq_ns = line.rest[i], line.rest[i + 1]
         if not _ns_matches_or_strict_prefix(eq_ns, line.namespace):
             return False
-        ea = _extract_args(eq_expr)
-        if len(ea) == 2:
-            eq_set.add((ea[0], ea[1]))
-        i += 2
+        pair = _equality_args(eq_expr)
+        if pair is None:
+            return False
+        eq_set.add(pair)
 
-    # Same core and arity
-    result_core = _extract_core_name(line.expression)
-    source_core = _extract_core_name(source_expr)
-    result_args = _extract_args(line.expression)
-    source_args = _extract_args(source_expr)
-
-    if result_core != source_core or len(result_args) != len(source_args):
+    # Same polarity, operator and arity.
+    result = _simple_atom(line.expression)
+    source = _simple_atom(source_expr)
+    if result is None or source is None:
+        return False
+    if result[0] != source[0] or result[1] != source[1] or len(result[2]) != len(source[2]):
         return False
 
     # Each differing position must be covered by an equality (source→result)
-    for ra, sa in zip(result_args, source_args):
-        if ra != sa:
-            if (sa, ra) not in eq_set:
-                return False
+    for ra, sa in zip(result[2], source[2]):
+        if ra != sa and (sa, ra) not in eq_set:
+            return False
 
     return True
 
@@ -3872,8 +4129,9 @@ def check_equality2(line: ProofLine, chapter: List[ProofLine],
 
     **Structural rule.**
 
-    - ``rest`` must have at least 4 entries.
-    - Result, eq1, and eq2 all have arity 2.
+    - ``rest`` holds exactly the two equalities with their scopes.
+    - Result, eq1 and eq2 are all exactly positive equalities
+      ``(=[x,y])`` (``_equality_args``).
     - Result's first arg == eq1's first arg.
     - Result's second arg == eq2's second arg.
     - eq1's second arg == eq2's first arg (the transitivity link).
@@ -3884,7 +4142,7 @@ def check_equality2(line: ProofLine, chapter: List[ProofLine],
     @return  True iff the row is a valid transitive composition of
              the two cited equalities at admissible scopes.
     """
-    if len(line.rest) < 4:
+    if len(line.rest) != 4:
         return False
 
     eq1_expr, eq1_ns = line.rest[0], line.rest[1]
@@ -3895,11 +4153,11 @@ def check_equality2(line: ProofLine, chapter: List[ProofLine],
     if not _ns_matches_or_strict_prefix(eq2_ns, line.namespace):
         return False
 
-    result_args = _extract_args(line.expression)
-    eq1_args = _extract_args(eq1_expr)
-    eq2_args = _extract_args(eq2_expr)
+    result_args = _equality_args(line.expression)
+    eq1_args = _equality_args(eq1_expr)
+    eq2_args = _equality_args(eq2_expr)
 
-    if len(result_args) != 2 or len(eq1_args) != 2 or len(eq2_args) != 2:
+    if result_args is None or eq1_args is None or eq2_args is None:
         return False
 
     # (=[a,c]) from (=[a,b]) and (=[b,c])
@@ -3927,7 +4185,9 @@ def check_symmetry_of_equality(line: ProofLine, chapter: List[ProofLine],
     Unlike ``check_equality1`` / ``check_equality2``, this checker
     requires EXACT namespace match between source and result — no
     ancestor widening. The prover emits this row form when mirroring
-    a negated equality inside ``addStatement``.
+    a negated equality inside ``addStatement``. Both expressions must
+    be exactly positive equalities (``_equality_args``): an
+    inequality or another binary relation is rejected.
 
     @param line     The symmetry row.
     @param chapter  Sibling rows (unused).
@@ -3938,17 +4198,17 @@ def check_symmetry_of_equality(line: ProofLine, chapter: List[ProofLine],
     @see check_symmetry_of_inequality — sibling that handles
     ``!(=[a,b]) ← !(=[b,a])`` (negated equalities).
     """
-    if len(line.rest) < 2:
+    if len(line.rest) != 2:
         return False
 
     source_expr, source_ns = line.rest[0], line.rest[1]
     if line.namespace != source_ns:
         return False
 
-    result_args = _extract_args(line.expression)
-    source_args = _extract_args(source_expr)
+    result_args = _equality_args(line.expression)
+    source_args = _equality_args(source_expr)
 
-    if len(result_args) != 2 or len(source_args) != 2:
+    if result_args is None or source_args is None:
         return False
 
     return result_args[0] == source_args[1] and result_args[1] == source_args[0]
@@ -3975,8 +4235,9 @@ def check_symmetry_of_inequality(line: ProofLine, chapter: List[ProofLine],
         rest[0]          = !(=[b,a])
         rest[1]          = source scope (must equal line.namespace)
 
-    Both result and source must start with ``!(=[`` and have arity 2.
-    Same exact-namespace rule as ``check_symmetry_of_equality``.
+    Both result and source must be exactly negated equalities
+    ``!(=[x,y])`` (``_equality_args`` with ``negated=True``). Same
+    exact-namespace rule as ``check_symmetry_of_equality``.
 
     @param line     The symmetry-of-inequality row.
     @param chapter  Sibling rows (unused).
@@ -3986,7 +4247,7 @@ def check_symmetry_of_inequality(line: ProofLine, chapter: List[ProofLine],
 
     @see check_symmetry_of_equality — positive sibling.
     """
-    if len(line.rest) < 2:
+    if len(line.rest) != 2:
         return False
 
     source_expr, source_ns = line.rest[0], line.rest[1]
@@ -3994,16 +4255,10 @@ def check_symmetry_of_inequality(line: ProofLine, chapter: List[ProofLine],
         return False
 
     # Both result and source must be negated equalities `!(=[a,b])`.
-    if not line.expression.startswith("!(=[") or not source_expr.startswith("!(=["):
-        return False
+    result_args = _equality_args(line.expression, negated=True)
+    source_args = _equality_args(source_expr, negated=True)
 
-    result_inner = line.expression[1:]  # drop leading '!'
-    source_inner = source_expr[1:]
-
-    result_args = _extract_args(result_inner)
-    source_args = _extract_args(source_inner)
-
-    if len(result_args) != 2 or len(source_args) != 2:
+    if result_args is None or source_args is None:
         return False
 
     return result_args[0] == source_args[1] and result_args[1] == source_args[0]
@@ -4403,6 +4658,88 @@ def _reformulation_implication_to_existence(expr: str) -> Optional[Tuple[str, st
 
 
 
+# Membership operators of the subset implications that integrate a set- or
+# relation-typed ``=`` goal: the number of element positions before the set
+# position (I-267).
+_EXTENSIONALITY_MEMBERSHIP = {'in': 1, 'in2': 2, 'in3': 3}
+
+
+def _extensionality_membership(entry: dict) -> Optional[str]:
+    """@brief The membership operator of a subset-implication binary entry.
+
+    @details
+    A subset implication is the compiled implication
+    ``E[u_1,u_2] := (>[b..](op[b..,u_1])(op[b..,u_2]))`` with ``op`` one of
+    ``in`` / ``in2`` / ``in3``: the same bound variables — distinct, none of
+    them a formal — fill the element positions of premise and head, and the
+    set position holds ``u_1`` in the premise and ``u_2`` in the head. It
+    states "``u_1`` is a subset of ``u_2``". Two of them, one per direction,
+    integrate a set- or relation-typed ``=`` goal (extensionality,
+    I-267).
+
+    @param entry  A binary entry (``{category, signature, elements}``).
+    @return  ``'in'`` / ``'in2'`` / ``'in3'`` when ``entry`` is a subset
+             implication, ``None`` otherwise.
+    """
+    if entry.get('category') != 'implication':
+        return None
+    if _extract_args(entry.get('signature', '')) != ['u_1', 'u_2']:
+        return None
+    elements = entry.get('elements') or []
+    if len(elements) != 2:
+        return None
+    premise, head = elements
+    op = _extract_core_name(premise)
+    if op not in _EXTENSIONALITY_MEMBERSHIP or _extract_core_name(head) != op:
+        return None
+    width = _EXTENSIONALITY_MEMBERSHIP[op]
+    premise_args = _extract_args(premise)
+    head_args = _extract_args(head)
+    if len(premise_args) != width + 1 or len(head_args) != width + 1:
+        return None
+    bound = premise_args[:width]
+    if (bound != head_args[:width] or len(set(bound)) != width
+            or any(arg.startswith('u_') for arg in bound)):
+        return None
+    if premise_args[width] != 'u_1' or head_args[width] != 'u_2':
+        return None
+    return op
+
+
+def _typed_equality_entry(expansion: str, binaries) -> Optional[dict]:
+    """@brief The extensionality entry of ``=`` that an integration expansion names.
+
+    @details
+    A set- or relation-typed ``(=[A,B])`` goal integrates through its two
+    subsets: its expansion is ``(&(E[A,B])(E[B,A]))`` with ``E`` a subset
+    implication (``_extensionality_membership``). The expansion names ``E``;
+    the returned entry is the ``and`` entity the prover integrates,
+    ``(=[u_1,u_2]) := (&(E[u_1,u_2])(E[u_2,u_1]))``, in the shape
+    ``_try_expand`` and the ``and`` reformulation check read. Whether the
+    membership fits the type of ``A`` and ``B`` is the D-41 check's concern.
+
+    @param expansion  The expansion text, integration-goal postfix stripped.
+    @param binaries   The chapter's binaries.
+    @return  The entry, or ``None`` when the expansion is no such pair.
+    """
+    if not expansion.startswith('(&'):
+        return None
+    elements = _flatten_and(expansion)
+    if len(elements) != 2:
+        return None
+    core = _extract_core_name(elements[0])
+    if not core or _extract_core_name(elements[1]) != core:
+        return None
+    for binary in binaries:
+        if core in binary and _extensionality_membership(binary[core]) is not None:
+            return {
+                'category': 'and',
+                'signature': '(=[u_1,u_2])',
+                'elements': [f'({core}[u_1,u_2])', f'({core}[u_2,u_1])'],
+            }
+    return None
+
+
 def _reformulation_integration_preamble(line: ProofLine,
                                         chapter: List[ProofLine],
                                         state: VerifierState):
@@ -4428,7 +4765,9 @@ def _reformulation_integration_preamble(line: ProofLine,
     4. Strip the integration-goal postfix from the expansion's
        ``rest[0]`` to get the compact. Extract its core.
     5. Look up the core in every binary for the chapter; record the
-       first match. Reject if no binary defines the core.
+       first match. A positive ``=`` compact has no binary entry: its
+       entry is the extensionality ``and`` that the expansion names
+       (``_typed_equality_entry``). Reject if neither yields an entry.
     6. Disintegrate ``line.expression`` and check the disintegrated
        head matches the compact (verifies the row claims to expand
        exactly this compact, not some other operator).
@@ -4474,6 +4813,9 @@ def _reformulation_integration_preamble(line: ProofLine,
         if core in binary:
             entry = binary[core]
             break
+    if entry is None and compact.startswith('(=['):
+        entry = _typed_equality_entry(_strip_integration_goal(right_expr),
+                                      state.binaries_for_chapter())
 
     if entry is None:
         return None
@@ -4702,6 +5044,297 @@ def check_reformulation_for_integration_empty(line: ProofLine,
     return _check_reformulation_integration_existence(line, entry, compact)
 
 
+_FLAT_ADHOC_CORE_RE = re.compile(r'^(?:and|existence|implication|or)\d+$')
+_FLAT_TOKEN_RE = re.compile(r'[^\[\],()!]+|[\[\],()!]')
+_FLAT_WITNESS_PREFIX = "__w"
+
+
+def _flat_entry_for(core: str, binaries: List[dict]):
+    """@brief Look up a compiled-definition entry by core name across binaries.
+
+    @details
+    First-match scan over ``binaries`` (the chapter's consultable GL
+    binaries, in ``binaries_for_chapter`` order). The empty core (a
+    negated element, a malformed leaf) never matches.
+
+    @param core      The operator core name (``""`` for no core).
+    @param binaries  The chapter's GL binaries.
+    @return  The entry dict, or ``None`` when no binary defines ``core``.
+    """
+    if not core:
+        return None
+    for binary in binaries:
+        if core in binary:
+            return binary[core]
+    return None
+
+
+def _flat_instantiate(entry: dict, compact: str, fresh) -> Optional[List[str]]:
+    """@brief Instantiate a binary entry's elements for one compact occurrence.
+
+    @details
+    Mirrors ``prepareIntegrationCore``'s per-entity instantiation: every
+    bound placeholder (an element argument that does not start with
+    ``u_``) is renamed to a fresh witness name (one name per distinct
+    placeholder, shared across the entry's elements — the witness of
+    ``(in[1,u_1])`` is the witness of ``(existence3[u_1,1,...])``),
+    then the signature arguments ``u_k`` are substituted with the
+    compact's actual arguments. Two passes, so an actual argument that
+    is itself a digit (an anchor slot ``1``) never collides with the
+    placeholder ``1``.
+
+    @param entry    The binary entry (``signature`` + ``elements``).
+    @param compact  The instantiated compact (``(core[args])``).
+    @param fresh    Zero-argument callable minting a fresh witness name.
+    @return  The instantiated element list, or ``None`` on an arity
+             mismatch between the signature and the compact.
+    """
+    sig_args = _extract_args(entry.get('signature', ''))
+    actual_args = _extract_args(compact)
+    if len(sig_args) != len(actual_args):
+        return None
+    elements = entry.get('elements', [])
+    placeholders: List[str] = []
+    for element in elements:
+        for arg in _extract_args(element):
+            if not arg.startswith('u_') and arg not in placeholders:
+                placeholders.append(arg)
+    witness_map = {p: fresh() for p in placeholders}
+    sig_map = dict(zip(sig_args, actual_args))
+    out = []
+    for element in elements:
+        renamed = _replace_arg_safe_multi(element, witness_map)
+        out.append(_replace_arg_safe_multi(renamed, sig_map))
+    return out
+
+
+def _flat_unfold_variants(compact: str, entry: dict,
+                          binaries: List[dict]) -> List[List[str]]:
+    """@brief Enumerate every intact/extended premise list of a compact's
+    definition tree — the verifier twin of ``emitFlatIntegrationVariants``.
+
+    @details
+    The root is always dissolved into its instantiated elements. Each
+    element is then classified exactly as the prover classifies it:
+
+    - no binary entry (an atomic operator, a negated element) or an
+      entry of category other than ``existence`` / ``and``
+      (``implication``, ``or``): a LEAF, kept verbatim;
+    - an ``existence`` / ``and`` entry whose core is an ad-hoc product
+      (``and<N>`` / ``existence<N>``): always DISSOLVED into its
+      instantiated elements — never a choice;
+    - an ``existence`` / ``and`` entry of a user-defined (config)
+      compound: a CHOICE — INTACT (the element as a premise) or
+      EXTENDED (its instantiated elements, which are classified again).
+
+    Every combination is enumerated (nested choices exist only under an
+    extended parent; sibling choices cross-multiply). Instantiation is
+    memoised per compact occurrence so a compound reached twice shares
+    one witness set, as the prover's one-entity-per-signature table
+    does (I-186). A cyclic definition graph is impossible for compiled
+    definitions; a depth beyond the element budget raises.
+
+    @param compact   The root compact (``(core[args])``).
+    @param entry     Its binary entry (category ``existence`` / ``and``).
+    @param binaries  The chapter's GL binaries.
+    @return  The list of premise lists, in enumeration order (intact
+             before extended at every choice); empty when the root's
+             arity does not match its entry.
+    """
+    counter = [0]
+
+    def fresh() -> str:
+        counter[0] += 1
+        return f"{_FLAT_WITNESS_PREFIX}{counter[0]}"
+
+    instantiated: Dict[str, Optional[List[str]]] = {}
+
+    def children_of(element: str, element_entry: dict) -> Optional[List[str]]:
+        if element not in instantiated:
+            instantiated[element] = _flat_instantiate(element_entry, element, fresh)
+        return instantiated[element]
+
+    results: List[List[str]] = []
+
+    def rec(work: List[str], acc: List[str], depth: int) -> None:
+        if depth > 4096:
+            raise RuntimeError("flat unfolding: definition graph too deep")
+        if not work:
+            results.append(list(acc))
+            return
+        element, rest = work[0], work[1:]
+        core = '' if element.startswith('!') else _extract_core_name(element)
+        element_entry = _flat_entry_for(core, binaries)
+        container = (element_entry is not None
+                     and element_entry.get('category') in ('existence', 'and'))
+        if not container:
+            acc.append(element)
+            rec(rest, acc, depth + 1)
+            acc.pop()
+            return
+        children = children_of(element, element_entry)
+        if children is None:
+            return
+        if _FLAT_ADHOC_CORE_RE.match(core):
+            rec(children + rest, acc, depth + 1)
+            return
+        acc.append(element)
+        rec(rest, acc, depth + 1)
+        acc.pop()
+        rec(children + rest, acc, depth + 1)
+
+    root_children = children_of(compact, entry)
+    if root_children is None:
+        return []
+    rec(root_children, [], 0)
+    return results
+
+
+def _flat_match_premises(expected: List[str], actual: List[str],
+                         binders: set) -> bool:
+    """@brief Match an expected leaf list against a row's premises modulo
+    witness renaming.
+
+    @details
+    Looks for a bijection from the expected list's fresh witness names
+    onto ``binders`` (the row's bound variables) under which the two
+    lists are equal as multisets. Elements compare token by token
+    (operator names, brackets, commas, negation, argument names); a
+    fresh witness token unifies with a binder-token only, consistently
+    and injectively. Backtracking over the premise assignment; the lists
+    are short (a handful of premises), so exhaustive search is cheap.
+    Every binder must be used — the I-4 form binds exactly the
+    witnesses, so an unused binder is a malformed row.
+
+    @param expected  Leaves from ``_flat_unfold_variants`` (fresh
+                     witness names).
+    @param actual    The row's premises (``disintegrate_implication_full``).
+    @param binders   The row's bound-variable names.
+    @return  ``True`` iff such a bijection exists.
+    """
+    if len(expected) != len(actual):
+        return False
+    expected_tokens = [_FLAT_TOKEN_RE.findall(e) for e in expected]
+    actual_tokens = [_FLAT_TOKEN_RE.findall(a) for a in actual]
+
+    def unify(te: List[str], ta: List[str], mapping: Dict[str, str]):
+        if len(te) != len(ta):
+            return None
+        m = dict(mapping)
+        for x, y in zip(te, ta):
+            if x.startswith(_FLAT_WITNESS_PREFIX):
+                if x in m:
+                    if m[x] != y:
+                        return None
+                else:
+                    if y not in binders or y in m.values():
+                        return None
+                    m[x] = y
+            elif x != y:
+                return None
+        return m
+
+    used = [False] * len(actual)
+
+    def backtrack(i: int, mapping: Dict[str, str]) -> bool:
+        if i == len(expected):
+            return set(mapping.values()) == binders
+        for j in range(len(actual)):
+            if used[j]:
+                continue
+            m = unify(expected_tokens[i], actual_tokens[j], mapping)
+            if m is None:
+                continue
+            used[j] = True
+            if backtrack(i + 1, m):
+                return True
+            used[j] = False
+        return False
+
+    return backtrack(0, {})
+
+
+def check_reformulation_for_integration_flattened(line: ProofLine,
+                                                  chapter: List[ProofLine],
+                                                  state: VerifierState) -> bool:
+    """@brief Verify a ``reformulation for integration flattened`` row.
+
+    @details
+    A flat integration-rule variant: the compact's definition tree
+    unfolded through several levels in one implication (the prover's
+    ``emitFlatIntegrationVariants``, the Case B addon of
+    ``prepareIntegrationCore2``). Unlike the three one-level
+    ``reformulation for integration`` tags there is no
+    ``expansion for integration`` row to pair with — the row cites the
+    compact directly.
+
+    **Algorithm.**
+
+    1. ``len(rest) >= 2`` required; ``line.namespace == rest[1]``.
+    2. ``rest[0]`` must carry the ``_integration_goal`` postfix; strip
+       it to get the compact. Its core must have a binary entry of
+       category ``existence`` or ``and``.
+    3. ``disintegrate_implication_full(line.expression)``: the head
+       must equal the compact; at least one premise.
+    4. Collect the row's bound variables from every ``(>[...]`` list.
+    5. Enumerate the compact's intact/extended unfoldings
+       (``_flat_unfold_variants``); drop the one-level list (that is
+       Case B's own rule, never emitted under this tag); accept iff
+       some remaining variant matches the premises modulo witness
+       renaming (``_flat_match_premises``).
+
+    @param line     The row.
+    @param chapter  All chapter rows (unused — the compact is a forward
+                    reference, like ``expansion for integration``'s).
+    @param state    Reads ``binaries_for_chapter``.
+    @return  True iff the row is a genuine flat variant of its compact.
+
+    @see check_reformulation_for_integration_bound — the one-level
+    existence sibling; _flat_unfold_variants — the prover-twin
+    enumeration.
+    """
+    if len(line.rest) < 2:
+        return False
+    if line.namespace != line.rest[1]:
+        return False
+    if not line.rest[0].endswith(_INTEGRATION_GOAL_SUFFIX):
+        return False
+    compact = _strip_integration_goal(line.rest[0])
+
+    binaries = state.binaries_for_chapter()
+    entry = _flat_entry_for(_extract_core_name(compact), binaries)
+    if entry is None or entry.get('category') not in ('existence', 'and'):
+        return False
+
+    premises, head = disintegrate_implication_full(line.expression)
+    if head != compact or not premises:
+        return False
+
+    binders = set()
+    for group in re.findall(r'\(>\[([^\]]*)\]', line.expression):
+        for name in group.split(','):
+            if name:
+                binders.add(name)
+
+    variants = _flat_unfold_variants(compact, entry, binaries)
+    if not variants:
+        return False
+    counter = [0]
+
+    def fresh() -> str:
+        counter[0] += 1
+        return f"{_FLAT_WITNESS_PREFIX}{counter[0]}"
+
+    one_level = _flat_instantiate(entry, compact, fresh)
+    for variant in variants:
+        if one_level is not None and len(variant) == len(one_level) \
+                and sorted(variant) == sorted(one_level):
+            continue
+        if _flat_match_premises(variant, premises, binders):
+            return True
+    return False
+
+
 def check_expansion_for_integration(line: ProofLine,
                                     chapter: List[ProofLine],
                                     state: VerifierState) -> bool:
@@ -4727,7 +5360,11 @@ def check_expansion_for_integration(line: ProofLine,
        ``line.expression`` and ``rest[0]``.
     4. Extract the right side's core; iterate every binary; for OR,
        recursively decode the ordered atomic leaves, then delegate to
-       ``_try_expand``.
+       ``_try_expand``. A positive ``=`` right side (a set- or
+       relation-typed equality goal) instead expands through the
+       extensionality entry its left side names
+       (``_typed_equality_entry``): ``(&(E[A,B])(E[B,A]))`` with ``E`` a
+       subset implication.
 
     @param line     The row.
     @param chapter  Sibling rows (unused for origin presence —
@@ -4750,6 +5387,14 @@ def check_expansion_for_integration(line: ProofLine,
     # Strip _integration_goal postfix for structural checks
     left_clean = _strip_integration_goal(line.expression)
     right_clean = _strip_integration_goal(right_expr)
+
+    # A set- or relation-typed `=` goal expands to its two subsets
+    # (I-267).
+    if right_clean.startswith('(=['):
+        entry = _typed_equality_entry(left_clean, state.binaries_for_chapter())
+        return entry is not None and _try_expand(
+            entry, right_clean, left_clean,
+            binaries=state.binaries_for_chapter())
 
     core = _extract_core_name(right_clean)
 
@@ -5973,6 +6618,10 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
     """@brief Verify an ``or convergence`` row promotes per-branch conclusions to parent.
 
     @details
+    Equality-supported rows cite actual case facts and positive equalities.
+    The shared plan checks each case separately and every cited pair must exist.
+    The exact layout below remains the legacy contract.
+
     When every branch of an OR case-split has independently derived
     the same conclusion ``C``, the convergence row promotes ``C`` to
     the OR's parent scope. This checker enforces the producer-side
@@ -6048,6 +6697,17 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
     if disjuncts is None or len(disjuncts) < 2:
         return False
     k = len(disjuncts)
+    from proof_export.mpl import parse_mpl
+    from proof_export.or_convergence import match_equality_convergence
+    branch_prefix = parent_ns + "_boundary_ordis_" + or_expr + "_("
+    plan = None
+    if _extract_args(line.expression):
+        plan = match_equality_convergence(parse_mpl(line.expression), parent_ns,
+            [(parse_mpl(disjunct), branch_prefix + disjunct + ")") for disjunct in disjuncts],
+            [(parse_mpl(line.rest[i]), line.rest[i+1]) for i in range(2, len(line.rest), 2)])
+    if plan is not None:
+        return all(any(row.expression == line.rest[i] and row.namespace == line.rest[i+1]
+                       for row in chapter) for i in range(2, len(line.rest), 2))
     if len(line.rest) != 2 + 2 * k:
         return False
 
@@ -6451,11 +7111,89 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
     return True
 
 
-def check_vacuous_truth(line: ProofLine, chapter: List[ProofLine],
-                        state: VerifierState) -> bool:
-    """@brief Verify a ``vacuous truth`` row records a self-contradictory induction step.
+def check_scoped_vacuous_truth(line: ProofLine, chapter: List[ProofLine],
+                               state: VerifierState) -> bool:
+    """@brief Verify contradiction elimination for an implication subproof.
 
     @details
+    The result is the exact head of a checked implication expansion at the
+    ordinary child scope. The opposing facts must be visible there, with at
+    least one at that exact scope. Their recorded dependency graph must reach
+    a premise of this same integration expansion. The caller's ordinary
+    origin and tag checks still validate every referenced derivation.
+
+    @param line Scoped vacuous-truth result with exactly two dependencies.
+    @param chapter Proof rows containing its checked expansion and premises.
+    @param state Definition registry for the enclosing chapter.
+    @return True exactly when the scoped contradiction proves this goal.
+    @invariant Descendant-only and sibling contradictions cannot close a goal.
+    @see check_vacuous_truth; check_expansion_for_integration.
+    """
+    if line.namespace == "main" or len(line.rest) != 4:
+        return False
+    cut = line.namespace.rfind("_boundary_")
+    if cut < 0:
+        return False
+    parent = line.namespace[:cut]
+    payload = line.namespace[cut + len("_boundary_"):]
+    split = _split_subproof_payload(payload)
+    compact = split[1] if split is not None else payload
+    entry = _flat_entry_for(_extract_core_name(compact),
+                            state.binaries_for_chapter())
+    if entry is None or entry.get("category") != "implication":
+        return False
+    left, left_scope, right, right_scope = line.rest
+    if not (right == "!" + left or left == "!" + right):
+        return False
+    if line.namespace not in (left_scope, right_scope):
+        return False
+    if any(not (scope == line.namespace
+                or line.namespace.startswith(scope + "_boundary_"))
+           for scope in (left_scope, right_scope)):
+        return False
+    expansions = []
+    for row in chapter:
+        if (row.tag == "expansion for integration"
+                and row.namespace == parent and len(row.rest) >= 2
+                and _strip_integration_goal(row.rest[0]) == compact
+                and _strip_integration_goal(row.expression).startswith("(>[")
+                and disintegrate_implication_head(
+                    _strip_integration_goal(row.expression)) == line.expression
+                and check_expansion_for_integration(row, chapter, state)):
+            expansions.append(row.expression)
+    if not expansions:
+        return False
+    rows_by_key = {}
+    for row in chapter:
+        rows_by_key.setdefault((row.expression, row.namespace), []).append(row)
+    pending = [(left, left_scope), (right, right_scope)]
+    if any(key not in rows_by_key for key in pending):
+        return False
+    visited = set()
+    while pending:
+        key = pending.pop()
+        if key in visited:
+            continue
+        visited.add(key)
+        for row in rows_by_key.get(key, ()):
+            if (row.tag == "premise element" and row.namespace == line.namespace
+                    and row.rest and row.rest[0] in expansions
+                    and check_premise_element(row, chapter, state)):
+                return True
+            if len(row.rest) % 2 == 0:
+                pending.extend(zip(row.rest[::2], row.rest[1::2]))
+    return False
+
+
+def check_vacuous_truth(line: ProofLine, chapter: List[ProofLine],
+                        state: VerifierState) -> bool:
+    """@brief Verify induction or scoped implication contradiction elimination.
+
+    @details
+    Ordinary implication subproofs use exactly four rest fields and are
+    validated by ``check_scoped_vacuous_truth``. The existing induction
+    form below is unchanged.
+
     In an induction step, if both ``expr`` and ``negate(expr)`` are
     derived as statements, the step's premises are self-contradictory
     and any conclusion follows vacuously. The vacuous-truth row
@@ -6474,7 +7212,8 @@ def check_vacuous_truth(line: ProofLine, chapter: List[ProofLine],
         rest[4]          = lb_exprKey
         rest[5]          = "main"
 
-    **This checker validates format + negation shape only.** Specifically:
+    **For the main-scope induction form, this checker validates format and
+    negation shape.** Specifically:
 
     1. ``line.namespace == "main"``.
     2. ``len(rest) >= 6``.
@@ -6489,17 +7228,16 @@ def check_vacuous_truth(line: ProofLine, chapter: List[ProofLine],
     ``contradiction trace``.
 
     @param line     The vacuous-truth row.
-    @param chapter  Sibling rows (unused by this checker; the
-                    trace meta-check is run separately).
-    @param state    Global state (unused).
-    @return  True iff the format and negation shape are valid.
+    @param chapter  Sibling rows used to validate scoped implication premises.
+    @param state    Definition registry for the enclosing chapter.
+    @return  True iff the applicable scoped or induction contract holds.
 
     @see check_contradiction — closely related shape, but
     contradiction rows are at the root of contradiction LBs where
-    vacuous-truth rows are inside induction steps.
+    main-scope vacuous-truth rows are inside induction steps.
     """
     if line.namespace != "main":
-        return False
+        return check_scoped_vacuous_truth(line, chapter, state)
     if len(line.rest) < 6:
         return False
 
@@ -6553,9 +7291,73 @@ _ORIGIN_EXEMPT_TAGS = frozenset({
 })
 
 
+def check_implication_composition(line: ProofLine, chapter: List[ProofLine],
+                                 state: VerifierState) -> bool:
+    """@brief Verify an ordered producer chain composed with one unary consumer.
+
+    @details The endpoint and intermediate matches determine explicit source
+    substitutions for every producer premise and binder group. Fixed arguments, polarity, repeated variables and the exact
+    joined validity are checked. Normal origin checking still requires both
+    source derivations; composition adds no origin exemption.
+    @param line Claimed composition row.
+    @param chapter Chapter rows used by the independent origin checks.
+    @param state Current verifier environment.
+    @return True exactly for a valid scoped composition.
+    """
+    from proof_export.implication_composition import (
+        build_implication_composition_plan, validate_composition_scopes)
+    from proof_export.mpl import parse_mpl
+    if len(line.rest) != 4:
+        return False
+    try:
+        validate_composition_scopes(line.namespace, line.rest[1], line.rest[3])
+        build_implication_composition_plan(parse_mpl(line.expression),
+                                          parse_mpl(line.rest[0]), parse_mpl(line.rest[2]))
+    except (AssertionError, ValueError):
+        return False
+    return True
+
+
+def check_contraposition_auxiliary(line: ProofLine, chapter: List[ProofLine],
+                                  state: VerifierState) -> bool:
+    """@brief Verify a grouping or contraposition against its exact cited rules.
+    @details Normal origin checks remain mandatory. Binder coverage, repeated
+    ports, fixed parameters, signs, source multiplicity and scopes are checked.
+    @param line Claimed auxiliary derivation.
+    @param chapter Chapter used by independent provenance checks.
+    @param state Current compiled-definition environment.
+    @return True exactly when the derivation satisfies its proof contract.
+    """
+    from proof_export.contraposition import (
+        build_contraposition_plan, build_grouping_plan, validate_auxiliary_scopes)
+    from proof_export.mpl import parse_mpl
+    if not line.rest or len(line.rest) % 2:
+        return False
+    try:
+        validate_auxiliary_scopes(line.namespace, list(line.rest[1::2]))
+        sources = [parse_mpl(value) for value in line.rest[::2]]
+        target = parse_mpl(line.expression)
+        if line.tag == 'contraposition':
+            assert len(sources) == 1
+            build_contraposition_plan(target, sources[0])
+        else:
+            assert line.tag == 'implication grouping'
+            definitions = {}
+            for binary in reversed(state.binaries_for_chapter()):
+                definitions.update(binary)
+            build_grouping_plan(target, sources, definitions)
+    except (AssertionError, ValueError, KeyError):
+        return False
+    return True
+
+
 # Tag name → checker function
 TAG_CHECKERS = {
+    "zoom in":                         check_zoom_in,
     "implication":                      check_implication,
+    "implication composition":          check_implication_composition,
+    "implication grouping":             check_contraposition_auxiliary,
+    "contraposition":                   check_contraposition_auxiliary,
     "expansion":                        check_expansion,
     "compilation":                      check_compilation,
     "disintegration":                   check_disintegration,
@@ -6569,6 +7371,7 @@ TAG_CHECKERS = {
     "reformulation for integration and": check_reformulation_for_integration_and,
     "reformulation for integration >[bound]": check_reformulation_for_integration_bound,
     "reformulation for integration >[]": check_reformulation_for_integration_empty,
+    "reformulation for integration flattened": check_reformulation_for_integration_flattened,
     "expansion for integration":        check_expansion_for_integration,
     "premise element":                  check_premise_element,
     "validity name":                    check_validity_name,
@@ -6650,8 +7453,11 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
        ``counter_for("<unknown:{tag}>")``.
 
     7. **General origin check.** Every dependency (``rest[i]`` at
-       even indices) of every row must be either (a) the LEFT-side
-       expression of some chapter row, (b) carry the
+       even indices, cited at scope ``rest[i+1]``) of every row must
+       be either (a) the LEFT-side expression of a chapter row whose
+       scope is the cited scope or an enclosing one -- an expression
+       derived only inside a nested subproof is not available outside
+       it -- (b) carry the
        ``_integration_goal`` postfix, or (c) belong to a tag in
        ``_ORIGIN_EXEMPT_TAGS``. For implication/multiplied-from/
        reformulated-from rows, ``rest[0]`` is
@@ -6675,7 +7481,7 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
 
     @param chapter_file  Filename (for diagnostics).
     @param lines         Parsed chapter rows.
-    @param chapter_type  Filename-derived type (``direct_proof``,
+    @param chapter_type  Filename-derived type (``single_chapter_proof``,
                          ``check_zero``, …).
     @param state         Global verifier state — mutated in place.
     @param chapter_thm   Chapter's theorem triple or None.
@@ -6832,6 +7638,10 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
     for line in lines:
         if line.tag != "vacuous truth":
             continue
+        if line.namespace != "main":
+            state.counter_for("vacuous truth trace").record(
+                check_scoped_vacuous_truth(line, lines, state))
+            continue
         if len(line.rest) < 6:
             state.counter_for("vacuous truth trace").record(False)
             continue
@@ -6847,22 +7657,38 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
             state.counter_for(f"<unknown:{tag}>").record(False)
 
     # 9. General origin check: every expression referenced as a dependency
-    #    (in rest fields) must appear as a left-side expression (have its
-    #    own derivation line). Exemptions live in the module-scope
-    #    _ORIGIN_EXEMPT_TAGS set (see comment above its definition for the
-    #    per-tag rationale).
-    originated = {line.expression for line in lines}
+    #    (in rest fields) must have its own derivation line at the cited
+    #    scope or at an enclosing scope; a fact derived only inside a nested
+    #    subproof is not available outside it. Exemptions live in the
+    #    module-scope _ORIGIN_EXEMPT_TAGS set (see comment above its
+    #    definition for the per-tag rationale).
+    derived_at: Dict[str, Set[str]] = {}
+    for line in lines:
+        derived_at.setdefault(line.expression, set()).add(line.namespace)
     for line in lines:
         if line.tag in _ORIGIN_EXEMPT_TAGS:
             continue
         for i in range(0, len(line.rest), 2):
             dep = line.rest[i]
-            if dep in originated:
+            dep_ns = line.rest[i + 1] if i + 1 < len(line.rest) else None
+            if dep_ns is not None and any(
+                    _ns_matches_or_strict_prefix(ns, dep_ns)
+                    for ns in derived_at.get(dep, ())):
                 continue
             if dep.endswith("_integration_goal"):
                 continue
-            # rest[0] global theorem check: implication rules and multiplied-from sources
-            if i == 0 and line.tag in ("implication", "multiplied from", "reformulated from"):
+            # Auxiliary sources are rule citations. Registered theorems are
+            # cited at main; local sources still require their own rows.
+            is_registered_rule_citation = (
+                i == 0 and line.tag in ("implication", "multiplied from", "reformulated from")
+            ) or (
+                line.tag == "implication composition" and i in (0, 2)
+                and i + 1 < len(line.rest) and line.rest[i + 1] == "main"
+            ) or (
+                line.tag in ("implication grouping", "contraposition")
+                and i + 1 < len(line.rest) and line.rest[i + 1] == "main"
+            )
+            if is_registered_rule_citation:
                 norm_dep = _normalize_expr_list([dep])
                 # Cross-batch refs may carry alpha-equivalent but textually
                 # distinct bound-var names (e.g. incubator chapter row uses
@@ -6986,15 +7812,17 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
 #  `checkDefinitionConsistency`).
 #
 #  Algorithm: recursive parse of each MPL expression independently,
-#  accumulating per-node `remainingArgsDefs` (a `var → type_label` map).
-#  At quantifier nodes (`>[v1,v2]<L><R>`) the bound variables are
-#  REMOVED from the merged child map, so their names can be reused at
-#  outer scopes without collision. `_merge_maps` is the consistency
-#  check: shared variable names across child sub-trees must have
-#  identical type labels (else mismatch). Each expression in a chapter
-#  row is checked independently — no cross-expression pooling, matching
-#  how the compiler invokes `analyze()` once per expression at compile
-#  time.
+#  recording every leaf's type constraints in one union-find
+#  (`_DefsetGroups`). A bound variable is keyed per quantifier node
+#  (`>[v1,v2]<L><R>`), so its name can be reused at outer or sibling
+#  scopes without collision; a free variable is keyed by its name. An
+#  operator slot fixes its argument's group to the slot's type label,
+#  and `=` joins its two arguments' groups without fixing them
+#  (I-267: `=` is typed by its arguments, `(1)` when
+#  nothing else types them). The consistency check: one group, one
+#  type label (else mismatch). Each expression in a chapter row is
+#  checked independently — no cross-expression pooling, matching how
+#  the compiler invokes `analyze()` once per expression at compile time.
 # ---------------------------------------------------------------------------
 
 # Regex matching a leaf operator-call: `(<head>[<args>])` where the bracket
@@ -7012,148 +7840,207 @@ _LEAF_LABEL_RE = re.compile(r'([\w=]+)\[([^\[\]]*)\]')
 ## @brief Sentinel exception for D-41 per-row defset mismatch.
 #
 # @details
-# Raised by ``_merge_maps`` when two child sub-trees disagree on the
-# type of a shared variable, or by ``_process_leaf`` when the same
-# variable appears at two same-leaf positions with different types.
+# Raised by ``_DefsetGroups`` when one variable group (a variable, or
+# the variables ``=`` joins) receives two different types, including
+# the same variable at two same-leaf positions (``_process_leaf``).
 # Caught by ``check_defset_consistency`` to convert the structural
 # violation into a per-row failure under the
 # ``"definition set consistency"`` counter.
 #
 # @see check_defset_consistency
 class _DefsetMismatch(Exception):
-    """Raised by _merge_maps when two child sub-trees disagree on the type of
-    a shared variable, or by _process_leaf when the same variable appears at
-    two same-leaf positions with different types. Caught by
-    check_defset_consistency to record a per-row failure."""
+    """Raised by _DefsetGroups when one variable group (a variable, or
+    variables `=` joins) receives two different types, including the same
+    variable at two same-leaf positions. Caught by check_defset_consistency
+    to record a per-row failure."""
     pass
 
 
-def _merge_maps(a: Dict[str, str], b: Dict[str, str]) -> Dict[str, str]:
-    """@brief Union two ``var → type_label`` maps; raise on shared-key type clash.
+class _DefsetGroups:
+    """@brief Union-find over scoped variables for the D-41 type check.
 
     @details
-    Python mirror of C++ ``ArgumentAnalyzer::mergeMaps``
-    (``compiler.hpp:1250-1264``). For each key in ``b``:
-
-    - If absent from ``a``: copy into result.
-    - If present in ``a`` with the SAME type: keep one entry.
-    - If present in ``a`` with a DIFFERENT type: raise
-      ``_DefsetMismatch``.
-
-    Used inside ``_parse_subtree`` at every binary/quantifier node
-    to combine left-child and right-child type maps.
-
-    @param a  First type map.
-    @param b  Second type map.
-    @return  Union map.
-    @throws  _DefsetMismatch if any shared key has differing types.
+    Every variable occurrence maps to a key: a free variable to its name, a
+    bound variable to ``(name, binder id)``, so a bound name reused at
+    another binder stays apart (the scoping the former map merge achieved by
+    dropping bound variables at their binder). An operator slot fixes its
+    argument's group to the slot's type label; ``=`` joins its two
+    arguments' groups without fixing them (I-267). Two
+    different labels in one group raise ``_DefsetMismatch``. A group that
+    only ``=`` touches keeps no label: ``=``'s starting point ``(1)``
+    applies to it and cannot conflict.
     """
-    out = dict(a)
-    for k, v in b.items():
-        existing = out.get(k)
+
+    def __init__(self) -> None:
+        """@brief Start with no variables.
+
+        @details Parent links and group labels start empty.
+        """
+        self.parent: Dict[object, object] = {}
+        self.label: Dict[object, str] = {}
+
+    def find(self, key: object) -> object:
+        """@brief The root of ``key``'s group, with path compression.
+
+        @details An unseen key becomes its own group.
+        @param key  A variable key.
+        @return  The root key.
+        """
+        self.parent.setdefault(key, key)
+        root = key
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while self.parent[key] != root:
+            self.parent[key], key = root, self.parent[key]
+        return root
+
+    def fix(self, key: object, label: str) -> None:
+        """@brief Fix ``key``'s group to a type label (an operator slot).
+
+        @details A group carries at most one label.
+        @param key    A variable key.
+        @param label  The slot's type label.
+        @throws  _DefsetMismatch when the group carries another label.
+        """
+        root = self.find(key)
+        existing = self.label.get(root)
         if existing is None:
-            out[k] = v
-        elif existing != v:
+            self.label[root] = label
+        elif existing != label:
             raise _DefsetMismatch
-    return out
+
+    def join(self, left: object, right: object) -> None:
+        """@brief Join two keys' groups (the ``=`` rule).
+
+        @details The joined group keeps the label either side carried.
+        @param left   First variable key.
+        @param right  Second variable key.
+        @throws  _DefsetMismatch when the groups carry different labels.
+        """
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root == right_root:
+            return
+        left_label = self.label.get(left_root)
+        right_label = self.label.get(right_root)
+        if (left_label is not None and right_label is not None
+                and left_label != right_label):
+            raise _DefsetMismatch
+        self.parent[right_root] = left_root
+        if left_label is None and right_label is not None:
+            self.label[left_root] = right_label
+        self.label.pop(right_root, None)
 
 
 def _process_leaf(label: str,
-                  resolved_defsets: Dict[str, Dict[str, str]]) -> Dict[str, str]:
-    """@brief Build a leaf operator-call's ``var → type_label`` map.
+                  scope: Dict[str, object],
+                  groups: _DefsetGroups,
+                  resolved_defsets: Dict[str, Dict[str, str]]) -> None:
+    """@brief Record one leaf operator call's type constraints.
 
     @details
     Python mirror of C++ ``RecursiveParser::processLeaf``
-    (``compiler.hpp:1409-1426``). Parses ``label`` as
-    ``<head>[<args>]``; looks up ``head`` in ``resolved_defsets``;
-    for each position, records the position's type label against
-    the actual arg name.
+    (``compiler.hpp``), extended by the ``=`` rule
+    (I-267). Parses ``label`` as ``<head>[<args>]``:
 
-    **Tightening over the C++ reference.** The C++ silently
-    overwrites on same-arg-twice (last-write-wins). The Python
-    port raises ``_DefsetMismatch`` if the same variable appears at
-    two positions of the SAME leaf with different declared types
-    — this catches expressions like ``(in[v,v])`` where pos 1 is
-    ``(1)`` (anchor slot) and pos 2 is ``P(1)`` (a projection). The
-    tightening is sound under I-29: a single occurrence of ``v``
-    can't have two types simultaneously.
+    - ``=`` joins its two arguments' groups and fixes neither;
+    - any other head found in ``resolved_defsets`` fixes each argument's
+      group to its position's type label;
+    - operators not in ``resolved_defsets`` contribute nothing.
 
-    Operators not in ``resolved_defsets`` return an empty map
-    (unknown operator → no type information contributed).
+    **Tightening over the C++ reference.** The C++ silently overwrites on
+    same-arg-twice (last-write-wins); here the same variable at two
+    positions of one leaf with different labels raises
+    ``_DefsetMismatch`` (``(in[v,v])``: ``(1)`` and ``P(1)``). Sound under
+    I-29: one occurrence cannot carry two types.
 
-    @param label             Leaf label of the form ``<head>[<args>]``
-                             (no outer parens — the surrounding parens
-                             are stripped by ``_parse_subtree``).
+    @param label             Leaf label ``<head>[<args>]`` (the outer
+                             parens are stripped by ``_parse_subtree``).
+    @param scope             Bound variable → key at this position.
+    @param groups            The expression's constraint groups.
     @param resolved_defsets  Map ``operator → position → type_label``.
-    @return  Map ``var → type_label`` for this leaf's arg positions.
-    @throws  _DefsetMismatch on same-var-twice with different types.
+    @throws  _DefsetMismatch on a type clash.
     """
     m = _LEAF_LABEL_RE.match(label)
     if not m:
-        return {}
+        return
     head = m.group(1)
     args = [a for a in m.group(2).split(",") if a]
+    if head == '=':
+        assert len(args) == 2, "`=` takes two arguments"
+        groups.join(scope.get(args[0], args[0]), scope.get(args[1], args[1]))
+        return
     ds = resolved_defsets.get(head)
     if ds is None:
-        return {}
-    out: Dict[str, str] = {}
+        return
     for i, arg in enumerate(args, start=1):
         t = ds.get(str(i))
         if t is None:
             continue
-        existing = out.get(arg)
-        if existing is None:
-            out[arg] = t
-        elif existing != t:
-            raise _DefsetMismatch
-    return out
+        groups.fix(scope.get(arg, arg), t)
 
 
 def _parse_subtree(s: str, idx_box: List[int],
-                   resolved_defsets: Dict[str, Dict[str, str]]) -> Dict[str, str]:
-    """@brief Recursive-descent parser computing the D-41 type map for a subtree.
+                   scope: Dict[str, object],
+                   groups: _DefsetGroups,
+                   binder_count: List[int],
+                   resolved_defsets: Dict[str, Dict[str, str]]) -> None:
+    """@brief Recursive-descent parser recording the D-41 type constraints of a subtree.
 
     @details
     Python mirror of C++ ``RecursiveParser::parseSubtree``
-    (``compiler.hpp:1281-1407``). Walks the expression string from
-    the current cursor position, recognizing six structural shapes:
+    (``compiler.hpp``). Walks the expression string from the current cursor
+    position, recognizing seven structural shapes:
 
-    1. ``(>[bound_list]<left><right>)`` — implication with binder.
-       Recurse on both sub-expressions, merge their type maps,
-       remove the bound vars (scoped local — names can be reused at
-       outer scopes without collision).
-    2. ``(&<left><right>)`` — conjunction. Recurse, merge.
-    3. ``(|<left><right>)`` — disjunction. Recurse, merge.
+    1. ``(>[bound_list]<left><right>)`` — implication with binder. Each
+       bound variable gets a fresh key ``(name, binder id)`` for both
+       sub-expressions (scoped local — the name can be reused at outer or
+       sibling scopes without collision).
+    2. ``(&<left><right>)`` — conjunction. Recurse on both.
+    3. ``(|<left><right>)`` — disjunction. Recurse on both.
     4. ``(<head>[<args>])`` — leaf operator call. Dispatch to
        ``_process_leaf``.
     5. ``!(>[bound_list]<left><right>)`` — negated implication
        (existence shape). Same as case 1.
-    6. ``!(&<left><right>)`` / ``!(|<left><right>)`` — negated
-       binary; same as cases 2-3.
+    6. ``!(&<left><right>)`` / ``!(|<left><right>)`` — negated binary;
+       same as cases 2-3.
     7. ``!(<head>[<args>])`` — negated leaf; dispatch to
        ``_process_leaf``.
 
-    Any other input shape returns ``{}`` (defensive).
+    Any other input shape records nothing (defensive). Every constraint
+    lands in ``groups``, which raises on the first type clash: a free
+    variable carries one type across the whole expression, a bound
+    variable one type inside its binder, and ``=`` joins its two sides
+    (I-267).
 
-    The ``idx_box`` parameter is a single-element list used as a
-    mutable cursor — Python doesn't have C++-style reference
-    semantics for ints, so wrap-in-list is the idiomatic
+    The ``idx_box`` and ``binder_count`` parameters are single-element
+    lists used as mutable cursors — Python doesn't have C++-style
+    reference semantics for ints, so wrap-in-list is the idiomatic
     work-around.
 
     @param s                 The expression string.
     @param idx_box           Mutable cursor (one-element list).
+    @param scope             Bound variable → key at this position.
+    @param groups            The expression's constraint groups.
+    @param binder_count      Mutable binder-id counter (one-element list).
     @param resolved_defsets  Map ``operator → position → type_label``.
-    @return  Type map ``var → type_label`` for this subtree's free
-             variables.
-    @throws  _DefsetMismatch via downstream ``_merge_maps`` /
-             ``_process_leaf`` on type clashes.
+    @throws  _DefsetMismatch via ``_process_leaf`` / ``_DefsetGroups`` on
+             type clashes.
 
     @see check_defset_consistency — primary consumer.
     """
     idx = idx_box[0]
     n = len(s)
     if idx >= n:
-        return {}
+        return
+
+    def binder_scope(bound_vars: List[str]) -> Dict[str, object]:
+        """@brief The scope inside a binder: fresh keys for its variables."""
+        inner = dict(scope)
+        for v in bound_vars:
+            binder_count[0] += 1
+            inner[v] = (v, binder_count[0])
+        return inner
 
     if s[idx] == "(":
         idx += 1
@@ -7166,47 +8053,32 @@ def _parse_subtree(s: str, idx_box: List[int],
             bound_vars = [v for v in bound_str.split(",") if v]
             idx = close + 1
             idx_box[0] = idx
-            left_map = _parse_subtree(s, idx_box, resolved_defsets)
-            right_map = _parse_subtree(s, idx_box, resolved_defsets)
+            inner = binder_scope(bound_vars)
+            _parse_subtree(s, idx_box, inner, groups, binder_count, resolved_defsets)
+            _parse_subtree(s, idx_box, inner, groups, binder_count, resolved_defsets)
             idx = idx_box[0]
-            combined = _merge_maps(left_map, right_map)
-            for v in bound_vars:
-                combined.pop(v, None)
             if idx < n and s[idx] == ")":
                 idx += 1
             idx_box[0] = idx
-            return combined
-        if idx < n and s[idx] == "&":
+            return
+        if idx < n and s[idx] in "&|":
+            # Conjunction / disjunction — no bound vars.
             idx += 1
             idx_box[0] = idx
-            left_map = _parse_subtree(s, idx_box, resolved_defsets)
-            right_map = _parse_subtree(s, idx_box, resolved_defsets)
+            _parse_subtree(s, idx_box, scope, groups, binder_count, resolved_defsets)
+            _parse_subtree(s, idx_box, scope, groups, binder_count, resolved_defsets)
             idx = idx_box[0]
-            combined = _merge_maps(left_map, right_map)
             if idx < n and s[idx] == ")":
                 idx += 1
             idx_box[0] = idx
-            return combined
-        if idx < n and s[idx] == "|":
-            # OR — treated like conjunction for scoping (no bound vars).
-            idx += 1
-            idx_box[0] = idx
-            left_map = _parse_subtree(s, idx_box, resolved_defsets)
-            right_map = _parse_subtree(s, idx_box, resolved_defsets)
-            idx = idx_box[0]
-            combined = _merge_maps(left_map, right_map)
-            if idx < n and s[idx] == ")":
-                idx += 1
-            idx_box[0] = idx
-            return combined
+            return
         # Leaf operator call: (<head>[<args>])
         close = s.find(")", idx)
         assert close != -1, "Missing ')' for leaf"
         label = s[idx:close]
-        idx = close + 1
-        leaf_map = _process_leaf(label, resolved_defsets)
-        idx_box[0] = idx
-        return leaf_map
+        idx_box[0] = close + 1
+        _process_leaf(label, scope, groups, resolved_defsets)
+        return
 
     if idx + 1 < n and s[idx] == "!" and s[idx + 1] == "(":
         idx += 2
@@ -7219,49 +8091,34 @@ def _parse_subtree(s: str, idx_box: List[int],
             bound_vars = [v for v in bound_str.split(",") if v]
             idx = close + 1
             idx_box[0] = idx
-            left_map = _parse_subtree(s, idx_box, resolved_defsets)
-            right_map = _parse_subtree(s, idx_box, resolved_defsets)
+            inner = binder_scope(bound_vars)
+            _parse_subtree(s, idx_box, inner, groups, binder_count, resolved_defsets)
+            _parse_subtree(s, idx_box, inner, groups, binder_count, resolved_defsets)
             idx = idx_box[0]
-            combined = _merge_maps(left_map, right_map)
-            for v in bound_vars:
-                combined.pop(v, None)
             if idx < n and s[idx] == ")":
                 idx += 1
             idx_box[0] = idx
-            return combined
-        if idx < n and s[idx] == "&":
+            return
+        if idx < n and s[idx] in "&|":
             idx += 1
             idx_box[0] = idx
-            left_map = _parse_subtree(s, idx_box, resolved_defsets)
-            right_map = _parse_subtree(s, idx_box, resolved_defsets)
+            _parse_subtree(s, idx_box, scope, groups, binder_count, resolved_defsets)
+            _parse_subtree(s, idx_box, scope, groups, binder_count, resolved_defsets)
             idx = idx_box[0]
-            combined = _merge_maps(left_map, right_map)
             if idx < n and s[idx] == ")":
                 idx += 1
             idx_box[0] = idx
-            return combined
-        if idx < n and s[idx] == "|":
-            idx += 1
-            idx_box[0] = idx
-            left_map = _parse_subtree(s, idx_box, resolved_defsets)
-            right_map = _parse_subtree(s, idx_box, resolved_defsets)
-            idx = idx_box[0]
-            combined = _merge_maps(left_map, right_map)
-            if idx < n and s[idx] == ")":
-                idx += 1
-            idx_box[0] = idx
-            return combined
+            return
         # Negated leaf: !(<head>[<args>])
         close = s.find(")", idx)
         assert close != -1, "Missing ')' for negated leaf"
         label = s[idx:close]
-        idx = close + 1
-        leaf_map = _process_leaf(label, resolved_defsets)
-        idx_box[0] = idx
-        return leaf_map
+        idx_box[0] = close + 1
+        _process_leaf(label, scope, groups, resolved_defsets)
+        return
 
-    # Defensive — unrecognised shape.
-    return {}
+    # Defensive — unrecognised shape records nothing.
+    return
 
 
 def build_resolved_defsets_per_tag(
@@ -7380,9 +8237,11 @@ def _try_derive_from_elements(spec: dict,
     For each element of ``spec.elements``, parse it as a leaf
     operator call ``(<head>[<args>])``, look up ``head`` in
     ``resolved``, and propagate the position types onto the
-    element's actual arg names. Accumulate the resulting
-    ``var → type_label`` map. Finally extract the per-signature-arg
-    types by looking up each signature arg in the accumulated map.
+    element's actual arg names; an ``=`` element joins its two
+    arguments instead (I-267). Accumulate the
+    resulting groups. Finally extract the per-signature-arg types from
+    each signature arg's group; a group only ``=`` touches takes
+    ``=``'s starting point (its configured slot label).
 
     **Failure modes (return None — composite stays unresolved).**
 
@@ -7413,32 +8272,42 @@ def _try_derive_from_elements(spec: dict,
     signature = spec.get("signature", "")
     elements = spec.get("elements") or []
 
-    # Local accumulator: variable name (u_K, integer literal) → type label
-    var_types: Dict[str, str] = {}
-
-    for elem in elements:
-        if not elem:
-            continue
-        m = _LEAF_OP_CALL_RE.search(elem)
-        if not m:
-            continue  # element is not a leaf-call shape; skip
-        head = m.group(1)
-        args_str = m.group(2)
-        args = [a for a in args_str.split(",") if a]
-        inner_ds = resolved.get(head)
-        if inner_ds is None:
-            return None  # inner op not yet resolved; defer
-        for i, arg in enumerate(args, start=1):
-            t = inner_ds.get(str(i))
-            if t is None:
+    # Local groups: variable name (u_K, integer literal) → type label, with
+    # `=` joining its two arguments (I-267).
+    groups = _DefsetGroups()
+    equality_keys: List[str] = []
+    try:
+        for elem in elements:
+            if not elem:
                 continue
-            existing = var_types.get(arg)
-            if existing is not None and existing != t:
-                # Internal contradiction in the producer-emitted spec.
-                # Surface as unresolved (caller will leave it absent from
-                # the output map; the consistency check then skips it).
-                return None
-            var_types[arg] = t
+            m = _LEAF_OP_CALL_RE.search(elem)
+            if not m:
+                continue  # element is not a leaf-call shape; skip
+            head = m.group(1)
+            args_str = m.group(2)
+            args = [a for a in args_str.split(",") if a]
+            if head == '=':
+                assert len(args) == 2, "`=` takes two arguments"
+                groups.join(args[0], args[1])
+                equality_keys.extend(args)
+                continue
+            inner_ds = resolved.get(head)
+            if inner_ds is None:
+                return None  # inner op not yet resolved; defer
+            for i, arg in enumerate(args, start=1):
+                t = inner_ds.get(str(i))
+                if t is None:
+                    continue
+                groups.fix(arg, t)
+    except _DefsetMismatch:
+        # Internal contradiction in the producer-emitted spec. Surface as
+        # unresolved (caller will leave it absent from the output map; the
+        # consistency check then skips it).
+        return None
+
+    # A group only `=` touches takes `=`'s starting point.
+    start_label = (resolved.get('=') or {}).get('1')
+    equality_roots = {groups.find(key) for key in equality_keys}
 
     # Extract signature args (u-prefixed in normal case) and look them up.
     sig_match = _LEAF_OP_CALL_RE.search(signature)
@@ -7447,9 +8316,14 @@ def _try_derive_from_elements(spec: dict,
     sig_args = [a for a in sig_match.group(2).split(",") if a]
     out: Dict[str, str] = {}
     for i, sa in enumerate(sig_args, start=1):
-        t = var_types.get(sa)
-        if t is None:
+        if sa not in groups.parent:
             return None  # signature arg never appeared in elements
+        root = groups.find(sa)
+        t = groups.label.get(root)
+        if t is None:
+            if root not in equality_roots or start_label is None:
+                return None
+            t = start_label
         out[str(i)] = t
     return out
 
@@ -7465,9 +8339,10 @@ def check_defset_consistency(line: ProofLine, state: VerifierState) -> bool:
 
     Each expression in the row (left-hand expression + each
     ``rest[i]`` expression at even indices) is parsed independently
-    with ``_parse_subtree``, which
-    accumulates per-node `remainingArgsDefs` and removes bound variables at
-    `>[…]` quantifiers. `_merge_maps` is the actual mismatch detector — a
+    with ``_parse_subtree``, which records every leaf's type constraints
+    into one ``_DefsetGroups`` per expression, bound variables keyed per
+    binder and ``=`` joining its two sides (I-267).
+    ``_DefsetGroups`` is the actual mismatch detector — a
     `_DefsetMismatch` raised anywhere during parse is caught and returns
     False. Returns True if every expression parses without raising.
 
@@ -7490,7 +8365,7 @@ def check_defset_consistency(line: ProofLine, state: VerifierState) -> bool:
         if not s:
             continue
         try:
-            _parse_subtree(s, [0], resolved)
+            _parse_subtree(s, [0], {}, _DefsetGroups(), [0], resolved)
         except _DefsetMismatch:
             return False
         except (AssertionError, IndexError):
@@ -7523,7 +8398,7 @@ def chapter_sort_key(filename: str) -> Tuple[int, str]:
     (sorted lexicographically among themselves via the ``999999``
     sentinel + base name).
 
-    @param filename  Chapter filename like ``"1209_direct_proof.txt"``.
+    @param filename  Chapter filename like ``"1209_single_chapter_proof.txt"``.
     @return  ``(int_prefix, suffix)`` sort key.
     """
     base = filename.replace(".txt", "")
@@ -7628,6 +8503,7 @@ def collect_theorem_usage_citations(lines: List[ProofLine],
        originated (no chapter row derives that exact expression) in
        the sanctioned citation positions: the ``rest[0]`` rule cell of
        ``implication`` / ``multiplied from`` / ``reformulated from``
+       rows, both main-scope source cells of ``implication composition``
        rows, and any cell of the ``_ORIGIN_EXEMPT_TAGS`` rows (or
        theorem sources, incubator back-reformulation sources,
        compilation antecedents). Locally-originated cells are internal
@@ -7664,7 +8540,11 @@ def collect_theorem_usage_citations(lines: List[ProofLine],
             if dep in originated:
                 continue
             is_rule_cell = (i == 0 and ln.tag in (
-                "implication", "multiplied from", "reformulated from"))
+                "implication", "multiplied from", "reformulated from")) or (
+                ln.tag == "implication composition" and i in (0, 2)
+                and ln.rest[i + 1] == "main") or (
+                ln.tag in ("implication grouping", "contraposition")
+                and ln.rest[i + 1] == "main")
             if not (is_rule_cell or ln.tag in _ORIGIN_EXEMPT_TAGS):
                 continue
             resolved = resolve(dep)
@@ -7796,7 +8676,10 @@ def run_verifier(base_dir: str,
 
     7. **Chapter enumeration.** List ``.txt`` files in ``base_dir``
        (excluding manifest files), sort by ``chapter_sort_key``,
-       map each to its theorem via ``build_chapter_theorem_map``.
+       map each to its theorem via ``build_chapter_theorem_map`` and
+       record ``check_chapter_coverage`` (every expected chapter
+       present, no stray chapter; a missing primary manifest is a
+       failure too).
 
     8. **Verify every chapter.** For each chapter file, parse it
        and call ``verify_chapter``. Each call accumulates counter
@@ -7822,9 +8705,13 @@ def run_verifier(base_dir: str,
     """
     state = VerifierState()
 
-    # Load global theorem list
+    # Load global theorem list. The primary manifest must exist: without it
+    # no chapter can be tied to a theorem, and nothing would be verified.
     state.global_theorems, state.global_theorem_list = \
         load_global_theorem_list(base_dir)
+    primary_theorem_list = list(state.global_theorem_list)
+    if not os.path.isfile(os.path.join(base_dir, "global_theorem_list.txt")):
+        state.counter_for("chapter coverage").record(False)
 
     # Union sibling-batch theorem lists into globals (cross-batch references
     # such as Peano axioms cited from incubator chapters). Local entries take
@@ -7885,9 +8772,11 @@ def run_verifier(base_dir: str,
         key=chapter_sort_key,
     )
 
-    # Build chapter → theorem mapping
+    # Build chapter → theorem mapping, and check that the chapters prove
+    # exactly the primary manifest (sibling lists only add citable theorems).
     chapter_thm_map = build_chapter_theorem_map(
-        chapter_files, state.global_theorem_list)
+        chapter_files, primary_theorem_list)
+    check_chapter_coverage(chapter_files, primary_theorem_list, state)
 
     # Cross-chapter theorem-usage graph, accumulated over the chapter
     # loop and cycle-checked after it (theorem usage termination).
@@ -7930,7 +8819,8 @@ def get_totals(state: VerifierState) -> tuple[int, int]:
     ``"operator registry consistency"``,
     ``"theorem usage termination"``,
     ``"anchor handling trace"``, ``"contradiction trace"``,
-    ``"vacuous truth trace"``). All three groups contribute BOTH success
+    ``"vacuous truth trace"``, ``"chapter coverage"``). All three groups
+    contribute BOTH success
     AND failure counts symmetrically — the headline "M checks" therefore
     counts every actual check performed, regardless of whether it lives
     in TAG_CHECKERS or is a chapter-level meta-counter. ``total_success``
@@ -8018,11 +8908,9 @@ def main():
        missing.
     3. ``run_verifier(base_dir, extra_global_lists=...)``.
     4. ``print_report(state)`` to stdout.
-
-    No explicit return code; the function returns ``None`` and
-    Python exits 0. The verifier intentionally does NOT exit non-
-    zero on failures — the report's headline is the canonical
-    pass/fail signal, parsed by downstream tooling.
+    5. Exit status 1 when the report has a failure, 0 when it is
+       airtight, so a script or CI job can rely on the status as well
+       as on the headline.
 
     @see run_verifier — the workhorse.
     """
@@ -8053,7 +8941,10 @@ def main():
 
     state = run_verifier(args.base_dir, extra_global_lists=args.include_globals)
     print_report(state)
+    _, total_failure = get_totals(state)
+    sys.exit(1 if total_failure else 0)
 
 
 if __name__ == "__main__":
+    require_assertions("verifier.py")
     main()

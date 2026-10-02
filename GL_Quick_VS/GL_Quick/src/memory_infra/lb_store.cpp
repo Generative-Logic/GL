@@ -65,7 +65,7 @@ namespace gl {
         }
         else {
             if (currentBlock_ == nullptr || currentCursor_ >= slotsPerBlock_) {
-                currentBlock_ = manager_->acquireBlock();
+                currentBlock_ = manager_->acquireBlock(PoolPurpose::LbShell);
                 currentCursor_ = 0;
                 blocks_.push_back(currentBlock_);
             }
@@ -125,7 +125,7 @@ namespace gl {
     void LbStore::releaseAll() {
         std::lock_guard<std::mutex> lock(mutex_);
         for (char* block : blocks_) {
-            manager_->releaseBlock(block);
+            manager_->releaseBlock(block, PoolPurpose::LbShell);
         }
         blocks_.clear();
         freeHead_ = nullptr;

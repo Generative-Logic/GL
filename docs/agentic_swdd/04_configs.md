@@ -43,6 +43,7 @@ Current set:
 | File | Purpose |
 |---|---|
 | `ConfigPeano.json` | Main-pipeline Peano batch. |
+| `ConfigFTA.json` | Main FTA batch after Gauss, with supplied conjectures only; the development shortcut uses the same arithmetic configuration and independent output routing. |
 | `ConfigGauss.json` | Main-pipeline Gauss batch. **No longer carries `EnumerationSet2`** — that migrated to the rung-1 incubator config on 2026-04-29 ([D-25](40_decisions.md#d-25)). The file holding it is now `ConfigIncubatorGauss3.json` (was `ConfigIncubatorGauss1.json` before the AI3 anchor split). |
 | `ConfigIncubatorPeano1.json` | Big-batch incubator over the 14-slot `AnchorIncubator8`. Renamed from `ConfigIncubatorPeano.json` to make room for an AI3 sibling. |
 | `ConfigIncubatorPeano2.json` | AI3 mirror of `ConfigIncubatorPeano1.json`. Same expressions and parameters, anchored on the 9-slot `AnchorIncubator3` (i0..i3 only). Cheap pre-rung-1 batch that produces a fact base of AI3-tagged simple facts. |
@@ -59,20 +60,12 @@ Batch anchor tag matches the filename suffix: `Peano` → `AnchorPeano`, `Gauss`
 
 ---
 
-## File-size landscape
+## Configuration scope
 
-Line counts on the current branch:
-
-| File | Lines | Notes |
-|---|---:|---|
-| `ConfigPeano.json` | 184 | Smallest — 8 expression entries. |
-| `ConfigGauss.json` | 1019 | Largest non-incubator — 18 expressions, the conjecturer's `max_values_*` matrices add bulk. |
-| `ConfigIncubatorPeano.json` | 484 | 20 expressions. |
-| `ConfigIncubatorGauss.json` | 428 | 21 expressions. |
-| `ConfigVisu.json` | 290 | 20 expressions — verifier needs every expression that appears anywhere. |
-| `tag_descriptions.json` | 29 | 27 tag entries (flat). |
-
-Lineage: the Gauss config is much bigger than Peano because every expression in it carries per-def-set matrices that don't exist in Peano's simpler setup.
+Peano uses the smallest expression vocabulary. Gauss and the incubator variants
+add mapping matrices and arithmetic operators. FTA has its own vocabulary and
+proof limits but disables conjecture generation; it consumes the supplied
+shortlist after Gauss. Configuration sizes are not part of the contract.
 
 ---
 
@@ -88,6 +81,8 @@ Every `Config<Tag>.json` is a JSON object keyed by:
 - **`prohibited_combinations`** — array-of-arrays listing forbidden co-occurrences of predicates. Optional.
 - **`prohibited_heads`** — array of predicate names that may never be a head. Optional.
 - **`anchor_name`** — override for the implicit anchor derivation from filename. Optional. Read at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp).
+- **`generate_conjectures`** — Boolean, default `true`. The Python batch driver runs the conjecturer when enabled. FTA sets it to `false`.
+- **`external_conjectures_file`** — Optional input path, default empty (no supplied conjectures). Nonblank MPL rows are appended to generated conjectures, or form the entire input when generation is disabled. The latter requires a nonempty file. These rows are goals and never enter the external-theorem premise pool. FTA uses the durable shortlist shared with the development shortcut. Peano uses `files/supplied_conjectures/peano.txt` for the supplied successor-cancellation lemma `s(b)=c; s(d)=e; a+c=e -> a+b=d`, alongside its normal generated conjectures; later batches may use it only after proof and ordinary registration.
 - **`theorems_folder`** — path override (incubator and shortcut configs). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
 - **`background_theorems_folder`** — path override (incubator only). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
 - **`raw_proof_graph_folder`** — path override (incubator and shortcut configs). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
@@ -103,11 +98,11 @@ Every expression's config entry has (some fields are optional):
 | Field | Type | Purpose |
 |---|---|---|
 | `arity` | int | Number of arguments. Must match the MPL `[arg1, arg2,...]` count. |
-| `definition_sets` | object `{index → [type, combinable]}` | Per-argument type label (see [`03_mpl.md`](03_mpl.md#type-label-vocabulary)) + combinable flag. |
+| `definition_sets` | object `{index → [type, combinable]}` | Per-argument type label (see [`03_mpl.md`](03_mpl.md#type-label-vocabulary)) + combinable flag. Exception: `=`'s `(1),(1)` is only the starting point of type inference — `=` takes the type of whatever its arguments are joined with ([I-267](30_invariants.md#i-267)). |
 | `full_mpl` | string | Inline MPL body, OR a filename (must end in `.mpl`) to load from `files/definitions/`. |
 | `short_mpl` | string | Canonical signature in `u_`-form for diagnostic output. |
 | `max_count_per_conjecture` | int | Cap on copies of this predicate in one conjecture. `0` removes the expression from the conjecturer's seed list entirely (`Conjecturer::run` builds `exprList` only from positive-cap entries) — the single participation switch. |
-| `input_args` | array of string | Argument positions that are "inputs" (flow in). Used by `findDigitArgs` + the `operators` set. |
+| `input_args` | array of string | Argument positions that are "inputs" (flow in). Used by `findDigitArgs` (only `(1)`-typed input slots become induction variables) + the `operators` set. |
 | `output_args` | array of string | Argument positions that are "outputs". An expression with non-empty `output_args` is an **operator**; with empty, it's a **relation**. |
 | `max_size_expression_before_existence` | int | Conjecturer size limit when the expression appears *before* an existence-head. |
 | `max_size_expression_after_existence` | int | Conjecturer size limit when it appears *after* an existence-head. |
@@ -146,21 +141,41 @@ Decoded: `in3` takes 4 arguments — positions 1, 2, 3 are `(1)`-typed (elements
 
 ```json
 "fold": {
-    "arity": 6,
-    "definition_sets": { /* 6 slots with type labels */ },
+    "arity": 8,
+    "definition_sets": { /* 8 slots with type labels */ },
     "full_mpl": "fold.mpl",
-    "short_mpl": "(fold[n,m,f,p,N,+])",
+    "short_mpl": "(fold[N,s,+,op,f,n,m,p])",
     ...
 }
 ```
 
-Decoded: 6-ary. `full_mpl = "fold.mpl"` means load the MPL body from [`files/definitions/fold.mpl`](../files/definitions/fold.mpl) — the complex folds-and-accumulates definition. Short form is the readable signature.
+Decoded: 8-ary. `full_mpl = "fold.mpl"` means load the MPL body from [`files/definitions/fold.mpl`](../../files/definitions/fold.mpl) — the complex folds-and-accumulates definition. Short form is the readable signature.
+
+### FTA singleton construction
+
+`ConfigFTA.json` and `ConfigVisu.json` register `EnumerationSet1[a,M]` with types `(1), P(1)` and `EnumerationRelationSet1[a,b,X]` with types `(1), (1), P(x(1)(1))`. Both use their named `.mpl` definition files, combinable argument slots, and empty `input_args` and `output_args`, following the enumeration convention. Their FTA count is one; visualization disables conjecture generation for them with count zero. No existing interval, sequence or Fold signature changes.
+
+The supplied F1 implications construct the interval `[0,0]` and the singleton sequence on that interval through set-definition reformulation. Zero is the actual `AnchorFTA` zero argument, not the textual MPL variable `0`. The last endpoint is zero and the length is one. See the [MPL cookbook](03b_mpl_cookbook.md#set-definition-implications-can-produce-existence-statements) for the exact construction gates and Gauss examples.
+
+### FTA set and sequence extension
+
+`ConfigFTA.json` and `ConfigVisu.json` register `addToSet[M,a,L]` with types `P(1), (1), P(1)` and `appendToSequence[n,a,f,g]` with types `(1), (1), P(x(1)(1)), P(x(1)(1))`. All slots are combinable. The set relation follows `limitSet` with empty input/output lists; the sequence relation follows `limitSequence` with input `n` and no output slot. The defined set/graph argument is determined from the membership equivalence, independently of numeric operator outputs. FTA permits one occurrence; visualization disables conjecture generation for both with count zero.
+
+Their `.mpl` files use direct OR membership definitions. The new index is an explicit natural-number argument, not an implicit length operation. The supplied interval-extension and sequence-extension conjectures bind it through successor and place the new object solely in the final definition premise and conclusion, matching `reformulateTheorem`'s construction gate. No native proof rule or admission gate changes.
+
+### FTA primality
+
+FTA and visualization configure `prime[N,+,*,i1,i2,p]` as a six-argument relation with input `p` and no output slot. [`prime.mpl`](../../files/definitions/prime.mpl) follows the classical definition: `p>=2`, and every natural divisor of `p` equals one or `p`. Additive `preorder[N,+,i2,p]` expresses the lower bound; multiplicative `preorder[N,*,d,p]` expresses divisibility through its existential witness. The two operation parameters have binary-function types; `i1` and `i2` are fixed element parameters. The supplied E2 conjecture projects the lower-bound conjunct.
+
+### FTA nontrivial factors
+
+`nontrivialFactor[N,+,*,i2,n,a]` is a six-argument operator with input `n` and the single output `a`. [`nontrivialFactor.mpl`](../../files/definitions/nontrivialFactor.mpl) binds a natural cofactor `b` and requires the shared product `a*b=n` together with `i2<=a<n` and `i2<=b<n`. Both configurations fix the set, operations and lower-bound parameter; `n` and `a` are combinable element slots. The E6 input quantifies `a` under the premise that `n>=2` is not prime, preserving both factor witnesses and all bounds in one existence statement.
 
 ---
 
 ## `parameters` — conjecturer parameters
 
-Top-level `parameters` object. Read at [`conjecturer.cpp–651`](../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+Top-level `parameters` object. Read by `Conjecturer::loadConfiguration` in [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
@@ -187,7 +202,7 @@ Top-level `parameters` object. Read at [`conjecturer.cpp–651`](../GL_Quick_VS/
 
 ## `prover_parameters` — prover parameters
 
-Top-level `prover_parameters` object. Read at [`prover.cpp–162`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Defaults declared in `struct ProverParameters` at [`parameters.hpp–73`](../GL_Quick_VS/GL_Quick/src/parameters.hpp).
+Top-level `prover_parameters` object. Read by `ExpressionAnalyzer::ExpressionAnalyzer` in [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp). Defaults are declared by `ProverParameters` in [`parameters.hpp`](../../GL_Quick_VS/GL_Quick/src/parameters.hpp).
 
 ### Iteration-budget fields
 
@@ -204,11 +219,13 @@ Top-level `prover_parameters` object. Read at [`prover.cpp–162`](../GL_Quick_V
 | `minNumOperatorsKey` | int | `2` | Minimum operator-count in a hash key (main mode). |
 | `minNumOperatorsKeyCE` | int | `4` | Same, CE mode. |
 | `maxIterationNumberVariable` | int | `1` | The per-batch WITNESS-GENERATION cap, enforced at all three stations of the witness economy ([D-232](40_decisions.md#d-232)): request building (`filterIntEncodedStatements` drops statements whose `it_<N>_lev_...` names exceed it), revival (`revisitRejected2`'s strict-`>` doors), and admission (`isAdmitted`'s per-value depth is stamped from it). With the generation wire ([D-233](40_decisions.md)) a fired head's witnesses mint at max premise iteration + 1, so this bounds the witness-of-witness cascade depth; each increment opens one more totality layer per step. Values (maintainer-directed): `1` in every batch except `ConfigIncubatorGauss3.json` at `2` — the other batches keep their historical request cap (1) as the unified value (measured no-op on their pools: proven counts byte-equal to the pre-unification reference at value 1), while IncubatorGauss3 needs generation-1 admission for rung 1's second-layer sum witnesses and generation 2 for rung 2's deeper `_orint_` descents (rung 2 measured unproved at cap 1 with working admission; the earlier 2/3/5 raises compensated through the wrong parameter while admission stayed at depth 0 — the rung-1 regression). |
+| `maxNumberFilteredStatements` | int | `16384` | Positive count of eligible statement rows retained per filter call, before the stable name sort. Shared by processor request generation, stump production and CUDA. Range `1..65535`, checked against the unsigned 16-bit position-code representation (zero is reserved). Rows beyond the configured prefix are not continued. Independent of the submatch/request limit. See [D-408](40_decisions.md#d-408). |
+| `maxIntegrationDepth` | int | `1` | Maximum ordinary integration-witness depth, default 1 and independent of algebraic generation. One depth is assigned per outer disintegration; the limit gates minting and parking, while structural disintegration continues. Forced witnesses are exempt; replay retains its original assignment. |
 | `standardMaxSecondaryNumber` | int | `1` | Standard admission-path secondary-variable cap. |
 | `inductionMaxAdmissionDepth` | int | `1` | Induction-specific admission depth. |
 | `inductionMaxSecondaryNumber` | int | `2` | Induction-specific secondary-variable cap. |
 | `counterExampleBoundary` | int | `6` | Counter-example boundary. |
-| `minLenLongKey` | int | `5` | Minimum long-key length. |
+| `minLenLongKey` | int | `5` | Minimum premise count for the regular long-key admission exception, only for unanchored products of disintegration (argument-position `u_` prefix). Anchored theorems do not qualify by length. |
 | `maxLenHypoKey` | int | `2` | Maximum hypothesis-key length. |
 | `max_or_depth` | int | `1` | Max nesting depth of OR branch scopes (1 = no nested `_ordis_` scopes). Gates only the per-branch case-split; the K mutual-exclusion implications emit at every depth ([D-211](40_decisions.md#d-211)). |
 | `max_partition_size` | int | `5` | Cap on `multiplyImplication` Bell-partition size. |
@@ -217,16 +234,16 @@ Top-level `prover_parameters` object. Read at [`prover.cpp–162`](../GL_Quick_V
 | `disable_lb_split` | bool | `false` | Diagnostic / RT-profiling flag. When true, `proveKernel` runs every LB unsplit (one phase-2 part) so the per-call `RTTracker` homed in `performElem2` measures the LB's whole hashburst (one `.rt/<chain>.log` per LB). Default false leaves the production parallel path untouched. See [D-110](40_decisions.md#d-110), [I-59](30_invariants.md#i-59). |
 | `lb_split` | bool | `true` | The split master switch: when false, `proveKernel` excludes every LB of the batch from the statistics-driven split ([D-201](40_decisions.md#d-201)) — the gate is `mainPath = lb_split && !disable_lb_split`; `incubator_mode` is no longer consulted. Every production incubator config sets true; the integer straggler trigger still leaves balanced small-LB grids unsplit and fans out only an LB above both fair-share and the setup floor. `ConfigPeano`/`ConfigGauss` omit the key and inherit true. Independent of the diagnostic `disable_lb_split`. See [D-231](40_decisions.md#d-231), [D-328](40_decisions.md#d-328). |
 | `use_gpu` | bool | `false` | Batch-owned Phase 2 execution policy. Absent a command-line override the processor route runs (the product default — a customer PC needs no GPU); a config may pin one batch to CUDA with `true`. `main.py --GPU` passes `--phase2-backend cuda` to every batch of the run, and `--phase2-backend cpu|cuda` remains the explicit oracle override. A CUDA-selected batch uses the same backend for its counterexample filter, and a CUDA route that finds device, driver or runtime missing asserts. See [D-329](40_decisions.md#d-329) and [D-338](40_decisions.md#d-338). |
-| `allow_ssd_deload` | bool | `true` | Batch-owned permission for the steward and extent path to deload LB state, derived at prover construction: CUDA plus SSD deload stays forbidden, so a CUDA batch derives false and runs the resident-only steward, while a processor batch keeps this default and pages; set false to pin a processor batch resident. See [D-330](40_decisions.md#d-330). |
+| `allow_ssd_deload` | bool | `true` | Batch-owned permission for the steward and extent path to deload LB state. Both Phase 2 backends keep it and page (the CUDA route claims each logic block inside its steward windows); counterexample-filter clones always run resident-only; set false to pin a batch resident. See [D-409](40_decisions.md#d-409). |
 | `maxNumberHashRequests` | int | `40000` | **Unused** no-op field. Was the per-part submatch cap that triggered the split; retired when the trigger became statistics-driven and preemptive ([D-201](40_decisions.md#d-201)) — main-path bursts now run to completion. Retained only so existing config files keep parsing. |
 | `fixed_number_splits` | int | `20` | **Unused** no-op field. Was the rule-split escalation target / bucket count; the fan-out is now `logicalCores`. Retained only so existing config files keep parsing. See [D-201](40_decisions.md#d-201). |
 | `second_split_submatch_cap` | int | `10000` | **Unused** no-op field. Was the second cap of the retired two-cap rule→stump escalation. Retained only so existing config files keep parsing. See [D-201](40_decisions.md#d-201). |
 | `split_growth_factor` | int | `2` | **Unused** no-op field (long retired graduated policy). Retained only so existing config files keep parsing. |
 | `max_number_splits` | int | `32` | **Unused** no-op field (long retired graduated policy). Retained only so existing config files keep parsing. |
 | `split_fallback_ratio` | double | `0.10` | **Unused** no-op field. Was the coarsen threshold of the bang-bang cap policy; the trigger is now the statistics pass (`isStraggler`), which de-splits when an LB's total work falls below the fair-share. Retained only so existing config files keep parsing. See [D-201](40_decisions.md#d-201). |
-| `static_pool_bytes` | int64 | | Statification sizing: total bytes of the ONE static-memory reservation made at program start (never freed, never grown). The current 12 GiB cap provides 49152 blocks at `static_block_bytes = 256 KiB`, giving the heavy rung-2 incubator batch resident headroom; the working-set pager still engages whenever a batch's live set exceeds the pool. The historical sequence was 2 GiB → 4 GiB for cold-string floor consumption, then 4 GiB → 8 GiB for added headroom, a user-directed return to 4 GiB ([D-209](40_decisions.md#d-209)), then a raise to 6 GiB to clear the `IncubatorGauss1` static-pool exhaustion and reach the rung-2 `IncubatorGauss3` batch, then 6 GiB → 12 GiB alongside the `NameId` int16→int32 migration ([D-212](40_decisions.md#d-212)), which raised `MAX_NAME_IDS` from 32000 to 1,000,000 and cleared the id-width ceiling that had blocked the `IncubatorGauss3` proof. Must be a whole multiple of `static_block_bytes`; the pair is validated by `isValidStaticMemoryConfig` ([`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp)) and asserted in the `ExpressionAnalyzer` constructor. |
+| `static_pool_bytes` | int64 | | Statification sizing: total bytes of the ONE static-memory reservation made at program start (never freed, never grown). The current 6 GiB cap provides 24576 blocks at `static_block_bytes = 256 KiB`; with SSD deload active on both Phase 2 backends, a batch whose live set exceeds the pool pages through the working-set steward (measured: IncubatorPeano1 and IncubatorGauss1 page, every other batch fits; [D-410](40_decisions.md#d-410)). The historical sequence was 2 GiB → 4 GiB for cold-string floor consumption, then 4 GiB → 8 GiB for added headroom, a user-directed return to 4 GiB ([D-209](40_decisions.md#d-209)), then a raise to 6 GiB to clear the `IncubatorGauss1` static-pool exhaustion and reach the rung-2 `IncubatorGauss3` batch, then 6 GiB → 12 GiB alongside the `NameId` int16→int32 migration ([D-212](40_decisions.md#d-212)), which raised `MAX_NAME_IDS` from 32000 to 1,000,000 and cleared the id-width ceiling that had blocked the `IncubatorGauss3` proof, then 12 GiB → 6 GiB once SSD deload ran under CUDA ([D-410](40_decisions.md#d-410)). Must be a whole multiple of `static_block_bytes`; the pair is validated by `isValidStaticMemoryConfig` ([`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp)) and asserted in the `ExpressionAnalyzer` constructor. |
 | `static_block_bytes` | int32 | `262144` | Statification sizing: bytes per block — the grant unit the global static-memory manager dispenses to each LB's bump arena (`LbArena`). Must be a power of two, so a virtual offset resolves to a physical address by one shift and one mask. |
-| `static_page_bytes` | int32 | `8192` | Statification sizing: bytes per page — the fixed allocation unit each LB's manager carves a granted block into and hands to the paged containers. Must be a power of two and divide `static_block_bytes` evenly; validated by `isValidStaticPageConfig` ([`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp)) and asserted in the `ExpressionAnalyzer` constructor. |
+| `static_page_bytes` | int32 | `2048` | Statification sizing: bytes per page — the fixed allocation unit each LB's manager carves a granted block into and hands to the paged containers. Every small container and hash index holds at least one page, so the page size is the padding floor; 2 KiB (formerly 8 KiB) cut logic-block memory 10-54 % per batch ([D-411](40_decisions.md#d-411)). Must be a power of two and divide `static_block_bytes` evenly; validated by `isValidStaticPageConfig` ([`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp)) and asserted in the `ExpressionAnalyzer` constructor. |
 | `static_persistent_pool_bytes` | int64 | | Statification sizing: total bytes of the SECOND (persistent) static-memory reservation — a pool separate from `static_pool_bytes` that is never deloaded and backs `Memory::intToBeProved` (the determinism fix; see [`20_core_concepts/09_static_memory.md`](20_core_concepts/09_static_memory.md) and [I-95](30_invariants.md#i-95)). Sized by peak simultaneously-active-LB count (each active LB pins ≥1 persistent block for its whole active life, reclaimed only at discharge), not by content volume. Reuses `isValidStaticMemoryConfig` with `static_persistent_block_bytes`; asserted in the `ExpressionAnalyzer` constructor. Exhaustion asserts naming this knob. |
 | `static_persistent_block_bytes` | int32 | `32768` | Statification sizing: bytes per block of the persistent pool — smaller than `static_block_bytes` (the per-LB persistent content is tiny). 32 KiB = 4 × `static_page_bytes`. Must be a power of two and a whole multiple of `static_page_bytes` (the page tier is shared); validated by `isValidStaticMemoryConfig` (pool/block) and `isValidStaticPageConfig` (block/page). |
 | `static_mail_pool_bytes` | int64 | | Statification sizing: total bytes of the THIRD (mail) static-memory reservation — a stand-alone pool separate from both `static_pool_bytes` and `static_persistent_pool_bytes` that is never deloaded and backs the cross-LB pull-model mail log (see [`20_core_concepts/09_static_memory.md`](20_core_concepts/09_static_memory.md) and [`20_core_concepts/03_mail_system.md`](20_core_concepts/03_mail_system.md)). Nothing reads its grant ledger, so it plays no role in any deload/throttle/steward decision. Sized by peak total mail content across a batch (tune by the pool telemetry). Reuses `isValidStaticMemoryConfig` with `static_mail_block_bytes`; asserted in the `ExpressionAnalyzer` constructor. Exhaustion asserts naming this knob. |
@@ -386,15 +403,15 @@ Per the project conventions's "ConfigVisu.json reference":
 - `in2` → output index 1
 - `in3` → output index 2
 - `residual` → output index 2
-- `fold` → output index 6
+- `fold` → output index 7
 - `in` → input indices `[0]`
 - `=` → input indices `[0, 1]`
 - `in2` → input indices `[0]`
 - `in3` → input indices `[0, 1]`
 - `residual` → input indices `[0, 1]`
-- `interval` → input indices `[0, 1]`
-- `fold` → input indices `[0, 1]`
-- `preorder` → input indices `[0, 1]`
+- `interval` → input indices `[2, 3]`
+- `fold` → input indices `[5, 6]` (visualization); `[6]` in proving configurations
+- `preorder` → input indices `[2, 3]`
 
 ---
 
@@ -503,6 +520,13 @@ To add a new expression to an existing config:
 
 ---
 
+### Division-with-remainder input
+
+`ConfigFTA.json` and `ConfigVisu.json` register the six-argument `remainder` predicate defined by `remainder.mpl`: there exist a quotient and product satisfying multiplication, addition and the strict remainder bound. The nested existence uses the positive inner binder required by MPL negation. FTA's supplied-conjecture file includes the D1 existence goal, with generated conjectures still disabled. `sizeAllPermutationsAna` is 8 so its flat integration rules use the existing permutation preparation. Current full-run output paths and captured-input shortcut replay remain unchanged.
+
+Both files also register the six-argument `quotient` predicate defined by `quotient.mpl` — the twin of `remainder` that exposes the quotient `q` (its single output) and binds the remainder `r` and the product `t`; inputs `a, d`, so the induction candidates stay `{a, d}`. Its inner ∃t body compiles to a spontaneous existence of its own (the parameter order differs from `remainder`'s), so registering it replaces no existing entity. FTA's supplied row 68 states quotient uniqueness on it ([D-372](40_decisions.md#d-372)). `output_args` holds at most one position — see the one-output rule in the [MPL cookbook](03b_mpl_cookbook.md).
+
+
 ## Weaknesses
 
 ### Known & tracked
@@ -546,6 +570,12 @@ To add a new expression to an existing config:
 - [`10_pipeline/09_incubator.md`](10_pipeline/09_incubator.md) — incubator config variants.
 - [`20_core_concepts/06_anchors_and_scopes.md`](20_core_concepts/06_anchors_and_scopes.md) — anchor-name override mechanics.
 - — anchor-expansion recipe, including config-sizing cautions.
+
+### Fold generation settings
+
+`fold[N,s,+,op,f,n,m,p]` has separate non-combinable binary-function parameters in slots 3 and 4. Gauss and its Fold-generating incubators restrict both to anchor addition (slot 4); product Fold remains available to explicit expressions. Main Gauss allows four uncombinable binary-function variables before anchor connection and excludes four occurrences of its active binary-function-bearing predicates through `patterns_to_exclude`, preserving the prior three-occurrence budget after adding the extra Fold parameter. Incubator limits stay unchanged. The exclusion lists `in3`, `interval`, `limitSequence`, `fold`, `preorder`, `sequence`, and `limitSet`; registering another generated predicate with that type requires reviewing this list.
+
+The general repetition filter considers only `(1)`-typed slots. Batch `patterns_to_exclude` preserve the previous non-Fold set-parameter scope: Gauss excludes identical set roles within `interval`, `fXY`, and `limitSet`; IncubatorGauss3 excludes an interval equal to its ambient set; IncubatorPeano1/2 exclude identical domain and codomain in generated `fXY` candidates. These are generation restrictions, not restrictions on supplied statements or proof application.
 
 ---
 

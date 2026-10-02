@@ -240,7 +240,7 @@ A non-checker tag tracked by the verifier. Records the per-step chain of `_copy`
 
 ### theorem
 
-A proved `(>[...](premise)(head))` expression. Survives the prover phase and enters `files/theorems/theorems.txt`, then is further pruned by the compressor. Each theorem is emitted into the processed proof graph as one or more chapters (one for direct proof, three for induction, one each for mirrored/reformulated variants).
+A proved `(>[...](premise)(head))` expression. Survives the prover phase and enters `files/theorems/theorems.txt`, then is further pruned by the compressor. Each theorem is emitted into the processed proof graph as one or more chapters (one for a single-chapter proof, three for induction, one each for mirrored/reformulated variants).
 
 ### conjecture
 
@@ -250,9 +250,9 @@ An expression that *looks like* a theorem (same shape) but has not yet been prov
 
 A premise is one entry in the chain; the conclusion is the head. In a multi-premise implication `(>[α](P1)(>[β](P2)(head)))`, there are two premises (`P1`, `P2`) and one head.
 
-### direct proof
+### single-chapter proof
 
-A theorem proved without recourse to induction. Emitted as a single chapter `<N>_direct_proof.txt`. Method label in `global_theorem_list.txt`: `direct`.
+A non-induction theorem whose proof occupies one chapter. Emitted as `<N>_single_chapter_proof.txt`; method label in `global_theorem_list.txt`: `single chapter proof`. The final HTML calls the depiction **Contradiction Proof** when the chapter goal row is tagged `contradiction`, and **Direct Proof** otherwise. A contradiction used only by a later dependency does not change the chapter label.
 
 ### induction proof
 
@@ -293,7 +293,7 @@ A theorem whose head is an `or<N>` node (disjunction). Distinct from [`or branch
 
 The maintainer's standing method for a theorem needing a case split on a bound premise variable that the in-prover cohort machinery cannot open: state the two GUARD VARIANTS (the theorem plus one binder-free innermost guard premise each — e.g. `1≤b` and `b=0`) as ordinary flat pool rows, and DERIVE the unguarded theorem by classical or-elimination at the phase-4 drain seam (`constructOrEliminationInRun`), licensed by a proved or theorem whose two disjuncts are exactly the two guards. The derived row carries method label `or elimination` and a fabricated chapter `<N>_or_elimination.txt` citing both variants plus the licensing or theorem. The full theorem is never a pool conjecture (a pool copy would spin an LB the whole run for nothing); the variants are never subsumed. See [D-289](40_decisions.md#d-289) and the third unfair-advantage shape in `docs/fta_ladder/README.md`.
 
-A degenerate guard variant often has a mathematically redundant premise (13b's `a|b`), so its closure trips the D-278 level gate; such variants land in the **proved-not-broadcast tier** — method label `proved not broadcast`, a real direct-walk chapter, zero circulation (no reformulation, broadcast, or-seeding, compressor participation, or `theorems.txt` row) — and the merge consumes them as variants like any proved row. See [D-290](40_decisions.md#d-290).
+A degenerate guard variant often has a mathematically redundant premise (13b's `a|b`), so its closure trips the D-278 level gate; such variants land in the **proved-not-broadcast tier** — method label `proved not broadcast`, a real single-chapter walk, zero circulation (no reformulation, broadcast, or-seeding, compressor participation, or `theorems.txt` row) — and the merge consumes them as variants like any proved row. See [D-290](40_decisions.md#d-290).
 
 ### or branch proven
 
@@ -411,7 +411,7 @@ if (lvN == memoryBlock.level && !has0)
     allLevelsInvolved = true;
 ```
 
-The primary branch (`lvN == level+1`) requires the derivation to have touched **exactly** every LB from the anchor (level 0) down to the producer (level = `memoryBlock.level`). The alternate branch (`lvN == level`, no level 0) covers derivations that ignore the anchor scope. Since [D-278](40_decisions.md#d-278) the verdict gates ONLY the global registration: goal CLOSURE (goal-row erase, scope wipes, twin retirement, deactivation) is level-free, and the verdict rides the sealed `UpdateGlobalDirectRec` to the post-join drain, which on false runs the lifecycle and refuses `appendGlobalTheorem`. A levels row with even one extra element (e.g. a level the LB has no ancestor for) fails both branches — the goal still closes, but no theorem reaches `globalTheoremList`. The contradiction-twin route seals its own verdict from the colliding pair's level-row union (excluding the twin's own level, the assumed seed's tier). See [G-46](50_gotchas.md#g-46) and the fix in [D-77](40_decisions.md#d-77).
+The primary branch (`lvN == level+1`) requires the derivation to have touched **exactly** every LB from the anchor (level 0) down to the producer (level = `memoryBlock.level`). The alternate branch (`lvN == level`, no level 0) covers derivations that ignore the anchor scope. Since [D-278](40_decisions.md#d-278) the verdict gates ONLY the global registration: goal CLOSURE (goal-row erase, scope wipes, twin retirement, deactivation) is level-free, and the verdict rides the sealed `UpdateGlobalSingleChapterRec` to the post-join drain, which on false runs the lifecycle and refuses `appendGlobalTheorem`. A levels row with even one extra element (e.g. a level the LB has no ancestor for) fails both branches — the goal still closes, but no theorem reaches `globalTheoremList`. The contradiction-twin route seals its own verdict from the colliding pair's level-row union (excluding the twin's own level, the assumed seed's tier). See [G-46](50_gotchas.md#g-46) and the fix in [D-77](40_decisions.md#d-77).
 
 **Invariant for producer-side deposits.** Any mail deposit that ships a rule across LBs (`Mail::statements`, retired `Mail::implications`, or any future replacement) **must** use `std::set<int>` (empty) as the deposited level set. The receiver computes the rule's effective levels from its own scope on installation; the mail-side levels are NEVER additive into the derived-statement union. The tuple channel (deleted on this branch) historically used empty sets at every insert site (`prover.cpp:2149` etc.); the D-76 compact-form drain learned this the hard way. See [I-51](30_invariants.md#i-51).
 
@@ -443,13 +443,21 @@ Secondary admission set in `HashMemory`. Populated at `prover.cpp` via `removeUP
 
 Defined at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Pass B's integration-admission query. Takes Pass B's bare marker form, adds `u_` prefix to every non-marker arg, then looks up `admissionMapIntegration`. On match, unfolds the admission template via `prepareIntegrationCore2`. Returns `true` iff the var was admitted.
 
+### template key (packed admission / rejection key)
+
+The `int64` key every admission and rejection map is indexed by: `packStatementKey(templateId, validityId)` — the marker-form template interned in the dedicated `Memory::templateInterner` (high half) and the scope interned in `Memory::nameMap` (low half). Minted by `mintTemplateKey` at write sites, probed by the non-minting `lookupTemplateKey` ([I-89](30_invariants.md#i-89)). Because the scope is half of the key, a park and a demand meet only at the SAME scope by key match; the ancestor walk of `D-341` re-probes the same template under each strict ancestor of the demand's scope.
+
 ### rejected map (algebra)
 
-`rejectedMap` in `HashMemory`. Integration-side buffer for `it_…` vars that failed Pass B admission. Write via [`updateRejectedMap`](#updaterejectedmap) at `prover.hpp`. Revisit via [`revisitRejected2`](#revisitrejected2) at `prover.cpp` when a new admission key arrives. **Key shape:** bare concrete (matches Pass B's `makeMarkedExpr` output). Revisit path calls `addExprToMemoryBlock` directly — cyclic re-entry guarded by `revisitInProgress`.
+`rejectedMap` in `HashMemory`. Integration-side buffer for `it_…` vars that failed Pass B admission. Write via [`updateRejectedMap`](#updaterejectedmap) at `prover.hpp`. Revisit via [`revisitRejected2`](#revisitrejected2) at `prover.cpp` when a new admission key arrives — at the key's scope (erased) or at a strict ancestor of it (kept, released into the key's scope). **Key shape:** bare concrete (matches Pass B's `makeMarkedExpr` output). Revisit stages the stored cohort on `sameIterationInternalMail`; `revisitInProgress` guards the exact-scope path.
 
 ### `rejectedMapIntegration`
 
 Integration-side counterpart to `rejectedMap` in `HashMemory`. Added in [D-19](40_decisions.md#d-19). Write via `updateRejectedMapIntegration` at `prover.hpp` from Pass B's `int_` branch when admission fails. Value is [`RejectedMapIntegrationValue`](#rejectedmapintegrationvalue). **Key shape:** bare concrete — same as `rejectedMap`. Two revival paths: [`applyEquivalenceClassToRejectedMapIntegration`](#applyequivalenceclasstorejectedmapintegration) (eq-class rewrite) and [`revisitRejectedIntegration2`](#revisitrejectedintegration2) (new-admission-key trigger). Both deposit to `sameIterationInternalMail`, not via direct `addExprToMemoryBlock`. See [I-22](30_invariants.md#i-22): the admission-map entry is **not** erased on revival (asymmetric with algebra).
+
+### `rejectedMapSubproof`
+
+Parked implication subproofs in `HashMemory` ([D-406](40_decisions.md#d-406)). An implication element of an and whose **gate element** — a non-implication element of that and with every argument fixed (atomic, negated or compound) — is not known at the preparing scope or an ancestor does not open its boundary subproof; `openImplicationSubproof` files it here instead (`parkImplicationSubproof`). **Key shape:** the gate element's clean ground text (u_ stripped), normalized through the preparing scope's classes (canonical). **Value:** the `admissionMapIntegration` family (`IntegrationEntry`), in the instruction's own text (never re-canonicalized — the and's integration rule expects that text): entity 0 the implication, entities 1..k its parent ands, `markedGoal` the root goal of a main-level opening. **Revival:** every newly known row (`stageSubproofArrival`) and every scope whose class view changed (`stageSubproofRecheck`) is staged and handled at step 4b by `drainSubproofArrivals`, which first moves parks under changed scopes to their canonical keys (`rekeySubproofPark`); `revisitRejectedSubproof` reopens the records as stored through `openImplicationSubproof`, which parks again under the next unknown gate element. Guard `subproofRevisitInProgress`.
 
 ### `RejectedMapIntegrationValue`
 
@@ -471,7 +479,7 @@ Defined at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Integration-s
 
 ### `revisitRejected2`
 
-Defined at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Algebra-side revival entry point — called after an admission-map insert to re-process rejected entries at that marker key. Snapshots, reconstructs expanded form, deposits body elements via `addExprToMemoryBlock`. Does not consume the admission key ([I-200](30_invariants.md#i-200)). Cyclic (can re-enter via `updateRejectedMap`); guarded by `revisitInProgress`.
+Defined at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Algebra-side revival entry point — called after an admission-map insert to re-process rejected entries at that marker key. Two paths: the exact-scope cohort is snapshotted, erased and mailed on `sameIterationInternalMail` at the key's scope (the `equality1`-door revival; no `addExprToMemoryBlock` call — mail-only since D-19's discipline reached both sides); then every cohort parked at a strict ancestor of the key's scope is released into the key's scope and kept (`releaseAncestorRejected2`, `D-341`). Does not consume the admission key ([I-200](30_invariants.md#i-200)). Cyclic (can re-enter via `updateRejectedMap`); guarded by `revisitInProgress`.
 
 ### `revisitRejectedIntegration2`
 
@@ -510,7 +518,7 @@ Defined at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Inserts admis
 
 ### `reconstructImplication`
 
-Defined at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Rebuilds an implication from a chain + head. Binds **only** variables appearing more than once across chain+head in `>[...]`. Skips `u_`-prefixed variables. Used for theorem-level reconstruction (`addTheoremToMemory`, `updateGlobalDirect`, back-reformulation).
+Defined at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Rebuilds an implication from a chain + head. Binds **only** variables appearing more than once across chain+head in `>[...]`. Skips `u_`-prefixed variables. Used for theorem-level reconstruction (`addTheoremToMemory`, `updateGlobalSingleChapter`, back-reformulation).
 
 ### `reconstructImplicationFullBind`
 
@@ -566,7 +574,7 @@ A scope ID minted when an integration operation opens. Used by the reformulation
 
 ### compilation
 
-Proof tag (added, [D-76](40_decisions.md#d-76)). Records the ASIC-prep step where an implication entering the mail "implications" channel is also compiled to its compact named form and deposited as a `mailOut.statements` expression. Row layout: `<compact (implication<N>[args])> main compilation <original expanded implication> main` — left is the compact form, the single dependency is the original it was compiled from, both at `"main"` (the mail implications channel is main-only, [I-26](30_invariants.md#i-26)). Checker: `check_compilation` — structural, in `_ORIGIN_EXEMPT_TAGS` (the compact↔original link is definitional via the GL binary). Purely additive provenance; does not change which theorems prove.
+Proof tag (added, [D-76](40_decisions.md#d-76)). Records conversion of an expanded implication to its compact named form. Implications travel through `Mail::statements` as compact carriers; the separate implications channel is retired ([I-54](30_invariants.md#i-54)). The row's conclusion is the compact expression and its single dependency is the compiled definition's canonical expanded reconstruction ([I-52](30_invariants.md#i-52)). Outgoing implication statements remain main-scope only ([I-26](30_invariants.md#i-26)). Checker: `check_compilation` — structural, in `_ORIGIN_EXEMPT_TAGS` (the compact-to-expanded link is definitional via the GL binary). Purely additive provenance; does not change which theorems prove.
 
 ### disintegration
 
@@ -596,7 +604,7 @@ The second disintegration pass. Runs after Pass A has populated basic structures
 
 ### integration
 
-The mirror of disintegration: reassembling expressions from their constituents so that a conclusion involving a compound shape can be asserted. Two preparatory tags stage this: `reformulation for integration and` (for `and`-category conclusions), `reformulation for integration >[bound]` (for `existence` conclusions with a non-empty outer bound list), `reformulation for integration >[]` (for `existence` conclusions whose bound list was already stripped).
+The mirror of disintegration: reassembling expressions from their constituents so that a conclusion involving a compound shape can be asserted. Preparatory tags stage this: `reformulation for integration and` (for conjunction conclusions), `reformulation for integration >[bound]` (for existence conclusions with a non-empty outer bound list), `reformulation for integration >[]` (for existence conclusions whose bound list was already stripped), and `reformulation for integration flattened` (additional root rules joining a permitted multi-level definition unfolding in one firing).
 
 ### expansion for integration
 
@@ -640,7 +648,7 @@ Proof by contradiction: under an assumption of the opposite of the conclusion, d
 
 ### vacuous truth
 
-The premise chain leading to an implication is shown to be self-contradictory; the implication head is then trivially valid. Currently confined to scope `main`. Tagged `vacuous truth`.
+The premise chain leading to an implication is shown to be self-contradictory; the implication head is then trivially valid. At `main`, the induction form cites the opposing pair and recursion hypothesis. Inside an ordinary implication integration scope, the scoped form cites two visible opposing facts and closes the exact implication head under its premises. Tagged `vacuous truth`.
 
 ### `reactToHypo`
 
@@ -796,6 +804,7 @@ Sorted alphabetically for quick lookup:
 | `recursion` | `check_recursion` (1732) | Induction-hypothesis step. |
 | `reformulated from` | `check_reformulated_from` (2334) | This theorem is a reformulation of the cited source. |
 | `reformulation for integration and` | `check_reformulation_for_integration_and` (2080) | Reverse-disintegration prep for an `and`-category conclusion. |
+| `reformulation for integration flattened` | `check_reformulation_for_integration_flattened` | Root integration rule with explicitly checked multi-level definition construction. |
 | `reformulation for integration >[]` | `check_reformulation_for_integration_empty` (2117) | Reverse-disintegration prep for an `existence` with empty outer bounds. |
 | `reformulation for integration >[bound]` | `check_reformulation_for_integration_bound` (2093) | Reverse-disintegration prep for an `existence` with non-empty outer bounds. |
 | `symmetry of equality` | `check_symmetry_of_equality` (1680) | From `(=[b,a])`, emit `(=[a,b])`. |
@@ -901,11 +910,31 @@ expression \t namespace \t tag \t [ref_expression \t ref_namespace \t ...]
 
 ### `files/processed_proof_graph/global_theorem_list.txt`
 
-Authoritative theorem registry for verifier. Three columns: `expression`, `method`, `reference`. Method ∈ `direct | induction | reformulated statement`. Reference is `-1` for `direct`, the induction variable for `induction`, and the source-theorem expression for `reformulated statement`.
+Authoritative theorem registry for verifier. Three columns: `expression`, `method`, `reference`. Live methods are `single chapter proof`, `induction`, `reformulated statement`, `incubator back reformulation`, `or theorem`, `or elimination`, `proved not broadcast`, and the debug-only `debug`. Reference is `-1` for `single chapter proof`, the induction variable for `induction`, and the source-theorem expression for the derived chapter kinds.
 
 ### `files/full_proof_graph/*.html`
 
 Generated HTML proof-graph export. `index.html` (chapter list), `tags.html` (tag legend), `chapter<N>.html` (one per processed-proof-graph chapter).
+
+### zoom in
+
+Proof-history tag for an unchanged expression inherited from a strict ancestor validity scope. The row cites the exact parent expression/scope pair and preserves its derivation there. See [proof tag reference](20_core_concepts/08_proof_tags.md#zoom-in).
+
+### implication composition
+
+Composition of two actual one-premise rules whose intermediate signed atoms match bijectively over the same complete bound-variable set. Construction requires the consumer head to match an existing integration admission demand through the CNFE marker convention; later demands wake existing rules. The result retains both proof sources, compatible source scope and supporting levels, and can participate in further demand-qualified composition. `unary_composition.cpp`, `drainUnaryComposition`, maintains the incremental closure; the proof tag is `implication composition`. CNFE transfers the integration demand into ordinary algebra witness permission.
+
+### implication grouping
+
+An auxiliary single-premise implication whose conjunction head consists exactly of its cited same-premise source heads. Complete binders align bijectively; every selected source is retained in provenance. It adds no defining element or integration obligation.
+
+### contraposition
+
+The derived implication obtained by exchanging a unary implication's premise and head and complementing both, cancelling double negation. GL prepares binder-covering source families during compilation and activates them during disintegration with exact source scope and checked proof history.
+
+## Permanent witness-name representation
+
+`memory_infra/witness_names.hpp` provides allocation-free classification of `force_lev_<level>_<serial>`, `int_<depth>_lev_<level>_<serial>` and `it_<generation>_lev_<level>_<serial>`. Its canonical comparator prefers ordinary names, forced names, integration names by numeric depth, then algebraic names, with decoded lexical ties. Its outer-expression depth calculation counts integration names only. Forced routes mint forced names. Ordinary integration minting uses the outer expansion assignment under `maxIntegrationDepth`; parked sources preserve that assignment. Cross-block fact and rule mail excludes every ordinary integration witness, while proof-history transport remains available.
 
 ---
 

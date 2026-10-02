@@ -25,7 +25,9 @@
 #include "test_harness.hpp"
 #include "../mail_log.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -544,6 +546,93 @@ TEST(deloadable_mail_out, insert_and_toheapmail) {
     ASSERT_EQ(mem.mailOutInterner.internedCount(), 0);
 }
 
+// Codec<Mail>::serialize(DeloadableMailOut) over randomized mailboxes — shared
+// expressions and scopes, several level sets per expression, multi-line
+// histories with dependencies, statement flags — emits exactly the bytes of
+// the decoded-string form it replaces (kept here as the oracle: decode every
+// row to strings, sort, emit), and both runs leave the global mail interner
+// with the same ids (the fresh names of each round are minted by the direct
+// form first, in emission order, and the oracle finds them all).
+TEST(deloadable_mail_out, serialize_matches_decoded_string_oracle_randomized) {
+    const auto oracle = [](const gl::DeloadableMailOut& hm, const gl::ValueInterner& mi) {
+        std::vector<char> out;
+        const auto putPod = [&out](const auto& x) {
+            const char* p = reinterpret_cast<const char*>(&x);
+            out.insert(out.end(), p, p + sizeof(x));
+        };
+        const auto putGlobalEwv = [&putPod](const gl::ExpressionWithValidity& e) {
+            putPod(gl::mailInterner().intern(e.original));
+            putPod(gl::mailInterner().intern(e.validityName));
+        };
+        const auto stmts = gl::decodeMailOutStatements(hm, mi);
+        putPod(static_cast<int32_t>(stmts.size()));
+        for (const auto& st : stmts) {
+            putGlobalEwv(st.first);
+            putPod(static_cast<int32_t>(st.second.size()));
+            for (const int lv : st.second) putPod(static_cast<int32_t>(lv));
+        }
+        const auto origins = gl::decodeMailOutOrigins(hm, mi);
+        putPod(static_cast<int32_t>(origins.size()));
+        for (const auto& keyed : origins) {
+            putGlobalEwv(keyed.first);
+            putPod(static_cast<int32_t>(keyed.second.size()));
+            for (const gl::OriginLine& origin : keyed.second) {
+                putPod(static_cast<int32_t>(gl::originTagFromString(gl::StrSpan(origin.first))));
+                putPod(static_cast<int32_t>(origin.second.size()));
+                for (const gl::ExpressionWithValidity& dep : origin.second) putGlobalEwv(dep);
+            }
+        }
+        const auto flags = gl::decodeMailOutStatementFlags(hm, mi);
+        putPod(static_cast<int32_t>(flags.size()));
+        for (const auto& fl : flags) {
+            putGlobalEwv(fl.first);
+            putPod(fl.second);
+        }
+        return out;
+    };
+    std::mt19937 rng(20260925u);
+    const char* const tags[] = { "theorem", "implication", "equality1", "disintegration" };
+    for (int round = 0; round < 30; ++round) {
+        gl::Memory mem;
+        const auto expression = [&](int i) {
+            return "(mailtest" + std::to_string(round) + "[x" + std::to_string(i) + ",y])";
+        };
+        const auto scope = [&](int i) {
+            return i == 0 ? std::string("main") : "main_(q" + std::to_string(round) + "[" + std::to_string(i) + "])";
+        };
+        const int n = 1 + static_cast<int>(rng() % 40);
+        for (int i = 0; i < n; ++i) {
+            std::set<int> levels;
+            for (int k = static_cast<int>(rng() % 4); k > 0; --k) levels.insert(static_cast<int>(rng() % 6));
+            mem.insertMailOutStatement(gl::ExpressionWithValidity(
+                expression(static_cast<int>(rng() % 12)), scope(static_cast<int>(rng() % 3))), levels);
+        }
+        for (int i = 0; i < n; ++i) {
+            std::vector<gl::ExpressionWithValidity> deps;
+            for (int k = static_cast<int>(rng() % 3); k > 0; --k)
+                deps.emplace_back(expression(static_cast<int>(rng() % 12)), scope(static_cast<int>(rng() % 3)));
+            mem.addMailOutOrigin(gl::ExpressionWithValidity(
+                expression(static_cast<int>(rng() % 12)), scope(static_cast<int>(rng() % 3))),
+                std::make_pair(std::string(tags[rng() % 4]), deps), 30);
+        }
+        for (int i = static_cast<int>(rng() % 6); i > 0; --i) {
+            const std::string e = expression(static_cast<int>(rng() % 12));
+            const std::string v = scope(static_cast<int>(rng() % 3));
+            mem.setMailOutStatementFlag(gl::StrSpan(e), gl::StrSpan(v),
+                (rng() % 2) == 0 ? gl::kMailStatementFlagNone : gl::kMailStatementFlagExternalDisintegrate,
+                static_cast<int32_t>(rng() % 5) - 1);
+        }
+        const int32_t before = gl::mailInterner().count();
+        const std::vector<char> direct =
+            gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+        const int32_t minted = gl::mailInterner().count();
+        const std::vector<char> expected = oracle(mem.mailOut, mem.mailOutInterner);
+        ASSERT_TRUE(direct == expected);
+        ASSERT_TRUE(minted > before);                         // fresh names minted
+        ASSERT_EQ(gl::mailInterner().count(), minted);        // oracle mints nothing new
+    }
+}
+
 TEST(deloadable_mail_out, statement_multiplicity) {
     // Two members sharing an EWV but differing in levels stay distinct (the
     // whole-pair key reproduces set<pair<EWV,set<int>>> exactly).
@@ -713,6 +802,50 @@ TEST(routing_cold_mail_codec, statement_flag_round_trip) {
     const gl::Mail heap = gl::Codec<gl::Mail>::deserialize(
         blob.data(), static_cast<int32_t>(blob.size()));
     ASSERT_EQ(heap.statements.size(), static_cast<std::size_t>(2));
+}
+
+// The integrated mark of the statement flag (D-444):
+// bit 3 packs beside the code without disturbing the iteration, OR-merges with
+// flag 5 in either order, crosses the wire from the sender door, and the
+// receiver probe reports it (false for an unmarked or absent statement).
+TEST(routing_cold_mail_codec, statement_flag_integrated_mark_round_trip) {
+    const int32_t marked = gl::packMailStatementFlag(gl::kMailStatementFlagNone, -1, true);
+    ASSERT_TRUE(gl::unpackMailStatementFlagIntegrated(marked));
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(marked), gl::kMailStatementFlagNone);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(marked), -1);
+    const int32_t relay = gl::packMailStatementFlag(
+        gl::kMailStatementFlagExternalDisintegrate, 4);
+    ASSERT_FALSE(gl::unpackMailStatementFlagIntegrated(relay));
+    for (const int32_t merged : { gl::mergeMailStatementFlag(marked, relay),
+                                  gl::mergeMailStatementFlag(relay, marked) }) {
+        ASSERT_TRUE(gl::unpackMailStatementFlagIntegrated(merged));
+        ASSERT_EQ(gl::unpackMailStatementFlagCode(merged),
+                  gl::kMailStatementFlagExternalDisintegrate);
+        ASSERT_EQ(gl::unpackMailStatementFlagIteration(merged), 4);
+    }
+
+    gl::Memory mem;
+    mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{ 1 });
+    mem.insertMailOutStatement(ev("(in[b,N])"), std::set<int>{ 1 });
+    mem.setMailOutStatementFlag(gl::StrSpan("(in[a,N])"), gl::StrSpan("main"),
+        gl::kMailStatementFlagNone, -1, true);
+    const std::vector<char> blob =
+        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+    gl::RoutingColdMail inbox;
+    gl::Codec<gl::Mail>::deserializeInto(
+        blob.data(), static_cast<int32_t>(blob.size()), inbox);
+    int32_t code = 0, iter = 0;
+    bool integrated = false;
+    inbox.getStatementFlag(gl::packOriginKey(
+        gl::mailInterner().intern(gl::StrSpan("(in[a,N])")),
+        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter, &integrated);
+    ASSERT_TRUE(integrated);
+    ASSERT_EQ(code, gl::kMailStatementFlagNone);
+    ASSERT_EQ(iter, -1);
+    inbox.getStatementFlag(gl::packOriginKey(
+        gl::mailInterner().intern(gl::StrSpan("(in[b,N])")),
+        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter, &integrated);
+    ASSERT_FALSE(integrated);
 }
 
 // Codec<Mail>::deserializeInto folds a blob STRAIGHT into a routing mailIn (GLOBAL

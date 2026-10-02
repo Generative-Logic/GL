@@ -1,7 +1,9 @@
 {
   "anchor_name": "AnchorFTA",
-  "theorems_folder": "files/shortcut/theorems",
-  "raw_proof_graph_folder": "files/shortcut/raw_proof_graph",
+  "theorems_folder": "files/theorems",
+  "raw_proof_graph_folder": "files/raw_proof_graph",
+  "generate_conjectures": false,
+  "external_conjectures_file": "files/shortcut/theorems/conjectures.txt",
   "in": {
     "arity": 2,
     "definition_sets": {
@@ -108,6 +110,52 @@
     "output_args": [
       "3"
     ],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "EnumerationSet1": {
+    "arity": 2,
+    "definition_sets": {
+      "1": [
+        "(1)",
+        true
+      ],
+      "2": [
+        "P(1)",
+        true
+      ]
+    },
+    "full_mpl": "EnumerationSet1.mpl",
+    "short_mpl": "(EnumerationSet1[a,M])",
+    "max_count_per_conjecture": 1,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "EnumerationRelationSet1": {
+    "arity": 3,
+    "definition_sets": {
+      "1": [
+        "(1)",
+        true
+      ],
+      "2": [
+        "(1)",
+        true
+      ],
+      "3": [
+        "P(x(1)(1))",
+        true
+      ]
+    },
+    "full_mpl": "EnumerationRelationSet1.mpl",
+    "short_mpl": "(EnumerationRelationSet1[a,b,X])",
+    "max_count_per_conjecture": 1,
+    "input_args": [],
+    "output_args": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -361,8 +409,64 @@
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
   },
+  "addToSet": {
+    "arity": 3,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        true
+      ],
+      "2": [
+        "(1)",
+        true
+      ],
+      "3": [
+        "P(1)",
+        true
+      ]
+    },
+    "full_mpl": "addToSet.mpl",
+    "short_mpl": "(addToSet[M,a,L])",
+    "max_count_per_conjecture": 1,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "appendToSequence": {
+    "arity": 4,
+    "definition_sets": {
+      "1": [
+        "(1)",
+        true
+      ],
+      "2": [
+        "(1)",
+        true
+      ],
+      "3": [
+        "P(x(1)(1))",
+        true
+      ],
+      "4": [
+        "P(x(1)(1))",
+        true
+      ]
+    },
+    "full_mpl": "appendToSequence.mpl",
+    "short_mpl": "(appendToSequence[n,a,f,g])",
+    "max_count_per_conjecture": 1,
+    "input_args": [
+      "n"
+    ],
+    "output_args": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
   "fold": {
-    "arity": 7,
+    "arity": 8,
     "definition_sets": {
       "1": [
         "P(1)",
@@ -377,24 +481,28 @@
         false
       ],
       "4": [
-        "P(x(1)(1))",
+        "P(x(1)(x(1)(1)))",
         false
       ],
       "5": [
-        "(1)",
+        "P(x(1)(1))",
         false
       ],
       "6": [
         "(1)",
-        true
+        false
       ],
       "7": [
+        "(1)",
+        true
+      ],
+      "8": [
         "(1)",
         true
       ]
     },
     "full_mpl": "fold.mpl",
-    "short_mpl": "(fold[N,s,+,f,n,m,p])",
+    "short_mpl": "(fold[N,s,+,op,f,n,m,p])",
     "max_count_per_conjecture": 1,
     "input_args": [
       "m"
@@ -469,6 +577,118 @@
     "max_size_expression": 3,
     "max_size_expression_before_existence": 3,
     "max_size_expression_after_existence": 3
+  },
+  "remainder": {
+    "arity": 6,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "(1)",
+        true
+      ],
+      "5": [
+        "(1)",
+        true
+      ],
+      "6": [
+        "(1)",
+        true
+      ]
+    },
+    "full_mpl": "remainder.mpl",
+    "short_mpl": "(remainder[N,+,*,a,d,r])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["a", "d"],
+    "output_args": ["r"],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "nontrivialFactor": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["(1)", false],
+      "5": ["(1)", true],
+      "6": ["(1)", true]
+    },
+    "full_mpl": "nontrivialFactor.mpl",
+    "short_mpl": "(nontrivialFactor[N,+,*,i2,n,a])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["n"],
+    "output_args": ["a"],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "prime": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["(1)", false],
+      "5": ["(1)", false],
+      "6": ["(1)", true]
+    },
+    "full_mpl": "prime.mpl",
+    "short_mpl": "(prime[N,+,*,i1,i2,p])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["p"],
+    "output_args": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "quotient": {
+    "arity": 6,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "(1)",
+        true
+      ],
+      "5": [
+        "(1)",
+        true
+      ],
+      "6": [
+        "(1)",
+        true
+      ]
+    },
+    "full_mpl": "quotient.mpl",
+    "short_mpl": "(quotient[N,+,*,a,d,q])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["a", "d"],
+    "output_args": ["q"],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
   },
   "identity": {
     "arity": 2,
@@ -603,12 +823,12 @@
     "\\(=\\[(?:[267],\\d+|\\d+,[267])\\]\\)",
     "\\(preorder\\[\\d+,\\d+,(?:[267],\\d+|\\d+,[267])\\]\\)",
     "\\(in2\\[\\d+,\\d+,8\\]\\)",
-    "\\(fold\\[\\d+,8,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,5,\\d+,\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,\\d+,(?:2|6|7),\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,\\d+,(?!8,)\\d+,\\d+,\\d+,\\d+\\]\\)",
-    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,\\d+,\\d+,(?:2|6|7)\\]\\)",
+    "\\(fold\\[\\d+,8,\\d+,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,(?!4,)\\d+,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,\\d+,\\d+,(?:2|6|7),\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,(?!8,)\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,\\d+,\\d+,\\d+,(?:2|6|7)\\]\\)",
     "\\(split\\[\\d+,\\d+,\\d+,\\d+,(?:3|8),\\d+\\]\\)",
     "\\(split\\[\\d+,\\d+,\\d+,\\d+,\\d+,(?:3|8)\\]\\)",
     "\\(sequence\\[\\d+,\\d+,(?!2,)(?:[1-9]\\d*|0\\d+),\\d+,\\d+\\]\\)",
@@ -626,7 +846,8 @@
     "\\(interval\\[\\d+,\\d+,\\d+,(?:2|7),\\d+\\]\\)",
     "\\(in\\[\\d+,1\\]\\)",
     ".*\\(interval\\[([^,]+),([^,]+),([^,]+),([^,]+),([^,\\]]+)\\]\\).*\\(interval\\[\\1,\\2,\\3,\\4,(?!\\5\\])[^,\\]]+\\]\\)\\)*$",
-    ".*\\(sequence\\[([^,]+),([^,]+),([^,]+),([^,]+),([^,\\]]+)\\]\\).*\\(sequence\\[\\1,\\2,\\3,\\4,(?!\\5\\])[^,\\]]+\\]\\)\\)*$"
+    ".*\\(sequence\\[([^,]+),([^,]+),([^,]+),([^,]+),([^,\\]]+)\\]\\).*\\(sequence\\[\\1,\\2,\\3,\\4,(?!\\5\\])[^,\\]]+\\]\\)\\)*$",
+    "\\(fold\\[\\d+,\\d+,\\d+,(?!4,)\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)"
   ],
   "only_in_head": [
     "(=["
@@ -993,10 +1214,11 @@
     "maxSizeDefSetMapping": 5,
     "maxSizeTargetSetMapping": 12,
     "maxNumberSecondaryVariables": 2,
-    "sizeAllPermutationsAna": 7,
+    "sizeAllPermutationsAna": 8,
     "minNumOperatorsKey": 2,
     "minNumOperatorsKeyCE": 4,
     "maxIterationNumberVariable": 1,
+    "maxNumberFilteredStatements": 16384,
     "standardMaxSecondaryNumber": 1,
     "trackHistory": true,
     "inductionMaxAdmissionDepth": 1,

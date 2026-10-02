@@ -153,6 +153,8 @@ User-oriented SwDD — Chapter 6: Static memory (statification).
 
 <main>
 <h1><span class="num">6 ·</span> Static memory (statification)</h1>
+<p>The host reservation starts on a 4,096-byte boundary so complete transfer blocks can be registered with CUDA. This physical alignment does not change pool capacity or the virtual offsets stored by the prover.</p>
+<p>The reservation is address space only. The operating system commits a block when the pool first hands it out, and a returned block stays committed for reuse, so each pool costs commit charge only up to its peak use, not its full size. Capacity and the exhaustion assert are unchanged.</p>
 <p class="lede">How the prover's per-LB containers move off the heap and onto a
 fixed memory hierarchy: one reservation at program start, carved into blocks,
 carved into fixed-size pages that per-LB containers pack their elements into,
@@ -195,11 +197,23 @@ arenas, arena containers, the deload format — is built once, and each tier
 moved one container family onto it. <b>Tier 1 migrated the statement
 registry</b>, <code>Memory::intEncodedStatements</code>
 (<a href="substrate.html#lb-inside">§3.1.2</a>); the remaining per-LB families —
-the string interners (§<a href="#strings">6.7</a>), equivalence classes, the hash
+the string interners (§<a href="#strings">6.7</a>), application classes and the
+separate complete canonical-class view with its representative/change records and
+pooled dependency/comparison indexes, the hash
 inference engine, the goal registry, the cross-block mail log, and the logic-block
 objects themselves — followed across the campaign, which is now <b>complete</b>:
 all per-LB working memory is static (§<a href="#scope">6.6</a>).
 </p>
+<p>Complete-class comparison indexes follow their owning memory image. A canonical reload rebuilds them from its restored records. A raw snapshot preserves their pages and includes cache-only changes before that snapshot can be reused.</p>
+<p>Pending comparisons use pooled postings keyed by effective scope. Repeated
+invalidations share one live entry; each lookup drains only its scope's entries.
+These queues are derived data: canonical release clears them, while raw images
+retain their pages and include queue-only changes.</p>
+<p>Each canonical dependency stores its logical name/scope and record pair once,
+with one insertion revision and two ordered traversal links. The shared pair,
+lookup value and node use 44 payload bytes per live dependency, before hash
+slots and head maps. The revision avoids revisiting old records for a new
+posting. Raw images preserve this derived store; canonical reload rebuilds it.</p>
 
 <ul class="inv">
 <li><b>One main reservation, plus three small stand-alone pools.</b> Almost all
@@ -235,6 +249,19 @@ emergency heap allocation — a silent fallback would un-prove the static claim.
 </ul>
 
 <!-- ===================== 6.2 HIERARCHY ===================== -->
+<h2 id="shared-expressions">Shared expression records</h2>
+<p>Cleanup filters the ordered references in place. Surviving records stay where they are, without copying or another lookup in the sharing table. Only removed references release ownership; the local membership index is rebuilt and incremental processing positions are adjusted to the surviving order.</p>
+<p>Each logic block stores one immutable copy of each identical expression record. The main, local, newly-local and external lists keep ordered four-byte references. Scope and all metadata remain part of the record; deleting one list entry does not remove another list's fact. Free record slots are reused. Canonical files still contain complete records in each list's order; raw eviction preserves the shared store and references together.</p>
+<figure><svg viewBox="0 0 760 170" role="img" aria-label="Four ordered lists reference one shared immutable expression store">
+<rect x="15" y="20" width="290" height="125" rx="8" fill="#20232F" stroke="#5DCAA5"/>
+<text x="160" y="50" fill="#F0E8DC" text-anchor="middle">Main / local / newly-local / external</text>
+<text x="160" y="90" fill="#5DCAA5" text-anchor="middle">Independent ordered 32-bit references</text>
+<path d="M305 82 H440" stroke="#5DCAA5" stroke-width="3"/><polygon points="440,82 427,75 427,89" fill="#5DCAA5"/>
+<rect x="445" y="20" width="300" height="125" rx="8" fill="#20232F" stroke="#EF9F27"/>
+<text x="595" y="55" fill="#F0E8DC" text-anchor="middle">One immutable record store</text>
+<text x="595" y="90" fill="#EF9F27" text-anchor="middle">Full identity includes scope</text>
+<text x="595" y="120" fill="#F0E8DC" text-anchor="middle">Last reference releases ownership</text>
+</svg><figcaption>Only payload storage is shared; each list keeps its own membership and order.</figcaption></figure>
 <h2 id="hierarchy">6.2 &nbsp;The memory hierarchy — pool → blocks → pages</h2>
 <p>
 Three levels — pool carved into <b>blocks</b>, blocks carved into fixed-size
@@ -261,7 +288,7 @@ power-of-two page (so an index resolves by one shift and one mask);
 
   <!-- pool -->
   <rect x="20" y="16" width="720" height="124" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
-  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 12 GiB)</text>
+  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 6 GiB)</text>
   <text x="380" y="55" fill="#8B8FA5" font-size="9.5" text-anchor="middle">never freed, never grown — the software model of the MPU's fixed SRAM · mutex inside acquireBlock</text>
   <g font-size="9">
     <rect x="40"  y="68" width="60" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="70"  y="88" fill="#5DCAA5" text-anchor="middle">LB A</text>
@@ -288,8 +315,8 @@ power-of-two page (so an index resolves by one shift and one mask);
   <text x="380" y="208" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">LbArena — one per LB (this is LB A's)</text>
   <text x="380" y="225" fill="#8B8FA5" font-size="8.5" text-anchor="middle">its granted blocks are carved into fixed-size pages — a container takes whole pages and packs its elements in them; a page id (vid) names a page</text>
   <g font-size="8.5">
-    <rect x="120" y="236" width="156" height="34" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="198" y="250" fill="#5DCAA5" text-anchor="middle">block 0</text><text x="198" y="263" fill="#8B8FA5" text-anchor="middle">32 pages × 8K</text>
-    <rect x="282" y="236" width="156" height="34" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="360" y="250" fill="#5DCAA5" text-anchor="middle">block 1</text><text x="360" y="263" fill="#8B8FA5" text-anchor="middle">32 pages × 8K</text>
+    <rect x="120" y="236" width="156" height="34" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="198" y="250" fill="#5DCAA5" text-anchor="middle">block 0</text><text x="198" y="263" fill="#8B8FA5" text-anchor="middle">128 pages × 2K</text>
+    <rect x="282" y="236" width="156" height="34" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="360" y="250" fill="#5DCAA5" text-anchor="middle">block 1</text><text x="360" y="263" fill="#8B8FA5" text-anchor="middle">128 pages × 2K</text>
     <rect x="444" y="236" width="120" height="34" rx="4" fill="#1C1F2B" stroke="#EF9F27"/><text x="504" y="250" fill="#EF9F27" text-anchor="middle">block 2</text><text x="504" y="263" fill="#8B8FA5" text-anchor="middle">▸ free pages</text>
   </g>
   <text x="380" y="290" fill="#8B8FA5" font-size="9.5" text-anchor="middle">a page never straddles a block — pages come from the block's free-list; when it runs dry, a fresh block → acquireBlock</text>
@@ -335,7 +362,32 @@ hope, and the MPU sizing data would be fiction.
 </div>
 
 <!-- ===================== 6.3 VIRTUAL ===================== -->
+<h3 id="native-shared-keys">Shared native keys and record payloads</h3>
+<p>Each logic block shares identical native hash-key bytes, normalized-key values, and page-contained encoded rule and owner records. Larger records retain private paged storage. Each table keeps its own identifiers, membership, ordered runs and owner lists; replacing a record changes only that table's reference. Sharing storage therefore leaves scope and inference unchanged.</p>
+<svg viewBox="0 0 760 160" role="img" aria-label="Independent native tables share immutable payload within one logic block and retain their existing canonical byte format">
+<g fill="none" stroke="#5DCAA5" stroke-width="2"><rect x="12" y="14" width="222" height="116" rx="8"/><rect x="269" y="14" width="222" height="116" rx="8"/><rect x="526" y="14" width="222" height="116" rx="8"/><path d="M234 72 H269 M491 72 H526"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="13"><text x="123" y="40">Independent native tables</text><text x="123" y="66">Local identifiers and owners</text><text x="123" y="92">Separate membership and runs</text><text x="380" y="40">One pool per logic block</text><text x="380" y="66">Keys and immutable records</text><text x="380" y="92">Shared immutable bytes</text><text x="637" y="40">Existing canonical streams</text><text x="637" y="66">Same bytes and row order</text><text x="637" y="92">Sharing rebuilt on reload</text></g></svg>
+<p>After a worker finishes using borrowed views, it removes unreferenced shared payload and compacts the surviving bytes. Emptying the final table releases the shared store immediately. Canonical disk streams keep their existing format and reconstruct sharing when loaded. Raw eviction preserves the shared store and its references together. Memory reports count resident payload once; serialized size may include repeated copies.</p>
+<p>On the measured full F3 workload (28 September 2026), two sequential runs kept all theorem and proof files identical while peak native RAM fell from 8,570&ndash;8,577 to 7,051&ndash;7,055 MiB, about 17.7 percent below the projection-only result. At that stage, the largest main-pool peak was about 4,213 MiB of 6,144 MiB. The memory object grew by 5,120 bytes to 255,336 bytes and still fits one 256 KiB slot. FTA itself showed no material RAM saving.</p>
+
 <h2 id="virtual">6.3 &nbsp;The page tier — virtual page ids, the determinism device</h2>
+<h3>Addressing large containers with small pages</h3>
+<p>Container directories grow only when needed: a single page has no directory, then one and two directory levels serve larger containers. Above 262,144 data pages (512 MiB with 2 KiB pages), a third level addresses more pages without enlarging the pages or the main pool. Promotion retains the old root and payload; shrinking returns empty branches. The first promotion adds 6 KiB of directory storage. Signed element and slot counts remain separately bounded, and serialized logical contents are unchanged.</p>
+<svg viewBox="0 0 760 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Adaptive container directory: optional L3 root, L2, L1, then data page">
+  <g font-family="sans-serif" font-size="12" text-anchor="middle">
+    <rect x="12" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#EF9F27"/>
+    <text x="92" y="42" fill="#F0E8DC">L3 root</text><text x="92" y="60" fill="#EF9F27">only above L2 coverage</text>
+    <rect x="204" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#5DCAA5"/>
+    <text x="284" y="50" fill="#F0E8DC">L2 directory</text>
+    <rect x="396" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#5DCAA5"/>
+    <text x="476" y="50" fill="#F0E8DC">L1 directory</text>
+    <rect x="588" y="20" width="160" height="52" rx="7" fill="#262938" stroke="#5DCAA5"/>
+    <text x="668" y="50" fill="#F0E8DC">2 KiB data page</text>
+    <path d="M172 46h32m160 0h32m160 0h32" stroke="#8B8FA5" stroke-width="2"/>
+    <text x="380" y="103" fill="#8B8FA5">512 entries per directory page; smaller containers start lower in the tree.</text>
+  </g>
+</svg>
+
 <p>
 Containers never store physical pointers. They store <b>virtual page ids</b>
 (vids) and a within-page index. The arena carves its blocks into fixed-size pages;
@@ -347,7 +399,7 @@ inside the resolved page. The only free is <b>freePage</b> (LIFO: a freed page
 returns to the free-list, and freeing the tail rolls the page cursor back).
 Interior gaps left by other deletes are holes that the <b>in-place page
 compaction</b> (§<a href="#deload">6.5</a>) reclaims by packing the live pages onto
-the low blocks — the one operation that ever rebinds a vid to a different page.
+the low blocks — the one operation that ever rebinds a vid to a different page. Workers check for this reclamation after phase 1 and after phase-3 cleanup, before releasing their exclusive ownership. The check keeps the existing fragmentation threshold; returning a pool block does not by itself return its committed memory to the operating system.
 </p>
 
 <figure>
@@ -454,6 +506,63 @@ and reload reconstructs each digest from those bytes.
 
 <!-- ===================== 6.4 AGGREGATE ===================== -->
 <h2 id="aggregate">6.4 &nbsp;<code>LbMemory</code> — the growable aggregate</h2>
+<p>The aggregate includes one OR source store. Original source scopes, ordered
+leaves and levels, and pending work share the block's deloadable arena. A clone
+receives an independent copy; closing a scope removes its source records and
+pending work while preserving ancestor sources.</p>
+<figure>
+<svg viewBox="0 0 760 122" role="img" aria-label="One block-owned OR source store contains scoped sources, ordered leaf and level data, and pending events; all three travel together through deload and reload">
+  <rect x="10" y="8" width="740" height="106" rx="10" fill="none" stroke="currentColor"/>
+  <text x="380" y="30" text-anchor="middle" fill="currentColor">One block-owned OR source store</text>
+  <rect x="30" y="45" width="218" height="46" rx="6" fill="none" stroke="currentColor"/>
+  <text x="139" y="73" text-anchor="middle" fill="currentColor">Sources and original scopes</text>
+  <rect x="270" y="45" width="218" height="46" rx="6" fill="none" stroke="currentColor"/>
+  <text x="379" y="73" text-anchor="middle" fill="currentColor">Ordered leaves and levels</text>
+  <rect x="510" y="45" width="218" height="46" rx="6" fill="none" stroke="currentColor"/>
+  <text x="619" y="73" text-anchor="middle" fill="currentColor">Pending work and retirement</text>
+</svg>
+<figcaption>The source data travels together through deload and reload.</figcaption>
+</figure>
+<p>The OR matching foundation shares canonical forms by original expression and
+effective scope, using the same equality machinery as negations and proof goals.
+An equality change reaches only caches that depend on its argument tokens,
+including intermediate equality steps. A child equality creates a child view;
+the parent view keeps its original reach. Selected reductions continue through
+the ordinary proof-history and internal-mail paths.</p>
+<p>These lookup caches belong to the block and count toward its live memory.
+Raw eviction preserves them. A canonical reload or clone reconstructs them from
+the retained source data; closing scopes clears derived views once while keeping
+valid ancestor sources. Discharge releases both source state and lookup caches.</p>
+<p>An OR becomes a source only after statement admission has settled its actual
+arguments, scope and levels. This includes inherited statements. Collecting a
+possible disintegration product records intent; a rejected product creates no
+active source. Relevant fact and equality changes queue work for the matcher.</p>
+<p>Newly watched signed predicates share one initialization scan of known facts.
+Later changes use their exact queued keys. Matching combines comparable scopes;
+sibling scopes remain separate. Retiring a source removes all of its leaf
+lookups, and fact indexes are released when their last watcher disappears.</p>
+<p>The matching index owns complete updates: replacing a cached form updates its
+lookup links together, and removing the final user releases its token links.
+Facts, OR leaves and pending source evaluations have explicit, distinct roles.</p>
+<p>All leaves of one OR share its canonicalized parent expression. Flattening
+that parent gives the lookup keys, including rewritten equality disjuncts.
+This takes one canonicalization per OR and scope. A known OR fact can reuse
+the same cache while keeping its own whole-expression lookup key.</p>
+<figure>
+<svg viewBox="0 0 760 100" role="img" aria-label="Affected equality tokens reach shared expression and scope caches, which rekey exact OR leaf and known fact lookup views">
+  <rect x="10" y="15" width="208" height="62" rx="6" fill="none" stroke="currentColor"/>
+  <text x="114" y="51" text-anchor="middle" fill="currentColor">Affected equality tokens</text>
+  <path d="M218 46 H267 l-8 -5 m8 5 l-8 5" fill="none" stroke="currentColor"/>
+  <rect x="270" y="15" width="220" height="62" rx="6" fill="none" stroke="currentColor"/>
+  <text x="380" y="40" text-anchor="middle" fill="currentColor">Shared canonical form</text>
+  <text x="380" y="62" text-anchor="middle" fill="currentColor">One complete index update</text>
+  <path d="M490 46 H537 l-8 -5 m8 5 l-8 5" fill="none" stroke="currentColor"/>
+  <rect x="540" y="15" width="210" height="62" rx="6" fill="none" stroke="currentColor"/>
+  <text x="645" y="40" text-anchor="middle" fill="currentColor">Exact lookup views</text>
+  <text x="645" y="62" text-anchor="middle" fill="currentColor">OR leaves + known facts</text>
+</svg>
+<figcaption>One index operation updates the cache and both lookup directions; changes stay confined to affected expressions and scopes.</figcaption>
+</figure>
 <p>
 Each LB owns one <code>LbMemory</code>: a struct bundling the LB's
 <code>LbArena</code> (declared first, so the arena-backed members destruct before
@@ -566,10 +675,13 @@ mostly idle. If the working set <i>itself</i> cannot fit the
 pool, that is a genuinely too-small pool and the run stops at a loud assert on
 the next block request — never a silent wait (a dedicated stuck-detector also
 turns any unexpected worker wait longer than thirty seconds into an assert). In
-a genuine squeeze — free blocks below a small <b>emergency floor</b> (a quarter
+a genuine squeeze — free blocks below a small <b>emergency floor</b> (half
 of the reserve) — <i>every</i> worker handshake, not just one that needs a
 reload, may evict one block inline; a counted event the telemetry reports so a
-steward that cannot keep up shows up as an alarm, not a wall.
+steward that cannot keep up shows up as an alarm, not a wall. The same floor
+guards every block request: a request that would drop below it first evicts one
+idle block behind the cursor, so workers that grow their blocks quickly are
+slowed to the speed of the SSD instead of running the pool empty.
 </p>
 <p>
 An LB that was <b>deactivated</b> this iteration is the one special case:
@@ -595,14 +707,17 @@ fragmented or which physical blocks they sat in. The dump <i>is</i> the canonica
 across runs and hosts. This is the format the <b>discharge</b> drain and the
 chapter-export reads use, where that comparability matters.
 </p>
-<p><b>GPU execution and SSD deload are mutually exclusive in the current
-software.</b> The SSD policy derives from the batch's backend at prover
-construction: a CUDA-selected batch derives <code>allow_ssd_deload</code> false
-and runs a resident-only steward, while a processor-selected batch keeps the
-default permission and pages through the working-set steward
-(<code>allow_ssd_deload: false</code> in a configuration pins a processor batch
-resident). This is a temporary execution-policy boundary, not a claim that a
-future GPU or MPU cannot use a cold tier.</p>
+<p><b>GPU execution pages through SSD like the processor.</b> Both routes keep
+the default <code>allow_ssd_deload</code> permission and page through the
+working-set steward. The GPU route runs a chunk of logic blocks at a time: each
+block notes its size figures at the end of its first phase, while it is still in
+memory, so the chunks are planned without touching any block; the route then
+reads each block under a claim while it projects and schedules the chunk, and
+keeps the steward's window open while the device output grows the memory pool,
+so idle blocks can be written to SSD at any point. Only the
+counterexample filter's short-lived clones stay resident.
+(<code>allow_ssd_deload: false</code> in a configuration pins a batch
+resident.)</p>
 <p>
 The working-set pager's <b>evictions</b> — the hot loop above — instead use a
 <b>raw arena image</b>: a near-memcpy byte copy of the LB's live memory pages,
@@ -657,7 +772,7 @@ couple, turning the eviction stream from metadata-bound back into copy-bound.
     <rect x="378" y="40" width="160" height="62" rx="8" fill="#262938" stroke="#5DCAA5"/>
     <text x="458" y="62" fill="#5DCAA5" font-weight="bold" text-anchor="middle">phase 3</text>
     <text x="458" y="78" fill="#F0E8DC" font-size="9.5" text-anchor="middle">absorb / integrate</text>
-    <text x="458" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">mutations land here</text>
+    <text x="458" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">wipe → compact → release</text>
     <path d="M538 71 L560 71" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#dt-ar)"/>
     <rect x="560" y="36" width="186" height="70" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
     <text x="653" y="58" fill="#EF9F27" font-weight="bold" text-anchor="middle">iteration end</text>
@@ -665,7 +780,7 @@ couple, turning the eviction stream from metadata-bound back into copy-bound.
     <text x="653" y="88" fill="#F0E8DC" font-size="9.5" text-anchor="middle">pending queue (background dump)</text>
   </g>
   <path d="M653 106 L653 128 L94 128 L94 106" fill="none" stroke="#8B8FA5" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#dt-ar)"/>
-  <text x="380" y="122" fill="#8B8FA5" font-size="9.5" text-anchor="middle">processor + SSD mode: the steward pages across all phases · current GPU mode: resident-only</text>
+  <text x="380" y="122" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the steward pages across all phases, on the processor and the GPU route alike</text>
   <text x="380" y="156" fill="#8B8FA5" font-size="10" text-anchor="middle">Touching a deloaded container anywhere outside the enumerated reload points asserts.</text>
 </svg>
 <figcaption><b>RAM as a working-set cache.</b> The steward's planner plans and
@@ -747,8 +862,8 @@ static, and what remains is the accepted boundary below.
   <div class="left">
     <h4>Static (the whole campaign)</h4>
     <ul>
-      <li>The statement registries — all four per-LB statement vectors,
-      element payloads packed into pages in the LB's arena, in every LB.</li>
+      <li>The statement registries — four ordered per-block reference lists
+      sharing immutable expression records on that block's arena.</li>
       <li>The full hierarchy: pool, blocks, pages, the per-LB arena, virtual
       page ids, the in-place page compaction.</li>
       <li>The deload/reload round-trip with the canonical byte format.</li>
@@ -763,7 +878,8 @@ static, and what remains is the accepted boundary below.
       <li>The arena's own block/page lists — once the last heap carve-out here —
       are now pool-backed too: each is a small-buffer directory that keeps a tiny
       arena's table inline (no pool block at all) and spills only a large one onto
-      pool blocks. So "all of the LB goes static" now holds for the per-LB arena
+      pool blocks. A logic block's own tables live in the spare room of its shell,
+      so only an exceptionally large logic block spills. So "all of the LB goes static" now holds for the per-LB arena
       bookkeeping. What stays on the heap by design is the <i>global</i> pool's
       recycle queue (one process-wide root that hands out the pool) and the
       compaction's transient scratch — O(blocks), not O(payload), and outside any
@@ -797,15 +913,13 @@ strings campaign sorts every such string into one of three classes by
 <b>lifetime</b>, and each class gets memory shaped for exactly that lifetime.
 </p>
 <p>
-<b>One allocator underneath.</b> The scratch per-worker arena, the sealed-page
-handoff, and the cold per-LB store are the SAME arena
-(<code>LbArena</code>, §<a href="#hierarchy">6.2</a>) — one management code, no
-duplication. Cold per-LB content deloads and compacts; the scratch arena
-(per-worker, released back to the pool at each task's end) and the sealed pages
-(per-task, freed the moment a task's records are consumed) never do either, so a
-freshly allocated pointer stays valid until its scope ends — which is why the
-scratch and sealed views can hold raw pointers. The three classes below differ
-in <b>lifetime</b>, not in the page mechanics.
+<b>One backing pool, distinct allocation lifetimes.</b> Cold per-LB storage and
+per-worker scratch use <code>LbArena</code> (§<a href="#hierarchy">6.2</a>).
+Small sealed handoffs lease exclusive slices from shared pool blocks; larger
+contiguous records use private arena blocks. Cold content deloads and compacts.
+Scratch and sealed allocations retain stable pointers until their respective
+release boundaries. Each task owns its sealed payload and poisoning range,
+and a shared backing block returns only after its last live slice is released.
 </p>
 
 <figure>
@@ -833,7 +947,7 @@ in <b>lifetime</b>, not in the page mechanics.
   <g fill="#8B8FA5" font-size="9">
     <text x="380" y="84"  text-anchor="middle">the burst's staging records:</text>
     <text x="380" y="98"  text-anchor="middle">firing heads, admission values</text>
-    <text x="380" y="120" text-anchor="middle">filled by the task it belongs to</text>
+    <text x="380" y="120" text-anchor="middle">exclusive slices or private blocks</text>
     <text x="380" y="134" text-anchor="middle">sealed at task end</text>
     <text x="380" y="148" text-anchor="middle">crosses the pool join read-only</text>
     <text x="380" y="170" text-anchor="middle">freed in one sweep after the drain</text>
@@ -864,7 +978,7 @@ in <b>lifetime</b>, not in the page mechanics.
 <figcaption>Three lifetimes, three homes. A string is born in a worker's scratch
 arena, escapes into a sealed record if it fired, and only its interned id —
 backed by cold bytes in the LB's arena — persists. All three draw on the one
-pool; the scratch and sealed arenas are released before each barrier, so the
+pool; scratch arenas and sealed allocations are released before each barrier, so the
 steward's eviction decisions stay a pure function of LB state.</figcaption>
 </figure>
 
@@ -916,6 +1030,14 @@ artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
 
+<section id="conjunction-refutation-state"><h2>Supporting rules use ordinary memory</h2><p>Prepared templates live in the compiled registry. Unary owners install direct composed helpers; their intermediate rules remain proof documentation only. Other owners install their guarded helpers. Installed rules use the existing compact, rule and mail storage. Equality rewriting, reload, copying and scope cleanup follow the ordinary compact lifecycle.</p><p>No dedicated OR/contrapositive occurrence store, matching receipts, descendant replay queue or equality wakeup index is needed. Direct support for actual OR alternatives also travels through ordinary mail.</p><svg viewBox="0 0 920 155" role="img" aria-label="Supporting rules use ordinary memory"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Compiled registry</text><text x="150" y="77" text-anchor="middle" fill="#172635">Prepared helper templates</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Ordinary compact storage</text><text x="460" y="77" text-anchor="middle" fill="#172635">Installed rules and proof history</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Ordinary lifecycle</text><text x="770" y="77" text-anchor="middle" fill="#172635">Rewrite, reload and scope cleanup</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">Supporting-rule preparation adds no separate per-block matching store.</text></svg></section>
 </main>
+<section id="bounded-host-projection"><h2>Bounded host construction for GPU projection</h2><p>The GPU work chunk and complete immutable device image stay the same. The host constructs consecutive groups of whole logic blocks, targeting 128 MiB of column storage per window; an individually larger block receives its exact measured window. One set of construction threads serves the whole chunk. While one window is being built, an upload thread copies the previous one to the GPU and keeps its source statement ordinals and name/rule lookup data for scheduling and sealing, then the window is released: at most two windows are alive, together no larger than one former 256 MiB window. Memory is returned once per chunk.</p><svg viewBox="0 0 900 180" role="img" aria-label="Bounded host windows feed a complete device image and retain host sealing lookups"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="15" y="40" width="240" height="95" rx="8"/><rect x="330" y="15" width="550" height="65" rx="8"/><rect x="330" y="100" width="550" height="60" rx="8"/><path d="M255 65 H300 V48 H330 M255 110 H300 V130 H330"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="135" y="70">Two measured windows</text><text x="135" y="95">Build one, upload the other</text><text x="135" y="120">Release after upload</text><text x="605" y="42">Complete immutable GPU image</text><text x="605" y="65">Unchanged chunks, tasks and inference</text><text x="605" y="125">Retained names, rules and source ordinals</text><text x="605" y="148">Schedule and seal after complete upload</text></g></svg></section>
+
+
+<section id="shared-canonical-dependencies"><h2>Shared canonical dependency edges</h2><p>One stored dependency connects an exact scoped member to an exact scoped record. Both traversal directions point into the same recyclable edge node; its insertion revision preserves the order in which changed dependencies are revisited. Deletion unlinks both directions before reuse. Logical proof records, scopes and equality observations stay unchanged.</p><svg viewBox="0 0 900 140" role="img" aria-label="Member and record head tables share one ordered dependency edge"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="15" y="25" width="230" height="70" rx="8"/><rect x="315" y="15" width="270" height="90" rx="8"/><rect x="655" y="25" width="230" height="70" rx="8"/><path d="M245 60 H315 M585 60 H655"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="130" y="63">Scoped member heads</text><text x="450" y="43">One exact dependency pair</text><text x="450" y="68">Revision + two linked orders</text><text x="450" y="91">44 payload bytes per live edge</text><text x="770" y="63">Scoped record heads</text></g></svg></section>
+<section id="sealed-output-slices"><h2>Exclusive sealed slices share backing blocks</h2><p>Each sealed output retains its own immutable record chain and lifetime. Small outputs lease separate slices of the same physical block; the block returns to the main pool when its last slice is released. Larger contiguous allocations keep their ordinary private blocks. No peer may read, overwrite or poison another output's slice.</p><svg viewBox="0 0 900 150" role="img" aria-label="Exclusive sealed slices share backing blocks"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="20" y="15" width="300" height="50" rx="8"/><rect x="20" y="85" width="300" height="50" rx="8"/><rect x="470" y="30" width="410" height="90" rx="8"/><path d="M320 40 H390 V65 H470 M320 110 H390 V85 H470"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="170" y="46">Output A: exclusive slice</text><text x="170" y="116">Output B: exclusive slice</text><text x="675" y="65">One physical pool block</text><text x="675" y="94">Release after the last slice</text></g></svg></section>
+
+<section id="shared-rule-value-payloads"><h2>Share immutable rule value bytes across independent maps</h2><p>Independent hash memories retain their own rule membership and owner lists. Byte-identical page-contained records share immutable payload; replacing a record changes only the writer's reference. Larger records stay in private paged storage and retain the full size contract. Collection removes only unreferenced shared data and obsolete private payload.</p><svg viewBox="0 0 900 150" role="img" aria-label="Share immutable rule value bytes across independent maps"><g fill="none" stroke="#8B8FA5" stroke-width="2"><rect x="20" y="15" width="300" height="50" rx="8"/><rect x="20" y="85" width="300" height="50" rx="8"/><rect x="470" y="30" width="410" height="90" rx="8"/><path d="M320 40 H390 V65 H470 M320 110 H390 V85 H470"/></g><g fill="currentColor" font-size="15" text-anchor="middle"><text x="170" y="46">Overall map: own membership</text><text x="170" y="116">Working map: own membership</text><text x="675" y="65">Immutable record bytes</text><text x="675" y="94">Large records: private pages</text></g></svg></section>
 </body>
 </html>

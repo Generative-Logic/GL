@@ -47,6 +47,9 @@
 #include "../memory_infra/sealed_pages.hpp"
 #include "../memory_infra/str_ops.hpp"
 
+#include <atomic>
+#include <thread>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -222,6 +225,43 @@ TEST(sealed_pages, sealed_span_struct_run_aligned) {
     ASSERT_EQ(span[0].toStdString(), a);
     ASSERT_EQ(span[1].toStdString(), b);
     set.freePages();
+}
+
+TEST(sealed_pages, span_builder_retains_consecutive_fragments_until_complete) {
+    gl::GlobalMemoryManager memory;
+    memory.init(kSealedTestCfg);
+    gl::SealedPageSet pages;
+    pages.bind(&memory);
+    gl::SealedString::copyFrom(pages, "abc", 3);
+    gl::SealedSpanBuilder<int> builder(pages, 5);
+    int first[] = {3, 1};
+    const int second[] = {4, 1, 5};
+    builder.append(first, 2);
+    first[0] = 99;
+    builder.append(nullptr, 0);
+    builder.append(second, 3);
+    const auto result = builder.finish();
+    ASSERT_TRUE(pages.filling());
+    ASSERT_EQ(result.size(), 5);
+    ASSERT_EQ(result[0], 3);
+    ASSERT_EQ(result[4], 5);
+    ASSERT_EQ(reinterpret_cast<std::uintptr_t>(result.data()) % alignof(int), 0u);
+    pages.seal();
+    ASSERT_EQ(result[2], 4);
+    pages.freePages();
+}
+
+TEST(sealed_pages, span_builder_publishes_an_empty_stream_without_storage) {
+    gl::GlobalMemoryManager memory;
+    memory.init(kSealedTestCfg);
+    gl::SealedPageSet pages;
+    pages.bind(&memory);
+    gl::SealedSpanBuilder<int> builder(pages, 0);
+    builder.append(nullptr, 0);
+    ASSERT_TRUE(builder.finish().empty());
+    ASSERT_EQ(memory.blocksInUse(), 0);
+    pages.seal();
+    pages.freePages();
 }
 
 namespace {
@@ -412,4 +452,91 @@ TEST(sealed_pages, sealed_span_empty_contract) {
     ASSERT_EQ(set.blocksHeld(), 0);
     set.seal();
     set.freePages();
+}
+
+
+TEST(sealed_pages, shared_slices_preserve_independent_lifetimes_and_reclaim_blocks) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kSealedTestCfg);
+    gl::SealedPageSet sets[32];
+    char* bytes[32];
+    for (int i = 0; i < 32; ++i) {
+        sets[i].bind(&manager);
+        bytes[i] = sets[i].alloc(96);
+        std::memset(bytes[i], i + 1, 96);
+        sets[i].seal();
+    }
+    ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(2));
+    for (int i = 0; i < 32; i += 2) {
+        sets[i].freePages();
+        ASSERT_EQ(bytes[i][0], static_cast<char>(gl::kArenaPoisonByte));
+        ASSERT_EQ(bytes[i + 1][95], static_cast<char>(i + 2));
+    }
+    ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(2));
+    for (int i = 31; i >= 1; i -= 2) sets[i].freePages();
+    ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(0));
+    ASSERT_EQ(manager.attribution().purposePeak[static_cast<int>(gl::PoolPurpose::Sealed)], 2);
+}
+
+TEST(sealed_pages, shared_slices_keep_full_block_contiguous_allocations) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kSealedTestCfg);
+    gl::SealedPageSet small, mixed;
+    small.bind(&manager); mixed.bind(&manager);
+    char* peer = small.alloc(17); std::memset(peer, 0x71, 17);
+    char* first = mixed.alloc(19); std::memset(first, 0x72, 19);
+    char* large = mixed.alloc(manager.blockBytes());
+    std::memset(large, 0x73, manager.blockBytes());
+    char* last = mixed.alloc(23); std::memset(last, 0x74, 23);
+    ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(2));
+    ASSERT_EQ(mixed.blocksHeld(), 2);
+    mixed.seal(); small.seal(); mixed.freePages();
+    ASSERT_EQ(peer[16], static_cast<char>(0x71));
+    ASSERT_EQ(large[manager.blockBytes() - 1], static_cast<char>(gl::kArenaPoisonByte));
+    ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(1));
+    small.freePages(); ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(0));
+}
+
+TEST(sealed_pages, shared_slices_support_concurrent_producers_and_consumers) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    std::atomic<bool> correct{true};
+    std::thread workers[8];
+    for (int worker = 0; worker < 8; ++worker) workers[worker] = std::thread([&, worker] {
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            gl::SealedPageSet set; set.bind(&manager);
+            char* a = set.alloc(manager.sealedSliceCapacity());
+            char* b = set.alloc(33);
+            std::memset(a, worker + 1, manager.sealedSliceCapacity());
+            std::memset(b, worker + 2, 33);
+            set.seal();
+            if (a[manager.sealedSliceCapacity() - 1] != worker + 1 || b[32] != worker + 2)
+                correct.store(false);
+            set.freePages();
+        }
+    });
+    for (auto& worker : workers) worker.join();
+    ASSERT_TRUE(correct.load());
+    ASSERT_EQ(manager.blocksInUse(), static_cast<int64_t>(0));
+}
+
+TEST(sealed_pages, shared_slice_assertion_probe) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_SEALED_SLICE"), 0);
+    if (value) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_SEALED_SLICE")) mode = value;
+#endif
+    if (mode.empty()) return;
+    gl::GlobalMemoryManager manager, other;
+    manager.init(kSealedTestCfg); other.init(kSealedTestCfg);
+    auto* first = manager.acquireSealedSlice();
+    auto* peer = manager.acquireSealedSlice();
+    if (mode == "wrong_pool") other.releaseSealedSlice(first);
+    if (mode == "double_release") {
+        manager.releaseSealedSlice(first); manager.releaseSealedSlice(first);
+    }
+    manager.releaseSealedSlice(first); manager.releaseSealedSlice(peer);
 }

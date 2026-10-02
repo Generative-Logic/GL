@@ -43,6 +43,7 @@ if hasattr(sys.stderr, "reconfigure"):
 import os
 import subprocess
 
+from assertion_guard import require_assertions
 import run_modes
 from frame_timing import (
     StageTimer,
@@ -62,26 +63,38 @@ _GL_QUICK_EXE = os.path.join(
 )
 
 
-def _run_unit_test_gate():
-    """Run the in-tree C++ unit-test harness; abort on any failure.
+def _run_unit_test_gate(phase2_backend):
+    """Run the in-tree C++ unit-test harness for the run's route; abort on any failure.
 
-    Invokes ``gl_quick --unit-tests``. The harness is fast (sub-second
-    today, target <30 s for the full suite) and runs entirely on
-    synthetic in-memory inputs — no config-file reads, no real proof
-    runs. First failure aborts main.py before any pipeline work, so
-    regressions are caught before the 10–60-minute prover invocation
-    starts.
+    @brief Gate a pipeline run on the native unit tests of the route it uses.
+
+    @details
+    Invokes ``gl_quick --unit-tests --phase2-backend <route>``. The harness
+    runs entirely on synthetic in-memory inputs — no config-file reads, no
+    real proof runs — and the first failure aborts main.py before any
+    pipeline work, so regressions are caught before the prover starts.
+    The processor-route gate (``cpu``) leaves out the CUDA-route tests,
+    which need a CUDA device, so the default run works on a PC without a
+    GPU; the CUDA-route gate (``cuda``, a ``--GPU`` run) runs every test.
 
     Skipped silently when the binary does not exist yet (typical fresh
     clone before first build) so the bootstrap-cycle isn't blocked.
+
+    @param phase2_backend ``"cpu"`` for a processor run, ``"cuda"`` for a run
+        that selects the CUDA route for every batch.
+    @return None; a failing gate exits the process with the harness's code.
     """
+    assert phase2_backend in ("cpu", "cuda"), \
+        "the unit-test gate needs the run's Phase 2 route, cpu or cuda"
     if not os.path.exists(_GL_QUICK_EXE):
         print(
             f"[main.py] {_GL_QUICK_EXE} not found; skipping unit-test gate.",
             file=sys.stderr,
         )
         return
-    proc = subprocess.run([_GL_QUICK_EXE, "--unit-tests"], check=False)
+    proc = subprocess.run(
+        [_GL_QUICK_EXE, "--unit-tests", "--phase2-backend", phase2_backend],
+        check=False)
     if proc.returncode != 0:
         print(
             f"[main.py] Unit tests failed (exit {proc.returncode}). Aborting.",
@@ -167,12 +180,9 @@ def main():
         print(f"Generative Logic {_read_version()}")
         return
 
-    # --shortcut: run the FTA-shortcut pipeline (run_modes.shortcut_run —
-    # prove the hand-maintained conjecture list in files/shortcut/theorems/
-    # against the corpus snapshot as externals) instead of the full
-    # pipeline. All hardcoded paths live in shortcut_run; no per-invocation
-    # path arguments. The .debug setup and both unit-test gates below run
-    # identically in either mode.
+    # --shortcut replays the input captured immediately before FTA by a full
+    # run. Registry, theorem channels and prior proof chapters are identical;
+    # replay output lives under files/shortcut/.
     shortcut_mode = "--shortcut" in sys.argv[1:]
 
     # --GPU: run every batch of this run on the CUDA Phase 2 route. The
@@ -282,9 +292,11 @@ def main():
 
     # C++ unit-test gate. Synthetic in-memory inputs, no real proof runs;
     # safe to run pre-pipeline. First failure aborts main.py before any
-    # 10–60-minute proof work. See _run_unit_test_gate's docstring for budget.
+    # proof work. A run without an explicit CUDA selection runs on the
+    # processor (no shipped configuration pins a batch to CUDA), so its gate
+    # leaves out the CUDA-route tests and needs no GPU.
     with StageTimer("python.unit_tests.cpp", parent="run.total"):
-        _run_unit_test_gate()
+        _run_unit_test_gate(phase2_backend or "cpu")
 
     # Python verifier-side unit-test gate. Runs with the C++ gate, before the
     # pipeline: its fixtures are the frozen, test-owned tests/fixtures/ copies
@@ -314,15 +326,23 @@ def main():
     with open(traps_log, "w", encoding="utf-8"):
         pass
 
+    # The chain-selected section audit (GL_RT_AUDIT_CHAIN) appends to its own
+    # file; truncate it once per pipeline run like the trap file.
+    audit_log = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        ".debug", "rt_audit.log")
+    with open(audit_log, "w", encoding="utf-8"):
+        pass
+
     with StageTimer("python.pipeline", parent="run.total"):
         if shortcut_mode:
             # The shortcut, like the full run, defaults to the processor
             # route; `--GPU` (or the explicit `--phase2-backend cuda`)
             # selects CUDA.
-            run_modes.shortcut_run(
+            verifier_failures = run_modes.shortcut_run(
                 phase2_backend=phase2_backend or "cpu")
         else:
-            run_modes.full_run(phase2_backend=phase2_backend)
+            verifier_failures = run_modes.full_run(phase2_backend=phase2_backend)
 
     end_time = time.time()
     record_frame_timing(
@@ -332,13 +352,41 @@ def main():
     )
 
     print(f"Overall runtime: {end_time - start_time:.5f} seconds")
+    _exit_on_verifier_failures(verifier_failures)
 
 
+
+
+def _exit_on_verifier_failures(failures: int) -> None:
+    """End a run whose verifier reported failures in a failed process status.
+
+    @brief Make the process status agree with the verifier's verdict.
+
+    @details
+    A full run or a shortcut verifies its proof graphs at the end and
+    prints the report, but a printed failure alone lets a CI job, a shell
+    script or a release step that checks the exit status accept rejected
+    proofs. Called after every output and timing record is written, this
+    exits with status 1 when the verifier reported any failure, so the run
+    fails while its outputs stay complete for inspection; an airtight run
+    returns normally.
+
+    @param failures The verifier failure count the run reported (main and
+                    incubator graphs for a full run, the shortcut graph for
+                    a shortcut); never negative.
+    @return None when ``failures`` is 0; otherwise the process exits with 1.
+    """
+    assert failures >= 0, "a verifier failure count is never negative"
+    if failures:
+        print(f"[main.py] The verifier reported {failures} failure(s); "
+              "exiting with status 1.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
 
 
+    require_assertions("main.py")
     multiprocessing.freeze_support()
     main()
 

@@ -234,6 +234,9 @@ namespace gl {
         /// @brief The wrapped engine type (the type-erased cold container).
         using Inner = HashMap<typename Codec<K>::KeyStore, VS>;
 
+        /// @brief Insert position of an absent key (`HashMap::InsertHint`).
+        using InsertHint = typename Inner::InsertHint;
+
         /// @brief Deload facet for a byte key's lengths tag.
         using LengthsView = typename Inner::LengthsView;
         /// @brief Deload facet for a byte key's content-bytes tag.
@@ -429,9 +432,35 @@ namespace gl {
         template <typename VS2 = VS>
         void upsert(const K& k, const typename VS2::ValueType& v) {
             const typename Codec<K>::Encoded e = Codec<K>::encode(k);
-            const int32_t id = inner_.lookup(Codec<K>::view(e));
+            InsertHint hint;
+            const int32_t id = inner_.lookupForInsert(Codec<K>::view(e), hint);
             if (id != 0) inner_.setValueAt(id, v);
-            else inner_.insert(Codec<K>::view(e), v);
+            else inner_.insertAt(Codec<K>::view(e), v, hint);
+        }
+
+        /// @brief Probe `k` and remember where a following insert of it goes
+        ///        (`HashMap::lookupForInsert` over the encoded key).
+        ///
+        /// @param k The key to look up.
+        /// @param hint [out] The insert position for an absent key.
+        /// @return The id, or 0 when `k` was never minted.
+        int32_t lookupForInsert(const K& k, InsertHint& hint) const {
+            const typename Codec<K>::Encoded e = Codec<K>::encode(k);
+            return inner_.lookupForInsert(Codec<K>::view(e), hint);
+        }
+
+        /// @brief Insert `k`, just reported absent by `lookupForInsert`, with its
+        ///        value (`HashMap::insertAt` over the encoded key).
+        ///
+        /// @tparam VV The value type (deduced).
+        /// @param k The absent key.
+        /// @param v The value to store.
+        /// @param hint The position from `lookupForInsert(k, hint)`.
+        /// @return The key's id; >= 1.
+        template <typename VV>
+        int32_t insertAt(const K& k, const VV& v, const InsertHint& hint) {
+            const typename Codec<K>::Encoded e = Codec<K>::encode(k);
+            return inner_.insertAt(Codec<K>::view(e), v, hint);
         }
 
         /// @brief Overwrite an EXISTING key's value in place WITHOUT escalating
@@ -471,6 +500,23 @@ namespace gl {
         template <typename VS2 = VS>
         const typename VS2::ValueType& valueAt(int32_t id) const {
             return inner_.valueAt(id);
+        }
+
+        /// @brief Overwrite the value at a known id in place (single-value map).
+        ///
+        /// @details
+        /// The id form of the `upsert` hit path for a caller that already holds
+        /// the id (`lookupForInsert`); routes through `HashMap::setValueAt`, which
+        /// marks the aggregate `Restructured`. Single-threaded write side only
+        /// (I-83).
+        ///
+        /// @tparam VS2 The value store (defaulted; do not pass).
+        /// @param id A minted id; `1 <= id <= count()`.
+        /// @param v The new value.
+        /// @return Nothing.
+        template <typename VS2 = VS>
+        void setValueAt(int32_t id, const typename VS2::ValueType& v) {
+            inner_.setValueAt(id, v);
         }
 
         // ---- SET-MAP surface (instantiates on call) ------------------------

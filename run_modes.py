@@ -24,6 +24,7 @@
 
 
 import expression_utils
+import fta_shortcut
 import generate_full_proof_graph
 import json
 import re
@@ -31,12 +32,14 @@ import sys
 import time
 import shutil
 import os
+import tempfile
 from configuration_reader import configuration_reader
 from pathlib import Path
 import subprocess
 import process_proof_graphs
 import verifier
 from proof_export import live as lean_live
+import compilation_state
 from incubator_to_simple_facts import convert_incubator_theorems
 from frame_timing import StageTimer
 
@@ -103,6 +106,7 @@ def _seed_per_batch_binary(tag: str) -> None:
         shutil.copyfile(shared, target)
     else:
         target.write_text("{}\n", encoding="utf-8")
+    compilation_state.seed_state(PROJECT_ROOT, tag)
 
 
 def _merge_into_shared(tag: str) -> None:
@@ -134,9 +138,10 @@ def _merge_into_shared(tag: str) -> None:
     filter; anchor entries are inert in batches whose theorems do not name
     them (Peano references ``AnchorPeano``, never ``AnchorIncubator``).
 
-    The shared file grows monotonically over the run; entries already present
-    are not overwritten so a name allocated by an earlier batch keeps its
-    original definition.
+    Compilation migration runs before this merge: retired numbered entries
+    and their references have already been replaced. Surviving entries are
+    not overwritten, so every retained name keeps its original definition.
+    The compilation-state sidecar preserves monotone issued-number counters.
     """
     bin_dir = PROJECT_ROOT / "files" / "GL_binaries"
     shared = bin_dir / "GL_binary_shared.json"
@@ -417,10 +422,53 @@ def _filter_vacuous_tainted(theorems_dir: Path, raw_dir: Path) -> None:
         print(f"[VACUOUS-TAINT] {thm}")
 
 
+def _prepare_batch_conjectures(tag: str, config, theorems_dir: Path) -> None:
+    """@brief Prepare generated and externally supplied proof obligations.
+
+    @details
+    An empty external input contributes no conjectures. A batch that disables
+    generation must supply a nonempty file. Supplied rows enter only the
+    conjecture file; earlier proved theorems and external premises are untouched.
+    Generated mirror and OR metadata are empty for a supplied-only batch.
+
+    @param tag Configuration suffix passed to the native conjecturer.
+    @param config Loaded batch configuration with its input policy.
+    @param theorems_dir Destination folder for this batch's proof obligations.
+    @return None.
+    @invariant Disabling generation requires nonempty external conjectures.
+    """
+    external = []
+    if config.external_conjectures_file:
+        source = PROJECT_ROOT / config.external_conjectures_file
+        assert source.is_file(), f"External conjectures file is missing: {source}"
+        external = [line.strip() for line in source.read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+        assert all(line.startswith("(") and line.endswith(")") for line in external)
+    assert config.generate_conjectures or external, (
+        f"{tag}: generation is disabled but external conjectures are empty")
+    theorems_dir.mkdir(parents=True, exist_ok=True)
+    destination = theorems_dir / "conjectures.txt"
+    if config.generate_conjectures:
+        print(f"Conjecture creation started for {tag}.")
+        with StageTimer("native.conjecturer", parent="python.pipeline", batch=tag, excluded=True):
+            subprocess.run([str(_find_gl_quick_exe()), "--conjecture", tag],
+                           cwd=PROJECT_ROOT, check=True)
+        print(f"Conjecture creation finished for {tag}.")
+    else:
+        assert destination.resolve() != source.resolve(), "External input must remain durable"
+        destination.write_text("", encoding="utf-8")
+        for name in ("or_pairs.txt", "mirror_pairs.txt"):
+            (theorems_dir / name).write_text("", encoding="utf-8")
+    if external:
+        with destination.open("a", encoding="utf-8") as output:
+            output.write("\n".join(external) + "\n")
+        print(f"Loaded {len(external)} external conjectures for {tag}.")
+
+
 def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
                simple_facts_fn=None, add_cross_anchor: bool = True,
                phase2_backend: str = None):
-    """Run a single batch: conjecture generation + anchor connections + prover.
+    """Run one batch: supplied/generated goals, anchor connections, and prover.
 
     `add_cross_anchor` defaults True for the historic single-batch-per-tag
     behaviour. The orchestrator passes False for the 2nd, 3rd, … batches
@@ -447,19 +495,9 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
             for n in config.parameters.simple_facts_parameters:
                 simple_facts_fn(n)
 
-    # B. Create Expressions (C++ conjecturer)
-    start_time = time.time()
-    print(f"Conjecture creation started for {tag}.")
-    exe_path = _find_gl_quick_exe()
-    with StageTimer(
-        "native.conjecturer", parent="python.pipeline", batch=tag, excluded=True
-    ):
-        subprocess.run(
-            [str(exe_path), "--conjecture", tag], cwd=PROJECT_ROOT, check=True
-        )
-    print(f"Conjecture creation finished for {tag}.")
-    end_time = time.time()
-    print(f"Conjecture creation runtime: {end_time - start_time:.5f} seconds")
+    # B. Prepare this batch's proof obligations.
+    target_dir = theorems_dir or PROJECT_ROOT / (config.theorems_folder or "files/theorems")
+    _prepare_batch_conjectures(tag, config, target_dir)
 
     # C. Connect to Previous Anchors (Current -> Prev) — only on first batch per tag
     if add_cross_anchor:
@@ -480,12 +518,17 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     # it allocated.
     with StageTimer("python.binary_seed", parent="python.pipeline", batch=tag):
         _seed_per_batch_binary(tag)
+    if tag == "FTA":
+        with StageTimer("python.fta_input_capture", parent="python.pipeline", batch=tag):
+            fta_shortcut.capture(PROJECT_ROOT)
     os.environ["GL_FRAME_BATCH"] = tag
     with StageTimer(f"native.{tag}", parent="python.pipeline", batch=tag):
         run_gl_quick(tag, phase2_backend=phase2_backend)
     # Fold any newly-allocated spontaneous entries from this batch back into
     # the shared registry so the next batch starts with them.
     with StageTimer("python.binary_merge", parent="python.pipeline", batch=tag):
+        migration = compilation_state.migrate_batch(PROJECT_ROOT, tag)
+        print(f"[compilation] {tag}: {migration}")
         _merge_into_shared(tag)
 
     # Vacuity taint closure: retire pool theorems whose proofs cite a
@@ -510,17 +553,22 @@ RUN_MAIN_PATH = True  # full pipeline: incubator + main (determinism study compl
 SIMPLE_FACTS_MAP = {}
 
 
-def full_run(phase2_backend: str = None):
-    
-    """
-    Unified pipeline. For each tag: Incubator{Tag} -> {Tag}.
-    Incubator produces ground-level facts for CE filtering.
-    Main path produces proof graph theorems.
-    Use --no-clean to keep previous results (e.g. run only Gauss after Peano).
+def full_run(phase2_backend: str = None) -> int:
+    """@brief Run the unified pipeline and return the verifier's failure count.
 
-    ``phase2_backend`` is ``None`` for per-batch ``use_gpu`` selection (the
-    processor route unless a config pins CUDA), or an explicit ``cpu``/``cuda``
-    override for the whole run (``main.py --GPU`` passes ``cuda``).
+    @details
+    For each tag: Incubator{Tag} -> {Tag}. Incubator produces ground-level
+    facts for CE filtering. Main path produces proof graph theorems, then FTA
+    consumes its supplied conjectures and the preceding proved pool. Use
+    --no-clean to keep previous results. The finalization verifies the main
+    and incubator graphs; their combined failure count is returned so that
+    ``main.py`` can end a run with failures in a failed process status.
+
+    @param phase2_backend ``None`` for per-batch ``use_gpu`` selection (the
+           processor route unless a config pins CUDA), or an explicit
+           ``cpu``/``cuda`` override for the whole run (``main.py --GPU``
+           passes ``cuda``).
+    @return The verifier failures of the main and incubator graphs together.
     """
     tags = ["Peano", "Gauss"]  # full pipeline
 
@@ -654,94 +702,19 @@ def full_run(phase2_backend: str = None):
                        add_cross_anchor=(j == 0),
                        phase2_backend=phase2_backend)
 
+    # FTA uses the preceding proved pool and supplied conjectures directly.
+    # Its input already contains the Peano and Gauss anchor connections.
+    if RUN_MAIN_PATH:
+        print("\n=== FTA ===")
+        _run_batch("FTA", prev_tags=tags, theorems_dir=theorems_dir,
+                   add_cross_anchor=False, phase2_backend=phase2_backend)
+
     # 3. Finalization
     visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
     configuration_visu = configuration_reader(visu_config_path)
 
-    # Cross-batch HTML link plumbing: the incubator HTML can deep-link
-    # into the main pipeline's HTML (and vice versa) so an external-
-    # theorem citation in an incubator chapter opens the corresponding
-    # main-pipeline chapter in a new browser tab. Each side passes the
-    # other as a sibling_graphs entry; out_dirs are used to compute
-    # relative URLs from one HTML tree to the other.
-    main_proc_dir = PROJECT_ROOT / "files" / "processed_proof_graph"
-    main_full_dir = PROJECT_ROOT / "files" / "full_proof_graph"
-
-    incubator_siblings = []
-    if RUN_MAIN_PATH:
-        incubator_siblings.append({"proc_dir": main_proc_dir, "out_dir": main_full_dir})
-    main_siblings = []
-    if RUN_INCUBATOR:
-        main_siblings.append({"proc_dir": incubator_proc_dir, "out_dir": incubator_full_dir})
-
-    # 3a. Main proof graph — must run first so files/processed_proof_graph/
-    # global_theorem_list.txt exists before the incubator HTML pass
-    # (Section 3b) references it via `incubator_siblings`. Otherwise
-    # generate_full_proof_graph.read_theorem_list raises FileNotFoundError
-    # when the sibling read hits a not-yet-created path on a fresh worktree.
-    if RUN_MAIN_PATH:
-        print("\n--- Generating Proof Graph ---")
-        with StageTimer(
-            "python.processed_graph.main", parent="python.pipeline", batch="main"
-        ):
-            process_proof_graphs.create_processed_proof_graph(configuration_visu)
-        # Lean export of the Peano + Gauss theorems into
-        # files/full_proof_graph/lean_export/ (skipped with one notice when
-        # no Lean toolchain is installed); runs before the HTML so the
-        # chapter pages can link their Lean twins.
-        with StageTimer(
-            "python.lean_export.main", parent="python.pipeline", batch="main"
-        ):
-            lean_live.export_main_graph(
-                main_proc_dir, main_full_dir,
-                PROJECT_ROOT / "files" / "config",
-                PROJECT_ROOT / "files" / "GL_binaries")
-        with StageTimer(
-            "python.html.main", parent="python.pipeline", batch="main"
-        ):
-            generate_full_proof_graph.generate_proof_graph_pages(
-                configuration_visu, sibling_graphs=main_siblings)
-
-    # 3b. Incubator HTML (incubator processed proof graph already built
-    # in the tag loop; the main sibling's processed_proof_graph is now
-    # built by Section 3a above).
-    if RUN_INCUBATOR:
-        print("\n--- Generating Incubator Proof Graph HTML ---")
-        with StageTimer(
-            "python.html.incubator", parent="python.pipeline", batch="incubator"
-        ):
-            generate_full_proof_graph.generate_proof_graph_pages(
-                configuration_visu, proc_dir=incubator_proc_dir,
-                out_dir=incubator_full_dir,
-                sibling_graphs=incubator_siblings)
-
-    # 4. Verification
-    all_success = 0
-    all_failure = 0
-
-    if RUN_INCUBATOR:
-        print("\n--- Running Incubator Proof Graph Verifier ---")
-        with StageTimer(
-            "python.verifier.incubator", parent="python.pipeline", batch="incubator"
-        ):
-            incubator_state = verifier.run_verifier(str(incubator_proc_dir))
-            verifier.print_report(incubator_state)
-            s, f = verifier.get_totals(incubator_state)
-        all_success += s
-        all_failure += f
-
-    if RUN_MAIN_PATH:
-        print("\n--- Running Proof Graph Verifier ---")
-        with StageTimer(
-            "python.verifier.main", parent="python.pipeline", batch="main"
-        ):
-            main_state = verifier.run_verifier(
-                str(PROJECT_ROOT / "files" / "processed_proof_graph")
-            )
-            verifier.print_report(main_state)
-            s, f = verifier.get_totals(main_state)
-        all_success += s
-        all_failure += f
+    all_success, all_failure = _finish_full_graphs(
+        configuration_visu, RUN_MAIN_PATH, RUN_INCUBATOR)
 
     if all_failure == 0:
         art = (
@@ -758,49 +731,125 @@ def full_run(phase2_backend: str = None):
             f"        {all_success} checks, 0 failures — airtight.\n"
         )
         print(art)
+    return all_failure
+
+
+def _finalize_incubator_worker(result_path: str, include_main: bool) -> None:
+    """@brief Render and verify the completed incubator graph in its own process.
+
+    @details
+    Reads completed processed graphs and writes only incubator HTML, its timing
+    records, and the requested result file. Separate process state isolates the
+    renderer's configuration and link maps from simultaneous main rendering.
+
+    @param result_path JSON destination for the verifier success/failure totals.
+    @param include_main Whether main chapters are available as sibling links.
+    @return None.
+    @invariant All processed inputs are complete before this worker starts.
+    @see _finish_full_graphs
+    """
+    with StageTimer("python.finalization.incubator", parent="python.finalization", batch="incubator"):
+        proc_dir = PROJECT_ROOT / "files/incubator/processed_proof_graph"
+        out_dir = PROJECT_ROOT / "files/incubator/full_proof_graph"
+        config = configuration_reader(PROJECT_ROOT / "files/config/ConfigVisu.json")
+        siblings = ([{"proc_dir": PROJECT_ROOT / "files/processed_proof_graph",
+                      "out_dir": PROJECT_ROOT / "files/full_proof_graph"}]
+                    if include_main else [])
+        print("\n--- Generating Incubator Proof Graph HTML ---")
+        with StageTimer("python.html.incubator", parent="python.finalization.incubator", batch="incubator"):
+            generate_full_proof_graph.generate_proof_graph_pages(
+                config, proc_dir=proc_dir, out_dir=out_dir, sibling_graphs=siblings)
+        print("\n--- Running Incubator Proof Graph Verifier ---")
+        with StageTimer("python.verifier.incubator", parent="python.finalization.incubator", batch="incubator"):
+            state = verifier.run_verifier(str(proc_dir))
+            verifier.print_report(state)
+            success, failure = verifier.get_totals(state)
+        Path(result_path).write_text(json.dumps({"success": success, "failure": failure}), encoding="utf-8")
+
+
+def _finish_full_graphs(config, run_main: bool, run_incubator: bool) -> tuple[int, int]:
+    """@brief Finish independent main and incubator outputs concurrently.
+
+    @details
+    Completes main processing first so both sibling registries exist. A child
+    process renders and verifies the incubator while the parent exports Lean,
+    renders main HTML, and verifies main. The parent joins the child on every
+    exit path and retains its log. Failed child execution asserts with that log.
+
+    @param config Fixed visualization configuration for main output.
+    @param run_main Whether the main graph is enabled.
+    @param run_incubator Whether the incubator graph is enabled.
+    @return Combined verifier success and failure counts.
+    @invariant Main HTML follows Lean; output trees and renderer state are separate.
+    @see _finalize_incubator_worker
+    """
+    main_proc = PROJECT_ROOT / "files/processed_proof_graph"
+    main_out = PROJECT_ROOT / "files/full_proof_graph"
+    if run_main:
+        print("\n--- Generating Proof Graph ---")
+        with StageTimer("python.processed_graph.main", parent="python.pipeline", batch="main"):
+            process_proof_graphs.create_processed_proof_graph(config)
+    success = failure = 0
+    with StageTimer("python.finalization", parent="python.pipeline"):
+        process = None
+        if run_incubator:
+            worker_log = tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix="incubator_finalize_", suffix=".log",
+                dir=PROJECT_ROOT / ".debug", delete=False)
+            result_path = Path(worker_log.name).with_suffix(".json")
+            command = [sys.executable, "-c",
+                       "import sys, run_modes; run_modes._finalize_incubator_worker(sys.argv[1], sys.argv[2] == '1')",
+                       str(result_path), "1" if run_main else "0"]
+            worker_environment = dict(os.environ)
+            worker_environment["PYTHONIOENCODING"] = "utf-8"
+            process = subprocess.Popen(command, cwd=PROJECT_ROOT, env=worker_environment,
+                                       stdout=worker_log, stderr=subprocess.STDOUT)
+        try:
+            if run_main:
+                with StageTimer("python.finalization.main", parent="python.finalization", batch="main"):
+                    with StageTimer("python.lean_export.main", parent="python.finalization.main", batch="main"):
+                        lean_live.export_main_graph(main_proc, main_out,
+                                                    PROJECT_ROOT / "files/config",
+                                                    PROJECT_ROOT / "files/GL_binaries")
+                    siblings = ([{"proc_dir": PROJECT_ROOT / "files/incubator/processed_proof_graph",
+                                  "out_dir": PROJECT_ROOT / "files/incubator/full_proof_graph"}]
+                                if run_incubator else [])
+                    with StageTimer("python.html.main", parent="python.finalization.main", batch="main"):
+                        generate_full_proof_graph.generate_proof_graph_pages(config, sibling_graphs=siblings)
+                    print("\n--- Running Proof Graph Verifier ---")
+                    with StageTimer("python.verifier.main", parent="python.finalization.main", batch="main"):
+                        state = verifier.run_verifier(str(main_proc))
+                        verifier.print_report(state)
+                        success, failure = verifier.get_totals(state)
+        finally:
+            if process is not None:
+                return_code = process.wait()
+                worker_log.close()
+                print(Path(worker_log.name).read_text(encoding="utf-8"), end="")
+                assert return_code == 0, f"Incubator finalization failed: {worker_log.name}"
+        if process is not None:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            assert set(result) == {"success", "failure"}
+            assert all(type(value) is int and value >= 0 for value in result.values())
+            success += result["success"]
+            failure += result["failure"]
+    return success, failure
 
 
 def shortcut_run(phase2_backend: str = "cpu"):
-    """@brief FTA-shortcut pipeline (``main.py --shortcut``): prove the
-    hand-maintained conjecture list against the corpus supplied as external
-    theorems, entirely inside ``files/shortcut/``.
+    """@brief Replay the full pipeline's saved FTA input in the shortcut tree.
 
     @details
-    Implements D-248 (see ``docs/agentic_swdd/40_decisions.md``
-    and ``docs/fta_ladder/fta_shortlist.md``): the prover receives the
-    previously proved Peano + Gauss corpus externally plus a list of true
-    conjectures, and assembles the proofs autonomously. Stages, mirroring
-    ``full_run`` / ``_run_batch`` for the single ``Shortcut`` batch:
+    The full run captures its prepared FTA registry, theorem channels and prior
+    proof chapters. Replay validates that capture, restores those bytes, then
+    runs the same native FTA batch and graph processing. A full run is required
+    after changing configurations, definitions or the supplied conjectures.
+    The shortcut skips earlier computation and connected Lean certification.
 
-    1. Preconditions (assert, never fall back): the externals snapshot
-       ``files/shortcut/theorems/externally_provided_theorems.txt`` in
-       EXPANDED BASE FORM (rows of the main ``theorems.txt``, refreshed
-       manually after a full run — base form is registry-independent, so
-       the run needs no prior spontaneous registry) and the
-       hand-maintained ``conjectures.txt``.
-    2. Clean start: under ``CLEAN_RUN``, wipe ``files/GL_binaries`` and
-       ``files/simple_facts`` (every big run starts clean/empty), then
-       clean the shortcut tree: wipe ``raw_proof_graph``, truncate the
-       theorems-folder run products, keep the two durable inputs,
-       re-mirror the externals
-       (``_setup_theorem_folder`` -> ``--mirror-externals``).
-    3. Run the prover: seed ``GL_binary_FTA.json`` from shared (an empty
-       object on the clean start), invoke
-       ``gl_quick.exe Shortcut --conjectures-file ... --externals-file ...``
-       (``ConfigFTA.json`` routes all outputs into ``files/shortcut/``
-       and sets ``skip_compression``), merge new spontaneous names back into
-       shared. No conjecturer step — ``conjectures.txt`` is the input.
-    4. Vacuity taint closure over the shortcut pool.
-    5. Processed proof graph + HTML export + verifier report, all under
-       ``files/shortcut/``.
-
-    ``full_run`` is untouched by this mode; the main ``files/theorems/``
-    pool is never written.
-
-    @param phase2_backend Explicit ``cpu`` or ``cuda`` Phase 2 implementation
-        (default ``cpu`` — the processor route is the default of every run;
-        ``main.py --GPU`` passes ``cuda``).
-    @return None. Raises on any precondition or subprocess failure.
+    @param phase2_backend Explicit cpu or cuda Phase 2 implementation.
+    @return The shortcut graph's verifier failure count. Missing, stale or
+            invalid input asserts before cleanup.
+    @see fta_shortcut.capture, fta_shortcut.restore
     """
     assert phase2_backend in ("cpu", "cuda"), \
         "phase2 backend must be exactly cpu or cuda"
@@ -811,35 +860,8 @@ def shortcut_run(phase2_backend: str = "cpu"):
     shortcut_proc_dir = shortcut_dir / "processed_proof_graph"
     shortcut_full_dir = shortcut_dir / "full_proof_graph"
 
-    # 1. Preconditions — every input the mode cannot regenerate itself. The
-    # externals snapshot is a tracked input in its own right: the shortcut is
-    # independent of the main path and never reads its theorem pool.
-    externals_path = shortcut_theorems_dir / "externally_provided_theorems.txt"
-    assert externals_path.exists() and externals_path.read_text(
-        encoding="utf-8").strip(), (
-        f"{externals_path} missing or empty — snapshot it from a full run: "
-        "copy files/theorems/theorems.txt (base form) there.")
-    conjectures_path = shortcut_theorems_dir / "conjectures.txt"
-    assert conjectures_path.exists() and conjectures_path.read_text(
-        encoding="utf-8").strip(), (
-        f"{conjectures_path} missing or empty — it is the hand-maintained "
-        "conjecture list (docs/fta_ladder/fta_shortlist.md).")
-    # 2. Clean start. The corpus is BASE FORM (registry-independent), so the
-    # run needs no pre-existing spontaneous registry and no CE fact tables —
-    # like full_run, every big run starts from a clean/empty position: wipe
-    # files/GL_binaries and files/simple_facts, then clean the shortcut tree
-    # (keeping the two durable inputs conjectures.txt and
-    # externally_provided_theorems.txt) and rebuild
-    # compressed_external_theorems.txt via --mirror-externals.
     with StageTimer("python.global_setup", parent="python.pipeline", batch=tag):
-        if CLEAN_RUN:
-            empty_simple_facts()
-            gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
-            if gl_binaries_dir.exists():
-                shutil.rmtree(gl_binaries_dir)
-            gl_binaries_dir.mkdir(parents=True, exist_ok=True)
-        empty_raw_proof_graph(str(shortcut_raw_dir.relative_to(PROJECT_ROOT)))
-        _setup_theorem_folder(shortcut_theorems_dir)
+        fta_shortcut.restore(PROJECT_ROOT)
 
     # 3. Prover run (no conjecturer — conjectures.txt is the input).
     with StageTimer("python.binary_seed", parent="python.pipeline", batch=tag):
@@ -847,12 +869,15 @@ def shortcut_run(phase2_backend: str = "cpu"):
     os.environ["GL_FRAME_BATCH"] = tag
     with StageTimer(f"native.{tag}", parent="python.pipeline", batch=tag):
         run_gl_quick(tag, extra_args=[
+            "--shortcut",
             "--conjectures-file",
-            "files/shortcut/theorems/conjectures.txt",
+            "files/shortcut/theorems/replay_conjectures.txt",
             "--externals-file",
             "files/shortcut/theorems/compressed_external_theorems.txt",
         ], phase2_backend=phase2_backend)
     with StageTimer("python.binary_merge", parent="python.pipeline", batch=tag):
+        migration = compilation_state.migrate_batch(PROJECT_ROOT, tag, shortcut=True)
+        print(f"[compilation] {tag}: {migration}")
         _merge_into_shared(tag)
 
     # 4. Vacuity taint closure over the shortcut pool.
@@ -870,14 +895,9 @@ def shortcut_run(phase2_backend: str = "cpu"):
             configuration_visu, raw_dir=shortcut_raw_dir,
             proc_dir=shortcut_proc_dir,
             theorems_dir=shortcut_theorems_dir)
-    # Lean export of the FTA theorems into files/shortcut/full_proof_graph/
-    # lean_export/: independent of the main path — its only dependency is the
-    # externals snapshot (skipped with one notice without a Lean toolchain).
-    with StageTimer("python.lean_export.shortcut", parent="python.pipeline", batch=tag):
-        lean_live.export_shortcut_graph(
-            shortcut_proc_dir, shortcut_full_dir, externals_path,
-            PROJECT_ROOT / "files" / "config",
-            PROJECT_ROOT / "files" / "GL_binaries")
+    # The connected Lean certificate is produced by the full run.
+    lean_live.skip_export(shortcut_full_dir,
+                         "Development shortcut: run the full pipeline for Lean certification.")
     with StageTimer("python.html.shortcut", parent="python.pipeline", batch=tag):
         generate_full_proof_graph.generate_proof_graph_pages(
             configuration_visu, proc_dir=shortcut_proc_dir,
@@ -907,3 +927,4 @@ def shortcut_run(phase2_backend: str = "cpu"):
     else:
         print(f"\nShortcut verification: {success_count} checks, "
               f"{failure_count} failures.")
+    return failure_count

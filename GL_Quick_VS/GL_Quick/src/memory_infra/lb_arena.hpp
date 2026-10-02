@@ -257,6 +257,46 @@ namespace gl {
         /// this, the cursor restarts at 0.
         void releaseAll();
 
+        /// @brief Set the pool purpose this arena's blocks are attributed to.
+        ///
+        /// @details
+        /// Every block the arena draws or returns — byte-bump blocks, page-tier
+        /// blocks and the three block directories' spilled blocks — is booked
+        /// under this purpose in the pool's attribution
+        /// (`GlobalMemoryManager::attribution`). Legal only while the arena
+        /// holds no block (asserted), because a block must be returned under
+        /// the purpose it was granted under. Observability only (Rule 16).
+        ///
+        /// @param purpose The consumer class; not `PoolPurpose::Count`.
+        void setPurpose(PoolPurpose purpose);
+
+        /// @brief The pool purpose this arena's blocks are attributed to.
+        ///
+        /// @return The purpose set by `setPurpose`, else `Unattributed`.
+        PoolPurpose purpose() const { return purpose_; }
+
+        /// @brief Give the page table and the carved-block list caller-owned
+        ///        direct storage, so a large arena's tables need no spilled
+        ///        pool block.
+        ///
+        /// @details
+        /// Without it the page table keeps `kArenaPageTableInline` entries
+        /// inline and spills the rest into whole pool blocks — one block for a
+        /// few KiB of entries on a typical logic block, likewise the carved-
+        /// block list past `kArenaBlockTableInline` blocks. A logic block's
+        /// `LbMemory` owns larger arrays in the unused room of its `LbStore`
+        /// slot and attaches them here from its constructor. Entries past the
+        /// attached capacities still spill as before. The arrays must outlive
+        /// the arena (declared before it). Legal only on an arena that holds
+        /// no block and no vid (asserted).
+        ///
+        /// @param pageTable          Array for the vid -> page table; non-null.
+        /// @param pageTableCapacity  Its entry count; `>= kArenaPageTableInline`.
+        /// @param pageBlocks         Array for the carved-block list; non-null.
+        /// @param pageBlocksCapacity Its entry count; `>= kArenaBlockTableInline`.
+        void attachDirectoryStorage(char** pageTable, int32_t pageTableCapacity,
+                                    char** pageBlocks, int32_t pageBlocksCapacity);
+
         /// @brief Blocks currently held (telemetry / tests) — byte-bump and
         ///        page-tier blocks together.
         ///
@@ -947,6 +987,7 @@ namespace gl {
         void releaseFrom(PtrDirectory<kArenaBlockTableInline>& dir);
 
         GlobalMemoryManager* global_ = nullptr;  // null until bound
+        PoolPurpose purpose_ = PoolPurpose::Unattributed;  // pool attribution of every block
         int32_t blockBytes_ = 0;     // 0 until ensureGeometry; cached after
         int32_t blockShift_ = 0;     // log2(blockBytes_)
         uint32_t blockMask_ = 0;     // blockBytes_ - 1

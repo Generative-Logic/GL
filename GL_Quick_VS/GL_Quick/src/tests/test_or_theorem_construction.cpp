@@ -47,7 +47,7 @@ TEST(or_theorem_construction, single_direction_constructs_or) {
     const std::string companion = ea.headSwitchOne(totality);
     ASSERT_TRUE(!companion.empty());
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "single chapter proof", "-1", "-1"));
     ea.orPairsFromHeadSwitch.push_back({totality, companion});
 
     std::set<std::string> consumed;
@@ -78,8 +78,8 @@ TEST(or_theorem_construction, mirror_pair_dedup_and_both_consumed) {
     const std::string mirror = ea.headSwitchOne(parent);
     ASSERT_TRUE(!mirror.empty());
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(parent, "direct", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(mirror, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(parent, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(mirror, "single chapter proof", "-1", "-1"));
     ea.orPairsFromHeadSwitch.push_back({parent, mirror});
     ea.orPairsFromHeadSwitch.push_back({mirror, parent});
 
@@ -107,7 +107,7 @@ TEST(or_theorem_construction, chain_of_negated_premises_folds_all_branches) {
     const std::string companion = ea.headSwitchOne(trichotomy);
     ASSERT_TRUE(!companion.empty());
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(trichotomy, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(trichotomy, "single chapter proof", "-1", "-1"));
     ea.orPairsFromHeadSwitch.push_back({trichotomy, companion});
 
     std::set<std::string> consumed;
@@ -151,7 +151,7 @@ TEST(or_theorem_construction, in_run_constructs_registers_and_queues) {
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
         "(>[9](in[9,1])(>[10](in[10,1])"
         "(>[]!(preorder[1,4,9,10])(preorder[1,4,10,9])))))";
-    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "single chapter proof", "-1", "-1"));
 
     ea.constructOrTheoremsInRun();
 
@@ -176,7 +176,7 @@ TEST(or_theorem_construction, in_run_rescan_is_idempotent) {
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
         "(>[9](in[9,1])(>[10](in[10,1])"
         "(>[]!(preorder[1,4,9,10])(preorder[1,4,10,9])))))";
-    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "single chapter proof", "-1", "-1"));
 
     ea.constructOrTheoremsInRun();
     const std::size_t rows = ea.globalTheoremList.size();
@@ -201,9 +201,9 @@ TEST(or_theorem_construction, in_run_mirror_scanned_later_no_double) {
     const std::string mirror = ea.headSwitchOne(parent);
     ASSERT_TRUE(!mirror.empty());
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(parent, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(parent, "single chapter proof", "-1", "-1"));
     ea.constructOrTheoremsInRun();
-    ASSERT_TRUE(ea.appendGlobalTheorem(mirror, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(mirror, "single chapter proof", "-1", "-1"));
     ea.constructOrTheoremsInRun();
 
     int orRows = 0;
@@ -227,7 +227,7 @@ TEST(or_theorem_construction, export_seam_idempotent_after_in_run) {
     const std::string companion = ea.headSwitchOne(totality);
     ASSERT_TRUE(!companion.empty());
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "single chapter proof", "-1", "-1"));
     ea.constructOrTheoremsInRun();
     const std::size_t rowsAfterInRun = ea.globalTheoremList.size();
     ASSERT_EQ(static_cast<int>(ea.fullTheoremList.size()), 1);
@@ -252,7 +252,7 @@ TEST(or_theorem_construction, in_run_compressor_mode_noop) {
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
         "(>[9](in[9,1])(>[10](in[10,1])"
         "(>[]!(preorder[1,4,9,10])(preorder[1,4,10,9])))))";
-    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "direct", "-1", "-1"));
+    ASSERT_TRUE(ea.appendGlobalTheorem(totality, "single chapter proof", "-1", "-1"));
 
     ea.constructOrTheoremsInRun();
 

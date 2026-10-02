@@ -23,24 +23,125 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 /// @file
-/// @brief Phase-6 unit tests for the compressor module.
+/// @brief Unit tests for compressor graph values and reachability.
 ///
 /// @details
 /// `Compressor::run` requires a fully-constructed `ExpressionAnalyzer`
 /// (loads config files) and runs the prover end-to-end on a set of
-/// theorems, which is too heavyweight for a <30 s test budget. Phase 6
-/// covers the value-only piece: `CompressorNode` default + populated
-/// shape and `std::stable_sort` determinism on a synthetic theorem list
-/// (the determinism property OPEN-13 in `docs/agentic_swdd/SwDD.md` calls out).
-///
-/// `Compressor` instance tests land in Phase 7+ alongside
-/// ExpressionAnalyzer machinery.
+/// theorems, which belongs to the full-pipeline gate. These tests cover graph
+/// values and compare the indexed reachability oracle against an independent
+/// string-set fixed point, including cycles, scope distinctions, repeated
+/// dependencies, unconditional alternatives, and removed theorem seeds.
 
 #include "test_harness.hpp"
 
 #include "../compressor.hpp"
 
 #include <algorithm>
+
+TEST(compressor, indexed_reachability_preserves_scope_and_duplicate_dependencies) {
+    const gl::ExpressionWithValidity a("A", "main");
+    const gl::ExpressionWithValidity b("B", "main");
+    const gl::ExpressionWithValidity scopedA("A", "main_boundary_child");
+    gl::CompressorNode node;
+    node.head = b;
+    node.graph[b] = {{a, a}, {scopedA}};
+    node.graph[a] = {{b}};
+    const gl::CompressorReachability indexed(node, {"A", "unused"});
+    ASSERT_TRUE(indexed.isDerivable({}));
+    ASSERT_FALSE(indexed.isDerivable({"A"}));
+    ASSERT_TRUE(indexed.isDerivable({"unused"}));
+    ASSERT_FALSE(indexed.isDerivable({"A", "unused"}));
+
+    node.premises.insert(scopedA);
+    const gl::CompressorReachability scoped(node, {"A"});
+    ASSERT_TRUE(scoped.isDerivable({"A"}));
+
+    node.premises.clear();
+    node.graph[a].push_back({});
+    const gl::CompressorReachability unconditional(node, {"A"});
+    ASSERT_TRUE(unconditional.isDerivable({"A"}));
+}
+
+TEST(compressor, indexed_reachability_handles_heads_outside_graph_and_removed_seeds) {
+    gl::CompressorNode node;
+    node.head = gl::ExpressionWithValidity("A", "main");
+    const gl::CompressorReachability theoremHead(node, {"A", "A", "irrelevant"});
+    ASSERT_TRUE(theoremHead.isDerivable({}));
+    ASSERT_FALSE(theoremHead.isDerivable({"A"}));
+
+    node.premises.insert(node.head);
+    const gl::CompressorReachability premiseHead(node, {});
+    ASSERT_TRUE(premiseHead.isDerivable({"A"}));
+
+    node.premises.clear();
+    node.head.validityName = "main_boundary_child";
+    const gl::CompressorReachability scopedHead(node, {"A"});
+    ASSERT_FALSE(scopedHead.isDerivable({}));
+
+    const gl::ExpressionWithValidity theorem("B", "main");
+    node.graph[node.head] = {{theorem}};
+    node.graph[theorem] = {{gl::ExpressionWithValidity("C", "main")}};
+    const gl::CompressorReachability derivedRemoved(node, {"B", "C"});
+    ASSERT_TRUE(derivedRemoved.isDerivable({"B"}));
+    ASSERT_FALSE(derivedRemoved.isDerivable({"B", "C"}));
+}
+
+TEST(compressor, indexed_reachability_matches_full_scan_on_cyclic_graphs) {
+    // Independent oracle: the original string-set least-fixed-point algorithm.
+    const auto reference = [](const gl::CompressorNode& node,
+                              const std::vector<std::string>& theorems,
+                              const std::set<std::string>& removed) {
+        std::set<gl::ExpressionWithValidity> alive = node.premises;
+        for (const auto& theorem : theorems) {
+            if (removed.count(theorem) == 0)
+                alive.emplace(theorem, "main");
+        }
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const auto& row : node.graph) {
+                for (const auto& dependencies : row.second) {
+                    bool reached = true;
+                    for (const auto& dependency : dependencies)
+                        reached = reached && alive.count(dependency) != 0;
+                    if (reached && alive.insert(row.first).second) changed = true;
+                }
+            }
+        }
+        return alive.count(node.head) != 0;
+    };
+    const std::vector<std::string> theorems{"A", "B", "C", "unused"};
+    std::vector<gl::ExpressionWithValidity> terms;
+    for (const auto& name : {"A", "B", "C", "D"}) {
+        terms.emplace_back(name, "main");
+        terms.emplace_back(name, "main_boundary_child");
+    }
+    uint32_t random = 47291;
+    const auto next = [&]() { random = random * 1664525u + 1013904223u; return random; };
+    for (int sample = 0; sample < 256; ++sample) {
+        gl::CompressorNode node;
+        node.head = terms[(next() >> 16) % terms.size()];
+        for (const auto& term : terms) {
+            if ((next() >> 16) % 5 == 0) node.premises.insert(term);
+            const uint32_t alternatives = (next() >> 16) % 4;
+            for (uint32_t alternative = 0; alternative < alternatives; ++alternative) {
+                std::vector<gl::ExpressionWithValidity> dependencies;
+                const uint32_t count = (next() >> 16) % 4;
+                for (uint32_t dependency = 0; dependency < count; ++dependency)
+                    dependencies.push_back(terms[(next() >> 16) % terms.size()]);
+                node.graph[term].push_back(dependencies);
+            }
+        }
+        const gl::CompressorReachability indexed(node, theorems);
+        for (unsigned mask = 0; mask < 16; ++mask) {
+            std::set<std::string> removed;
+            for (std::size_t i = 0; i < theorems.size(); ++i)
+                if ((mask & (1u << i)) != 0) removed.insert(theorems[i]);
+            ASSERT_EQ(indexed.isDerivable(removed), reference(node, theorems, removed));
+        }
+    }
+}
 
 TEST(compressor, compressornode_default_is_empty) {
     gl::CompressorNode n;

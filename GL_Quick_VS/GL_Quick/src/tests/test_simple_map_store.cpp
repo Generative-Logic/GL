@@ -201,3 +201,79 @@ TEST(simple_map_store, forced_two_level_spill_no_corruption) {
         ASSERT_TRUE(s.findChild(parent(i), "(absent)") == nullptr);
     }
 }
+
+// anyChild on a parent with no edges answers false without calling the test.
+TEST(simple_map_store, anychild_empty_parent_is_false) {
+    StoreFixture f;
+    gl::SimpleMapStore& s = f.store;
+    int calls = 0;
+    ASSERT_FALSE(s.anyChild(fakeLb(0x100), [&](gl::Memory*) { ++calls; return true; }));
+    ASSERT_EQ(calls, 0);
+}
+
+// anyChild answers true when one child matches, whatever its insertion position.
+TEST(simple_map_store, anychild_true_when_some_child_matches) {
+    StoreFixture f;
+    gl::SimpleMapStore& s = f.store;
+    gl::Memory* p = fakeLb(0x100);
+    gl::Memory* ca = fakeLb(0xA);
+    gl::Memory* cb = fakeLb(0xB);
+    gl::Memory* cc = fakeLb(0xC);
+    s.linkChild(p, "(gamma)", cc);
+    s.linkChild(p, "(alpha)", ca);
+    s.linkChild(p, "(beta)", cb);
+    for (gl::Memory* target : { ca, cb, cc }) {
+        int calls = 0;
+        ASSERT_TRUE(s.anyChild(p, [&](gl::Memory* c) { ++calls; return c == target; }));
+        ASSERT_TRUE(calls >= 1 && calls <= 3);
+    }
+}
+
+// anyChild answers false when no child matches, after testing each child once.
+TEST(simple_map_store, anychild_false_when_none_match) {
+    StoreFixture f;
+    gl::SimpleMapStore& s = f.store;
+    gl::Memory* p = fakeLb(0x100);
+    s.linkChild(p, "(k1)", fakeLb(0xA));
+    s.linkChild(p, "(k2)", fakeLb(0xB));
+    s.linkChild(p, "(k3)", fakeLb(0xC));
+    std::vector<gl::Memory*> seen;
+    ASSERT_FALSE(s.anyChild(p, [&](gl::Memory* c) { seen.push_back(c); return false; }));
+    ASSERT_EQ(seen.size(), static_cast<std::size_t>(3));
+    for (gl::Memory* c : { fakeLb(0xA), fakeLb(0xB), fakeLb(0xC) }) {
+        int hits = 0;
+        for (gl::Memory* x : seen) hits += (x == c) ? 1 : 0;
+        ASSERT_EQ(hits, 1);
+    }
+}
+
+// anyChild stops at the first match.
+TEST(simple_map_store, anychild_stops_at_first_match) {
+    StoreFixture f;
+    gl::SimpleMapStore& s = f.store;
+    gl::Memory* p = fakeLb(0x100);
+    s.linkChild(p, "(k1)", fakeLb(0xA));
+    s.linkChild(p, "(k2)", fakeLb(0xB));
+    s.linkChild(p, "(k3)", fakeLb(0xC));
+    int calls = 0;
+    ASSERT_TRUE(s.anyChild(p, [&](gl::Memory*) { ++calls; return true; }));
+    ASSERT_EQ(calls, 1);
+}
+
+// anyChild tests only the children of its own parent, even with interleaved inserts.
+TEST(simple_map_store, anychild_visits_only_own_children) {
+    StoreFixture f;
+    gl::SimpleMapStore& s = f.store;
+    gl::Memory* pA = fakeLb(0x100);
+    gl::Memory* pB = fakeLb(0x200);
+    gl::Memory* a1 = fakeLb(0xA1);
+    gl::Memory* a2 = fakeLb(0xA2);
+    gl::Memory* b1 = fakeLb(0xB1);
+    s.linkChild(pA, "(k1)", a1);
+    s.linkChild(pB, "(k1)", b1);
+    s.linkChild(pA, "(k2)", a2);
+    int calls = 0;
+    ASSERT_FALSE(s.anyChild(pA, [&](gl::Memory* c) { ++calls; return c == b1; }));
+    ASSERT_EQ(calls, 2);
+    ASSERT_TRUE(s.anyChild(pB, [&](gl::Memory* c) { return c == b1; }));
+}

@@ -2707,7 +2707,7 @@
       "actions": 1511,
       "chapters": 33,
       "methods": {
-        "direct": 19,
+        "single chapter proof": 19,
         "induction": 2,
         "reformulated statement": 8
       },
@@ -2998,9 +2998,9 @@
       "chapters": [
         {
           "number": 138,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "138_direct_proof.txt",
+          "source_file": "138_single_chapter_proof.txt",
           "source_sha256": "F2C74777971F7923991038F1F2AF3ED5B93675185E374D4DD65F26E921A4D0D2",
           "steps": [
             {
@@ -3792,7 +3792,7 @@
       "external_dependencies": [],
       "id": "gauss_source_064",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 64",
       "source_index": 64,
       "source_tags": [
@@ -3955,9 +3955,9 @@
       "chapters": [
         {
           "number": 145,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "145_direct_proof.txt",
+          "source_file": "145_single_chapter_proof.txt",
           "source_sha256": "6010FEB98B11E806E48BB1C1D225C12A6DAEF5E3C1558EBFD9F8C29BD9B3434C",
           "steps": [
             {
@@ -4298,7 +4298,7 @@
       "external_dependencies": [],
       "id": "gauss_source_067",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 67",
       "source_index": 67,
       "source_tags": [
@@ -4404,9 +4404,9 @@
       "chapters": [
         {
           "number": 163,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "163_direct_proof.txt",
+          "source_file": "163_single_chapter_proof.txt",
           "source_sha256": "58964CE9FA7FB5EB1BCD6B8A666A89D14C266CA54C2A99B881A4490BE91EAAD4",
           "steps": [
             {
@@ -6598,7 +6598,7 @@
       "external_dependencies": [],
       "id": "gauss_source_085",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 85",
       "source_index": 85,
       "source_tags": [
@@ -6704,9 +6704,9 @@
       "chapters": [
         {
           "number": 165,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "165_direct_proof.txt",
+          "source_file": "165_single_chapter_proof.txt",
           "source_sha256": "BC0E5E19536628B51409CD5EA5C5BAE6532E05E4AB62FE6E0EB3E90EE79F913A",
           "steps": [
             {
@@ -8603,7 +8603,7 @@
       "external_dependencies": [],
       "id": "gauss_source_087",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 87",
       "source_index": 87,
       "source_tags": [
@@ -8761,7 +8761,7 @@
       "chapters": [
         {
           "number": 166,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [
             {
               "compact": {
@@ -8928,7 +8928,7 @@
               }
             }
           ],
-          "source_file": "166_direct_proof.txt",
+          "source_file": "166_single_chapter_proof.txt",
           "source_sha256": "42FC1C0AE5DBCFE06AA93332391701653D3A01375B3145F6EAA664EA964E096A",
           "steps": [
             {
@@ -13000,7 +13000,7 @@
       "external_dependencies": [],
       "id": "gauss_source_088",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 88",
       "source_index": 88,
       "source_tags": [
@@ -13110,9 +13110,9 @@
       "chapters": [
         {
           "number": 169,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "169_direct_proof.txt",
+          "source_file": "169_single_chapter_proof.txt",
           "source_sha256": "0CEC2F660C8DFD3FF28469A8FE6CA8D00CEA27EBC58D2E717DB792BE20195F98",
           "steps": [
             {
@@ -17549,7 +17549,7 @@
       "external_dependencies": [],
       "id": "gauss_source_091",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 91",
       "source_index": 91,
       "source_tags": [
@@ -17756,9 +17756,9 @@
       "chapters": [
         {
           "number": 170,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "170_direct_proof.txt",
+          "source_file": "170_single_chapter_proof.txt",
           "source_sha256": "D9E152A3E6E2D91D8A8317C0EE002CBC2619C2F77D913927CBCCAEF17EBEECB5",
           "steps": [
             {
@@ -18332,7 +18332,7 @@
       "external_dependencies": [],
       "id": "gauss_source_092",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 92",
       "source_index": 92,
       "source_tags": [
@@ -18401,7 +18401,7 @@
       "chapters": [
         {
           "number": 152,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [
             {
               "compact": {
@@ -18513,7 +18513,7 @@
               }
             }
           ],
-          "source_file": "152_direct_proof.txt",
+          "source_file": "152_single_chapter_proof.txt",
           "source_sha256": "F3F60D7A6BDCF1510E1BEBCA972635858433DAB9594D5204A8643B28D9179F3C",
           "steps": [
             {
@@ -22217,7 +22217,7 @@
       "external_dependencies": [],
       "id": "gauss_source_074",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 74",
       "source_index": 74,
       "source_tags": [
@@ -22428,9 +22428,9 @@
       "chapters": [
         {
           "number": 167,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "167_direct_proof.txt",
+          "source_file": "167_single_chapter_proof.txt",
           "source_sha256": "FE7853FBD5213E4F9BE8AFA0217F6C159E71492ABCE15B7BF82758B2BE0643C0",
           "steps": [
             {
@@ -25869,7 +25869,7 @@
       "external_dependencies": [],
       "id": "gauss_source_089",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 89",
       "source_index": 89,
       "source_tags": [
@@ -26026,9 +26026,9 @@
       "chapters": [
         {
           "number": 168,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "168_direct_proof.txt",
+          "source_file": "168_single_chapter_proof.txt",
           "source_sha256": "B61AFA8385C0EC079EB5D9E9B5333A72ED60D2F91F43C8E3867F0195BEF6F538",
           "steps": [
             {
@@ -28905,7 +28905,7 @@
       "external_dependencies": [],
       "id": "gauss_source_090",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 90",
       "source_index": 90,
       "source_tags": [
@@ -29191,9 +29191,9 @@
       "chapters": [
         {
           "number": 148,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "148_direct_proof.txt",
+          "source_file": "148_single_chapter_proof.txt",
           "source_sha256": "9047B5E2663027E6244EACA5D128D0882F1DF1A42B0C72DC8A6651C547A28429",
           "steps": [
             {
@@ -37161,7 +37161,7 @@
       "external_dependencies": [],
       "id": "gauss_source_070",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 70",
       "source_index": 70,
       "source_tags": [
@@ -37651,9 +37651,9 @@
       "chapters": [
         {
           "number": 149,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "149_direct_proof.txt",
+          "source_file": "149_single_chapter_proof.txt",
           "source_sha256": "DCE66536B403587C7E07499D90995EDAC6AB75B27308CFD880AB580C23C344DA",
           "steps": [
             {
@@ -41863,7 +41863,7 @@
       "external_dependencies": [],
       "id": "gauss_source_071",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 71",
       "source_index": 71,
       "source_tags": [
@@ -42193,9 +42193,9 @@
       "chapters": [
         {
           "number": 150,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "150_direct_proof.txt",
+          "source_file": "150_single_chapter_proof.txt",
           "source_sha256": "B566A00819C05C54369A14C5559D2AE762854E6837C93EC98F2EEC8E9CCC3B9A",
           "steps": [
             {
@@ -50163,7 +50163,7 @@
       "external_dependencies": [],
       "id": "gauss_source_072",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 72",
       "source_index": 72,
       "source_tags": [
@@ -50653,9 +50653,9 @@
       "chapters": [
         {
           "number": 151,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "151_direct_proof.txt",
+          "source_file": "151_single_chapter_proof.txt",
           "source_sha256": "99F2A55E02A69669EB9ED656238EA4A740284AF36E347CAB3FE211CAE0662FD9",
           "steps": [
             {
@@ -58623,7 +58623,7 @@
       "external_dependencies": [],
       "id": "gauss_source_073",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 73",
       "source_index": 73,
       "source_tags": [
@@ -59113,9 +59113,9 @@
       "chapters": [
         {
           "number": 153,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "153_direct_proof.txt",
+          "source_file": "153_single_chapter_proof.txt",
           "source_sha256": "FB316EEC7D3F5AE240B20131E92A4002D369F5E7D4709A7EF6FF82704D85874D",
           "steps": [
             {
@@ -67053,7 +67053,7 @@
       "external_dependencies": [],
       "id": "gauss_source_075",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 75",
       "source_index": 75,
       "source_tags": [
@@ -67605,9 +67605,9 @@
       "chapters": [
         {
           "number": 154,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "154_direct_proof.txt",
+          "source_file": "154_single_chapter_proof.txt",
           "source_sha256": "4C32ADCC153A083BD0453975F5F5A085CF447302B715B58C7E9A12C30890244A",
           "steps": [
             {
@@ -75352,7 +75352,7 @@
       "external_dependencies": [],
       "id": "gauss_source_076",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 76",
       "source_index": 76,
       "source_tags": [
@@ -76399,9 +76399,9 @@
       "chapters": [
         {
           "number": 157,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "157_direct_proof.txt",
+          "source_file": "157_single_chapter_proof.txt",
           "source_sha256": "02DF2140ED0098DFCC8EA0BAE2B93C1CBF5A173C0371847AAFF206D9F92813A2",
           "steps": [
             {
@@ -84081,7 +84081,7 @@
       "external_dependencies": [],
       "id": "gauss_source_079",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 79",
       "source_index": 79,
       "source_tags": [
@@ -84552,7 +84552,7 @@
       "chapters": [
         {
           "number": 147,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [
             {
               "compact": {
@@ -84763,7 +84763,7 @@
               }
             }
           ],
-          "source_file": "147_direct_proof.txt",
+          "source_file": "147_single_chapter_proof.txt",
           "source_sha256": "4C5A7531F1B75E2E2E76684C029BB814492D151392B0369AC8891E108F5D5547",
           "steps": [
             {
@@ -90511,7 +90511,7 @@
       "external_dependencies": [],
       "id": "gauss_source_069",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 69",
       "source_index": 69,
       "source_tags": [
@@ -161464,9 +161464,9 @@
       "chapters": [
         {
           "number": 146,
-          "role": "direct_proof",
+          "role": "single_chapter_proof",
           "scope_contexts": [],
-          "source_file": "146_direct_proof.txt",
+          "source_file": "146_single_chapter_proof.txt",
           "source_sha256": "E13D1994B8562A94F475CC6EEACF45DA778FB6145B977F3AD7739064DF70623D",
           "steps": [
             {
@@ -165888,7 +165888,7 @@
       "external_dependencies": [],
       "id": "gauss_source_068",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Gauss source 68",
       "source_index": 68,
       "source_tags": [

@@ -1,0 +1,11 @@
+{
+  "conclusion": "(>[v2](in[v2,N])(>[v3](in[v3,N])(>[](in3[v2,v3,v1,*])(>[](preorder[N,+,i2,v2])(>[v4](in[v4,N])(>[](in3[v2,v4,v1,+])(>[]!(=[v2,v1])(existence20[N,+,*,i2,v1]))))))))",
+  "compact": "(existence20[N,+,*,i2,v1])",
+  "definitions": {
+    "existence20": {"category": "existence", "signature": "(existence20[u_1,u_2,u_3,u_4,u_5])", "elements": ["(in[1,u_1])", "(nontrivialFactor[u_1,u_2,u_3,u_4,u_5,1])"]},
+    "nontrivialFactor": {"category": "existence", "signature": "(nontrivialFactor[u_1,u_2,u_3,u_4,u_5,u_6])", "elements": ["(in[1,u_1])", "(and2[u_6,1,u_5,u_3,u_1,u_2,u_4])"]},
+    "and2": {"category": "and", "signature": "(and2[u_1,u_2,u_3,u_4,u_5,u_6,u_7])", "elements": ["(in3[u_1,u_2,u_3,u_4])", "(preorder[u_5,u_6,u_7,u_1])", "(strictOrder[u_5,u_6,u_1,u_3])", "(preorder[u_5,u_6,u_7,u_2])", "(strictOrder[u_5,u_6,u_2,u_3])"]},
+    "strictOrder": {"category": "and", "signature": "(strictOrder[u_1,u_2,u_3,u_4])", "elements": ["(preorder[u_1,u_2,u_3,u_4])", "!(=[u_3,u_4])"]},
+    "preorder": {"category": "existence", "signature": "(preorder[u_1,u_2,u_3,u_4])", "elements": ["(in[1,u_1])", "(in3[u_3,1,u_4,u_2])"]}
+  }
+}

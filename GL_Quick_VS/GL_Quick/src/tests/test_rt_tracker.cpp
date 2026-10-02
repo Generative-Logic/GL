@@ -127,6 +127,31 @@ TEST(rt_tracker, chain_human_and_filename_round_trip) {
     ASSERT_NE(fn.find("AnchorPeano"), std::string::npos);
 }
 
+// The chain-selected audit accepts the tracker's own root-to-leaf chain and
+// the leaf-to-root `[RT-LB]` print of the same chain; a shorter, longer,
+// differing or empty selection selects nothing.
+TEST(rt_tracker, audit_chain_selection_matches_complete_chain_only) {
+    SyntheticChain c;
+    buildSyntheticChain(c, "(AnchorPeano[N,i0,s])", "(=[v1,v2])");
+    ::gl::rt_tracker::RTTracker tracker(c.leaf, /*triggerSeconds=*/9999,
+                                        /*minPercentage=*/2);
+    const std::string& chain = tracker.chainHuman();
+    using ::gl::rt_tracker::RTTracker;
+    ASSERT_TRUE(RTTracker::auditChainSelects(chain,
+        "(root) -> (AnchorPeano[N,i0,s]) -> (=[v1,v2])"));
+    ASSERT_TRUE(RTTracker::auditChainSelects(chain,
+        "(=[v1,v2]) <- (AnchorPeano[N,i0,s]) <- (root)"));
+    ASSERT_FALSE(RTTracker::auditChainSelects(chain, ""));
+    ASSERT_FALSE(RTTracker::auditChainSelects(chain,
+        "(=[v1,v2]) <- (AnchorPeano[N,i0,s])"));                 // root missing
+    ASSERT_FALSE(RTTracker::auditChainSelects(chain,
+        "(root) -> (AnchorPeano[N,i0,s])"));                      // parent only
+    ASSERT_FALSE(RTTracker::auditChainSelects(chain,
+        "(=[v1,v3]) <- (AnchorPeano[N,i0,s]) <- (root)"));       // other leaf
+    ASSERT_FALSE(RTTracker::auditChainSelects(chain,
+        "(=[v1,v2]) <- (=[v1,v2]) <- (AnchorPeano[N,i0,s]) <- (root)"));
+}
+
 // ---------------------------------------------------------------------------
 // Test 2 — under-trigger run leaves no file behind.
 // ---------------------------------------------------------------------------

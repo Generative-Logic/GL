@@ -40,6 +40,9 @@
 
 #include "../compiler.hpp"
 #include "../memory_infra/str_ops.hpp"
+#include "../memory_infra/witness_names.hpp"
+
+#include <cstring>
 #include "../prover.hpp"
 
 #include <algorithm>
@@ -172,6 +175,57 @@ TEST(str_ops, scratch_subst_run_twin) {
         sA, gA, "(in[absent])", { { "int_lev_0", "z" } }));
 }
 
+// forEachSubstitutionToken slices a text at exactly the boundaries
+// replaceKeysScratch replaces at: flat arguments, every innermost argument of
+// a nested text, no empty runs, no run without a terminator, nothing at
+// position 0 — and "the text changes under a key" == "some run equals the
+// key".
+TEST(str_ops, substitution_tokens_mirror_replace_boundaries) {
+    auto tokens = [](const char* text) {
+        std::vector<std::string> out;
+        gl::forEachSubstitutionToken(
+            gl::StrSpan(text, static_cast<int32_t>(std::strlen(text))),
+            [&](gl::StrSpan t) { out.emplace_back(t.ptr, static_cast<std::size_t>(t.len)); });
+        return out;
+    };
+    ASSERT_TRUE(tokens("(in2[a,marker,3])") == std::vector<std::string>({ "a", "marker", "3" }));
+    ASSERT_TRUE(tokens("!(=[x,y])") == std::vector<std::string>({ "x", "y" }));
+    // nested: the outer run up to the first delimiter, then the inner arguments
+    ASSERT_TRUE(tokens("(and2[(f[x,marker]),y])")
+                == std::vector<std::string>({ "(f[x", "x", "marker", "y" }));
+    // empty runs are skipped; a run without a terminator ends the walk
+    ASSERT_TRUE(tokens("(p[,a,,b])") == std::vector<std::string>({ "a", "b" }));
+    ASSERT_TRUE(tokens("(p[abc") == std::vector<std::string>({}));
+    ASSERT_TRUE(tokens("(p[a,bc") == std::vector<std::string>({ "a" }));
+    ASSERT_TRUE(tokens("a,b]") == std::vector<std::string>({ "b" }));
+    ASSERT_TRUE(tokens("(p)") == std::vector<std::string>({}));
+    ASSERT_TRUE(tokens("") == std::vector<std::string>({}));
+
+    // The equivalence with the substitution itself, key by key.
+    gl::GlobalMemoryManager m;
+    m.init(kStrOpsTestCfg);
+    gl::ScratchArena sA; sA.bind(&m);
+    auto changes = [&](const char* text, const char* key) {
+        gl::StrReplacement pair;
+        pair.key = gl::StrSpan(key, static_cast<int32_t>(std::strlen(key)));
+        pair.value = gl::StrSpan("Z", 1);
+        const gl::StrSpan src(text, static_cast<int32_t>(std::strlen(text)));
+        const gl::ScratchString out = gl::replaceKeysScratch(sA, src, &pair, 1);
+        return out.toStdString() != std::string(text);
+    };
+    auto hasToken = [&](const char* text, const char* key) {
+        for (const std::string& t : tokens(text)) if (t == key) return true;
+        return false;
+    };
+    for (const char* text : { "(in2[v1,v,w1])", "(in2[v1,w1])", "(and2[(f[x,marker]),y])",
+                              "(p[abc", "a,b]", "(q[it_5_lev_1_22,3])", "(q[it_5_lev_1_2,3])" }) {
+        for (const char* key : { "v", "v1", "w1", "x", "y", "marker", "(f[x", "a", "b",
+                                 "abc", "it_5_lev_1_2", "3" }) {
+            ASSERT_EQ(changes(text, key), hasToken(text, key));
+        }
+    }
+}
+
 TEST(str_ops, spans_compare_equal_hash) {
     const std::string a = "(in2[i0,v1,s])";
     const std::string b = "(in2[i0,v1,t])";
@@ -194,6 +248,32 @@ TEST(str_ops, spans_compare_equal_hash) {
     // The empty span hashes to the FNV-1a offset basis (pinned: the cold
     // find-index will persist nothing, but determinism matters).
     ASSERT_EQ(gl::hashSpan(gl::StrSpan()), 14695981039346656037ULL);
+}
+
+// coldKeyHash: pinned MurmurHash64A answers (computed by an independent
+// reference implementation) for the empty span, word-tail-only, exact-word and
+// multi-word inputs; equal content hashes equal; every tail length 0..16 of
+// one prefix family yields a distinct digest.
+TEST(str_ops, cold_key_hash_known_answers_and_tails) {
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan()), 0x409820713d71ee3dULL);
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan("a", 1)), 0x172d1a1c63ac4fa0ULL);
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan("main", 4)), 0x15127cf223aeb5ecULL);
+    const std::string atom = "(in2[9,10,3])";
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan(atom)), 0xb6fdac659c27bdbcULL);
+    const std::string name = "int_lev_2_31";
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan(name)), 0x392a901930ec3befULL);
+    const std::string scope =
+        "main_boundary_(implication33[int_lev_2_31,3,int_lev_2_27,10,5])";
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan(scope)), 0xa6b68e8c74e706a1ULL);
+    const std::string copy = scope;
+    ASSERT_EQ(gl::coldKeyHash(gl::StrSpan(copy)), gl::coldKeyHash(gl::StrSpan(scope)));
+    std::vector<uint64_t> seen;
+    const std::string family = "it_0_lev_0_2_copy";
+    for (int32_t len = 0; len <= 16; ++len) {
+        const uint64_t h = gl::coldKeyHash(gl::StrSpan(family.data(), len));
+        for (const uint64_t prior : seen) ASSERT_NE(prior, h);
+        seen.push_back(h);
+    }
 }
 
 TEST(str_ops, contains_span_twin) {
@@ -583,85 +663,6 @@ TEST(str_ops, it_lev_prefix_occurrence_scan_matches_regex_oracle) {
     const std::string buf2 = "it_7_lev_88_QQ";
     checkSpan(gl::StrSpan(buf2.data(), 11),              // "it_7_lev_88" (no trailing _)
               std::string(buf2.data(), 11));
-}
-
-// scanSingleDistinctIntLev — verdict (0/1/2) and the sole-distinct token value
-// match the verbatim former allowedForMail collection (regex_search gate +
-// sregex_iterator std::set dedup). std::regex lives in the TEST only. Covers:
-// none, one, duplicates-of-one-token -> 1, two distinct -> 2, and the
-// second-distinct-lex-smaller case (verdict 2 either way; the value is unread
-// when verdict != 1).
-TEST(str_ops, single_distinct_int_lev_scan_matches_regex_oracle) {
-    static const std::regex kInt(R"(int_lev_\d+_\d+)");
-    const auto oracle = [&](const std::string& s, std::string& outVar) -> int {
-        if (!std::regex_search(s, kInt)) return 0;
-        std::set<std::string> intVars;
-        for (std::sregex_iterator i(s.begin(), s.end(), kInt), e; i != e; ++i)
-            intVars.insert(i->str());
-        if (intVars.size() != 1) return 2;
-        outVar = *intVars.begin();
-        return 1;
-    };
-    const std::string cases[] = {
-        "(=[x,zero])",                    // none -> 0
-        "int_lev_0_1",                    // one -> 1
-        "(f[int_lev_0_1,int_lev_0_1])",   // duplicates of one -> 1
-        "(g[int_lev_0_1,int_lev_2_3])",   // two distinct -> 2
-        "(g[int_lev_9_9,int_lev_0_1])",   // second lex-smaller distinct -> 2
-        "",                               // empty -> 0
-    };
-    for (const std::string& s : cases) {
-        std::string refVar;
-        const int refV = oracle(s, refVar);
-        gl::StrSpan myVar;
-        const int myV = gl::scanSingleDistinctIntLev(gl::StrSpan(s), myVar);
-        ASSERT_EQ(myV, refV);
-        if (refV == 1) {
-            ASSERT_TRUE(std::string(myVar.ptr, static_cast<size_t>(myVar.len)) == refVar);
-        }
-    }
-    // Mid-buffer slice with live tail bytes.
-    const std::string buf = "QQint_lev_5_6ZZ";
-    gl::StrSpan myVar;
-    const int myV = gl::scanSingleDistinctIntLev(gl::StrSpan(buf.data() + 2, 11), myVar);
-    ASSERT_EQ(myV, 1);
-    ASSERT_TRUE(std::string(myVar.ptr, static_cast<size_t>(myVar.len)) == "int_lev_5_6");
-}
-
-// allIntLevLevelsBelow — the parent-level mail-gate predicate matches a regex
-// oracle that extracts every int_lev token's level and requires all of them
-// strictly below the bound. std::regex lives in the TEST only. Covers: no
-// tokens (vacuously true), single parent-level, own-level (equal -> false),
-// deeper-than-bound, mixed parent+own, duplicates, multi-digit levels, bound
-// 0, and a mid-buffer slice with live tail bytes.
-TEST(str_ops, all_int_lev_levels_below_matches_regex_oracle) {
-    static const std::regex kInt(R"(int_lev_(\d+)_\d+)");
-    const auto oracle = [&](const std::string& s, int32_t bound) -> bool {
-        for (std::sregex_iterator i(s.begin(), s.end(), kInt), e; i != e; ++i)
-            if (std::stoll((*i)[1].str()) >= bound) return false;
-        return true;
-    };
-    const std::pair<std::string, int32_t> cases[] = {
-        { "(=[x,zero])", 3 },                       // none -> true
-        { "", 1 },                                  // empty -> true
-        { "(in[int_lev_1_1,1])", 2 },               // parent level -> true
-        { "(in[int_lev_2_1,1])", 2 },               // own level -> false
-        { "(in[int_lev_3_1,1])", 2 },               // deeper -> false
-        { "(g[int_lev_1_1,int_lev_2_1])", 3 },      // both parent -> true
-        { "(g[int_lev_1_1,int_lev_2_1])", 2 },      // mixed -> false
-        { "(g[int_lev_1_1,int_lev_1_1])", 2 },      // duplicates parent -> true
-        { "(g[int_lev_10_2,int_lev_9_1])", 11 },    // multi-digit levels -> true
-        { "(g[int_lev_10_2,int_lev_9_1])", 10 },    // multi-digit boundary -> false
-        { "(in[int_lev_0_1,1])", 0 },               // bound 0 -> false
-    };
-    for (const auto& c : cases) {
-        ASSERT_EQ(gl::allIntLevLevelsBelow(gl::StrSpan(c.first), c.second),
-                  oracle(c.first, c.second));
-    }
-    // Mid-buffer slice with live tail bytes: span covers "int_lev_5_6" only.
-    const std::string buf = "QQint_lev_5_6ZZ";
-    ASSERT_TRUE(gl::allIntLevLevelsBelow(gl::StrSpan(buf.data() + 2, 11), 6));
-    ASSERT_TRUE(!gl::allIntLevLevelsBelow(gl::StrSpan(buf.data() + 2, 11), 5));
 }
 
 // containsItLevPrefixShape — existence verdict matches regex_search over
@@ -1740,4 +1741,92 @@ TEST(str_ops, numeric_less_span_matches_numeric_less) {
         ASSERT_EQ(gl::numericLessSpan(gl::StrSpan(b), gl::StrSpan(a)),
                   numericLessOracle(b, a));
     }
+}
+
+
+TEST(str_ops, witness_name_fields_and_lexical_boundaries) {
+    const std::string forced = "force_lev_4_12", integration = "int_10_lev_4_12";
+    const std::string algebra = "it_2_lev_4_12";
+    auto a = gl::classifyWitnessName(gl::StrSpan(forced));
+    ASSERT_TRUE(a.kind == gl::WitnessNameKind::Forced);
+    ASSERT_EQ(a.level, 4); ASSERT_EQ(a.serial, 12);
+    a = gl::classifyWitnessName(gl::StrSpan(integration));
+    ASSERT_TRUE(a.kind == gl::WitnessNameKind::Integration); ASSERT_EQ(a.depth, 10);
+    a = gl::classifyWitnessName(gl::StrSpan(algebra));
+    ASSERT_TRUE(a.kind == gl::WitnessNameKind::Algebra); ASSERT_EQ(a.generation, 2);
+    for (const std::string name : {"int_lev_4_12", "int__lev_4_12", "int_1_lev_4_",
+            "force_lev_4_12x", "u_int_1_lev_4_12", "print_1_lev_4_12", "", "x"})
+        ASSERT_TRUE(gl::classifyWitnessName(gl::StrSpan(name)).kind == gl::WitnessNameKind::Ordinary);
+}
+
+TEST(str_ops, witness_name_occurrences_assign_outer_depth) {
+    const std::string source = "(in3[u_int_2_lev_0_1,int_10_lev_0_2,force_lev_0_3,it_19_lev_0_4])";
+    int count = 0;
+    gl::forEachWitnessName(gl::StrSpan(source), [&](gl::StrSpan, const gl::WitnessName&) { ++count; });
+    ASSERT_EQ(count, 4); ASSERT_EQ(gl::assignedIntegrationDepth(gl::StrSpan(source)), 11);
+    const std::string noIntegration = "(in2[force_lev_1_2,it_10_lev_2_3,f])";
+    ASSERT_EQ(gl::assignedIntegrationDepth(gl::StrSpan(noIntegration)), 0);
+    const std::string repeated = "(=[int_0_lev_1_0,int_0_lev_1_0])";
+    ASSERT_EQ(gl::assignedIntegrationDepth(gl::StrSpan(repeated)), 1);
+    gl::WitnessName value;
+    ASSERT_EQ(gl::matchWitnessNameAt(gl::StrSpan(source), 0, value), -1);
+}
+
+// An original expression qualifies for an induction admission only with
+// decimal or `rec` arguments (I-285).
+TEST(str_ops, only_number_arguments_accept_decimals_and_rec) {
+    for (const std::string clean : {"(existence15[9,11,1,4,2])", "!(in2[rec,9,3])",
+            "(sequence[1,4,2,rec,11])", "(=[10,10])", "(p)", "(in2[u_9,u_rec,3])"})
+        ASSERT_TRUE(gl::hasOnlyNumberArguments(gl::StrSpan(clean)));
+    for (const std::string dirty : {"(existence28[9,10,int_0_lev_6_8,1,4,2])",
+            "(in2[9,it_0_lev_1_0,11])", "!(sequence[1,4,2,9,force_lev_6_76])",
+            "(sequence[1,4,x2,rec,11])", "(in2[repl_lev_2_3,9,3])", "(in2[rec0,9,3])",
+            "(in2[9,1a,3])", "(in2[u_int_0_lev_1_2,9,3])", "(>[u_N,u_0](in[u_0,u_N]))"})
+        ASSERT_FALSE(gl::hasOnlyNumberArguments(gl::StrSpan(dirty)));
+}
+
+TEST(str_ops, witness_name_canonical_preference_uses_numeric_depth) {
+    const std::vector<std::string> order = {"a", "z", "force_lev_2_1", "force_lev_3_1",
+        "int_0_lev_8_1", "int_2_lev_8_1", "int_10_lev_1_0", "it_0_lev_0_0"};
+    for (size_t i = 0; i < order.size(); ++i) {
+        ASSERT_EQ(gl::compareWitnessNames(gl::StrSpan(order[i]), gl::StrSpan(order[i])), 0);
+        for (size_t j = i + 1; j < order.size(); ++j) {
+            ASSERT_TRUE(gl::compareWitnessNames(gl::StrSpan(order[i]), gl::StrSpan(order[j])) < 0);
+            ASSERT_TRUE(gl::compareWitnessNames(gl::StrSpan(order[j]), gl::StrSpan(order[i])) > 0);
+        }
+    }
+}
+
+
+TEST(str_ops, disintegration_witness_helpers_keep_classes_distinct) {
+    for (const std::string name : {"force_lev_4_12", "int_2_lev_4_12"}) {
+        ASSERT_TRUE(gl::isDisintegrationWitnessShape(gl::StrSpan(name)));
+        int level = -1, serial = -1;
+        ASSERT_TRUE(gl::matchDisintegrationWitnessId(gl::StrSpan(name), level, serial));
+        ASSERT_EQ(level, 4); ASSERT_EQ(serial, 12);
+    }
+    const std::string algebra = "it_2_lev_4_12";
+    ASSERT_FALSE(gl::isDisintegrationWitnessShape(gl::StrSpan(algebra)));
+    int level = -1, serial = -1;
+    ASSERT_FALSE(gl::matchDisintegrationWitnessId(gl::StrSpan(algebra), level, serial));
+    const std::string expression = "(in3[force_lev_4_12,int_2_lev_4_12,it_2_lev_4_12,f])";
+    std::vector<std::string> found;
+    gl::scanDisintegrationWitnessOccurrences(gl::StrSpan(expression), [&](int start, int length) {
+        found.push_back(expression.substr(start, length));
+    });
+    ASSERT_TRUE((found == std::vector<std::string>{"force_lev_4_12", "int_2_lev_4_12"}));
+}
+
+
+TEST(str_ops, witness_shape_can_skip_identity_decoding) {
+    const auto value = gl::classifyWitnessName(gl::StrSpan("int_10_lev_999999999999999_1"), false);
+    ASSERT_TRUE(value.kind == gl::WitnessNameKind::Integration);
+    ASSERT_EQ(value.depth, 10);
+    ASSERT_EQ(value.level, 0);
+    ASSERT_TRUE(gl::classifyWitnessName(gl::StrSpan("int_999999999999999_bad"), false).kind
+        == gl::WitnessNameKind::Ordinary);
+    int count = 0;
+    gl::scanDisintegrationWitnessOccurrences(gl::StrSpan("force_lev_999999999999_1 int_2_lev_999999999999_1"),
+        [&](int32_t, int32_t) { ++count; });
+    ASSERT_EQ(count, 2);
 }

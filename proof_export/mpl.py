@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, Iterator
 
 
@@ -157,10 +158,12 @@ class _Parser:
         return Atom(head, arguments), close_arguments + 2
 
 
+@lru_cache(maxsize=16384)
 def parse_mpl(text: str) -> Expression:
     """
     @brief Parse one canonical MPL expression.
-    @details A new strict parser owns the complete input and rejects trailing data.
+    @details A bounded cache shares immutable trees for identical source text.
+    Cache misses use the strict parser and reject trailing data.
     @param text Canonical compact MPL spelling.
     @return Immutable MPL expression tree.
     """
@@ -237,11 +240,12 @@ def map_arguments(
     return Negation(map_arguments(expression.inner, transform))
 
 
+@lru_cache(maxsize=16384)
 def alpha_key(expression: Expression) -> str:
     """
     @brief Form a stable key insensitive to bound-variable spelling.
     @details Binders are renamed in lexical encounter order while free tokens
-    remain byte-identical.
+    remain byte-identical. Immutable equal trees reuse a bounded cached result.
     @param expression MPL expression tree.
     @return Canonical alpha-normalized MPL spelling.
     """

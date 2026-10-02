@@ -13,6 +13,8 @@ and a commercial license — see https://generative-logic.com/license.
 
 > MPL is the one language the entire GL pipeline speaks. Every definition file, every theorem, every row of the processed proof graph, every row of a `simple_facts` table, every rule installed in an LB's hash memory — all of it is MPL strings. This chapter is a dedicated reference for MPL: the formal grammar, the variable-naming conventions, the type-label vocabulary, the shape patterns that recur across the codebase, and the common reading exercises.
 
+Before writing MPL, read the [MPL cookbook](03b_mpl_cookbook.md). Its first rule splits an AND conclusion into separate conjectures with the same premises and one conclusion per head.
+
 ---
 
 ## Chapter map
@@ -55,15 +57,16 @@ expression    := atomic
               |  negation
 
 atomic        := "(" name "[" args "]" ")"
-conjunction   := "(" "&" expression+ ")"
+conjunction   := "(" "&" expression expression ")"
 implication   := "(" ">" "[" bound-vars "]" expression expression ")"
 equality      := "(" "=" "[" arg "," arg "]" ")"
 negation      := "!" expression
 
 name          := identifier                       -- operator / predicate / compound-expression name
 args          := /empty/ | arg ("," arg)*
-arg           := identifier | integer-literal     -- no spaces; commas only
-bound-vars    := /empty/ | identifier ("," identifier)*
+arg           := identifier | numeric-name | "+" | "*"  -- common argument tokens
+bound-vars    := /empty/ | arg ("," arg)*
+numeric-name  := digit+                          -- a variable name, not a numeral value
 
 identifier    := [A-Za-z_][A-Za-z0-9_]*           -- including prefix conventions below
 ```
@@ -91,9 +94,9 @@ Examples:
 (AnchorPeano[N,i0,s,+,*,i1])  -- the Peano anchor, pinning the 6 slots
 ```
 
-### Conjunction — `(&expr1 expr2...)`
+### Conjunction — `(&expr1 expr2)`
 
-N-ary conjunction. Two or more sub-expressions, no comma separators (only the `&` marker distinguishes the shape from an atomic). Most definition bodies are deeply-nested conjunctions.
+Binary conjunction. Each node has exactly two sub-expressions, with no comma separator. Larger conjunctions nest binary nodes, as in the definition bodies. Both `ce::parseExpr` in [`compiler.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler.cpp) and `parse_expr` in [`expression_utils.py`](../../expression_utils.py) read one left child and one right child.
 
 ```text
 (&
@@ -102,17 +105,13 @@ N-ary conjunction. Two or more sub-expressions, no comma separators (only the `&
 )
 ```
 
-Note that `(&)` with zero sub-expressions is not grammatically valid — there must be at least two elements. `(&X)` with exactly one is also atypical; the prover compiles it away at definition time.
+Empty and unary conjunctions are outside this authoring contract; do not assume a malformed form will be compiled away. A conjunction may occur in a definition, but an AND conclusion is authored as separate conjectures: see the [first cookbook rule](03b_mpl_cookbook.md#1-split-an-and-head-into-separate-conjectures).
 
 ### Implication — `(>[bound-vars](premise)(body))`
 
 Universally-quantified implication. `bound-vars` is the list of identifiers universally quantified over the body (may be empty `>[]`). `premise` is the antecedent; `body` is the consequent.
 
-```text
-(>[x](in[x,N])(P(x)))           -- for all x in N, P(x)
-(>[](Q)(R))                      -- Q implies R (no quantifier)
-(>[a,b,c](P1)(>[d](P2)(P3)))    -- nested — forall a,b,c,d: P1, P2 ⇒ P3
-```
+Schematic examples (the predicate letters stand for declared predicates): `(>[x](in[x,N])(P[x]))` means "for every x in N, P(x)" within an outer context binding N. `(>[](Q[x])(R[x]))` adds a conditional with x already bound. `(>[a,b,c](P1[a,b,c])(>[d](P2[c,d])(P3[a,d])))` nests two premises.
 
 The nested form is how multi-premise rules are encoded: each `>` takes exactly one premise + one body, so three premises mean three nested `>`s.
 
@@ -147,9 +146,7 @@ MPL variable names follow prefix conventions that encode their role. The prefix 
 
 The conjecturer emits bound variables as bare integers `1`, `2`, `3`, …:
 
-```text
-(>[2,3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[2,7,3])(in3[2,6,7,4])))
-```
+Schematic fully bound form: `(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[2,7,3])(in3[2,6,7,4])))`.
 
 Raw form. Each integer is a fresh bound variable within the theorem's scope. Anchor slots are also given integer placeholders — the outer `(AnchorPeano[1,2,3,4,5,6])` pins them to indices, which the renamer later translates.
 
@@ -157,9 +154,7 @@ Raw form. Each integer is a fresh bound variable within the theorem's scope. Anc
 
 After `process_proof_graphs.py` runs its four-priority renaming scheme (see [`10_pipeline/06_process_proof_graph.md`](10_pipeline/06_process_proof_graph.md)), non-anchor bound variables become `v1`, `v2`, `v3`, …:
 
-```text
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))
-```
+Schematic fully bound form: `(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))`.
 
 The `v<k>` numbering is seeded from the theorem expression's left-to-right scan, so chapters and `global_theorem_list.txt` share a v-numbering (see [I-10](30_invariants.md#i-10)).
 
@@ -173,7 +168,7 @@ Inside a compiled expression's body, the formal parameters are `u_0`, `u_1`, …
 
 ### `x<k>` — prover-internal anchor-slot copies
 
-During anchor handling, the prover mints fresh copies of anchor-slot `(1)`-typed variables to keep them distinct from their originals. The minted names are `x` + the original slot name. See [`prover.cpp–3449`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Priority 2.5 of the processor renaming (see [`10_pipeline/06_process_proof_graph.md`](10_pipeline/06_process_proof_graph.md)) rewrites these `x<N>` to `<digit>_copy` in the processed proof graph.
+During anchor handling, the prover mints fresh copies of anchor-slot `(1)`-typed variables to keep them distinct from their originals. The minted names are `x` + the original slot name. See [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::prehandleAnchor`. Priority 2.5 of the processor renaming (see [`10_pipeline/06_process_proof_graph.md`](10_pipeline/06_process_proof_graph.md)) rewrites these `x<N>` to `<digit>_copy` in the processed proof graph.
 
 ### `it_<k>` — Pass B iteration variables
 
@@ -216,6 +211,15 @@ New type labels can be constructed using the same operators. `P(x(x(1)(1))(1))` 
 
 The `[<label>, <combinable>]` pair in `definition_sets` has the label first and a boolean second. The boolean decides whether the argument can participate in conjecturer combination (some arguments are "fixed" and should not be generalised).
 
+### `=` is typed by its arguments
+
+`=` is the only equality and relates values of any type. Its configured `(1),(1)` is the starting point of type inference, not a constraint ([I-267](30_invariants.md#i-267), [D-407](40_decisions.md#d-407)):
+- a slot of any other operator fixes its argument's label;
+- `(=[a,b])` only joins `a` and `b`;
+- a group that nothing fixes is `(1)`.
+
+In `(>[..](AnchorFTA[..])(>[9,10](interval[1,4,2,9,10])(>[11](interval[1,4,2,9,11])(=[10,11]))))`, `interval`'s fifth slot types 10 and 11 as `P(1)`, so this `=` is an equality of sets. A digit equality types `(1)` exactly as before. Joining a set with a number is a type error and asserts.
+
 ---
 
 ## Recurring shape patterns
@@ -226,38 +230,37 @@ MPL expressions fall into a handful of shape patterns that recur across the code
 
 *"For all x in T, body(x)."* Typing is usually `(in[x,T])` restricting `x` to a set.
 
-```text
-(>[v1](in[v1,N])(P(v1)))        -- for all v1 in N, P(v1)
-```
+Schematic form within an outer context binding N: `(>[v1](in[v1,N])(P[v1]))`.
 
 ### Existential quantifier via double negation — `!(>[x](typing)!(body))`
 
 *"There exists x in T such that body(x)."*
 
-```text
-!(>[v1](in[v1,N])!(P(v1)))       -- there exists v1 in N with P(v1)
-```
+Schematic form within an outer context binding N: `!(>[v1](in[v1,N])!(P[v1]))`.
 
 Rationale: MPL has no native existential quantifier. The double-negated universal encodes it cleanly, and the compiler rewrites it to `existence<N>` compiled names during `precompileStructuralOperators`.
 
-### Iff via conjunction of two implications — `(&(>[x](P)(Q))(>[x](Q)(P)))`
+### Iff in a definition — conjunction of two implications
 
 *"P iff Q."*
 
-```text
-(&
-    (>[x](P(x))(Q(x)))
-    (>[x](Q(x))(P(x)))
-)
-```
+Schematic definition form: `(&(>[x](P[x])(Q[x]))(>[x](Q[x])(P[x])))`. If the equivalence is a conjecture to prove, supply the two directions as separate conjectures, each under the required anchor and typing context.
 
 Seen throughout definition files whenever a set is defined by a characteristic predicate — `fXY`, `interval`, `limitSet`, etc.
+
+The FTA singleton constructors follow this pattern. [`EnumerationSet1.mpl`](../../files/definitions/EnumerationSet1.mpl) defines `EnumerationSet1[a,M]` by `x in M iff x=a`; [`EnumerationRelationSet1.mpl`](../../files/definitions/EnumerationRelationSet1.mpl) defines `EnumerationRelationSet1[a,b,X]` by `in2[x,y,X] iff x=a and y=b`. Their configured object types are `P(1)` and `P(x(1)(1))`, respectively. Under `AnchorFTA`, the supplied singleton-to-interval and singleton-relation-to-sequence implications use the actual zero anchor slot and equal zero endpoints. Set-definition reformulation supplies the existence variants, as described in the [MPL cookbook](03b_mpl_cookbook.md#set-definition-implications-can-produce-existence-statements).
+
+FTA sequence notation uses nonempty domains `0,...,m`, whose length is `m+1`; `sequence[N,+,zero,m,X]` retains the existing five-argument signature. The singleton has `m=zero`, and its product uses `fold[N,s,+,*,X,zero,zero,a]`. No empty sequence or scalar equality between relation objects is introduced.
+
+The extension definitions retain the same nonrecursive membership-characterization shape. [`addToSet.mpl`](../../files/definitions/addToSet.mpl) defines `addToSet[M,a,L]` by `x in L iff x in M or x=a`; [`appendToSequence.mpl`](../../files/definitions/appendToSequence.mpl) defines `appendToSequence[n,a,f,g]` by `in2[i,p,g] iff in2[i,p,f] or (i=n and p=a)`. Both use explicit OR, spelled as a negated binary conjunction of the complemented alternatives. Their defined objects are L and g, respectively; neither appears in its defining body.
+
+The sequence definition adjoins one pair to a graph; its name does not assume that the result is a function. The construction conjecture supplies `n=s(m)`, a source sequence on `[zero,m]`, and a natural new value. Its conclusion is a sequence on `[zero,n]`. The set companion adjoins `s(m)` to an interval `[zero,m]` and concludes `[zero,s(m)]`. The supplied implications put the graph/set definition last so the new object occurs only there and in the head. Once proved, existing set-definition reformulation supplies one witness satisfying both the definition and the conclusion; the definitions themselves are not proof certificates.
 
 ### Function typing — `(fXY[f,X,Y])`
 
 *"f is a total function from X to Y."*
 
-The body of `fXY` unpacks to three clauses: typing (the graph of f is contained in X × Y), totality (every x in X has *some* y in Y), and functionality (every x in X has *at most one* y). See [`files/definitions/fXY.mpl`](../files/definitions/fXY.mpl).
+The body of `fXY` unpacks to three clauses: typing (the graph of f is contained in X × Y), totality (every x in X has *some* y in Y), and functionality (every x in X has *at most one* y). See [`files/definitions/fXY.mpl`](../../files/definitions/fXY.mpl).
 
 ### Anchor application — `(Anchor<Tag>[slot1,slot2,...])`
 
@@ -267,15 +270,13 @@ Every theorem's outermost atomic expression. Pins the axiomatic context. See [`2
 
 *"For all x,y: P1(x,y) ∧ P2(x,y) ⇒ R(x,y)"* becomes:
 
-```text
-(>[x,y](P1(x,y))(>[](P2(x,y))(R(x,y))))
-```
+Schematic MPL: `(>[x,y](P1[x,y])(>[](P2[x,y])(R[x,y])))`.
 
 The outer `>` carries the quantifier. Each inner `>[]` (with empty bound-list) adds one more premise. Final body is the conclusion.
 
-### Vacuous implication — `(>[](P)(R))`
+### Implication without additional quantifiers — `(>[](P[x])(R[x]))`
 
-*"P implies R"* without any additional quantifier. Used when both P and R already reference variables bound by an outer scope.
+Schematic "P(x) implies R(x)" without any additional quantifier. Used when x is already bound by an outer scope. An empty binder does not make the implication vacuous.
 
 ### Operator equality (negated) — `!(in3[a,b,c,+])`
 
@@ -285,7 +286,7 @@ The outer `>` carries the quantifier. Each inner `>[]` (with empty bound-list) a
 
 ## Pretty-printing
 
-Source definition files are indented for readability (e.g. [`files/definitions/NaturalNumbers.mpl`](../files/definitions/NaturalNumbers.mpl)). The compiler strips whitespace before parsing, so the indentation serves maintainers only.
+Source definition files are indented for readability (e.g. [`files/definitions/NaturalNumbers.mpl`](../../files/definitions/NaturalNumbers.mpl)). The compiler strips whitespace before parsing, so the indentation serves maintainers only.
 
 Generated HTML chapter pages (stage 7, [`10_pipeline/07_html_export.md`](10_pipeline/07_html_export.md)) apply their own pretty-printing via the `processText` JavaScript function embedded in every page: click an expression to expand it to indented form.
 
@@ -353,30 +354,32 @@ Reading: "For all m ∈ N, for all n1 and n2: if s(n1) = m and s(n2) = m, then n
 ### Exercise 4 — a Gauss reformulated statement
 
 ```text
-(>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](interval[N,+,i0,v2,v3])(existence4[N,+,v3,v1,i0]))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v2,V1])(existence8[N,+,V1,v1,i0]))))
 ```
 
-Parse:
+All eight anchor parameters are universally bound. Under the Gauss anchor,
+`in2[v1,v2,s]` says that `v2` is the successor of `v1`, and
+`interval[N,+,i0,v2,V1]` supplies the interval from zero through `v2`.
+In the matching Gauss registry, the head expands to an existing set `V2`
+satisfying both `limitSet[N,+,V1,v1,V2]` and `interval[N,+,i0,v1,V2]`.
+It constructs the interval restricted to the smaller endpoint; it is not a
+Fold statement. The compact number is snapshot-specific.
 
-- Outer: `(>[N,i0,s,+](A)(B))` — for all N, i0, s, +: A implies B.
-- A = `(AnchorGauss[...])` — the Gauss anchor context.
-- B = `(>[v1,v2](C)(D))` — for all v1, v2: C implies D.
-- C = `(in2[v1,v2,s])` — s(v1) = v2 (v2 is the successor of v1).
-- D = `(>[v3](E)(F))` — for all v3: E implies F.
-- E = `(interval[N,+,i0,v2,v3])` — v3 is the interval [i0, v2] = [0, v2].
-- F = `(existence4[N,+,v3,v1,i0])` — a compiled existence claim; expands to "there exists a function g on the interval v3 such that g(0) = 0 and g satisfies the fold recurrence with f = +, producing v1 at the right endpoint".
-
-Reading: "In the Gauss context, if s(v1) = v2 and v3 is the interval [0, v2], then there exists a fold-valid function on v3 that accumulates to v1 at v2." A piece of the Gauss summation machinery.
+The [MPL cookbook](03b_mpl_cookbook.md#set-definition-implications-can-produce-existence-statements)
+shows the proved source implication, its generated existence result, the
+corresponding sequence example, and the exact set-definition reformulation
+gates in `ArgumentAnalyzer::isSetDefinition` and `ExpressionAnalyzer::reformulateTheorem`.
 
 ---
 
 ## Common mistakes
 
+- **Writing an AND head.** Split the conclusions into separate conjectures with the same premises; do not rely on the supplied-input loader to split the row. See the [MPL cookbook](03b_mpl_cookbook.md).
 - **Inserting spaces after commas.** `(in3[a, b, c, +])` — invalid. Use `(in3[a,b,c,+])`. Parser rejects.
 - **Omitting the `!` for structural operators.** `(&...` is a conjunction; `!(&...)` is "not (conjunction)" which the compiler rewrites to `or<N>`. Omitting the `!` silently changes the semantics.
 - **Anchor-slot names in `>[...]`.** No longer forbidden — [I-11](30_invariants.md#i-11) was inverted by [D-75](40_decisions.md#d-75). Every theorem now binds every anchor slot it references in its outer `>[...]` (a theorem has no `u_` formal parameters; one binder rule everywhere — [I-4](30_invariants.md#i-4)). The anchor atom still pins the slots positionally.
 - **Using `(=[x,x])` in a head.** Trivial equality is forbidden as a conclusion but allowed as a premise ([I-8](30_invariants.md#i-8)). Conjecturer filters for this.
-- **Miscounting parentheses.** Each opening `(` must match a closing `)`. No auto-closing. When a MPL string gets corrupted, it's usually because a `)` was lost during manual editing. `verifier.py`'s `_find_matching_paren` at [`verifier.py`-ish](../verifier.py) is the reference parenthesis-matcher; use it as a mental model.
+- **Miscounting parentheses.** Each opening `(` must match a closing `)`. No auto-closing. When a MPL string gets corrupted, it's usually because a `)` was lost during manual editing. `verifier.py`'s `_find_matching_paren` at [`verifier.py`](../../verifier.py) is the reference parenthesis-matcher; use it as a mental model.
 - **Forgetting that `!` is a prefix, not a wrap.** `!(P)` is correct; `(!(P))` is not a valid MPL expression (the extra parens surround the negation itself, turning it into a malformed expression).
 
 ---
@@ -387,7 +390,7 @@ Adding a new operator or predicate:
 
 1. Add a per-expression entry to every relevant `Config<Tag>.json` — see [`04_configs.md`](04_configs.md).
 2. Add a definition file to `files/definitions/` (or use inline `full_mpl` if the body is small).
-3. If the operator has `output_args`, it joins the prover's `operators` set at [`prover.cpp–200`](../GL_Quick_VS/GL_Quick/src/prover.cpp) automatically (the set is recomputed from `coreExpressionMap` every run).
+3. If the operator has `output_args`, it joins the prover's `operators` set at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::ExpressionAnalyzer`, automatically (the set is recomputed from `coreExpressionMap` every run).
 4. Ensure the GL binary's `category` is correctly inferred — `atomic` for leaves, `and` / `existence` / `implication` / `or` for compound. See `compiler.cpp` loading logic.
 5. Verify that `process_proof_graphs.py`'s anchor-mapping and HTML-export's `rename_expr_peano` / `rename_expr_gauss` handle the new name (they may default-through, which is OK for auxiliary operators).
 
@@ -420,8 +423,8 @@ Adding a new structural operator (a new shape like `@`, `|`,...):
 ## Open questions
 
 - **OPEN-MPL-1 — RESOLVED (partial normalisation).** Double-negation `!!X` is cancelled at specific prover sites, not globally. Explicit cancellation:
- - [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) — during `existence2` rewriting: *"`!(existence2[args]) =!!(>[bound](left)!(right)) = (>[bound](left)!(right))`"* — a structural-operator simplification where the `!` on existence cancels with the `!` inside the compiled definition.
- - [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) — explicit `expanded = expanded.substr(1); // double negation cancels`.
+ - [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) — during `existence2` rewriting: *"`!(existence2[args]) =!!(>[bound](left)!(right)) = (>[bound](left)!(right))`"* — a structural-operator simplification where the `!` on existence cancels with the `!` inside the compiled definition.
+ - [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) — explicit `expanded = expanded.substr(1); // double negation cancels`.
  
  There is **no universal normaliser** that scans an arbitrary expression and collapses every `!!X` to `X`. The conjecturer does not emit `!!` by construction; the verifier does not specifically test for it. A manually-authored external theorem containing raw `!!X` would be passed through unchanged in most paths and would hash distinctly from `X` — potentially preventing hash-matches that should succeed. Hardening: either canonicalise at the load boundary (precompile phase) or forbid `!!` in external theorems.
 - **OPEN-MPL-2.** `(&X)` (single-element conjunction) and `(>[])` with no sub-expressions — parser behaviour not tested. Neither is emitted by the conjecturer, and neither appears in any checked-in definition file. Whether the C++ compiler rejects them or silently accepts them has not been investigated for this chapter. Low priority — if the shape never enters the pipeline, behaviour is moot.
@@ -430,6 +433,7 @@ Adding a new structural operator (a new shape like `@`, `|`,...):
 
 ## See also
 
+- [`03b_mpl_cookbook.md`](03b_mpl_cookbook.md) — required authoring rules and the D2 worked example.
 - [`02_glossary.md`](02_glossary.md) — every term used in MPL.
 - [`04_configs.md`](04_configs.md) — config files that describe MPL-expression metadata.
 - [`10_pipeline/01_mpl_definitions.md`](10_pipeline/01_mpl_definitions.md) — how definition files are compiled.

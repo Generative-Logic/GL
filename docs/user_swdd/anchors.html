@@ -237,7 +237,7 @@ kinds of mathematics they commit to.
 <tr><td><code>AnchorGauss</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>Extends Peano with two more constants (i2, id). Drives the Gauss summation theorem and intermediate algebra.</td></tr>
 <tr><td><code>AnchorIncubator8</code></td><td>14 — <code>[N, i0, s, +, *, i1, i2, id, i3, i4, i5, i6, i7, i8]</code></td><td>The widest anchor (the original <code>AnchorIncubator</code>, renamed when the incubator anchor was split). Used by the wide incubator batches to produce ground-level facts. Many slots are unused in any individual theorem but available to the conjecturer's enumeration.</td></tr>
 <tr><td><code>AnchorIncubator3</code></td><td>9 — <code>[N, i0, s, +, *, i1, i2, id, i3]</code></td><td>The narrow incubator anchor (Gauss plus <code>i3</code>). Used by the AI3 incubator batches and the FTA-rung-1 batch, whose shorter successor chain generates only the i0–i3 facts it needs and so keeps the name-id count well within the mint ceiling.</td></tr>
-<tr><td><code>AnchorFTA</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>A byte-copy of <code>AnchorGauss</code> under its own name. Drives the FTA-shortcut batch: the previously proved corpus keeps its Gauss/Peano anchors and is activated by two connection theorems (§9.8) that the prover proves itself.</td></tr>
+<tr><td><code>AnchorFTA</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>A byte-copy of <code>AnchorGauss</code> under its own name. Drives the full FTA batch and the development shortcut: the previously proved corpus keeps its Gauss/Peano anchors and is activated by two connection theorems (§9.8) that the prover proves itself.</td></tr>
 </table>
 
 <figure>
@@ -609,6 +609,19 @@ its port types from it via the operator's signature; every variable inherits
 its type from the ports it touches. The verifier's <code>definition set
 consistency</code> meta-check is the catch-all.
 </p>
+<p>
+<b>Equality is the one polymorphic operator.</b> <code>=</code> relates
+numbers, sets and relations alike. Its configured <code>(1),(1)</code> is only
+the starting point: every other operator's port fixes the type of the variable
+it touches, while <code>=</code> merely joins its two arguments into one group.
+A group that nothing fixes stays a number, and a group that would be both a
+number and a set is a type error that stops the run. In
+<code>interval(N,+,0,n,A) ∧ interval(N,+,0,n,B) → A = B</code> the interval's
+last port makes <code>A</code> and <code>B</code> sets, so this equality is an
+equality of sets. Every logic block records the types of its own variables
+when it is created, so a later step can ask which kind of equality a goal is
+without re-reading the theorem. Induction is scheduled only over numbers.
+</p>
 
 <!-- ===================== 9.8 ===================== -->
 <h2 id="bridge">9.8 &nbsp;Cross-anchor theorems &amp; the FTA bridge</h2>
@@ -633,13 +646,15 @@ conjecturer output, so its outer binder need not follow the full-bind rule of
 in the <code>AnchorGauss</code> premise.
 </p>
 <p>
-The FTA-shortcut batch extends the same idea, with one difference: its two
+The FTA batch, in both full and shortcut mode, extends the same idea: its two
 bridges are <i>proved, not supplied</i>. <code>AnchorFTA</code> is a same-slot
 twin of <code>AnchorGauss</code>, so the connection theorems
 <code>AnchorFTA &rarr; AnchorGauss</code> and
 <code>AnchorFTA &rarr; AnchorPeano</code> are pure slot projections; they sit
-at the top of the shortcut conjecture list, the prover closes them first, and
-the entire Gauss and Peano corpus then fires under the FTA grid through them.
+at the top of the supplied conjecture list, the prover closes them first, and
+the Gauss and Peano corpus then fires under the FTA grid through them. The
+full run uses the results proved earlier in that same run; the development
+shortcut uses its saved corpus.
 </p>
 
 <figure>

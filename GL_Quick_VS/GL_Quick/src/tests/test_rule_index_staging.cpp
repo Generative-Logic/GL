@@ -29,7 +29,7 @@
 ///    second flush merges into existing runs.
 /// 3. LMV runs: `appendLmvIdsRecord` versus `stageLmvIdsRecord` +
 ///    `flushLmvSection` (arrival order kept).
-/// 4. Subkey records: `addShortSubkeyOwner` / `mergeSubkeySignatures` versus
+/// 4. Subkey records: `ensureEmptySubkeyRecord` / `mergeSubkeySignatures` versus
 ///    the staging twins + `flushSubkeySection` (loose byte, sorted-unique
 ///    signatures, renumbered sorted-unique pairs).
 /// 5. Remaining-args runs: `insertRemainingArgsNormKeyBatch` versus
@@ -48,6 +48,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 #include <string>
@@ -95,6 +96,157 @@ namespace {
     }
 
 }  // namespace
+
+// Full compressor setup preserves index bytes and origin rows across windows.
+TEST(rule_index_staging, compressor_setup_windows_match_per_install_flushes) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.compressor_mode = true;
+    analyzer.parameters.ban_disintegration = true;
+    const std::vector<std::string> rules{
+        "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[1,3])))",
+        "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[3,1])))",
+        "(>[1,4](in[1,u_2])(>[](in[u_2,u_3])(>[](in[u_3,4])(in[1,4]))))",
+        "(>[1,2](in[1,2])(in[2,1]))",
+        "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[1,3])))"
+    };
+    const int derived[1] = {0};
+    const int nonDerived[1] = {-1};
+    gl::Memory* sequential = analyzer.lbStore.create<gl::Memory>();
+    gl::Memory* batched = analyzer.lbStore.create<gl::Memory>();
+    const auto load = [&](gl::Memory& block, bool grouped) {
+        block.level = 0;
+        block.isActive = true;
+        block.setExprKey("CompressorSetupTest");
+        if (grouped) ++block.ruleStagingArmDepth;
+        for (const auto& rule : rules) {
+            gl::StrSpan chain[gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+            int32_t count = 0;
+            gl::StrSpan head;
+            ce::disintegrateImplicationSpans(gl::StrSpan(rule), head,
+                [&](gl::StrSpan premise, const gl::StrSpan*, int32_t) {
+                    ASSERT_TRUE(count < gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS);
+                    chain[count++] = premise;
+                });
+            analyzer.addToHashMemory(chain, count, head, nullptr, 0,
+                block, block.overallHashMemory, derived, 1, gl::StrSpan(rule),
+                analyzer.parameters.maxIterationNumberVariable,
+                analyzer.parameters.standardMaxSecondaryNumber, false,
+                analyzer.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+                false, gl::StrSpan(rule));
+            const int64_t key = gl::packStatementKey(
+                block.nameMap.encode(rule), block.nameMap.encode("main"));
+            block.intStatementLevelsMap.assignSetRange(key, nonDerived, nonDerived + 1);
+            gl::upsertStatementKey(block.intKnownStatements, key, true);
+        }
+        if (grouped) {
+            ASSERT_EQ(block.ruleStagingArmDepth, 1);
+            --block.ruleStagingArmDepth;
+            analyzer.closeRuleIndexStaging(block);
+        }
+        ASSERT_EQ(block.ruleStagingArmDepth, 0);
+        ASSERT_TRUE(gl::ruleStagings().slotIsEmpty(analyzer.currentGenSlot()));
+    };
+    const auto compare = [&]() {
+        const gl::HashMemory* left[] = {&sequential->overallHashMemory,
+            &sequential->localHashMemory, &sequential->localHashMemoryDelta,
+            &sequential->workingMemory};
+        const gl::HashMemory* right[] = {&batched->overallHashMemory,
+            &batched->localHashMemory, &batched->localHashMemoryDelta,
+            &batched->workingMemory};
+        for (int i = 0; i < 4; ++i) {
+            for (const gl::HashMemory* memory : {left[i], right[i]}) {
+                const auto& subkeys = memory->normalizedEncodedSubkeys;
+                for (int32_t id = 1; id <= subkeys.count(); ++id) {
+                    if (subkeys.decodeKey(id).numberExpressions >= 3) continue;
+                    const gl::OwnerSet value = subkeys.recordAt(id, 0);
+                    ASSERT_FALSE(value.hasLooseOwner);
+                    ASSERT_TRUE(value.owners.empty() && value.uSignatures.empty());
+                    ASSERT_EQ(gl::Codec<gl::OwnerSet>::serialize(value).size(), 9u);
+                }
+            }
+            ASSERT_TRUE(imageOf(left[i]->encodedMap.inner()) == imageOf(right[i]->encodedMap.inner()));
+            ASSERT_TRUE(imageOf(left[i]->normalizedEncodedKeys.inner()) == imageOf(right[i]->normalizedEncodedKeys.inner()));
+            ASSERT_TRUE(imageOf(left[i]->normalizedEncodedSubkeys.inner()) == imageOf(right[i]->normalizedEncodedSubkeys.inner()));
+            ASSERT_TRUE(imageOf(left[i]->remainingArgsNormalizedEncodedMap.inner()) == imageOf(right[i]->remainingArgsNormalizedEncodedMap.inner()));
+            ASSERT_TRUE(imageOf(left[i]->originals.inner()) == imageOf(right[i]->originals.inner()));
+            ASSERT_TRUE(imageOf(left[i]->copyOwners.inner()) == imageOf(right[i]->copyOwners.inner()));
+            ASSERT_TRUE(imageOf(left[i]->remainingArgsOwners.inner()) == imageOf(right[i]->remainingArgsOwners.inner()));
+            ASSERT_EQ(left[i]->maxKeyLength, right[i]->maxKeyLength);
+        }
+        ASSERT_TRUE(gl::decodeOriginMapSorted(sequential->exprOriginMap, sequential->originInterner)
+            == gl::decodeOriginMapSorted(batched->exprOriginMap, batched->originInterner));
+    };
+    load(*sequential, false);
+    load(*batched, true);
+    compare();
+
+    const auto seed = [&](gl::Memory& block, bool grouped) {
+        if (grouped) ++block.ruleStagingArmDepth;
+        const gl::TransientOrigin premise{true, gl::OriginTag::premise, nullptr, 0};
+        for (const auto& text : {"(in[1,u_2])", "(in[u_2,3])"}) {
+            const std::string expression(text);
+            analyzer.addExprToMemoryBlock(gl::StrSpan(expression), block, -1, 1,
+                nonDerived, 1, premise, -1, -1, gl::StrSpan("main", 4), false);
+        }
+        const std::string head = "(in[1,3])";
+        analyzer.addExprToMemoryBlock(gl::StrSpan(head), block, -1, 2, derived, 1,
+            gl::TransientOrigin{true, gl::OriginTag::goal, nullptr, 0},
+            -1, -1, gl::StrSpan("main", 4), true);
+        if (grouped) {
+            ASSERT_EQ(block.ruleStagingArmDepth, 1);
+            --block.ruleStagingArmDepth;
+            analyzer.closeRuleIndexStaging(block);
+        }
+        ASSERT_EQ(block.ruleStagingArmDepth, 0);
+        ASSERT_TRUE(gl::ruleStagings().slotIsEmpty(analyzer.currentGenSlot()));
+    };
+    seed(*sequential, false);
+    seed(*batched, true);
+    compare();
+    analyzer.lbStore.destroy(sequential);
+    analyzer.lbStore.destroy(batched);
+}
+
+TEST(rule_index_staging, compound_initial_deposit_matches_per_install_flushes) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory* sequential = analyzer.lbStore.create<gl::Memory>();
+    gl::Memory* batched = analyzer.lbStore.create<gl::Memory>();
+    const std::string expression = "(fXY[1,2,3])";
+    const int levels[1] = {0};
+    const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
+    for (gl::Memory* block : {sequential, batched}) {
+        block->level = 0;
+        block->parentMemory = &analyzer.body;
+        block->setExprKey(expression);
+        if (block == batched) ++block->ruleStagingArmDepth;
+        analyzer.addExprToMemoryBlock(gl::StrSpan(expression), *block, 0, 0,
+            levels, 1, origin, -1, -1, gl::StrSpan("main",4), false);
+        if (block == batched) {
+            --block->ruleStagingArmDepth;
+            analyzer.closeRuleIndexStaging(*block);
+        }
+        ASSERT_EQ(block->ruleStagingArmDepth, 0);
+        ASSERT_TRUE(gl::ruleStagings().slotIsEmpty(analyzer.currentGenSlot()));
+    }
+    const gl::HashMemory* left[] = {&sequential->overallHashMemory,
+        &sequential->localHashMemory, &sequential->localHashMemoryDelta, &sequential->workingMemory};
+    const gl::HashMemory* right[] = {&batched->overallHashMemory,
+        &batched->localHashMemory, &batched->localHashMemoryDelta, &batched->workingMemory};
+    ASSERT_TRUE(sequential->overallHashMemory.encodedMap.count() > 1);
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(imageOf(left[i]->encodedMap.inner()) == imageOf(right[i]->encodedMap.inner()));
+        ASSERT_TRUE(imageOf(left[i]->normalizedEncodedKeys.inner()) == imageOf(right[i]->normalizedEncodedKeys.inner()));
+        ASSERT_TRUE(imageOf(left[i]->normalizedEncodedSubkeys.inner()) == imageOf(right[i]->normalizedEncodedSubkeys.inner()));
+        ASSERT_TRUE(imageOf(left[i]->remainingArgsNormalizedEncodedMap.inner()) == imageOf(right[i]->remainingArgsNormalizedEncodedMap.inner()));
+        ASSERT_TRUE(imageOf(left[i]->originals.inner()) == imageOf(right[i]->originals.inner()));
+        ASSERT_TRUE(imageOf(left[i]->copyOwners.inner()) == imageOf(right[i]->copyOwners.inner()));
+        ASSERT_TRUE(imageOf(left[i]->remainingArgsOwners.inner()) == imageOf(right[i]->remainingArgsOwners.inner()));
+    }
+    ASSERT_TRUE(gl::decodeOriginMapSorted(sequential->exprOriginMap, sequential->originInterner)
+        == gl::decodeOriginMapSorted(batched->exprOriginMap, batched->originInterner));
+    analyzer.lbStore.destroy(sequential);
+    analyzer.lbStore.destroy(batched);
+}
 
 // 1. One rebuild reproduces the columns a random splice sequence left; a
 //    rebuild that reads the map's own runs is a fixed point; a key minted
@@ -315,8 +467,8 @@ TEST(rule_index_staging, subkey_section_flush_matches_sequential_merges) {
                 static_cast<int32_t>(1 + nextRandom(seed) % 10u), 1);
             gl::NameId data[2] = { static_cast<gl::NameId>(30 + k), 0 };
             if (count < gl::ExpressionAnalyzer::kSubkeyUCheckMinElements) {
-                gl::ExpressionAnalyzer::addShortSubkeyOwner(mapA, count, data, 2, owner);
-                gl::ExpressionAnalyzer::stageShortSubkeyOwner(section, count, data, 2, owner);
+                gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(mapA, count, data, 2);
+                gl::ExpressionAnalyzer::stageEmptySubkeyRecord(section, count, data, 2);
             } else {
                 gl::ExpressionAnalyzer::mergeSubkeySignatures(mapA, count, data, 2,
                                                               exprs, count, owner);
@@ -506,4 +658,184 @@ TEST(rule_index_staging, flush_scales_past_one_block) {
     }
     ASSERT_EQ(map.runLen(2), 1);
     ASSERT_EQ(map.recordAt(2, 0).owner, gl::packRuleOwner(2, 1));
+}
+
+TEST(rule_index_staging, inplace_rebuild_carries_empty_trailing_runs) {
+    for (bool grow : {false, true}) {
+        gl::GlobalMemoryManager global;
+        global.init(gl::StaticMemoryConfig{16 << 20, 1 << 18});
+        gl::LbArena arena(&global), scratch(&global);
+        gl::DirtyState dirty = gl::DirtyState::Clean;
+        gl::HashMap<gl::BytesKeyStore,gl::BlobCsrValueStore> map(&arena,&dirty);
+        const int32_t length = 1;
+        map.assignRun(gl::StrSpan("a",1),"x",&length,1);
+        map.assignRun(gl::StrSpan("b",1),nullptr,nullptr,0);
+        map.assignRun(gl::StrSpan("c",1),nullptr,nullptr,0);
+        const auto before = imageOf(map);
+        map.assignAllRunsGenerated(3,[&](int32_t id,auto&& sink) {
+            if (id == 1) {
+                sink.blob("x",1);
+                if (grow) sink.blob("y",1);
+            } else sink.unchanged(id);
+        },scratch);
+        ASSERT_EQ(map.runLen(1),grow ? 2 : 1);
+        ASSERT_EQ(map.runLen(2),0);
+        ASSERT_EQ(map.runLen(3),0);
+        if (!grow) ASSERT_TRUE(imageOf(map) == before);
+        std::vector<char> blob;
+        map.blobAt(1,grow ? 1 : 0,blob);
+        ASSERT_EQ(blob.size(),1u);
+        ASSERT_EQ(blob[0],grow ? 'y' : 'x');
+    }
+}
+
+
+TEST(rule_index_staging, short_keys_stay_empty_through_many_installs_and_removal) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::LbArena stagingArena(&g);
+    gl::LbArena scratch(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::HashMemory hm(&lb, &dirty);
+    gl::RuleIndexStagingSection section(&stagingArena);
+    const gl::NameId data[2] = { 17, 23 };
+    for (int repeat = 0; repeat < 40000; ++repeat) {
+        gl::ExpressionAnalyzer::stageEmptySubkeyRecord(section, 1, data, 2);
+        gl::ExpressionAnalyzer::stageEmptySubkeyRecord(section, 2, data, 2);
+    }
+    ASSERT_EQ(section.keyCount(), 2);
+    ASSERT_EQ(section.itemCount(), 2);
+    for (int32_t ord = 1; ord <= section.keyCount(); ++ord) {
+        section.forEachItem(ord, [&](const gl::StagedRuleItem& item) {
+            ASSERT_EQ(item.owner, 0);
+            ASSERT_EQ(item.len, 0);
+            ASSERT_EQ(item.flag, 0);
+        });
+    }
+    gl::ExpressionAnalyzer::flushSubkeySection(
+        hm.normalizedEncodedSubkeys, section, scratch);
+    const auto firstImage = imageOf(hm.normalizedEncodedSubkeys.inner());
+    section.clear();
+    for (int repeat = 0; repeat < 40000; ++repeat) {
+        gl::ExpressionAnalyzer::stageEmptySubkeyRecord(section, 1, data, 2);
+        gl::ExpressionAnalyzer::stageEmptySubkeyRecord(section, 2, data, 2);
+    }
+    ASSERT_EQ(section.itemCount(), 2);
+    gl::ExpressionAnalyzer::flushSubkeySection(
+        hm.normalizedEncodedSubkeys, section, scratch);
+    ASSERT_TRUE(imageOf(hm.normalizedEncodedSubkeys.inner()) == firstImage);
+    section.clear();
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&scratch, &dirty);
+    gl::RuleIndexOp removal;
+    removal.kind = gl::RuleIndexOp::Kind::Remove;
+    removal.visited = &visited;
+    for (gl::NameId count = 1; count <= 2; ++count) {
+        gl::ExpressionAnalyzer::removeRuleSubkeyEntry(
+            hm, removal, count, data, 2, gl::packRuleOwner(7, 1), scratch);
+    }
+    ASSERT_EQ(visited.count(), 0);
+    // A long key with no remaining owners is still erased by cleanup.
+    hm.normalizedEncodedSubkeys.assignRun(
+        gl::NormKey{ 3, { 17, 23 } }, std::vector<gl::OwnerSet>{ gl::OwnerSet{} });
+    hm.ownerlessPending = true;
+    gl::ExpressionAnalyzer::eraseOwnerlessEntries(hm, scratch);
+    ASSERT_EQ(hm.normalizedEncodedSubkeys.count(), 2);
+    for (gl::NameId count = 1; count <= 2; ++count) {
+        const int32_t id = gl::ExpressionAnalyzer::normKeyLookup(
+            hm.normalizedEncodedSubkeys, data, 2, count);
+        ASSERT_TRUE(id != 0);
+        const gl::OwnerSet value = hm.normalizedEncodedSubkeys.recordAt(id, 0);
+        ASSERT_FALSE(value.hasLooseOwner);
+        ASSERT_TRUE(value.uSignatures.empty());
+        ASSERT_TRUE(value.owners.empty());
+        ASSERT_EQ(gl::Codec<gl::OwnerSet>::serialize(value).size(), 9u);
+        ASSERT_TRUE(gl::ExpressionAnalyzer::subkeyUSatisfied(
+            hm.normalizedEncodedSubkeys, data, 2, nullptr, count));
+    }
+    ASSERT_EQ(gl::ExpressionAnalyzer::normKeyLookup(
+        hm.normalizedEncodedSubkeys, data, 2, 3), 0);
+}
+
+// 9. releaseSlotScratch returns exactly one slot's string-scratch and
+//    request-generation-scratch blocks (byte tier and page tier) to the pool,
+//    bumps both generations, leaves every other slot's blocks in place, and
+//    the released slot refills lazily.
+TEST(rule_index_staging, release_slot_scratch_returns_one_slots_blocks) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
+    gl::ScratchArenaRegistry strings;
+    gl::ScratchArenaRegistry gen;
+    strings.init(&g, 3);
+    gen.init(&g, 3);
+    gl::RuleStagingRegistry stagings;
+    stagings.init(gen);
+
+    // Slot 1: three byte-tier blocks on the gen arena, one page-tier page,
+    // one string block. Slot 2: one gen block that must survive.
+    for (int i = 0; i < 3; ++i)
+        ASSERT_TRUE(gen.forSlot(1).allocBytes(200 << 10) != nullptr);
+    ASSERT_GE(gen.forSlot(1).allocPage(), 0);
+    ASSERT_TRUE(strings.forSlot(1).allocBytes(1000) != nullptr);
+    ASSERT_TRUE(gen.forSlot(2).allocBytes(64) != nullptr);
+
+    const int64_t slot1Blocks =
+        gen.forSlot(1).blocksHeld() + strings.forSlot(1).blocksHeld();
+    const int64_t slot2Blocks = gen.forSlot(2).blocksHeld();
+    ASSERT_GE(slot1Blocks, static_cast<int64_t>(5));
+    ASSERT_EQ(slot2Blocks, static_cast<int64_t>(1));
+    const int64_t inUseBefore = g.blocksInUse();
+    const uint64_t genGenerationBefore = gen.forSlot(1).generation();
+    const uint64_t stringGenerationBefore = strings.forSlot(1).generation();
+
+    gl::releaseSlotScratch(strings, gen, stagings, 1);
+
+    ASSERT_EQ(gen.forSlot(1).blocksHeld(), static_cast<int64_t>(0));
+    ASSERT_EQ(strings.forSlot(1).blocksHeld(), static_cast<int64_t>(0));
+    ASSERT_EQ(g.blocksInUse(), inUseBefore - slot1Blocks);
+    ASSERT_EQ(gen.forSlot(2).blocksHeld(), slot2Blocks);
+    ASSERT_TRUE(gen.forSlot(1).generation() == genGenerationBefore + 1);
+    ASSERT_TRUE(strings.forSlot(1).generation() == stringGenerationBefore + 1);
+
+    // A release of an idle slot is a defined no-op on the pool.
+    gl::releaseSlotScratch(strings, gen, stagings, 0);
+    ASSERT_EQ(g.blocksInUse(), inUseBefore - slot1Blocks);
+
+    // The released slot re-acquires lazily on its next fill.
+    ASSERT_TRUE(gen.forSlot(1).allocBytes(64) != nullptr);
+    ASSERT_EQ(gen.forSlot(1).blocksHeld(), static_cast<int64_t>(1));
+}
+
+// 10. Negative coverage driven by `.scripts/tests/test_native_scratch_release.py`:
+//     with GL_TEST_INVALID_SCRATCH_RELEASE=nonempty_staging, releasing a slot
+//     whose rule-index staging still holds a record must assert (a staged
+//     write outliving its window). Without the variable the test is a no-op.
+TEST(rule_index_staging, release_slot_scratch_nonempty_staging_asserts) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_SCRATCH_RELEASE"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_SCRATCH_RELEASE")) mode = value;
+#endif
+    if (mode.empty()) return;
+    ASSERT_TRUE(mode == "nonempty_staging");
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::HashMemory hm(&lb, &d);
+    gl::ScratchArenaRegistry strings;
+    gl::ScratchArenaRegistry gen;
+    strings.init(&g, 2);
+    gen.init(&g, 2);
+    gl::RuleStagingRegistry stagings;
+    stagings.init(gen);
+    gl::RuleIndexStaging& st = stagings.acquire(0, &hm);
+    gl::NameId data[2] = { 7, 0 };
+    gl::ExpressionAnalyzer::stageWholeKeyOwner(st.wholeKeys, 1, data, 2,
+                                               gl::packRuleOwner(3, 1));
+    ASSERT_FALSE(stagings.slotIsEmpty(0));
+    gl::releaseSlotScratch(strings, gen, stagings, 0);   // asserts
 }

@@ -31,7 +31,321 @@ Contributions require CLA — see CONTRIBUTING.md.
 
 ---
 
+## Production bounded execution
+
+`prover.cpp` / `ExpressionAnalyzer::proveKernel` measures consecutive complete LB
+families and packs immutable projection, task and filter storage with minimum
+execution scratch against the automatic 2 MiB block budget. The one-LB fit assertion
+is retained. `makePhase2BufferPlanInput` maps every measured projection/task column explicitly,
+reserving one element for empty arrays. A minimum-only allocation query avoids
+demand optimization during each packing probe; the full planner runs once for the chosen chunk. The
+automatic budget stops at `kPhase2DefaultGpuBudgetBytes` (4 GiB,
+[D-412](../40_decisions.md#d-412));
+`GL_GPU_BUDGET_MIB` replaces that ceiling. Ordinary `main.py --GPU` needs no
+hardware-specific settings.
+
+Each chunk borrows six disjoint block leases for projection, tasks, filter,
+growth, ordering and evaluation. Consecutive complete logic blocks form host
+construction windows targeting 128 MiB of measured column storage (two are alive
+at once, within the former single 256 MiB window); a block larger
+than that target owns its exact measured window. This changes no logical device
+chunk or work limit. Within each window, parallel builders keep disjoint round-robin
+assignments, shared backing columns and canonical descriptor order. One set of
+persistent workers per chunk builds and adopts every window; adoption adds the
+accumulated complete-image offsets directly. An upload thread uploads each finished
+window and keeps its name/rule lookup data and source statement ordinals on the
+host while the next window is built, so at most two windows are alive. The freed
+heap is collected once per chunk. Device kernels begin after the complete image is
+sealed. See [D-436](../40_decisions.md#d-436) and
+[D-447](../40_decisions.md#d-447).
+Chunk/task directories use dynamic host storage; repeated filter-call examined-row
+accounting uses 64-bit totals.
+
+`Phase2SealingArena::runWindows` owns the pause/drain/resume orchestration. Generation
+stays frozen while locally ordered requests pass bounded owner/value evaluation. An aggregate per-block stop takes effect only after a completed logical growth level. Raw device output downloads repeatedly;
+a marker publishes one complete record after its key fragments assemble. Pages seal
+after generation and evaluation finish. Production sets the canonical flag false so
+`applyFiringRecords` uses the shared RAM comparator and paged merge sorter. No host
+inference, substitution, provenance reconstruction or early statement deposit occurs.
+
+Completed chunks feed observed occupancy and drain pressure into the next allocation.
+Permanent diagnostics separate allocated blocks, frontier and output transfers,
+host backing, and elapsed route time. CUDA event duration includes host gaps between
+kernels and must not be described as pure kernel busy time. Pipeline acceptance for
+this controller is recorded in `docs/GPU/batched_gpu_plan.md`.
+
+## Bounded Phase 2 execution and early exit
+
+Before constructing any of the six CUDA buffers,
+its `measureAllocation` query reports device payload bytes and the exact aligned
+arena footprint. Queries include current CUB workspace and every array, with
+256-byte alignment between arrays; they create no device-array ownership. Direct
+tests compare reported payload with each real owner and compare aligned footprint
+with the shared arena cursor. Adding a device column requires updating its sizing
+query as well as the constructor. Production selects capacities through the common automatic planner.
+
+`CudaPhase2EvaluationBuffer::nextFiringWindow` packs consecutive values using
+GPU-measured simultaneous bounds for all seven output columns. Bounds accumulate
+across 1,024-row metadata transfers until an actual output column fills; the
+metadata transfer size does not impose a materialization or download boundary. A large marker
+uses the largest fitting consecutive key slice. Ready output must be downloaded
+before reuse. If even the next minimum fragment does not fit, the method returns
+`needsCapacity` with its requirements and an unchanged value/key cursor; it neither
+writes nor drops the request. The production planner reserves the shared CPU single-fragment bound before
+execution; the explicit smaller-buffer API retains this non-consuming scheduling state.
+
+`Phase2SealingArena::downloadAndSeal` can consume raw device order and leave its
+output page sets filling across drains. A receiver collects marker-key fragments
+without appending partial records; repeated fragments reuse already-sealed head,
+validity, marker arguments and remaining arguments. `SealedSpanBuilder` reserves
+the final host span, copies consecutive fragments and exposes it only when complete.
+This is ownership conversion, with no CPU inference or substitution. The existing
+single-host-span allocation contract remains; arbitrary generated-byte and other
+provenance-column segmentation are still unfinished.
+
+The processor `BurstSink` retains its original stop for the ASIC path. GPU
+deactivation eligibility remains on CUDA in `deviceFiringDeactivates` and
+`markDoomTriggers`. `Phase2SealingArena::runWindows` keeps one 64-bit state per
+logical block: active, discharge observed in this level, or stopped. Every
+result in the current logical growth level is retained. Physical capacity drains
+do not commit a stop. After all seed calls at one starting depth, and after each
+complete frontier wave, the controller drains remaining requests, commits observed
+stops and removes those blocks' next frontiers. Later seed groups still use the
+original input and kernels; stopped blocks' results and descendants are excluded.
+Completed firing records append directly to their final pages, including every
+repeated firing and its proof information. There is no request-identity ledger,
+retrospective firing-selection list, or request-identity download. Phase 3 alone
+closes goals and discharges blocks. The original RAM frontier, broad execution
+windows, split-stump construction and shared RAM content sort remain. See
+I-237 and `docs/GPU/no_requests_plan.md`.
+Candidate-window launches in CudaPhase2GrowthBuffer::runRequestGrowthWindows use growthCandidateNodeWindow to binary-search the existing stable short/cooperative index lists against cumulative candidate boundaries. The returned slices cover every positive overlapping span; internal empty spans may remain. Two fixed counter records size the launches, while a fitting whole preparation uses its complete lists directly. This changes launch work only, preserving every candidate, request and output ordering key.
+
+Frontier transfer scratch uses three dedicated blocks from the existing host static pool, registered with CUDA for the duration of one growth sweep. Copy pages prefer 4,096 rows but are clamped by the larger node/prefix row size and the actual host block size. The blocks are unregistered before return to the pool; at the default 256 KiB block size the temporary reservation is 768 KiB. No request identities are downloaded for early exit.
+
+
+The shared RAM-side firing sorter uses `PagedSortedOrdinals`: bounded initial runs, page-backed run directories and two-way merge passes. It has no fixed 64-run limit. Production GPU supplies raw-order records and uses this same RAM sorting path. See [I-234](../30_invariants.md#i-234).
+
+
+## Counterexample finalization
+
+The `standardProcessing` counterexample gate runs only contradiction checks;
+completed heads are checked directly from the internal channel against loaded
+main-scope facts. Retaining a complete GPU level therefore does not invoke the
+ordinary equivalence and mail-processing sequence on counterexample clones.
+The generation, evaluation and multiple-firing contracts are unchanged. See
+I-236.
+
+## Requests are evaluated without duplicate history
+
+`phase2_cuda.cu` and `CudaPhase2OrderingBuffer::orderRequests` emit a token for
+every recordable event, including repeated ordered premise identities within a
+call or across drains. There is no request-key hash table or history owner in RAM
+or VRAM. Deterministic event ordering remains. Multiple firing records for an
+expression and validity scope preserve their levels, disintegration signals and
+proof origins; existing deposit code merges those contributions. See
+I-238 and `docs/GPU/no_requests_plan.md`.
+
+## Bounded generation windows
+
+### Prefix-directed candidate ranges
+
+Production projection adds four derived byte-map views, one for each selected
+hash-memory kind, after the ten existing views. `Phase2ProjectionArena::appendNextPredicateMaps`
+groups the immediate ordered normalized prefixes of the actual whole keys and
+subkeys into decoded-rank-ordered predicate runs. Each run's 32-bit word carries the
+polarity mask and up to two argument slots of the appended premise that every
+licensing key binds to the same prefix variable (`packNextPredicateWord`,
+`mergeNextPremiseBindings`). Both cheap-gate kernels resolve those slots against the
+node's distinct normalization-variable pool (`growthArgumentGate`) and reject a
+statement with a different argument there before `preparePooledGrowthCandidate`; such a
+statement normalizes outside every key of the transition, so positions, ordinals and
+accepted events are unchanged ([D-448](../40_decisions.md#d-448)). Retained
+empty short-subkey records participate. Singleton key lengths determine predicate
+arities; the prefix retains the complete argument-sharing pattern. Temporary
+deduplication uses a private static-pool arena. The final index reuses the existing
+24 packed columns and enters the normal projection sizing and block-budget calculation.
+
+`measurePhase2SharedKeyUsage` counts the distinct byte-key union and exact
+prefix entry, hash-slot and transition counts in private static-pool scratch
+before the host/device allocation is planned. `appendLogicalBlock` uses a
+separate construction dictionary for each logical block: byte-identical keys
+in different maps or prefix tables share one `byteKeyBytes` range, but every
+map keeps its original entries, value runs and membership. Reverse-index key
+offsets address the already projected forward `blobBytes`; the reverse-key
+transport column stays empty while its ordinal and positive minimum capacity
+remain. Shard adoption rebases reverse key offsets by the blob-byte base.
+Neither native proof storage nor owner validation changes. See
+[D-424](../40_decisions.md#d-424).
+
+Projection-only measurement on the full F3 workload (2026-09-28): largest host projection decreased
+from 3,113.3 to 1,615.4 MiB in both sequential runs. Peak native working set
+decreased from 9,939.0 to 8,576.7 / 8,569.5 MiB; the 6,144 MiB main pool
+still peaked at 5,895.25 / 5,888.0 MiB. Exact theorem and proof bytes matched
+the reference. These independent peaks are not additive.
+
+
+`phase2GrowthPreparePrefixesKernel` queries one transition entry per prepared
+prefix. `growthPredicateRange` then locates the allowed predicate names within
+the existing retained, rank-sorted statement span, clipped at its original cursor.
+The 40-byte prefix header carries the transition entry and reduced span length.
+The candidate-count scan and both cheap-gate shapes cover these disjoint name ranges;
+the polarity mask rejects an unlicensed sign before ordinary candidate checks.
+The configured eligible-row prefix retention, original positions, mandatory suffix masks, split stumps,
+terminal probes, full key/owner checks, accepted-subkey counts, complete-level stops
+and canonical firing output remain unchanged. Every currently accepted key supplies
+its own transition, so no accepted event or descendant is removed by the prefilter.
+
+The explicit ten-view projection mode remains the low-level test oracle; all
+production GPU projections request the fourteen-view image. Missing indexed
+continuations have zero candidates, never an unfiltered fallback. Per-pass diagnostics
+report candidate positions before/after name-range selection, derived key/predicate
+counts, used index bytes, and index construction worker time. That time is nested
+inside byte-map construction and must not be added to total projection time.
+See `I-248` and `D-384`.
+
+### Cached statement argument gates
+
+`phase2GrowthMandatoryMaskKernel` prepares each retained statement's distinct
+iterative argument positions once per growth call and removes identities present
+in that logical block's immutable recursion-product map. `growthDistinctSecondaryArgumentMask`
+selects the first iterative occurrence of an identity, even when an earlier
+non-iterative occurrence exists. A 32-bit device word keeps the original mandatory
+membership in bits 0..7 and this argument mask in bits 8..23. Suffix unions and
+request membership consume only the low byte. Compared with the one-byte membership
+array, this costs three extra bytes per retained row, included in allocation sizing.
+The 24 projection columns and encoded statement bytes remain unchanged.
+
+`preparePooledGrowthCandidate` checks hypothesis length/scope compatibility before
+secondary-variable counting, then visits only cached argument positions. It still
+compares those identities against the exact prefix's distinct secondary set and
+applies the original secondary-variable limits. Recursion-product lookups and
+within-statement duplicate scans therefore leave the per-candidate path; no gate
+verdict, candidate position, frontier boundary or firing order changes.
+
+The same candidate gate reuses each ancestry answer for both comparability and
+the deeper validity. If the current validity is an ancestor of the appended
+statement, the statement's validity is the result; otherwise the reverse test
+selects the current validity, or rejects an incomparable pair. It does not walk
+the same ancestry path again merely to recover that already established result.
+
+`CudaPhase2GrowthBuffer::runRequestGrowthWindows` runs the existing CUDA semantic
+kernels with explicit seed-call/stump, frontier-page, prefix and candidate-window
+positions. A seed window launches one thread per (call, stump) pair
+(`phase2GrowthSeedPairsKernel`), so a few calls with long stump runs still fill
+the device; the whole-frontier reference path keeps one thread per call
+(`phase2GrowthSeedKernel`), and both run the same per-pair body `seedGrowthPair`
+([D-449](../40_decisions.md#d-449)). A private
+host static-pool arena backs only the rows a level spills from the device frontier store.
+CUDA measures each prefix's three payload lengths; host scheduling packs consecutive
+prefixes within the available pools, then CUDA fills them. Cheap rejection fills a window bounded by the candidate buffer, independently of output slack. GPU-selected survivors then execute in consecutive probe windows, reserving worst-case room for one child, event and request per survivor before launch. Probe windows consume remaining event/request space. A tail below one quarter of full probe-window capacity (or the final smaller remaining run) triggers a synchronous drain, retaining all dependent results before request slots reset. Sparse output therefore does not force a drain after every large probe. Candidate indices and prefix payloads stay live across these drains, so rejection is not replayed.
+
+Per-task accepted-subkey counts accumulate into 64-bit host metadata across drains.
+The result reports logical event/request totals, peak frontier/backing occupancy
+and frontier upload/download bytes. Host code copies rows and schedules from sizes;
+all request construction, gates, normalization and exact probes remain on CUDA.
+Original call/run/path fields survive physical pages. Complete Phase 2 processing
+allows pages to execute in physical order before shared canonical result sorting.
+
+The windowed driver keeps the frontier in a pass-local device store: `deviceFrontiers_[0..1]` hold `frontierStoreRecords` rows each (at least `frontierRecords`), one the level being grown and the other its children. Pages of a level are read in place, device rows first; seeds append to the current buffer, probe children to the other, and the buffers swap at each level end. The host keeps upper bounds of the four append counters (seeds, children, events, requests; at most one per seed pair or survivor) and reads the exact counters only before a window the bounds cannot cover, at prefix windows (one read for both node selections and the attempt total), at each candidate window (with its survivor count) and at level ends. Probe windows are half the window capacity, so two run in flight: after each probe launch the four leading counters are published into one of two host-mapped snapshots, and before the next window the host tightens its bounds from the older snapshot (its exact counts plus one row per survivor of the newer window) while the newer probe runs; it settles exactly only when even that cannot cover the minimum window ([D-450](../40_decisions.md#d-450)). Every small read-back, exact or lagged, goes through `publishDeviceWords`: one block on the compute engine writes the words into host-mapped pinned memory and an event behind it makes them visible, because a small copy-engine transfer waits for an engine switch on both sides under the Windows display driver model. The probe kernel strides over survivor ordinals and the windowed driver launches at most the resident blocks; it probes the whole-key map only when the answer can reach an event (beside a satisfied subkey, or once the mandatory terms hold). A buffer that cannot take the next window spills its rows to the host pages (`spillRows`, counted in `frontierSpills`); spilled pages upload into the consumed current buffer after its device rows. A request drain restores the two frontier counters after resetting the others, so pending store rows survive it. The level-end cutoff prunes the host pages (`pruneFrontierByCall`) and the device rows (`pruneDeviceFrontierByCall`, a stable `cub::DeviceSelect::If` into the free buffer). The planner sizes the store from the `frontierStore` work dimension (the unclipped measured level, raised by spill pressure) up to `phase2FrontierStoreMaximumRows` (4,194,304 rows, 224 MiB per buffer); nothing in it outlives the pass ([D-441](../40_decisions.md#d-441)).
+
+The original whole-frontier method remains an isolated reference for direct tests. Pinned frontier transfer scratch uses four host-pool blocks with copy pages clamped to their actual capacity: downloads, packed prefix sizes, counters, and a second frontier-upload stage. Frontier-page uploads alternate between two staging blocks with asynchronous copies, so filling one block from the host frontier (`PagedVector::copyRunTo`, one copy per page span) overlaps the other block's transfer; stream order keeps every upload ahead of the download that reuses the first block. Consecutive transfers fill one GPU execution window of up to 65,536 frontier rows before prefix preparation. After the measuring preparation, `packPhase2PrefixSizes` packs each prefix's payload, variable and secondary lengths into one 64-bit word on the device (in the growth buffer's second node sort-key scratch, unused by this driver); the host downloads 8 bytes per node in whole pinned blocks instead of the 36-byte prefix records, keeps the words in host static-pool pages, and packs prefixes into windows across transfer boundaries, walking the words span by span (`unpackPhase2PrefixSizes`). The host frontier waves and the prefix-size list reset with `PagedVector::resetKeepingPages`, so their pages are reused from level to level instead of being freed and poison-filled per level. The level-end cutoff asks the sealing controller once for one keep flag per scheduled call (`retainedCalls`); when no call is cut off the frontier is not scanned, otherwise `pruneFrontierByCall` compacts it in place in order. Actual frontier, prefix and candidate capacities still determine continuation. Only spilled rows cross to the host and back. The call/task/filter image is supplied as a measured, fitting immutable schedule.
+
+
+## Automatic block-budget planning
+
+`phase2_allocation.hpp` / `planPhase2Buffers` measures immutable projection, task
+and filter costs first, then fits growth, ordering and evaluation
+capacities into whole 2 MiB blocks. Relative demand starts from a retained complete
+GPU run. Exact array/alignment/CUB costs govern the fit; unused blocks are lent to
+flexible processing columns. Prefix and candidate allocations stop at the amount
+one bounded execution window can use, independently of host transfer-page size. `observePhase2WorkDemand` updates proportions
+from completed-batch occupancy and drain pressure; these values never select proof
+results. Production uses the planner for every chunk.
+
+Minimum output storage covers one firing supported by the existing CPU storage
+contract: transformed strings and sealed spans fit a host arena block (currently
+256 KiB). The GPU reserves a head plus one marker key, one complete level run,
+bounded head dependencies, remaining-argument identifiers and marker argument
+slices. Larger result collections drain through value/key windows. This preserves
+the CPU representation rather than adding a new GPU payload limit. A capacity
+request beyond that contract still requires a shared payload-format extension.
+
+A non-fitting minimum input asks the packer to reduce its LB chunk; the production
+packer must assert when its single LB still cannot fit. A pending output floor can
+borrow from processing storage; if the floor itself cannot fit, planning reports
+that further segmentation is required without consuming work.
+
+## Capacity profile selection
+
+`CudaPhase2BlockPool` provides the common allocation substrate for the streaming
+integration. It leaves the larger of 256 MiB or five percent of total VRAM free,
+reserves the remaining working budget, capped at 4 GiB by default, in 2 MiB
+blocks, and lends validated
+contiguous runs. Full storage is observed through free-run counts before a
+reservation; release synchronizes before a generation is reused. Its ownership
+directory uses the existing host static pool. `CudaPhase2Arena` suballocates
+256-byte-aligned arrays from a lease. Projection, task, filter, growth, ordering
+and evaluation owners accept that arena and leave borrowed device arrays to its
+owner at destruction; pinned host allocations and CUDA streams retain their own
+lifetimes. Existing production calls still select independent reservations until
+the streaming controller supplies pooled arenas.
+
+`run_modes.cpp` / `fullRun` selects the common full-run capacity tuple for both
+full execution and shortcut replay (`ExpressionAnalyzer::phase2ShortcutProfile`
+is false). Replay consumes the same FTA workload and therefore needs the same
+reservation. The historical smaller tuple remains available to isolated native
+capacity tests; the production shortcut no longer selects it.
+The common full-run profile reserves fixed storage at process initialization.
+Its arrays use these ceilings; kernel loop bounds use the actual occupied counts.
+The retained pre-D2 corpus census supplied the sizing baseline below. These
+reservations provided at least twenty percent headroom for that baseline; the
+new D2 attempts exceed two of the limits, as recorded after the table:
+
+| Full-run buffer | Validated baseline maximum | Current reservation |
+|---|---:|---:|
+| Accepted events and matching ordering entries | 5,214,814 | 6,291,456 |
+| Frontier records | 2,888,475 | 3,670,016 |
+| Prefix payload values | 88,141,662 | 109,051,904 |
+| Prefix variable values | 23,900,090 | 29,360,128 |
+| Prefix secondary values | 4,426,235 | 6,291,456 |
+| Evaluation reverse-owner work | 2,880,228 | 4,194,304 |
+
+The common raw-request ceiling remains 524,288 and the candidate window remains
+16,777,216. Projection, filtering and evaluation algorithms are unchanged. The sizing removes 417 MiB of fixed columns from the enlarged
+profile, plus library-workspace savings. The startup `[GPU-PHASE2-MEMORY]` report
+includes all fixed owners and library workspace: the validated full profile
+previously reserved 7,169,784,452 device bytes. The induction-producer descriptor adds
+2,048 bytes and the D1 reverse-owner expansion adds 16,777,216 bytes, giving a
+measured pre-streaming total of 7,186,563,716 bytes. The wide owner/value window
+offsets add 8,388,616 bytes in the full profile, giving a calculated
+7,194,952,332 bytes. The bounded output-planning column adds 57,344 bytes,
+giving a calculated 7,195,009,676 bytes for the historical fixed profile before automatic allocation. The reverse-owner field sizes only
+the eight-byte `DeviceEvaluationOwnerWork` array; request, encoded-hit and firing
+counts size the unchanged CUB workspace. The complete D1 trace measured 2,880,228
+owners from 60,799 requests before the former 2,097,152 limit asserted. See
+[D-355](../40_decisions.md#d-355). D2 required 4,224,638 owners from 60,782
+requests. An experimental 8,388,608-owner reservation passed that point and
+reached 5,511,208 owners, then exceeded the separate 6,291,456 accepted-event
+ceiling. The maintainer restored the original reservation and deferred bounded
+GPU generation/evaluation and joint AND-head induction to main-based sessions.
+See the retained experiment
+[D-371](../40_decisions.md#d-371)
+and the [D2 handoff](../../fta_ladder/D2/current_proof_state.md).
+A successful allocation is not
+a performance guarantee: acceptance compares existing-stage runtime alongside
+full proof-artifact identity, verifier results and the connected Nat kernel build.
+See `D-348` and
+[`rt_restoration_plan.md`](../../GPU/rt_restoration_plan.md) for measured evidence.
+
 ## Definition — GPU-ported means exact semantic work on the device
+
+The evaluation owner also exposes `beginEvaluationWindows` and
+`nextEvaluationValues`. Request gates execute once; wide owner offsets name
+the complete logical expansion. Each owner window fits the owner, candidate
+and encoded-hit columns in the worst case. Wide value offsets allow even one
+encoded hit to span many value windows. The caller must retain each window's
+output before requesting another. These doors are directly tested with
+one-item work buffers; production routing is integrated and the remaining shared-payload segmentation limitation is recorded in [`batched_gpu_plan.md`](../../GPU/batched_gpu_plan.md).
 
 A Phase 2 operation is GPU-ported only when all of the following are true:
 
@@ -44,8 +358,7 @@ A Phase 2 operation is GPU-ported only when all of the following are true:
 - queue, byte-arena, transfer, launch, and device failures assert at their
  owning boundary;
 - the processor implementation remains the oracle and selectable peer;
-- processor and GPU proof artifacts are byte-identical at the agreed identity
- gate.
+- GPU proofs are valid and deterministic; cross-backend proof histories may differ. `prover.cpp`, `ExpressionAnalyzer::analyzeExpressions`, reports `Number proven theorems` from the complete `globalTheoremList.size`. Compare the authoritative exported theorem files and proof artifacts before landing; counts alone do not establish equivalence.
 
 Launching a kernel around processor-generated requests is not a Phase 2 port.
 Returning only theorem heads while provenance is reconstructed by re-running
@@ -63,7 +376,7 @@ bytes into `SealedPageSet` does not repeat semantics.
 | Batch immutable | Compiled operator metadata and other configuration shared by the batch | Upload once per batch and address by integer identifier or offset. |
 | Logical-block snapshot | Phase 2 reads that belong to one resident logical block | Pack into a pointer-free image with an explicit generation; never expose host arena pointers. |
 | Iteration delta | State changed by Phase 1 before the Phase 2 barrier | Upload only the changed ranges or replace the affected compact table; record transferred bytes. |
-| Task scratch | Frontier nodes, candidate keys, request deduplication, hit indexes | Allocate from pre-sized device scratch buffers; reset cursors, never allocate per request. |
+| Task scratch | Frontier nodes, candidate keys, request tokens, hit indexes | Allocate from pre-sized device scratch buffers; reset cursors, never allocate per request. |
 | Semantic output | Complete firing decisions, generated strings, provenance identifiers, flags, doom evidence | Write to bounded device record and byte arenas; copy the compact used prefix back. |
 | Host-only finalize | `SealedPageSet` ownership conversion and `applyFiringRecords` canonical replay | May copy/decode device results, but may not redo request gates or rule evaluation. |
 
@@ -81,7 +394,7 @@ the exact live subset.
 
 | Processor type or role | Proposed device form | Exactness rule | Live source |
 |---|---|---|---|
-| `IntEncodedExpr` statement pages | Contiguous `IntEncodedExpr[]` plus logical-block slice | Copy field-for-field; the 352-byte record is already flat and trivially copyable. | `memory_infra/int_encoded_expr.hpp · IntEncodedExpr` |
+| `IntEncodedExpr` statement pages | Contiguous `IntEncodedExpr[]` plus logical-block slice | Copy field-for-field; the 240-byte record is already flat, padding-free and trivially copyable. | `memory_infra/int_encoded_expr.hpp · IntEncodedExpr` |
 | `IntStmtView` | `(offset, count)` into the statement array | Offset is relative to the owning projection, never a device or host pointer persisted in a record. | `memory.hpp · IntStmtView` |
 | `ExpressionStump` bucket | Contiguous stump array plus `(offset, count, ordinal, total)` | Preserve statement indices, `terminalOnly`, bucket order, and sibling ordinal exactly. | `memory.hpp · ExpressionStump`, `SplitStumpRef` |
 | `NameMap` strings | `stringOffsets[]`, `stringBytes[]`, byte-key lookup table, validity-parent runs, decoded-lex rank per identifier | Identifier equality stays identifier equality; every observable order uses decoded-byte rank, never mint order. | `memory.hpp · NameMap` |
@@ -109,8 +422,15 @@ logical rows, runs, decoded bytes, and identifier spaces are identical.
 now defines the complete resident pointer-free image:
 
 - arena-relative logical-block descriptors for all 24 columns;
-- byte-identical contiguous `IntEncodedExpr` rows in original statement-index
- order;
+- byte-identical contiguous `IntEncodedExpr` rows in original relative order,
+ prefiltered on the host by the logical block's signed premise-core union
+ (`memory.hpp` and `forEachPremiseCore`); singleton subkeys and singleton whole
+ keys across all four hash memories cover the request universe. Goal-only cores
+ are not uploaded. Argument patterns, iteration limits, and frozen scopes remain
+ device filters. The reserved host scratch uses one two-polarity byte per name.
+ A host-only source-ordinal column follows retained rows through shard merging;
+ `Phase2ProjectionArena::projectedStatementIndex` translates processor split
+ stumps to dense device ordinals before task upload;
 - one name record per local `NameMap` identifier plus identifier-zero sentinel,
  carrying canonical byte offset/length, validity parent identifier, and
  decoded-byte lexical rank, plus a fixed-load byte lookup table;
@@ -127,21 +447,41 @@ now defines the complete resident pointer-free image:
 - the three ordered mandatory statement-key slices, expression-key bytes, four
  maximum-key lengths, and the contradiction-role scalars needed by the doom
  predicate;
-- a host arena whose vectors reserve fixed ceilings once, assert before every
- append, and retain their allocations across `clear`;
-- twelve process-owned projection shards that claim independent logical blocks in
- parallel, followed by `Phase2ProjectionArena::appendShard`, which bulk-copies
- all 24 used prefixes, rebases every nested offset and slot index, and restores
- the canonical logical-block descriptor order before upload;
-- a CUDA owner whose 24 device arrays allocate once, accept only bounded used
- prefixes, never grow during upload, and are all covered by the transfer twin;
+- a host arena whose fixed-capacity columns (`ProjectionColumn<T>`) reserve
+ their ceilings once, assert before every append, and retain their
+ allocations across `clear`;
+- a build-once projection ([D-425](../40_decisions.md#d-425)):
+ each bounded construction window reserves its twelve shards'
+ measured capacities laid end to end (`addProjectionCapacity`), and each shard
+ is a slice arena whose columns view its part of that storage, so the shards
+ claim independent logical blocks in parallel and write straight into the
+ final buffer; `Phase2ProjectionArena::adoptShards` then computes every
+ shard's column bases, adds the window's stream bases, and lets the chunk's
+ persistent `Phase2ProjectionWorkers` take whole columns (each moves
+ that column's used prefix of every shard, in order, to the backing column's
+ end inside the same storage and rebases its nested offsets and slot indices
+ through the per-column core `adoptShardColumn`), byte-identical to building
+ every block in one arena; the caller restores the canonical logical-block
+ descriptor order before append upload into the complete device image. A
+ retained-only host image holds sealing lookups and scheduling ordinals.
+ After each chunk's last construction window and every iteration's Phase 2 the
+ prover thread returns the freed projection heap to the operating system
+ (`mi_collect(true)`, [D-426](../40_decisions.md#d-426),
+ [D-447](../40_decisions.md#d-447));
+ columns above 64 MiB are returnable only because every mimalloc arena fills
+ whole bitmap fields ([D-427](../40_decisions.md#d-427),
+ [G-78](../50_gotchas.md#g-78));
+- a CUDA owner whose 24 device arrays accept only bounded used prefixes and
+ never grow during upload; production borrows the planner's block leases,
+ while standalone fixed allocations remain available to the transfer twins;
 - a dependency-staged upload door whose fixed page-locked arrays queue the nine
  evaluation-only column prefixes on a nonblocking stream while the host builds
  task/filter/growth schedules; the join occurs before the first kernel, and the
- fifteen early columns retain their ordinary synchronous copy; the staging owns
- 31,219,712 host bytes while fixed device ownership is 1,275,332,748 bytes
- after the measured pooled-prefix and candidate-window growth owner;
-- native fixed-load probes for decoded names, all ten byte-map views, the
+ fifteen early columns retain their ordinary synchronous copy; actual device
+ ownership follows the measured block plan, and direct allocation tests cover
+ the standalone fixed-capacity owners;
+- native fixed-load probes for decoded names, the ten source byte-map views
+ and four derived prefix-transition views, the
  remaining-argument reverse map, and all eleven plain-data views, using the same
  FNV-1a or SplitMix64 hash and linear-probe contract as the host builder.
 
@@ -173,8 +513,8 @@ stumps, with per-part maxima of one, four, four, and 55 respectively. The fixed
 ceilings are 512, 2,048, 2,048, and 16,384 records, occupying about 0.70 MiB.
 `gpu/phase2_cuda.cu::CudaPhase2TaskBuffer` allocates those four device columns
 and its checksum word once, accepts only bounded used prefixes, and proves the
-transfer byte-for-byte on native CUDA. Request kernels are the next boundary;
-the live processor does not consume this image yet.
+transfer byte-for-byte on native CUDA. Production request growth, evaluation and
+firing construction consume this image through the bounded execution owners.
 
 `Prover::proveKernel` emits one deterministic `[GPU-CAPACITY]` census for each
 Phase 2 sweep. The first executor task to claim a logical block records that
@@ -194,10 +534,10 @@ until deterministic multi-batch ownership is connected; it never resizes inside
 Phase 2 or falls back to the processor.
 
 `gpu/phase2_projection.cpp::measurePhase2ProjectionUsage` is the complete
-read-image capacity twin. It walks one logical block without allocation or proof
-side effects and counts name lookup slots; rule-interner strings; all ten
+read-image capacity twin. It walks one logical block with private arena scratch
+for shared keys and exact prefixes, without proof side effects, and counts name lookup slots; rule-interner strings; all ten
 byte-key maps and their encoded keys, value blobs, and fixed-load hash slots;
- the derived reverse map's safe no-dedup upper bound; all seven actual plain-data
+ the derived reverse map's safe owner/entry upper bound (key bytes alias forward blobs); all seven actual plain-data
  inputs, both derived mandatory-membership indexes, both mail-eligibility
  sets, and their value runs;
  mandatory statement-key sets; and logical-block metadata. `proveKernel`
@@ -230,7 +570,7 @@ retained rows in one sweep; one call examined 20,486 and retained 1,752. The
 first global fixed ceilings are 2,048 calls, 16,777,216 examined rows, 1,048,576
 retained rows, and 32,768 examined rows per call. The observed retained maximum
 rounds to 2,048 per call, but it is not an allocation boundary: the CUDA kernel
-preserves the processor's first-8,192 acceptance envelope and only the global
+preserves the processor's configured `maxNumberFilteredStatements` acceptance prefix and only the global
 retained prefix has a fixed arena ceiling. The schedule processes calls in one
 bulk launch family and orders retained indices by decoded-name lexical rank then
 original statement index. The precomputed name rank makes that composite key
@@ -241,7 +581,7 @@ variable-length strings inside the sort.
 call column and its exact class image. Each call descriptor selects one resident
 logical block, one of the four whole/subkey registry pairs, the iteration
 ceiling, the processor whole-key widening flag, and the statement count. A
-fixed open-address table interns all five fields, checks equality after hashing,
+fixed open-address table interns all six fields, checks equality after hashing,
 preserves first-occurrence class order, and stores one class index for every
 original processor call. The complete FTA shortcut contains 24,229 calls but
 only 8,853 exact classes: class representatives examine 8,178,826 rows instead
@@ -252,9 +592,11 @@ calls, the original-to-class map, original and class count/offset columns, two
 compact 64-bit retained-key arrays, and one shared CUB scratch allocation. Count,
 exclusive scan, predicate replay, stable compact emission, and radix sort run
 once per class. A fixed expansion kernel maps the class count and offset back to
-every original call without copying retained rows. The global sort key is class
-ordinal, decoded-name rank, and original statement index; growth decodes only
-the low statement-index field from the shared span, while its events and every
+every original call without copying retained rows. CUB segmented radix sort uses
+each class's offset range, including one final end-offset sentinel. Each 64-bit
+key contains a full 32-bit decoded-name rank and 32-bit original statement index;
+class identity lives in the span directory instead of consuming key bits. Growth
+decodes only the low statement-index field from the shared span, while its events and every
 downstream ordering token retain the original processor call ordinal. Equal-name
 stability is explicit rather than dependent on kernel arrival order. The
 predicate directly covers frozen-scope ancestry, exact one-expression
@@ -322,14 +664,16 @@ not used to construct either list. This contract is
 and
 [I-213](../30_invariants.md#i-213).
 
-The complete prefix census measured 14,074,478 payload values, 4,369,164
+The historical fixed-profile prefix census measured 14,074,478 payload values, 4,369,164
 normalization variables, and 951,515 secondary variables at the simultaneous
-frontier peaks. Production applies 25 percent headroom and rounds each upward
+frontier peaks. That profile applied 25 percent headroom and rounds each upward
 to 262,144-value blocks: 17,825,792, 5,505,024, and 1,310,720 values, or exactly
 94 MiB across the three pools. With one header per frontier node, canonical
 node-order arrays, two index lists, two flag arrays, fixed candidate-window
-storage, and retained CUB scratch, `CudaPhase2GrowthBuffer` owns exactly
-812,965,447 bytes (775.304 MiB). The task
+storage, and retained CUB scratch, the historical growth owner used
+812,965,447 bytes (775.304 MiB). Its direct allocation fixture now expects
+812,965,463 bytes after adding the two candidate-window counter records.
+Current production capacities come from the automatic budget planner. The task
 counters increment
 only for owner-accepted subkeys, matching `g_growthMatchCount` without counting
 whole-key-only evaluation events or downloading the event ledger. A
@@ -338,7 +682,7 @@ owner and asserts the exact byte total. Copying maximum-size prefix payloads
 into every 56-byte frontier row remains forbidden because it would dominate
 device memory.
 
-Production candidate growth is fixed and complete. Stable radix passes order
+The historical complete-growth route uses fixed candidate storage. Stable radix passes order
 node spans by original call, run, statement path, and candidate; one inclusive
 scan assigns exact candidate ordinals. Consecutive half-open windows of at most
 16,777,216 records cover every ordinal exactly once. Short-thread and 64-lane
@@ -347,7 +691,7 @@ selection compacts survivors in ordinal order, and one suffix-only probe kernel
 performs exact subkey, owner, whole-key, and term work. The retained window owns
 16-byte attempts, one-byte flags, and four-byte survivor indices; every boundary
 asserts and no window size can alter proof order. Reusable CUB scratch is
-12,868,095 bytes and complete fixed device ownership is 1,275,332,748 bytes.
+12,868,095 bytes; the recorded historical complete ownership was 1,275,332,748 bytes.
 See
 [D-319](../40_decisions.md#d-319)
 and
@@ -389,8 +733,12 @@ secondary-variable, and mandatory-term summaries once in shared memory; 64 lanes
 own disjoint candidate positions. `findProjectedSegmentedByteMapEntry` hashes and
 compares the canonical header, shared prefix payload, and lane-local expression
 suffix as one byte-exact key, so no lane copies the at-most-256-identifier prefix
-to its stack. The ordinary event/frontier ledgers and later canonical ordering are
-unchanged. The direct fixture lowers the threshold to four so short nodes, long
+to its stack. A caller that probes several maps with one key (the survivor probe's
+subkey and whole-key maps) digests the key once with `hashProjectedSegmentedKey`,
+which folds each identifier as one word low byte first (bit-identical to the
+byte-wise FNV-1a over the contiguous key), and probes each map with
+`findProjectedSegmentedByteMapEntryHashed`. The ordinary event/frontier ledgers and
+later canonical ordering are unchanged. The direct fixture lowers the threshold to four so short nodes, long
 nodes, presence, owner rejection, absence, event emission, and child growth all
 execute in one exact CUDA test.
 
@@ -404,16 +752,11 @@ immediate children ascending, then visit pushed children descending. A
 task-segmented inclusive scan over the subkey-satisfied bit assigns the exact
 cumulative growth position, including persistence across calls in one task.
 
-The per-call deduplication table is fixed-capacity open addressing. Its slot
-hash is only a placement aid: collision resolution compares the complete key —
-call identifier, statement count, and every original/validity identifier pair.
-An atomic minimum retains the lowest exact event order, so kernel arrival timing
-cannot select the representative. The retained unique tokens are radix-sorted
-by event order. At production ceilings its deterministic arrays consume
-81,788,932 bytes before one reusable maximum-sized CUB scratch allocation;
-`CudaPhase2OrderingBuffer::fixedAllocationBytes` reports the complete fixed
-ownership, and the production RTX allocation test asserts it remains below
-512 MiB.
+The ordering owner retains every recordable request. Its arrays contain event
+sort keys, indices, task-local growth scans, request tokens and reusable library
+scratch; no key table or duplicate history remains. At the documented ordering
+capacity the arrays consume 79,691,780 bytes before library scratch.
+`CudaPhase2OrderingBuffer::fixedAllocationBytes` reports the complete ownership.
 
 The processor generator is not a flat Cartesian product. It:
 
@@ -438,9 +781,8 @@ logical sequence where order is observable. The parallel pattern is:
 - compact survivors with prefix scans;
 - assign each candidate its exact growth position by a task-segmented scan over
  `subOk` in processor-equivalent order — live;
-- deduplicate requests by full semantic request key, retaining the minimum
- stream token, then order the unique stream by that token for doom-prefix
- semantics — live.
+- emit a token for every recordable event and order tokens for cutoff
+ selection; repeated semantic request identities are preserved.
 
 The processor's stack walk processes all children of a popped prefix in
 ascending filtered position and later pops the most recently pushed prefix.
@@ -482,13 +824,17 @@ values per encoded hit. Executor tasks accumulate these counters in
 thread-local storage and publish them only after returning. They are never read
 by proof flow.
 
-The retained FTA peaks are 72,674 requests and dependency passes; 1,049,978
+**Historical evaluation-sizing baseline.** The following peaks and initial
+ceilings describe the original evaluation campaign; current production uses
+the common profile in [Capacity profile selection](#capacity-profile-selection).
+
+The retained FTA peaks were 72,674 requests and dependency passes; 1,049,978
 reverse owners with at most 804 per request; 47,930 subset candidates with at
 most four per request; 46,654 encoded hits; 82,620 local values with at most 39
 per hit; 62,834 total firing records; 1,935,835 generated bytes; 189,815 level
 values; 184,494 origin dependencies; 1,608 marker keys; 780 marker remaining
-arguments; and 1,345 marker-argument slices. Use fixed next-power-of-two
-ceilings: 131,072 requests, 2,097,152 reverse-owner work items, 65,536 candidate
+arguments; and 1,345 marker-argument slices. The initial fixed next-power-of-two
+ceilings were: 131,072 requests, 2,097,152 reverse-owner work items, 65,536 candidate
 owners and encoded hits, 131,072 local values, 65,536 firing records, 2,097,152
 generated bytes, 262,144 levels and origin dependencies, 2,048 marker keys and
 argument slices, and 1,024 marker remaining arguments. The reverse expansion is
@@ -520,7 +866,8 @@ scratch arena and rejected values consume no generated-byte capacity.
 
 Before output, the kernel checks LMV/request scope comparability, chooses the
 deeper validity, repeats the ancestor closed-scope filter when the LMV deepens
-the deposit, applies the marker/ordis2 purity exception only at OR boundaries,
+the deposit, enforces marker purity in every scope (including OR branches),
+retains only the separate integration-justified compound-demand exemption,
 and scans transformed bytes for the exact ordis2 iteration cap. Surviving rows
 write complete fixed firing headers plus arena-relative payload runs. The same
 kernel fills levels for heads and demands with a bounded multiway
@@ -531,15 +878,12 @@ premises sorted through projection-time decoded ranks for expression then
 validity; identifiers remain in their source namespace until host sealing.
 
 The resident projection does not duplicate the analyzer-wide compiled-expression
-map. Instead, every projected `NameMap` and rule-interner string carries the only
-compiled-core distinction Phase 2 consumes: absent, atomic, or non-atomic. Two
-additional plain-data views project `canBeSentIds` and `canBeSentMarkerIds`; the
-logical-block descriptor carries the anchor-name bytes, block level, standard
-secondary-number ceiling, and incubator/disintegration/compressor switches.
-With those compact annotations the kernel executes the exact processor verdicts:
-mail eligibility including `int_lev_` and single-marker substitution, incubator
-anchor/local-premise disintegration gating, OR-disintegration permission,
-ancestor-known suppression, compressor handling, and marker non-atomic category.
+map. Projected strings retain the compiled-core annotation needed by record
+validity assertions. No whole-expression or marker mail-permission views are
+projected. The block descriptor retains anchor bytes, block level, secondary
+ceilings and execution switches. The kernel preserves incubator anchor/local
+premise disintegration gating, OR-disintegration permission, ancestor-known
+suppression and compressor handling; mail-only permission evaluation is absent.
 
 Marker records write transformed keys in source order, remaining rule-interner
 identifiers in decoded-byte sorted-unique order, and sorted-unique bare argument
@@ -548,8 +892,8 @@ are part of the fixed header. The implementation deliberately scans for each nex
 remaining argument instead of allocating a per-thread variable array; marker
 runs are small and this preserves occupancy and the static-memory contract.
 The direct RTX twin covers mapped and unmapped numeric keys, repeated `u_`
-removal, deeper validity, source flags, an impure-marker rejection outside an OR
-branch and acceptance inside one, the non-derived-level exclusion, four exact
+removal, deeper validity, source flags, CPU/GPU impure-marker rejection inside an
+OR branch and acceptance after recursion-product classification, the non-derived-level exclusion, four exact
 level unions, complete source-first/premise-sorted provenance runs, every head
 verdict flag, transformed marker keys, decoded-byte-sorted unique remaining
 arguments, bare arguments, category, and admission ceilings.
@@ -590,9 +934,11 @@ The host conversion may decode these identifiers and copy these byte slices to
 gate, infer provenance, or suppress a device firing.
 
 `gpu/phase2_sealing.hpp::Phase2SealingArena` is the implemented ownership
-conversion. Its constructor sizes every processor download column, canonical
-index array, and per-record sealing scratch array once from
-`Phase2EvaluationCapacity`; `downloadAndSeal` reuses those addresses. It copies
+conversion. Its constructor records `Phase2EvaluationCapacity` and allocates
+nothing; `downloadAndSeal` grows every processor download column, the canonical
+index array and the per-record sealing scratch to the used counts of its window
+and keeps the largest for later windows of the chunk, never beyond the capacity
+([D-428](../40_decisions.md#d-428)). It copies
 the used device prefixes, walks the doom-compacted canonical permutation, and
 creates one ordinary sealed record chain per logical block. Generated
 expressions, marker keys, and marker arguments copy from device byte slices.
@@ -779,7 +1125,7 @@ backend runs only when explicitly selected.
  cases.
 3. **Generator twin.** Capture complete processor and GPU request streams for
  the same batch, stump bucket, and logical block. Compare semantic keys,
- first-occurrence order, growth positions, and deduplication.
+ event order, growth positions, and preservation of repeated requests.
 4. **Evaluator twin.** Compare every field and variable run of every generated
  firing record before deposits are applied.
 5. **Doom twin.** Exercise multiple triggers, equal growth positions, different
@@ -895,8 +1241,9 @@ are therefore closed as small seams on this shape; repeatedly rebuilding the hos
 projection is the only substantial non-kernel seam. Measure fixed ownership and
 resident high-water memory before deciding whether to cache that projection.
 
-The fixed-ownership gate accounts for every production `cudaMalloc` request in
-the six process-static owners. After main appended provenance-owner records to
+The historical fixed-ownership gate accounted for every production `cudaMalloc` request in
+the six process-static owners. These recorded figures describe that profile,
+not current automatic allocations. After main appended provenance-owner records to
 the projected value blobs and raised the current forward-map slot peak, projection
 owns 299,951,120 bytes, tasks 731,144,
 filtering 25,577,983, growth 812,965,447, ordering 98,838,019, and evaluation
@@ -1010,13 +1357,13 @@ The Windows CUDA build seam, real-kernel device contract, complete fixed
 resident projection, corrected capacity census, all-column transfer twin, and
 native lookup layer, pointer-free host task image, exact bulk filter/sort stage,
 retained growth-capacity census, complete request-growth content, the
-812,965,447-byte pooled-prefix and candidate-window fixed growth owner, exact
+fixed pooled-prefix and candidate-window growth owner, exact
 per-task split-work counts, exact remaining-span census, stable
 short/cooperative selection, canonical candidate windows, cooperative long-span
 cheap gates, stable survivor compaction, and exact on-device stream reconstruction
 are live. Exact processor event order, task-local growth positions, and
-collision-checked per-call deduplication pass direct unsplit, mixed-stump, and
-duplicate-row twins. Production routing is live for FTA shortcut mode: the
+the then-active per-call deduplication passed direct unsplit, mixed-stump, and
+duplicate-row twins. Production routing is live for the full pipeline and FTA shortcut mode: the
 processor remains the default, `--phase2-backend cuda` selects CUDA explicitly,
 and selected CUDA mode asserts instead of falling back. The processor stump
 producer remains the split-work discovery prepass; semantic request filtering,
@@ -1040,7 +1387,7 @@ sealing, and finalization are not the primary bottleneck. End-to-end shortcut ti
  the complete shortcut to 161.911 seconds: 4.382 and 1.349 times faster than the
  paired processor run. The performance gate keeps the explicit Phase 2 bracket
  for diagnosis and the complete shortcut as the usefulness decision. Exact
- fixed device ownership is now 1,275,332,748 bytes (1,216.252 MiB); the refined traffic
+ fixed device ownership at that milestone was 1,275,332,748 bytes (1,216.252 MiB); the refined traffic
  run measured complete Phase 2 at 22.948 seconds and isolated 6.905 seconds of
  projection from only 0.073 seconds of scheduling. Internal attribution then
  localized the dominant host cost to repeated cold-table name comparisons. The
@@ -1103,24 +1450,33 @@ buffer, whose methods live in the `.cu` file), and the CUDA unit tests. A
 build without `GL_CUDA` has no CUDA route at all: selecting one
 (`--GPU` / `--phase2-backend cuda` / `use_gpu: true`) asserts at prover
 construction, never falls through to the processor. Both Linux builds are
-gated on Ubuntu (WSL2, CUDA 13.3, g++ 15): processor and CUDA, 1626/1626
-unit tests each.
+gated on Ubuntu (WSL2, CUDA 13.3, g++ 15): processor and CUDA.
+Every test compiled only under `GL_CUDA` is registered with
+`CUDA_TEST(suite, name)`, not `TEST`: `main.py`'s processor-route gate
+(`gl_quick --unit-tests --phase2-backend cpu`) leaves those tests out, so the
+default run needs no CUDA device
+([D-457](../40_decisions.md#d-457)).
 
 The closed boundary is `main.py` complete on Windows and Linux — the FTA
 shortcut AND the full incubator/main pipeline. The processor route is the product default
 (`ProverParameters::use_gpu`, false; no shipped config pins a batch),
 `main.py --GPU` selects CUDA for every batch of the run,
 `--phase2-backend cpu|cuda` is the explicit whole-run override, and selected
-CUDA asserts rather than falling back. A CUDA-selected batch also owns its counterexample filter: sixteen
-private conjecture clones per direct CUDA Phase 2 call, never a processor
-replay. CUDA and SSD deload are mutually exclusive — a CUDA batch derives
-`allow_ssd_deload` false and runs the resident-only steward, while a
-processor batch pages through the working-set steward by default. Phase 1, Phase 3, Python proof-graph processing, and
+CUDA asserts rather than falling back. A CUDA-selected batch also owns its counterexample filter: sixty-four independent conjecture clones share setup,
+and automatic device planning divides their images into bounded chunks. There
+is no processor replay. Both backends page through the working-set steward by default
+(`allow_ssd_deload`): the CUDA route packs chunks from the measurement each
+logical block records at the end of its phase 1, projects and schedules each
+block under a claim, keeps a steward window open while the device output grows
+the pool, and shares name / rule columns by comparing against the shard's own
+copy; counterexample-filter clones run resident-only
+([D-409](../40_decisions.md#d-409)). Phase 1, Phase 3, Python proof-graph processing, and
 verification remain on the processor. The approved split-stump discovery
 prepass and fixed-array sealing also remain on the processor, while semantic
-request work through provenance, marker payloads, canonical ordering, and doom
-selection executes on the device. Fixed device ownership is sized by the named
-audited capacity profiles; a full run streams deterministic projection chunks
+request work through provenance, marker payloads and deactivation eligibility
+executes on the device. Host metadata selects the GPU request-key cutoff and
+orders retained firing content. Automatic device ownership accounts for all
+arrays and library scratch within one budget; a full run streams projection chunks
 that keep each split LB's task family whole. Non-Windows hosts and new anchors
 still require new capacity, identity, and performance gates. Native `sm_120`
 is embedded but remains runtime-unmeasured until a Blackwell card is
@@ -1136,6 +1492,24 @@ available. Do not widen any of these claims from direct helper coverage alone.
 - [`02_hash_engine.md`](02_hash_engine.md) — normalized keys and rule lookup.
 - [`../10_pipeline/04_prover.md`](../10_pipeline/04_prover.md) — Phase 2 execution model.
 - [`../../GPU/gpu_plan.md`](../../GPU/gpu_plan.md) — persistent port plan, approvals, and evidence.
+
+### Bounded parallel construction waves
+
+`planProjectionConstructionWaves` partitions each existing device chunk into
+consecutive host-construction waves. The sum of unshared usage in each wave
+fits one construction shard in every column. This is a worst-case guarantee
+for dynamic claiming: even one worker receiving the entire wave fits the
+reserved arrays. Each wave resets the twelve construction shards and appends
+their results into the same final host projection. (The production route no
+longer builds in waves: each chunk builds once, the shards sized from the
+recorded per-block usage — see the build-once bullet above; the planner remains
+unit-tested.) Canonical descriptor order,
+source-ordinal remapping, GPU chunk boundaries, and device capacities stay
+unchanged. Two average shares alone were not a bound on a worker's actual load.
+
+## Witness-class mail boundary
+
+Processor and CUDA firing records carry no transitive mail-eligibility or marker-permission fields. The two permission sets and their projection columns are removed; remaining projection kinds retain their numeric identities. Circulating mail is checked at its publishing boundary by ordinary integration-witness presence. The GPU still computes every surviving inference gate and provenance field; removing a mail-only predicate does not transfer inference evaluation to the processor.
 
 ---
 

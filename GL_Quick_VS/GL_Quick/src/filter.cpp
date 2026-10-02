@@ -29,6 +29,7 @@
 // prover.hpp because C++ requires a single class definition; only the function
 // bodies live here.
 
+#include "project_paths.hpp"
 #include "filter.hpp"
 #include "prover.hpp"
 #include "parameters.hpp"
@@ -101,7 +102,7 @@ namespace gl {
 
         // 2) Resolve directory: <repo>/files/simple_facts
         const auto simpleFactsDir =
-            std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
+            gl::projectRoot()
             / "files" / "simple_facts";
 
         std::vector<std::pair<int, std::filesystem::path>> hits;   // (n, path)
@@ -155,7 +156,7 @@ namespace gl {
     }
 
     /// @brief Write the post-CE-filter conjecture list to
-    /// `files/theorems/filtered_conjectures.txt`.
+    /// `filteredConjecturesDirectory/filtered_conjectures.txt`.
     ///
     /// @details
     /// Called once per batch after the CE filter has finished probing every
@@ -167,16 +168,14 @@ namespace gl {
     ///
     /// @param filteredConjectures The full list of conjectures to persist,
     ///                            one per output line.
-    /// @post `files/theorems/filtered_conjectures.txt` exists and contains
+    /// @post The selected directory contains `filtered_conjectures.txt` with
     ///       `filteredConjectures.size()` lines of MPL text.
     /// @see `prover.hpp::CEFilter` — primary caller.
     /// @see `docs/agentic_swdd/10_pipeline/03_ce_filter.md` — pipeline stage chapter.
     void ExpressionAnalyzer::saveFilteredConjectures(const std::vector<std::string>& filteredConjectures) {
         namespace fs = std::filesystem;
 
-        const auto dir =
-            fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
-            / "files" / "theorems";
+        const auto& dir = filteredConjecturesDirectory;
         const auto out = dir / "filtered_conjectures.txt";
 
         std::error_code ec;
@@ -361,8 +360,8 @@ namespace gl {
         updateGlobalTuples.clear();
         std::vector<std::tuple<int, bool, int>>().swap(updateGlobalTuples);
 
-        // updateGlobalDirectPages (std::optional<SealedPageSet>) is emplaced by
-        // proveKernel and reset by drainUpdateGlobalDirect — nullopt between
+        // updateGlobalSingleChapterPages (std::optional<SealedPageSet>) is emplaced by
+        // proveKernel and reset by drainUpdateGlobalSingleChapter — nullopt between
         // proveKernel calls, so nothing to release here (the deferredAncestorPages
         // lifecycle).
 
@@ -432,6 +431,9 @@ namespace gl {
             // former keep-known-rows loop it replaces was a no-op relict of
             // the 2026-06 string/int container fold.
             ceBody.intKnownStatements.resetToFresh();
+            ceBody.orImplications.clear();
+            ceBody.orImplicationMatches.clear();
+            ceBody.lbMemory.existenceLookups.clear();
             ceBody.eqClassSttmntIndexMapMap.resetToFresh();
             swap(ceBody.isActive, empty.isActive);
             swap(ceBody.isPartOfRecursion, empty.isPartOfRecursion);
@@ -489,10 +491,10 @@ namespace gl {
         const auto ceStart = std::chrono::high_resolution_clock::now();
         const double phase2Before = phase2CumulativeSeconds;
         if (phase2Backend == Phase2Backend::cuda) {
-            // The CUDA projection owns fixed buffers sized for the measured main
-            // run. Sixteen Gauss fact clones remain below every fixed column
-            // ceiling while exposing enough independent CE tasks to fill the GPU.
-            constexpr std::size_t kCeCudaBatchSize = 16;
+            // Independent clones share setup and use all construction workers.
+            // The automatic planner packs their immutable images into bounded
+            // device chunks and continues when processing storage fills.
+            constexpr std::size_t kCeCudaBatchSize = 64;
             for (std::size_t begin = 0; begin < conjectures.size();
                  begin += kCeCudaBatchSize) {
                 const std::size_t count = std::min(
@@ -536,7 +538,7 @@ namespace gl {
             }
         }
         else {
-            // CPU fallback: independent single-owner clones run through the
+            // CPU ASIC path: independent single-owner clones run through the
             // established direct one-conjecture Phase 1/2/3 path.
             std::atomic<std::size_t> next{ 0 };
             auto worker = [this, &conjectures, templateLB, &next](unsigned coreId) {

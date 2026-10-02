@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "project_paths.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -119,7 +120,7 @@ std::vector<std::vector<int>> generateBinarySequencesAsLists(int n);
 using Mapping = std::map<int,int>;
 
 inline const std::filesystem::path DEFINITIONS_FOLDER =
-    std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "files" / "definitions";
+    gl::projectRoot() / "files" / "definitions";
 
 /// @brief Per-core-expression configuration record loaded from
 /// `files/config/Config<Anchor>.json`.
@@ -619,7 +620,7 @@ inline CoreExpressionMap
 modifyCoreExpressionMap(std::string anchorID)
 {
     const auto configPath =
-        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
+        gl::projectRoot()
         / "files" / "config" / ("Config" + anchorID + ".json");
 
     return modifyCoreExpressionMap(configPath);

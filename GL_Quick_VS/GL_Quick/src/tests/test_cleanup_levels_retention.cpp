@@ -35,6 +35,7 @@
 ///        class expansion regenerates sibling variants without bound.
 
 #include "test_harness.hpp"
+#include "canonical_test_helpers.hpp"
 
 #include "../prover.hpp"
 
@@ -47,18 +48,19 @@ TEST(cleanup_levels_retention, dropped_statement_keeps_its_levels_row) {
     const gl::NameId mainId = memory.nameMap.encode("main");
 
     // One equivalence class at the cleanup validity with two IntLev members;
-    // canonical is the decoded-lex first (int_lev_1_1), so a statement
-    // carrying int_lev_1_2 holds a non-canonical member and is dropped.
+    // canonical is the decoded-lex first (int_0_lev_1_1), so a statement
+    // carrying int_0_lev_1_2 holds a non-canonical member and is dropped.
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "int_lev_1_1", "int_lev_1_2" }, memory.nameMap);
+    cls.setMembersFromNames({ "int_0_lev_1_1", "int_0_lev_1_2" }, memory.nameMap);
     const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
     const int32_t lens[1] = { static_cast<int32_t>(blob.size()) };
     memory.equivalenceClassesMap.inner().assignRun(mainId, blob.data(), lens, 1);
+    seedFixtureCanonicalClasses(memory);
 
     const gl::EncodedExpression keptSrc(
-        "(=[a,int_lev_1_1])", memory.nameMap.decode(mainId));
+        "(=[a,int_0_lev_1_1])", memory.nameMap.decode(mainId));
     const gl::EncodedExpression droppedSrc(
-        "(=[a,int_lev_1_2])", memory.nameMap.decode(mainId));
+        "(=[a,int_0_lev_1_2])", memory.nameMap.decode(mainId));
     const gl::IntEncodedExpr kept =
         gl::encodeExpression(keptSrc, memory.nameMap);
     const gl::IntEncodedExpr dropped =
@@ -76,7 +78,7 @@ TEST(cleanup_levels_retention, dropped_statement_keeps_its_levels_row) {
     memory.intStatementLevelsMap.insertSorted(keptKey, 3);
     memory.intStatementLevelsMap.insertSorted(droppedKey, 5);
 
-    analyzer.cleanUpExpressions(memory, gl::StrSpan("main", 4));
+    cleanUpScopes(analyzer, memory, { mainId });
 
     // Registry: only the kept statement remains.
     ASSERT_EQ(static_cast<int>(memory.intEncodedStatements.size()), 1);
@@ -98,15 +100,16 @@ TEST(cleanup_levels_retention, cleanup_repairs_eq_class_waterlines) {
     const gl::NameId mainId = memory.nameMap.encode("main");
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "int_lev_1_1", "int_lev_1_2" }, memory.nameMap);
+    cls.setMembersFromNames({ "int_0_lev_1_1", "int_0_lev_1_2" }, memory.nameMap);
     const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
     const int32_t lens[1] = { static_cast<int32_t>(blob.size()) };
     memory.equivalenceClassesMap.inner().assignRun(mainId, blob.data(), lens, 1);
+    seedFixtureCanonicalClasses(memory);
 
     // Rows: kept (0), dropped (1), kept (2), dropped (3), kept (4).
-    const char* texts[5] = { "(=[a,int_lev_1_1])", "(=[a,int_lev_1_2])",
-                             "(=[b,int_lev_1_1])", "(=[b,int_lev_1_2])",
-                             "(=[c,int_lev_1_1])" };
+    const char* texts[5] = { "(=[a,int_0_lev_1_1])", "(=[a,int_0_lev_1_2])",
+                             "(=[b,int_0_lev_1_1])", "(=[b,int_0_lev_1_2])",
+                             "(=[c,int_0_lev_1_1])" };
     for (int i = 0; i < 5; ++i) {
         const gl::EncodedExpression src(texts[i], memory.nameMap.decode(mainId));
         const gl::IntEncodedExpr row = gl::encodeExpression(src, memory.nameMap);
@@ -125,7 +128,7 @@ TEST(cleanup_levels_retention, cleanup_repairs_eq_class_waterlines) {
     for (int i = 0; i < 5; ++i)
         gl::upsertEqClassIndex(memory.eqClassSttmntIndexMapMap, mainId, keys[i], before[i]);
 
-    analyzer.cleanUpExpressions(memory, gl::StrSpan("main", 4));
+    cleanUpScopes(analyzer, memory, { mainId });
 
     ASSERT_EQ(static_cast<int>(memory.intEncodedStatements.size()), 3);
     // Dropped positions {1, 3}: below 0 -> 0, below 1 -> 0, below 2 -> 1,
@@ -168,4 +171,266 @@ TEST(cleanup_levels_retention, repair_eq_class_waterlines_counts_below) {
     for (int i = 0; i < 5; ++i)
         ASSERT_EQ(gl::lookupEqClassIndex(memory.eqClassSttmntIndexMapMap, mainId, keys[i]),
                   after[i]);
+}
+
+namespace {
+
+// Two scheduled scopes (main and a child), one unscheduled sibling scope with
+// classes of its own, rows of all three interleaved in every registry, a
+// stale local-set key, and five waterlines into the statement registry.
+struct ScopeFixture {
+    gl::NameId mainId = 0;
+    gl::NameId childId = 0;
+    gl::NameId otherId = 0;
+    int64_t staleKey = 0;
+    std::vector<gl::NameId> waterlineKeys[5];
+};
+
+ScopeFixture buildScopeFixture(gl::Memory& memory) {
+    ScopeFixture f;
+    f.mainId = memory.nameMap.encode("main");
+    f.childId = memory.nameMap.encodePush(f.mainId, std::string("hypo_(h[a])"));
+    f.otherId = memory.nameMap.encodePush(f.mainId, std::string("hypo_(g[b])"));
+
+    // Canonical members are the decoded-lex first: int_0_lev_1_1 at main,
+    // int_0_lev_1_3 at the child, int_0_lev_1_5 at the sibling.
+    const auto putClass = [&](gl::NameId scope, const std::set<std::string>& names) {
+        gl::EquivalenceClass cls;
+        cls.setMembersFromNames(names, memory.nameMap);
+        const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
+        const int32_t lens[1] = { static_cast<int32_t>(blob.size()) };
+        memory.equivalenceClassesMap.inner().assignRun(scope, blob.data(), lens, 1);
+    };
+    putClass(f.mainId, { "int_0_lev_1_1", "int_0_lev_1_2" });
+    putClass(f.childId, { "int_0_lev_1_3", "int_0_lev_1_4" });
+    putClass(f.otherId, { "int_0_lev_1_5", "int_0_lev_1_6" });
+    seedFixtureCanonicalClasses(memory);
+
+    const auto row = [&](const char* text, gl::NameId scope) {
+        const gl::EncodedExpression src(text, memory.nameMap.decode(scope));
+        return gl::encodeExpression(src, memory.nameMap);
+    };
+    const gl::NameId m = f.mainId, c = f.childId, o = f.otherId;
+    const std::pair<const char*, gl::NameId> local[7] = {
+        { "(=[a,int_0_lev_1_1])", m }, { "(=[b,int_0_lev_1_4])", c },
+        { "(=[c,int_0_lev_1_6])", o }, { "(=[d,int_0_lev_1_2])", m },
+        { "(=[e,int_0_lev_1_3])", c }, { "(=[f,int_0_lev_1_1])", m },
+        { "(=[g,int_0_lev_1_4])", c } };
+    for (const auto& r : local) {
+        const gl::IntEncodedExpr ie = row(r.first, r.second);
+        memory.intLocalEncodedStatements.push_back(ie);
+        memory.intLocalEncodedStatementsSet.mint(
+            gl::packStatementKey(ie.originalId, ie.validityId));
+    }
+    const gl::IntEncodedExpr stale = row("(=[z,int_0_lev_1_1])", m);
+    f.staleKey = gl::packStatementKey(stale.originalId, stale.validityId);
+    memory.intLocalEncodedStatementsSet.mint(f.staleKey);
+
+    const std::pair<const char*, gl::NameId> delta[4] = {
+        { "(=[h,int_0_lev_1_4])", c }, { "(=[i,int_0_lev_1_2])", m },
+        { "(=[j,int_0_lev_1_6])", o }, { "(=[k,int_0_lev_1_3])", c } };
+    for (const auto& r : delta)
+        memory.intLocalEncodedStatementsDelta.push_back(row(r.first, r.second));
+
+    const std::pair<const char*, gl::NameId> stmts[9] = {
+        { "(=[l,int_0_lev_1_1])", m }, { "(=[m,int_0_lev_1_2])", m },
+        { "(=[n,int_0_lev_1_4])", c }, { "(=[o,int_0_lev_1_6])", o },
+        { "(=[p,int_0_lev_1_3])", c }, { "(=[q,int_0_lev_1_2])", m },
+        { "(=[r,int_0_lev_1_4])", c }, { "(=[s,int_0_lev_1_6])", o },
+        { "(=[t,int_0_lev_1_1])", m } };
+    for (const auto& r : stmts)
+        memory.intEncodedStatements.push_back(row(r.first, r.second));
+
+    const char* keyNames[5] = { "w0", "w2", "w4", "w6", "w9" };
+    const int positions[5] = { 0, 2, 4, 6, 9 };
+    for (int i = 0; i < 5; ++i) {
+        f.waterlineKeys[i] = { memory.nameMap.encode(keyNames[i]) };
+        gl::upsertEqClassIndex(memory.eqClassSttmntIndexMapMap, f.mainId,
+                               f.waterlineKeys[i], positions[i]);
+    }
+    return f;
+}
+
+int32_t rowsAt(const gl::SharedExpressionList& rows, gl::NameId scope) {
+    int32_t n = 0;
+    for (int32_t i = 0; i < rows.size(); ++i)
+        if (rows[i].validityId == scope) ++n;
+    return n;
+}
+
+void assertSameRows(const gl::SharedExpressionList& a,
+                    const gl::SharedExpressionList& b) {
+    ASSERT_EQ(a.size(), b.size());
+    for (int32_t i = 0; i < a.size(); ++i) {
+        ASSERT_EQ(a[i].originalId, b[i].originalId);
+        ASSERT_EQ(a[i].validityId, b[i].validityId);
+    }
+}
+
+} // namespace
+
+// One cleanup call over several scopes must leave exactly the state of one
+// call per scope in the same order: the same kept rows in the same order in
+// all three registries, the same re-minted local set (stale key purged), the
+// same repaired waterlines — while an unscheduled scope's rows pass through
+// although its own classes would drop them.
+TEST(cleanup_levels_retention, one_pass_over_scopes_equals_one_pass_per_scope) {
+    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::Memory together;
+    gl::Memory apart;
+    const ScopeFixture ft = buildScopeFixture(together);
+    const ScopeFixture fa = buildScopeFixture(apart);
+    ASSERT_EQ(ft.childId, fa.childId);
+    ASSERT_EQ(ft.staleKey, fa.staleKey);
+
+    cleanUpScopes(analyzer, together, { ft.mainId, ft.childId });
+    cleanUpScopes(analyzer, apart, { fa.mainId });
+    cleanUpScopes(analyzer, apart, { fa.childId });
+
+    assertSameRows(together.intLocalEncodedStatements, apart.intLocalEncodedStatements);
+    assertSameRows(together.intLocalEncodedStatementsDelta,
+                   apart.intLocalEncodedStatementsDelta);
+    assertSameRows(together.intEncodedStatements, apart.intEncodedStatements);
+
+    // Not vacuous: both scheduled scopes dropped rows in every registry
+    // (local 7 -> 4, delta 4 -> 2, statements 9 -> 5), the sibling's rows
+    // all survived.
+    ASSERT_EQ(together.intLocalEncodedStatements.size(), 4);
+    ASSERT_EQ(together.intLocalEncodedStatementsDelta.size(), 2);
+    ASSERT_EQ(together.intEncodedStatements.size(), 5);
+    ASSERT_EQ(rowsAt(together.intLocalEncodedStatements, ft.otherId), 1);
+    ASSERT_EQ(rowsAt(together.intLocalEncodedStatementsDelta, ft.otherId), 1);
+    ASSERT_EQ(rowsAt(together.intEncodedStatements, ft.otherId), 2);
+
+    // The local set holds exactly the kept local rows in both.
+    ASSERT_EQ(together.intLocalEncodedStatementsSet.count(),
+              apart.intLocalEncodedStatementsSet.count());
+    ASSERT_EQ(together.intLocalEncodedStatementsSet.count(), 4);
+    ASSERT_EQ(together.intLocalEncodedStatementsSet.lookup(ft.staleKey), 0);
+    for (int32_t i = 0; i < together.intLocalEncodedStatements.size(); ++i) {
+        const int64_t key = gl::packStatementKey(
+            together.intLocalEncodedStatements[i].originalId,
+            together.intLocalEncodedStatements[i].validityId);
+        ASSERT_NE(together.intLocalEncodedStatementsSet.lookup(key), 0);
+        ASSERT_NE(apart.intLocalEncodedStatementsSet.lookup(key), 0);
+    }
+
+    // Dropped statement positions {1, 2, 5, 6}: waterlines 0, 2, 4, 6, 9
+    // move to 0, 1, 2, 3, 5 — one repair equals the two per-scope repairs.
+    const int expected[5] = { 0, 1, 2, 3, 5 };
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_EQ(gl::lookupEqClassIndex(together.eqClassSttmntIndexMapMap,
+                                         ft.mainId, ft.waterlineKeys[i]),
+                  expected[i]);
+        ASSERT_EQ(gl::lookupEqClassIndex(apart.eqClassSttmntIndexMapMap,
+                                         fa.mainId, fa.waterlineKeys[i]),
+                  expected[i]);
+    }
+}
+
+TEST(cleanup_levels_retention, cleanup_preserves_surviving_shared_records) {
+    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::Memory memory;
+    const ScopeFixture f = buildScopeFixture(memory);
+    const int localKept[4] = { 0, 2, 4, 5 };
+    const int deltaKept[2] = { 2, 3 };
+    const int mainKept[5] = { 0, 3, 4, 7, 8 };
+    const gl::IntEncodedExpr* localAddresses[4];
+    const gl::IntEncodedExpr* deltaAddresses[2];
+    const gl::IntEncodedExpr* mainAddresses[5];
+    for (int i = 0; i < 4; ++i)
+        localAddresses[i] = &memory.intLocalEncodedStatements[localKept[i]];
+    for (int i = 0; i < 2; ++i)
+        deltaAddresses[i] = &memory.intLocalEncodedStatementsDelta[deltaKept[i]];
+    for (int i = 0; i < 5; ++i)
+        mainAddresses[i] = &memory.intEncodedStatements[mainKept[i]];
+
+    // A repeated position must remain repeated, and a removed main record
+    // must remain available through its independent external owner.
+    memory.intEncodedStatements.push_back(memory.intEncodedStatements[0]);
+    memory.intExternalStatements.push_back(memory.intEncodedStatements[1]);
+    const gl::IntEncodedExpr external = memory.intExternalStatements[0];
+    for (int pass = 0; pass < 2; ++pass) {
+        // The second pass drops nothing but must still purge stale set keys.
+        memory.intLocalEncodedStatementsSet.mint(f.staleKey);
+        cleanUpScopes(analyzer, memory, { f.mainId, f.childId });
+        ASSERT_EQ(memory.intLocalEncodedStatements.size(), 4);
+        ASSERT_EQ(memory.intLocalEncodedStatementsDelta.size(), 2);
+        ASSERT_EQ(memory.intEncodedStatements.size(), 6);
+        for (int i = 0; i < 4; ++i)
+            ASSERT_TRUE(&memory.intLocalEncodedStatements[i] == localAddresses[i]);
+        for (int i = 0; i < 2; ++i)
+            ASSERT_TRUE(&memory.intLocalEncodedStatementsDelta[i] == deltaAddresses[i]);
+        for (int i = 0; i < 5; ++i)
+            ASSERT_TRUE(&memory.intEncodedStatements[i] == mainAddresses[i]);
+        ASSERT_TRUE(&memory.intEncodedStatements[5] == mainAddresses[0]);
+        ASSERT_EQ(memory.intLocalEncodedStatementsSet.lookup(f.staleKey), 0);
+        ASSERT_EQ(memory.intLocalEncodedStatementsSet.count(), 4);
+        ASSERT_EQ(memory.intExternalStatements.size(), 1);
+        ASSERT_TRUE(std::memcmp(&memory.intExternalStatements[0], &external,
+                               sizeof(external)) == 0);
+    }
+}
+
+TEST(cleanup_levels_retention, cleanup_empty_lists_preserves_external_owner) {
+    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::Memory memory;
+    const ScopeFixture f = buildScopeFixture(memory);
+    const gl::IntEncodedExpr dropped = memory.intEncodedStatements[1];
+    memory.intEncodedStatements.clear();
+    memory.intLocalEncodedStatements.clear();
+    memory.intLocalEncodedStatementsDelta.clear();
+    memory.intEncodedStatements.push_back(dropped);
+    memory.intEncodedStatements.push_back(dropped);
+    memory.intLocalEncodedStatements.push_back(dropped);
+    memory.intLocalEncodedStatementsDelta.push_back(dropped);
+    memory.intExternalStatements.push_back(dropped);
+    for (int i = 0; i < 5; ++i)
+        gl::upsertEqClassIndex(memory.eqClassSttmntIndexMapMap, f.mainId,
+                              f.waterlineKeys[i], 2);
+
+    cleanUpScopes(analyzer, memory, { f.mainId, f.childId });
+    ASSERT_TRUE(memory.intEncodedStatements.empty());
+    ASSERT_TRUE(memory.intLocalEncodedStatements.empty());
+    ASSERT_TRUE(memory.intLocalEncodedStatementsDelta.empty());
+    ASSERT_EQ(memory.intLocalEncodedStatementsSet.count(), 0);
+    for (int i = 0; i < 5; ++i)
+        ASSERT_EQ(gl::lookupEqClassIndex(memory.eqClassSttmntIndexMapMap,
+                                        f.mainId, f.waterlineKeys[i]), 0);
+    ASSERT_EQ(memory.lbMemory.sharedExpressions.count(), 1);
+    ASSERT_EQ(memory.intExternalStatements.size(), 1);
+    ASSERT_TRUE(std::memcmp(&memory.intExternalStatements[0], &dropped,
+                           sizeof(dropped)) == 0);
+    memory.intExternalStatements.clear();
+    ASSERT_EQ(memory.lbMemory.sharedExpressions.count(), 0);
+}
+
+// Scheduled scopes without classes, and an empty schedule, are defined
+// no-ops: no row moves and the local set is not rebuilt (its stale key
+// survives), exactly as a per-scope call returned before its sweep.
+TEST(cleanup_levels_retention, scopes_without_classes_leave_registries_untouched) {
+    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    const gl::NameId childId =
+        memory.nameMap.encodePush(mainId, std::string("hypo_(h[a])"));
+    const char* texts[3] = { "(=[a,int_0_lev_1_1])", "(=[b,int_0_lev_1_2])",
+                             "(=[c,int_0_lev_1_2])" };
+    for (int i = 0; i < 3; ++i) {
+        const gl::EncodedExpression src(texts[i],
+            memory.nameMap.decode(i == 1 ? childId : mainId));
+        const gl::IntEncodedExpr ie = gl::encodeExpression(src, memory.nameMap);
+        memory.intLocalEncodedStatements.push_back(ie);
+        memory.intEncodedStatements.push_back(ie);
+    }
+    const int64_t staleKey = gl::packStatementKey(
+        memory.nameMap.encode("(=[z,int_0_lev_1_1])"), mainId);
+    memory.intLocalEncodedStatementsSet.mint(staleKey);
+
+    cleanUpScopes(analyzer, memory, { mainId, childId });
+    cleanUpScopes(analyzer, memory, {});
+
+    ASSERT_EQ(memory.intLocalEncodedStatements.size(), 3);
+    ASSERT_EQ(memory.intEncodedStatements.size(), 3);
+    ASSERT_NE(memory.intLocalEncodedStatementsSet.lookup(staleKey), 0);
 }

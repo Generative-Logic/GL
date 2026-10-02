@@ -22,7 +22,11 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
+#include <atomic>
 #include "phase2_cuda.hpp"
+#include "../infra/phase2_trace.hpp"
+#include "phase2_allocation.hpp"
+#include "../memory_infra/sealed_pages.hpp"
 
 #include <cub/cub.cuh>
 #include <cuda_runtime.h>
@@ -271,14 +275,63 @@ namespace {
         }
     }
 
-    /// @brief Probe one projected byte-key map from a segmented normalized key.
+    /// @brief FNV-1a digest of a segmented normalized key, as the projected
+    ///        byte-key maps place it.
     ///
     /// @details
-    /// Hashes and compares the canonical two-`NameId` header, shared normalized
-    /// prefix payload, and lane-local appended-expression payload as one exact byte
-    /// sequence. This avoids copying the shared prefix into every cooperative lane
-    /// while selecting exactly the slots and entries used by the contiguous probe.
-    /// Empty views and absent keys remain defined misses.
+    /// Hashes the canonical two-`NameId` header, the shared normalized prefix
+    /// payload and the lane-local appended-expression payload as one byte
+    /// sequence, exactly the bytes of the contiguous `NormKey` representation.
+    /// The digest depends on the key only, so one digest serves every byte map
+    /// probed with the same key (the growth probe's subkey and whole-key maps).
+    ///
+    /// @param expressionCount Serialized normalized-key expression count.
+    /// @param prefix Shared normalized prefix payload.
+    /// @param prefixLength Prefix length in `NameId` values.
+    /// @param suffix Lane-local appended-expression payload.
+    /// @param suffixLength Suffix length in `NameId` values.
+    /// @return The 64-bit FNV-1a digest.
+    /// @invariant Prefix and suffix together fit `MAX_KEY_SLOTS`. Each `NameId`
+    ///            is read as one word and folded low byte first, which is the
+    ///            byte order of its little-endian representation, so the digest
+    ///            equals the byte-wise FNV-1a of the contiguous key bytes.
+    /// @see findProjectedSegmentedByteMapEntryHashed
+    __device__ uint64_t hashProjectedSegmentedKey(
+        gl::NameId expressionCount,
+        const gl::NameId* prefix,
+        gl::NameId prefixLength,
+        const gl::NameId* suffix,
+        gl::NameId suffixLength) {
+        assert(expressionCount > 0);
+        assert(prefixLength >= 0);
+        assert(suffixLength > 0);
+        assert(prefixLength + suffixLength
+            <= gl::ExecutionParameters::MAX_KEY_SLOTS);
+        uint64_t hash = 14695981039346656037ull;
+        const auto foldWord = [&hash](gl::NameId value) {
+            const uint32_t word = static_cast<uint32_t>(value);
+            for (uint32_t shift = 0; shift < 32; shift += 8) {
+                hash ^= (word >> shift) & 0xffu;
+                hash *= 1099511628211ull;
+            }
+        };
+        foldWord(expressionCount);
+        foldWord(prefixLength + suffixLength);
+        for (gl::NameId index = 0; index < prefixLength; ++index)
+            foldWord(prefix[index]);
+        for (gl::NameId index = 0; index < suffixLength; ++index)
+            foldWord(suffix[index]);
+        return hash;
+    }
+
+    /// @brief Probe one projected byte-key map from a segmented normalized key
+    ///        whose digest is already known.
+    ///
+    /// @details
+    /// Starts at the slot `hash` selects and compares the header, the shared
+    /// prefix and the lane-local suffix as one exact byte sequence, so the shared
+    /// prefix is never copied into a lane. Selects exactly the slots and entries
+    /// of the contiguous probe. Empty views and absent keys remain defined misses.
     ///
     /// @param columns Typed device addresses for the resident projection.
     /// @param block Owning logical-block descriptor.
@@ -288,11 +341,12 @@ namespace {
     /// @param prefixLength Prefix length in `NameId` values.
     /// @param suffix Lane-local appended-expression payload.
     /// @param suffixLength Suffix length in `NameId` values.
+    /// @param hash `hashProjectedSegmentedKey` of the same key.
     /// @return Arena-global byte-map entry index, or `-1` for a defined miss.
     /// @invariant Prefix and suffix together fit `MAX_KEY_SLOTS` and their byte
     ///            concatenation equals the contiguous `NormKey` representation.
-    /// @see findProjectedByteMapEntry
-    __device__ int32_t findProjectedSegmentedByteMapEntry(
+    /// @see findProjectedSegmentedByteMapEntry, findProjectedByteMapEntry
+    __device__ int32_t findProjectedSegmentedByteMapEntryHashed(
         const ProjectionSemanticColumns& columns,
         const gl::gpu::DeviceLogicalBlockProjection& block,
         gl::gpu::DeviceByteMapKind kind,
@@ -300,7 +354,8 @@ namespace {
         const gl::NameId* prefix,
         gl::NameId prefixLength,
         const gl::NameId* suffix,
-        gl::NameId suffixLength) {
+        gl::NameId suffixLength,
+        uint64_t hash) {
         assert(expressionCount > 0);
         assert(prefixLength >= 0);
         assert(suffixLength > 0);
@@ -330,19 +385,6 @@ namespace {
         }
         assert(view.slotCount > view.entryCount);
         assert((view.slotCount & (view.slotCount - 1)) == 0);
-        uint64_t hash = 14695981039346656037ull;
-        for (uint32_t index = 0; index < headerByteCount; ++index) {
-            hash ^= static_cast<uint8_t>(headerBytes[index]);
-            hash *= 1099511628211ull;
-        }
-        for (uint32_t index = 0; index < prefixByteCount; ++index) {
-            hash ^= static_cast<uint8_t>(prefixBytes[index]);
-            hash *= 1099511628211ull;
-        }
-        for (uint32_t index = 0; index < suffixByteCount; ++index) {
-            hash ^= static_cast<uint8_t>(suffixBytes[index]);
-            hash *= 1099511628211ull;
-        }
         uint32_t slot = static_cast<uint32_t>(hash)
             & (view.slotCount - 1);
         while (true) {
@@ -370,6 +412,38 @@ namespace {
             }
             slot = (slot + 1) & (view.slotCount - 1);
         }
+    }
+
+    /// @brief Probe one projected byte-key map from a segmented normalized key.
+    ///
+    /// @details
+    /// Digests the key with `hashProjectedSegmentedKey` and probes with
+    /// `findProjectedSegmentedByteMapEntryHashed`; a caller probing several maps
+    /// with one key digests it once and calls the hashed probe directly.
+    ///
+    /// @param columns Typed device addresses for the resident projection.
+    /// @param block Owning logical-block descriptor.
+    /// @param kind Byte-map semantic identity.
+    /// @param expressionCount Serialized normalized-key expression count.
+    /// @param prefix Shared normalized prefix payload.
+    /// @param prefixLength Prefix length in `NameId` values.
+    /// @param suffix Lane-local appended-expression payload.
+    /// @param suffixLength Suffix length in `NameId` values.
+    /// @return Arena-global byte-map entry index, or `-1` for a defined miss.
+    /// @see findProjectedByteMapEntry
+    __device__ int32_t findProjectedSegmentedByteMapEntry(
+        const ProjectionSemanticColumns& columns,
+        const gl::gpu::DeviceLogicalBlockProjection& block,
+        gl::gpu::DeviceByteMapKind kind,
+        gl::NameId expressionCount,
+        const gl::NameId* prefix,
+        gl::NameId prefixLength,
+        const gl::NameId* suffix,
+        gl::NameId suffixLength) {
+        return findProjectedSegmentedByteMapEntryHashed(columns, block, kind,
+            expressionCount, prefix, prefixLength, suffix, suffixLength,
+            hashProjectedSegmentedKey(expressionCount, prefix, prefixLength,
+                suffix, suffixLength));
     }
 
     /// @brief Probe one projected remaining-argument reverse index.
@@ -413,7 +487,7 @@ namespace {
                 columns.reverseMapEntries[index];
             if (entry.keyLength == length
                 && projectionBytesEqual(
-                    columns.reverseKeyBytes + entry.keyOffset, key, length)) {
+                    columns.blobBytes + entry.keyOffset, key, length)) {
                 return entryIndex;
             }
             slot = (slot + 1) & (view.slotCount - 1);
@@ -683,12 +757,20 @@ namespace {
         assert(suffixLength <= result.normalizedKeyLength);
         const gl::NameId prefixLength =
             result.normalizedKeyLength - suffixLength;
+        const uint64_t segmentedKeyHash = hashProjectedSegmentedKey(
+            probe.count, result.normalizedKey, prefixLength,
+            result.normalizedKey + prefixLength, suffixLength);
         const int32_t segmentedSubkeyIndex =
-            findProjectedSegmentedByteMapEntry(
+            findProjectedSegmentedByteMapEntryHashed(
                 columns, block, subkeyKind, probe.count,
                 result.normalizedKey, prefixLength,
-                result.normalizedKey + prefixLength, suffixLength);
+                result.normalizedKey + prefixLength, suffixLength,
+                segmentedKeyHash);
         assert(segmentedSubkeyIndex == subkeyIndex);
+        assert(segmentedSubkeyIndex == findProjectedSegmentedByteMapEntry(
+            columns, block, subkeyKind, probe.count,
+            result.normalizedKey, prefixLength,
+            result.normalizedKey + prefixLength, suffixLength));
         if (subkeyIndex >= 0) {
             result.subkeyPresent = 1;
             if (probe.count < 3) {
@@ -705,10 +787,11 @@ namespace {
             columns, block, wholeKind,
             reinterpret_cast<const char*>(serialized), serializedBytes);
         const int32_t segmentedWholeKeyIndex =
-            findProjectedSegmentedByteMapEntry(
+            findProjectedSegmentedByteMapEntryHashed(
                 columns, block, wholeKind, probe.count,
                 result.normalizedKey, prefixLength,
-                result.normalizedKey + prefixLength, suffixLength);
+                result.normalizedKey + prefixLength, suffixLength,
+                segmentedKeyHash);
         assert(segmentedWholeKeyIndex == wholeKeyIndex);
         result.wholeKeyPresent = wholeKeyIndex >= 0 ? 1u : 0u;
         output[0] = result;
@@ -792,7 +875,7 @@ namespace {
         }
         case gl::gpu::DeviceLookupProbeKind::podMap: {
             assert(probe.mapKind <= static_cast<uint32_t>(
-                gl::gpu::DevicePodMapKind::mailEligibleMarkers));
+                gl::gpu::DevicePodMapKind::goals));
             const int32_t entryIndex = findProjectedPodMapEntry(
                 columns, block,
                 static_cast<gl::gpu::DevicePodMapKind>(probe.mapKind),
@@ -866,7 +949,7 @@ namespace {
     /// @param call Filter-call semantic selectors.
     /// @param statementIndex Statement index relative to `block`.
     /// @return True exactly when the processor filter would retain the statement
-    ///         before its first-8,192 accepted-row cap.
+    ///         before applying the call's configured eligible-row limit.
     /// @invariant The predicate reads only resident projection bytes and writes no
     ///            proof or scheduling state.
     __device__ bool phase2StatementPassesFilter(
@@ -954,9 +1037,8 @@ namespace {
     }
 
     constexpr uint32_t kFilterThreads = 256;
-    constexpr uint32_t kProcessorMaximumFilteredRows = 8192;
 
-    /// @brief Count each filter call's processor-retained first-8,192 rows.
+    /// @brief Count the configured prefix of eligible rows for each filter call.
     ///
     /// @details
     /// Launches one block per call and walks statement chunks in ascending index
@@ -993,7 +1075,7 @@ namespace {
 
         for (uint32_t base = 0; base < call.statementCount;
              base += kFilterThreads) {
-            if (retained >= kProcessorMaximumFilteredRows) break;
+            if (retained >= call.maximumFilteredStatements) break;
             const uint32_t statementIndex = base + threadIdx.x;
             const uint32_t accepted = statementIndex < call.statementCount
                 && phase2StatementPassesFilter(
@@ -1003,8 +1085,8 @@ namespace {
             __syncthreads();
             if (threadIdx.x == 0) {
                 const uint32_t next = retained + chunkAccepted;
-                retained = next < kProcessorMaximumFilteredRows
-                    ? next : kProcessorMaximumFilteredRows;
+                retained = next < call.maximumFilteredStatements
+                    ? next : call.maximumFilteredStatements;
             }
             __syncthreads();
         }
@@ -1053,7 +1135,7 @@ namespace {
 
         for (uint32_t base = 0; base < call.statementCount;
              base += kFilterThreads) {
-            if (retained >= kProcessorMaximumFilteredRows) break;
+            if (retained >= call.maximumFilteredStatements) break;
             const uint32_t statementIndex = base + threadIdx.x;
             const uint32_t accepted = statementIndex < call.statementCount
                 && phase2StatementPassesFilter(
@@ -1063,9 +1145,8 @@ namespace {
             BlockScan(scanStorage).ExclusiveSum(
                 accepted, prefix, chunkAccepted);
             const uint32_t ordinal = retained + prefix;
-            if (accepted != 0 && ordinal < kProcessorMaximumFilteredRows) {
-                assert(statementIndex <
-                    (1u << gl::gpu::kDeviceFilterStatementIndexBits));
+            if (accepted != 0 && ordinal < call.maximumFilteredStatements) {
+                assert(statementIndex < block.statementCount);
                 const gl::NameId statementName = columns.statements[
                     block.statementOffset + statementIndex].nameId;
                 assert(statementName >= 0);
@@ -1075,11 +1156,8 @@ namespace {
                     + block.nameRecordCount);
                 const uint32_t rank =
                     columns.nameRecords[nameRecordIndex].decodedLexRank;
-                assert(rank < (1u << gl::gpu::kDeviceFilterNameRankBits));
                 keys[offsets[callIndex] + ordinal] =
-                    (static_cast<uint64_t>(callIndex)
-                        << gl::gpu::kDeviceFilterCallShift)
-                    | (static_cast<uint64_t>(rank)
+                    (static_cast<uint64_t>(rank)
                         << gl::gpu::kDeviceFilterStatementIndexBits)
                     | statementIndex;
             }
@@ -1088,8 +1166,8 @@ namespace {
             __syncthreads();
         }
         if (threadIdx.x == 0) {
-            const uint32_t capped = retained < kProcessorMaximumFilteredRows
-                ? retained : kProcessorMaximumFilteredRows;
+            const uint32_t capped = retained < call.maximumFilteredStatements
+                ? retained : call.maximumFilteredStatements;
             assert(capped == counts[callIndex]);
         }
     }
@@ -1104,7 +1182,7 @@ namespace {
     ///
     /// @param callClassIndices Exact class index for every original call.
     /// @param callCount Number of original processor-order calls.
-    /// @param classCounts Retained first-8,192 row count per exact class.
+    /// @param classCounts Retained eligible-row count per exact class.
     /// @param classOffsets Exclusive compact span offset per exact class.
     /// @param classCount Number of exact class descriptors.
     /// @param callCounts Output retained count per original call.
@@ -1172,9 +1250,43 @@ namespace {
             gl::gpu::kDeviceGrowthSpanBucketCount]{};
         DeviceGrowthGateCounters gateDepthCounts[
             gl::gpu::kDeviceGrowthCensusDepthCount]{};
+        gl::gpu::DeviceGrowthNodeWindow candidateNodeWindows[2]{};
+        unsigned long long candidatePositionsBeforePrefilter{0};
+        unsigned long long candidatePositionsAfterPrefilter{0};
     };
 
-    static_assert(sizeof(DeviceGrowthCounters) == 1096);
+    static_assert(sizeof(DeviceGrowthCounters) == 1128);
+
+    /// @brief Locate the short and cooperative node slices for one attempt window.
+    ///
+    /// @details The two stable kind lists share scanned original-node candidate
+    /// boundaries. Two lanes write disjoint fixed counter slots; the controller
+    /// reads those slots to size launches without scanning or moving node lists.
+    ///
+    /// @param shortIndices Stable short-node index list.
+    /// @param shortCount Number of short-node indices.
+    /// @param cooperativeIndices Stable cooperative-node index list.
+    /// @param cooperativeCount Number of cooperative-node indices.
+    /// @param starts Candidate starts indexed by original node.
+    /// @param ends Candidate ends indexed by original node.
+    /// @param windowBegin Inclusive candidate-attempt ordinal.
+    /// @param windowEnd Exclusive candidate-attempt ordinal.
+    /// @param counters Fixed growth counters receiving the two slices.
+    /// @return Nothing.
+    /// @invariant Kind indices and cumulative candidate bounds are monotonic.
+    __global__ void phase2GrowthCandidateNodeWindowsKernel(
+        const uint32_t* shortIndices, uint32_t shortCount,
+        const uint32_t* cooperativeIndices, uint32_t cooperativeCount,
+        const uint64_t* starts, const uint64_t* ends,
+        uint64_t windowBegin, uint64_t windowEnd, DeviceGrowthCounters* counters) {
+        if (threadIdx.x < 2) {
+            const bool shortKind = threadIdx.x == 0;
+            counters->candidateNodeWindows[threadIdx.x] = gl::gpu::growthCandidateNodeWindow(
+                shortKind ? shortIndices : cooperativeIndices,
+                shortKind ? shortCount : cooperativeCount,
+                starts, ends, windowBegin, windowEnd);
+        }
+    }
 
     /// @brief Decode one statement index from the global sorted filter stream.
     ///
@@ -1703,7 +1815,7 @@ namespace {
             assert(filteredPositions[index] >= -1);
             assert(filteredPositions[index]
                 < static_cast<gl::NameId>(
-                    kProcessorMaximumFilteredRows));
+                    gl::ExecutionParameters::MAX_FILTERED_POSITION_CODE));
             event.filteredPositionCodes[index] = static_cast<uint16_t>(
                 filteredPositions[index] + 1);
         }
@@ -1731,7 +1843,8 @@ namespace {
     ///
     /// @details
     /// One block owns one disjoint filtered call span. Threads compute direct view
-    /// masks; thread zero folds the span backward into the exact suffix union used
+    /// masks and caches distinct iterative arguments absent from recursion products.
+    /// Thread zero folds the low membership byte into the exact suffix union used
     /// by the processor's mandatory-reachability gate.
     ///
     /// @param columns Resident semantic columns.
@@ -1747,7 +1860,7 @@ namespace {
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row direct membership output.
+    /// @param viewMasks Packed membership and distinct non-product argument masks.
     /// @param suffixMasks Per-row backward-union output.
     /// @return Nothing.
     /// @invariant Growth calls name distinct filter spans.
@@ -1765,7 +1878,7 @@ namespace {
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        uint8_t* viewMasks,
+        uint32_t* viewMasks,
         uint8_t* suffixMasks) {
         const uint32_t growthCallIndex = blockIdx.x;
         assert(growthCallIndex < growthCallCount);
@@ -1791,8 +1904,21 @@ namespace {
              row += blockDim.x) {
             const gl::NameId statementIndex = growthStatementIndex(
                 sortedKeys, offset + row);
-            viewMasks[offset + row] = projectedStatementViewMask(
-                columns, block, batch, terms, statementIndex);
+            const auto& expression = columns.statements[
+                block.statementOffset + static_cast<uint32_t>(statementIndex)];
+            uint32_t secondaryMask = gl::gpu::growthDistinctSecondaryArgumentMask(expression);
+            uint32_t unchecked = secondaryMask;
+            while (unchecked != 0) {
+                const uint32_t argument = static_cast<uint32_t>(__ffs(unchecked) - 1);
+                unchecked &= unchecked - 1;
+                if (findProjectedPodMapEntry(columns, block,
+                        gl::gpu::DevicePodMapKind::recursionProducts,
+                        static_cast<int64_t>(expression.argFullId[argument])) >= 0) {
+                    secondaryMask &= ~(uint32_t{1} << argument);
+                }
+            }
+            viewMasks[offset + row] = static_cast<uint32_t>(projectedStatementViewMask(
+                columns, block, batch, terms, statementIndex)) | (secondaryMask << 8);
         }
         __syncthreads();
         if (threadIdx.x == 0) {
@@ -1805,24 +1931,31 @@ namespace {
         }
     }
 
-    /// @brief Seed unsplit roots and exact stump nodes for all request calls.
+    /// @brief Seed one growth call's root or one stump of its run.
     ///
     /// @details
-    /// Each thread owns one growth call. It emits the stump-alone probe exactly,
-    /// including whole-only requests, and appends only owner-accepted nonterminal
-    /// stumps to the first frontier. Unsplit calls append one empty main-scope
-    /// root. Missing filtered positions are legal only for a whole-only stump.
+    /// Emits exactly what the per-call seed loop emits for one (call, run
+    /// ordinal) pair. An unsplit call (no stumps) appends its empty main-scope
+    /// root at depth zero for run ordinal zero. A stump whose premise count
+    /// equals the seed depth emits its stump-alone probe, including whole-only
+    /// requests, and appends an owner-accepted nonterminal stump to the first
+    /// frontier. Missing filtered positions are legal only for a whole-only
+    /// stump.
+    ///
+    /// Every append reserves its slot through the shared counters, so pairs
+    /// are independent: the per-call and the per-pair seed kernels share this
+    /// body and differ only in how threads map to pairs.
     ///
     /// @param columns Resident semantic columns.
     /// @param tasks Uploaded task descriptors.
     /// @param batches Uploaded batch descriptors.
+    /// @param terms Uploaded mandatory terms.
     /// @param stumps Uploaded expression stumps.
     /// @param growthCalls Uploaded request-growth schedule.
-    /// @param growthCallCount Number of scheduled calls.
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row mandatory-view bits.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
     /// @param parameters Analyzer request-shape limits.
     /// @param seedDepth Absolute candidate depth owned by this launch.
     /// @param frontier First frontier output.
@@ -1831,30 +1964,32 @@ namespace {
     /// @param taskSubkeyCounts Exact processor split-work counts by task.
     /// @param counters Shared append counters.
     /// @param capacity Fixed growth ceilings.
+    /// @param growthCallIndex Original call index of the pair.
+    /// @param runOrdinal Stump ordinal inside the call's run; for an unsplit
+    ///        call, the seed window's first ordinal.
     /// @return Nothing.
-    /// @invariant One thread owns every call and its stump run.
-    __global__ void phase2GrowthSeedKernel(
-        ProjectionSemanticColumns columns,
+    /// @invariant A call with stumps is seeded only for `runOrdinal` inside its run.
+    __device__ void seedGrowthPair(
+        const ProjectionSemanticColumns& columns,
         const gl::gpu::DevicePhase2Task* tasks,
         const gl::gpu::DeviceRequestBatch* batches,
         const gl::gpu::DeviceMandatoryTerm* terms,
         const gl::gpu::DeviceExpressionStump* stumps,
         const gl::gpu::DevicePhase2GrowthCall* growthCalls,
-        uint32_t growthCallCount,
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        const uint8_t* viewMasks,
-        gl::gpu::DevicePhase2GrowthParameters parameters,
+        const uint32_t* viewMasks,
+        const gl::gpu::DevicePhase2GrowthParameters& parameters,
         uint32_t seedDepth,
         gl::gpu::DeviceGrowthNode* frontier,
         gl::gpu::DeviceAcceptedGrowthEvent* events,
         gl::gpu::DeviceRawGrowthRequest* requests,
         uint32_t* taskSubkeyCounts,
         DeviceGrowthCounters* counters,
-        gl::gpu::Phase2GrowthCapacity capacity) {
-        const uint32_t growthCallIndex = blockIdx.x * blockDim.x + threadIdx.x;
-        if (growthCallIndex >= growthCallCount) return;
+        const gl::gpu::Phase2GrowthCapacity& capacity,
+        uint32_t growthCallIndex,
+        uint32_t runOrdinal) {
         const gl::gpu::DevicePhase2GrowthCall& growthCall =
             growthCalls[growthCallIndex];
         const gl::gpu::DevicePhase2Task& task = tasks[growthCall.taskIndex];
@@ -1871,10 +2006,10 @@ namespace {
             filterOffsets[growthCall.filterCallIndex];
 
         if (task.stumpCount == 0) {
-            if (seedDepth != 0) return;
+            if (seedDepth != 0 || runOrdinal != 0) return;
             const uint32_t frontierIndex = atomicAdd(
                 &counters->frontierCounts[0], 1u);
-            assert(frontierIndex < capacity.frontierRecords);
+            assert(frontierIndex < capacity.frontierStoreRecords);
             gl::gpu::DeviceGrowthNode root{};
             root.callIndex = growthCallIndex;
             root.validityId = block.mainValidityId;
@@ -1882,96 +2017,257 @@ namespace {
             return;
         }
         if (seedDepth == 0) return;
+        assert(runOrdinal < task.stumpCount);
+        const gl::gpu::DeviceExpressionStump& stump =
+            stumps[task.stumpOffset + runOrdinal];
+        assert(stump.count > 0);
+        if (static_cast<uint32_t>(stump.count) != seedDepth) return;
+        if (stump.count > targetLength) return;
 
         uint8_t termMasks[2]{};
         buildGrowthTermMasks(batch, terms, termMasks);
-        for (uint32_t runOrdinal = 0;
-             runOrdinal < task.stumpCount; ++runOrdinal) {
-            const gl::gpu::DeviceExpressionStump& stump =
-                stumps[task.stumpOffset + runOrdinal];
-            assert(stump.count > 0);
-            if (static_cast<uint32_t>(stump.count) != seedDepth) continue;
-            if (stump.count > targetLength) continue;
-            gl::NameId filteredPositions[
-                gl::ExecutionParameters::MAX_EXPRESSIONS]{};
-            bool everyPositionFound = true;
-            uint8_t candidateMask = 0;
-            gl::NameId validity = block.mainValidityId;
-            for (gl::NameId premise = 0;
-                 premise < stump.count; ++premise) {
-                const gl::NameId statementIndex =
-                    stump.statementIndices[premise];
-                const gl::IntEncodedExpr& expression = columns.statements[
-                    block.statementOffset
-                        + static_cast<uint32_t>(statementIndex)];
-                if (premise == 0) validity = expression.validityId;
-                else {
-                    assert(projectedValiditiesComparable(
-                        columns, block, validity, expression.validityId));
-                    validity = projectedDeeperValidity(
-                        columns, block, validity, expression.validityId);
+        gl::NameId filteredPositions[
+            gl::ExecutionParameters::MAX_EXPRESSIONS]{};
+        bool everyPositionFound = true;
+        uint8_t candidateMask = 0;
+        gl::NameId validity = block.mainValidityId;
+        for (gl::NameId premise = 0;
+             premise < stump.count; ++premise) {
+            const gl::NameId statementIndex =
+                stump.statementIndices[premise];
+            const gl::IntEncodedExpr& expression = columns.statements[
+                block.statementOffset
+                    + static_cast<uint32_t>(statementIndex)];
+            if (premise == 0) validity = expression.validityId;
+            else {
+                assert(projectedValiditiesComparable(
+                    columns, block, validity, expression.validityId));
+                validity = projectedDeeperValidity(
+                    columns, block, validity, expression.validityId);
+            }
+            gl::NameId foundPosition = -1;
+            for (uint32_t row = 0; row < filteredCount; ++row) {
+                if (growthStatementIndex(
+                        sortedKeys, filteredOffset + row)
+                    == statementIndex) {
+                    foundPosition = static_cast<gl::NameId>(row);
+                    break;
                 }
-                gl::NameId foundPosition = -1;
-                for (uint32_t row = 0; row < filteredCount; ++row) {
-                    if (growthStatementIndex(
-                            sortedKeys, filteredOffset + row)
-                        == statementIndex) {
-                        foundPosition = static_cast<gl::NameId>(row);
-                        break;
-                    }
-                }
-                filteredPositions[premise] = foundPosition;
-                if (foundPosition < 0) everyPositionFound = false;
-                else candidateMask = static_cast<uint8_t>(
-                    candidateMask
-                    | viewMasks[filteredOffset
-                        + static_cast<uint32_t>(foundPosition)]);
             }
-            if (batch.termCount > 0 && !everyPositionFound) continue;
-            if (!projectedRequestGatesPass(
-                    columns, block, stump.statementIndices,
-                    stump.count, parameters)) continue;
-            bool subkeySatisfied = false;
-            bool wholeKeyPresent = false;
-            probeProjectedGrowthCandidate(
-                columns, block, batch.memory, stump.statementIndices,
-                stump.count, subkeySatisfied, wholeKeyPresent);
-            const bool termsSatisfied = batch.termCount == 0
-                || growthTermsSatisfied(
-                    candidateMask, termMasks, batch.termCount);
-            if (subkeySatisfied || (wholeKeyPresent && termsSatisfied)) {
-                appendProjectedGrowthEvent(
-                    stump.statementIndices, filteredPositions, stump.count,
-                    growthCallIndex, runOrdinal,
-                    subkeySatisfied, wholeKeyPresent, termsSatisfied,
-                    growthCall.taskIndex, events, requests,
-                    taskSubkeyCounts, counters, capacity);
-            }
-            if (!subkeySatisfied || stump.terminalOnly != 0
-                || stump.count >= targetLength) continue;
-            assert(everyPositionFound);
-            for (gl::NameId premise = 1;
-                 premise < stump.count; ++premise) {
-                assert(filteredPositions[premise]
-                    > filteredPositions[premise - 1]);
-            }
-            const uint32_t frontierIndex = atomicAdd(
-                &counters->frontierCounts[0], 1u);
-            assert(frontierIndex < capacity.frontierRecords);
-            gl::gpu::DeviceGrowthNode node{};
-            node.callIndex = growthCallIndex;
-            node.runOrdinal = runOrdinal;
-            node.count = stump.count;
-            node.startPosition = filteredPositions[stump.count - 1] + 1;
-            node.validityId = validity;
-            node.termMask = candidateMask;
-            for (gl::NameId premise = 0;
-                 premise < stump.count; ++premise) {
-                node.filteredPositions[premise] =
-                    filteredPositions[premise];
-            }
-            frontier[frontierIndex] = node;
+            filteredPositions[premise] = foundPosition;
+            if (foundPosition < 0) everyPositionFound = false;
+            else candidateMask = static_cast<uint8_t>(
+                candidateMask
+                | viewMasks[filteredOffset
+                    + static_cast<uint32_t>(foundPosition)]);
         }
+        if (batch.termCount > 0 && !everyPositionFound) return;
+        if (!projectedRequestGatesPass(
+                columns, block, stump.statementIndices,
+                stump.count, parameters)) return;
+        bool subkeySatisfied = false;
+        bool wholeKeyPresent = false;
+        probeProjectedGrowthCandidate(
+            columns, block, batch.memory, stump.statementIndices,
+            stump.count, subkeySatisfied, wholeKeyPresent);
+        const bool termsSatisfied = batch.termCount == 0
+            || growthTermsSatisfied(
+                candidateMask, termMasks, batch.termCount);
+        if (subkeySatisfied || (wholeKeyPresent && termsSatisfied)) {
+            appendProjectedGrowthEvent(
+                stump.statementIndices, filteredPositions, stump.count,
+                growthCallIndex, runOrdinal,
+                subkeySatisfied, wholeKeyPresent, termsSatisfied,
+                growthCall.taskIndex, events, requests,
+                taskSubkeyCounts, counters, capacity);
+        }
+        if (!subkeySatisfied || stump.terminalOnly != 0
+            || stump.count >= targetLength) return;
+        assert(everyPositionFound);
+        for (gl::NameId premise = 1;
+             premise < stump.count; ++premise) {
+            assert(filteredPositions[premise]
+                > filteredPositions[premise - 1]);
+        }
+        const uint32_t frontierIndex = atomicAdd(
+            &counters->frontierCounts[0], 1u);
+        assert(frontierIndex < capacity.frontierStoreRecords);
+        gl::gpu::DeviceGrowthNode node{};
+        node.callIndex = growthCallIndex;
+        node.runOrdinal = runOrdinal;
+        node.count = stump.count;
+        node.startPosition = filteredPositions[stump.count - 1] + 1;
+        node.validityId = validity;
+        node.termMask = candidateMask;
+        for (gl::NameId premise = 0;
+             premise < stump.count; ++premise) {
+            node.filteredPositions[premise] =
+                filteredPositions[premise];
+        }
+        frontier[frontierIndex] = node;
+    }
+
+    /// @brief Seed unsplit roots and exact stump nodes, one thread per call.
+    ///
+    /// @details
+    /// Each thread owns one growth call and walks the selected window of its
+    /// stump run through `seedGrowthPair`. The whole-frontier reference path
+    /// launches this form; the windowed driver launches
+    /// `phase2GrowthSeedPairsKernel`, which gives every (call, stump) pair its
+    /// own thread and emits the same records.
+    ///
+    /// @param columns Resident semantic columns.
+    /// @param tasks Uploaded task descriptors.
+    /// @param batches Uploaded batch descriptors.
+    /// @param terms Uploaded mandatory terms.
+    /// @param stumps Uploaded expression stumps.
+    /// @param growthCalls Uploaded request-growth schedule.
+    /// @param growthCallCount Number of scheduled calls.
+    /// @param filterCounts Per-filter retained counts.
+    /// @param filterOffsets Per-filter retained offsets.
+    /// @param sortedKeys Global sorted retained keys.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
+    /// @param parameters Analyzer request-shape limits.
+    /// @param seedDepth Absolute candidate depth owned by this launch.
+    /// @param frontier First frontier output.
+    /// @param events Persistent semantic-event output.
+    /// @param requests Persistent raw-request output.
+    /// @param taskSubkeyCounts Exact processor split-work counts by task.
+    /// @param counters Shared append counters.
+    /// @param capacity Fixed growth ceilings.
+    /// @param callBegin First original call in this seed window.
+    /// @param callLimit Maximum calls in this seed window.
+    /// @param stumpBegin First original stump ordinal in each selected call.
+    /// @param stumpLimit Maximum stumps per selected call.
+    /// @return Nothing.
+    /// @invariant One thread owns every call and its stump run.
+    __global__ void phase2GrowthSeedKernel(
+        ProjectionSemanticColumns columns,
+        const gl::gpu::DevicePhase2Task* tasks,
+        const gl::gpu::DeviceRequestBatch* batches,
+        const gl::gpu::DeviceMandatoryTerm* terms,
+        const gl::gpu::DeviceExpressionStump* stumps,
+        const gl::gpu::DevicePhase2GrowthCall* growthCalls,
+        uint32_t growthCallCount,
+        const uint32_t* filterCounts,
+        const uint32_t* filterOffsets,
+        const uint64_t* sortedKeys,
+        const uint32_t* viewMasks,
+        gl::gpu::DevicePhase2GrowthParameters parameters,
+        uint32_t seedDepth,
+        gl::gpu::DeviceGrowthNode* frontier,
+        gl::gpu::DeviceAcceptedGrowthEvent* events,
+        gl::gpu::DeviceRawGrowthRequest* requests,
+        uint32_t* taskSubkeyCounts,
+        DeviceGrowthCounters* counters,
+        gl::gpu::Phase2GrowthCapacity capacity,
+        uint32_t callBegin = 0, uint32_t callLimit = UINT_MAX,
+        uint32_t stumpBegin = 0, uint32_t stumpLimit = UINT_MAX) {
+        const uint32_t localCall = blockIdx.x * blockDim.x + threadIdx.x;
+        if (localCall >= callLimit || localCall >= growthCallCount - callBegin) return;
+        const uint32_t growthCallIndex = callBegin + localCall;
+        const uint32_t stumpCount =
+            tasks[growthCalls[growthCallIndex].taskIndex].stumpCount;
+        if (stumpCount == 0) {
+            seedGrowthPair(columns, tasks, batches, terms, stumps, growthCalls,
+                filterCounts, filterOffsets, sortedKeys, viewMasks, parameters,
+                seedDepth, frontier, events, requests, taskSubkeyCounts, counters,
+                capacity, growthCallIndex, stumpBegin);
+            return;
+        }
+        if (seedDepth == 0) return;
+        const uint32_t stumpEnd = stumpBegin < stumpCount
+            ? stumpBegin + min(stumpLimit, stumpCount - stumpBegin) : stumpBegin;
+        for (uint32_t runOrdinal = stumpBegin;
+             runOrdinal < stumpEnd; ++runOrdinal) {
+            seedGrowthPair(columns, tasks, batches, terms, stumps, growthCalls,
+                filterCounts, filterOffsets, sortedKeys, viewMasks, parameters,
+                seedDepth, frontier, events, requests, taskSubkeyCounts, counters,
+                capacity, growthCallIndex, runOrdinal);
+        }
+    }
+
+    /// @brief Seed every (growth call, stump) pair of one seed window on its own thread.
+    ///
+    /// @details
+    /// The windowed driver's seed launch. Thread `p` owns call `callBegin + p /
+    /// stumpWindow` and run ordinal `stumpBegin + p % stumpWindow`, so a few
+    /// calls with long stump runs spread over the whole device instead of
+    /// occupying one thread each. Ordinals beyond a call's run exit; an unsplit
+    /// call is seeded once, by its first pair. The records equal the per-call
+    /// kernel's for the same window: both run `seedGrowthPair`, and every
+    /// append reserves its own slot.
+    ///
+    /// @param columns Resident semantic columns.
+    /// @param tasks Uploaded task descriptors.
+    /// @param batches Uploaded batch descriptors.
+    /// @param terms Uploaded mandatory terms.
+    /// @param stumps Uploaded expression stumps.
+    /// @param growthCalls Uploaded request-growth schedule.
+    /// @param growthCallCount Number of scheduled calls.
+    /// @param filterCounts Per-filter retained counts.
+    /// @param filterOffsets Per-filter retained offsets.
+    /// @param sortedKeys Global sorted retained keys.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
+    /// @param parameters Analyzer request-shape limits.
+    /// @param seedDepth Absolute candidate depth owned by this launch.
+    /// @param frontier First frontier output.
+    /// @param events Persistent semantic-event output.
+    /// @param requests Persistent raw-request output.
+    /// @param taskSubkeyCounts Exact processor split-work counts by task.
+    /// @param counters Shared append counters.
+    /// @param capacity Fixed growth ceilings.
+    /// @param callBegin First original call in this seed window.
+    /// @param callWindow Number of calls in this seed window.
+    /// @param stumpBegin First original stump ordinal in each selected call.
+    /// @param stumpWindow Number of stump ordinals per selected call.
+    /// @return Nothing.
+    /// @invariant The window lies inside the schedule and its pair count fits
+    ///            the append capacity the driver reserved.
+    __global__ void phase2GrowthSeedPairsKernel(
+        ProjectionSemanticColumns columns,
+        const gl::gpu::DevicePhase2Task* tasks,
+        const gl::gpu::DeviceRequestBatch* batches,
+        const gl::gpu::DeviceMandatoryTerm* terms,
+        const gl::gpu::DeviceExpressionStump* stumps,
+        const gl::gpu::DevicePhase2GrowthCall* growthCalls,
+        uint32_t growthCallCount,
+        const uint32_t* filterCounts,
+        const uint32_t* filterOffsets,
+        const uint64_t* sortedKeys,
+        const uint32_t* viewMasks,
+        gl::gpu::DevicePhase2GrowthParameters parameters,
+        uint32_t seedDepth,
+        gl::gpu::DeviceGrowthNode* frontier,
+        gl::gpu::DeviceAcceptedGrowthEvent* events,
+        gl::gpu::DeviceRawGrowthRequest* requests,
+        uint32_t* taskSubkeyCounts,
+        DeviceGrowthCounters* counters,
+        gl::gpu::Phase2GrowthCapacity capacity,
+        uint32_t callBegin, uint32_t callWindow,
+        uint32_t stumpBegin, uint32_t stumpWindow) {
+        assert(stumpWindow > 0);
+        assert(callBegin <= growthCallCount && callWindow <= growthCallCount - callBegin);
+        const uint64_t pair = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+        if (pair >= static_cast<uint64_t>(callWindow) * stumpWindow) return;
+        const uint32_t growthCallIndex = callBegin + static_cast<uint32_t>(pair / stumpWindow);
+        const uint32_t runOrdinal = stumpBegin + static_cast<uint32_t>(pair % stumpWindow);
+        const uint32_t stumpCount =
+            tasks[growthCalls[growthCallIndex].taskIndex].stumpCount;
+        if (stumpCount == 0) {
+            if (runOrdinal == stumpBegin) {
+                seedGrowthPair(columns, tasks, batches, terms, stumps, growthCalls,
+                    filterCounts, filterOffsets, sortedKeys, viewMasks, parameters,
+                    seedDepth, frontier, events, requests, taskSubkeyCounts, counters,
+                    capacity, growthCallIndex, stumpBegin);
+            }
+            return;
+        }
+        if (seedDepth == 0 || runOrdinal >= stumpCount) return;
+        seedGrowthPair(columns, tasks, batches, terms, stumps, growthCalls,
+            filterCounts, filterOffsets, sortedKeys, viewMasks, parameters,
+            seedDepth, frontier, events, requests, taskSubkeyCounts, counters,
+            capacity, growthCallIndex, runOrdinal);
     }
 
     /// @brief Count the remaining candidate-span shape of one live frontier.
@@ -2044,6 +2340,127 @@ namespace {
         }
     }
 
+    /// @brief Find an exact normalized prefix in a derived transition map.
+    ///
+    /// @details
+    /// Hashes the prefix's own count/length header and immutable payload without
+    /// copying the payload into thread-local storage. Empty prefixes are real
+    /// keys. Hash collisions retain the existing exact byte comparison.
+    ///
+    /// @param columns Resident projection columns.
+    /// @param block Owning logical block with four derived transition views.
+    /// @param memory Selected request hash memory.
+    /// @param count Number of expressions in the current prefix.
+    /// @param payload Ordered normalized prefix slots.
+    /// @param length Number of payload slots.
+    /// @return Matching entry index, or -1 for a defined absent continuation.
+    /// @invariant The queried prefix uses the same byte language as its source keys.
+    __device__ int32_t findProjectedGrowthPrefix(
+        const ProjectionSemanticColumns& columns,
+        const gl::gpu::DeviceLogicalBlockProjection& block,
+        gl::gpu::DeviceHashMemoryKind memory, gl::NameId count,
+        const gl::NameId* payload, gl::NameId length) {
+        assert(block.byteMapViewCount == 14);
+        assert(count >= 0 && length >= 0 && ((count == 0) == (length == 0)));
+        const auto& view = columns.byteMapViews[
+            block.byteMapViewOffset + 10 + static_cast<uint32_t>(memory)];
+        if (view.entryCount == 0) {
+            assert(view.slotCount == 0);
+            return -1;
+        }
+        const gl::NameId header[2]{count, length};
+        const char* headBytes = reinterpret_cast<const char*>(header);
+        const char* payloadBytes = reinterpret_cast<const char*>(payload);
+        const uint32_t payloadSize = static_cast<uint32_t>(length) * sizeof(gl::NameId);
+        uint64_t hash = 14695981039346656037ull;
+        for (uint32_t i = 0; i < sizeof(header); ++i) {
+            hash ^= static_cast<uint8_t>(headBytes[i]);
+            hash *= 1099511628211ull;
+        }
+        for (uint32_t i = 0; i < payloadSize; ++i) {
+            hash ^= static_cast<uint8_t>(payloadBytes[i]);
+            hash *= 1099511628211ull;
+        }
+        assert(view.slotCount > view.entryCount);
+        uint32_t slot = static_cast<uint32_t>(hash) & (view.slotCount - 1);
+        for (;;) {
+            const int32_t index = columns.byteMapSlots[view.slotOffset + slot];
+            if (index < 0) {
+                assert(index == -1);
+                return -1;
+            }
+            assert(static_cast<uint32_t>(index) >= view.entryOffset
+                && static_cast<uint32_t>(index) < view.entryOffset + view.entryCount);
+            const auto& entry = columns.byteMapEntries[index];
+            const char* key = columns.byteKeyBytes + entry.keyOffset;
+            if (entry.keyLength == sizeof(header) + payloadSize
+                && projectionBytesEqual(key, headBytes, sizeof(header))
+                && projectionBytesEqual(key + sizeof(header), payloadBytes, payloadSize)) return index;
+            slot = (slot + 1) & (view.slotCount - 1);
+        }
+    }
+
+    /// @brief Enumerate licensed predicate ranges in original statement order.
+    ///
+    /// @details
+    /// The derived run contains each predicate once with its continuation word:
+    /// the two-bit polarity mask plus up to two argument slots every key of the
+    /// transition binds to a prefix variable (`unpackNextPredicateWord`).
+    /// Its decoded-rank order matches the unchanged filtered statement order.
+    /// Projection-oracle prefixes explicitly select the original complete span;
+    /// an absent indexed prefix has zero candidate positions.
+    ///
+    /// @tparam Emit Device callback receiving begin, count, continuation word and ordinal.
+    /// @param columns Resident projection columns.
+    /// @param block Owning logical block.
+    /// @param prefix Immutable prefix with a transition entry or oracle sentinel.
+    /// @param sortedKeys Unchanged retained sorted statement positions.
+    /// @param filteredOffset Beginning of the current filter-class span.
+    /// @param filteredCount Retained statement count.
+    /// @param startPosition Current original-position cursor.
+    /// @param emit Callback called for each allowed predicate range.
+    /// @return Sum of the disjoint selected range lengths.
+    /// @invariant A statement position occurs at most once and never before the cursor.
+    template<class Emit>
+    __device__ uint32_t forEachPooledCandidateRange(
+        const ProjectionSemanticColumns& columns,
+        const gl::gpu::DeviceLogicalBlockProjection& block,
+        const gl::gpu::DeviceGrowthPrefix& prefix, const uint64_t* sortedKeys,
+        uint32_t filteredOffset, uint32_t filteredCount, uint32_t startPosition,
+        Emit emit) {
+        assert(startPosition <= filteredCount);
+        if (prefix.nextPredicateEntry == -2) {
+            assert(block.byteMapViewCount == 10);
+            emit(startPosition, filteredCount - startPosition, 3u, 0u);
+            return filteredCount - startPosition;
+        }
+        assert(block.byteMapViewCount == 14);
+        if (prefix.nextPredicateEntry == -1) return 0;
+        assert(prefix.nextPredicateEntry >= 0);
+        const auto& entry = columns.byteMapEntries[prefix.nextPredicateEntry];
+        assert(entry.blobRecordCount == 1);
+        const auto& blob = columns.blobRecords[entry.blobRecordOffset];
+        assert(blob.byteLength > 0 && blob.byteLength % 8 == 0);
+        const char* bytes = columns.blobBytes + blob.byteOffset;
+        uint32_t total = 0;
+        for (uint32_t at = 0; at < blob.byteLength; at += 8) {
+            gl::NameId predicate = 0;
+            uint32_t word = 0;
+            memcpy(&predicate, bytes + at, sizeof(predicate));
+            memcpy(&word, bytes + at + 4, sizeof(word));
+            assert(predicate > 0 && static_cast<uint32_t>(predicate) < block.nameRecordCount);
+            assert((word & 3u) != 0);
+            const uint32_t rank = columns.nameRecords[
+                block.nameRecordOffset + static_cast<uint32_t>(predicate)].decodedLexRank;
+            const auto range = gl::gpu::growthPredicateRange(
+                sortedKeys, filteredOffset, filteredCount, startPosition, rank);
+            emit(range.begin, range.count, word, total);
+            total += range.count;
+            assert(total <= filteredCount - startPosition);
+        }
+        return total;
+    }
+
     /// @brief Materialize one immutable pooled prefix for every live growth node.
     ///
     /// @details
@@ -2074,9 +2491,10 @@ namespace {
     /// @param cooperativeNodeFlags One stable-selection flag per frontier node.
     /// @param counters Shared prefix-pool reservation counters.
     /// @param capacity Fixed frontier and prefix-pool ceilings.
+    /// @param measureOnly Write prefix lengths without reserving payload pools.
     /// @return Nothing.
     /// @invariant Every live node below the expression ceiling sets exactly one
-    ///            flag and owns three in-capacity immutable slices.
+    ///            flag; payload-filling mode owns three in-capacity immutable slices.
     __global__ void phase2GrowthPreparePrefixesKernel(
         ProjectionSemanticColumns columns,
         const gl::gpu::DeviceRequestBatch* batches,
@@ -2096,7 +2514,7 @@ namespace {
         uint8_t* shortNodeFlags,
         uint8_t* cooperativeNodeFlags,
         DeviceGrowthCounters* counters,
-        gl::gpu::Phase2GrowthCapacity capacity) {
+        gl::gpu::Phase2GrowthCapacity capacity, bool measureOnly = false) {
         const uint32_t nodeIndex = blockIdx.x * blockDim.x + threadIdx.x;
         if (nodeIndex >= currentCount) return;
         const gl::gpu::DeviceGrowthNode& node = current[nodeIndex];
@@ -2220,6 +2638,14 @@ namespace {
         assert(payloadLength <= 0xffff);
         assert(variableCount <= 0xffff);
         assert(secondaryCount <= 0xffff);
+        if (measureOnly) {
+            gl::gpu::DeviceGrowthPrefix sizes{};
+            sizes.payloadLength = static_cast<uint16_t>(payloadLength);
+            sizes.variableCount = static_cast<uint16_t>(variableCount);
+            sizes.secondaryCount = static_cast<uint16_t>(secondaryCount);
+            prefixes[nodeIndex] = sizes;
+            return;
+        }
         const uint32_t payloadOffset = atomicAdd(
             &counters->prefixPayloadCount,
             static_cast<uint32_t>(payloadLength));
@@ -2257,6 +2683,17 @@ namespace {
             | (static_cast<uint32_t>(nonExemptScopes) << 1)
             | (static_cast<uint32_t>(termMasks[0]) << 8)
             | (static_cast<uint32_t>(termMasks[1]) << 16);
+        assert(block.byteMapViewCount == 10 || block.byteMapViewCount == 14);
+        if (block.byteMapViewCount == 14)
+            prefix.nextPredicateEntry = findProjectedGrowthPrefix(
+                columns, block, batch.memory, node.count, localPayload, payloadLength);
+        prefix.candidateCount = forEachPooledCandidateRange(
+            columns, block, prefix, sortedKeys, filteredOffset, filteredCount,
+            static_cast<uint32_t>(node.startPosition),
+            [](uint32_t, uint32_t, uint32_t, uint32_t) {});
+        const bool selectedCooperative = prefix.candidateCount >= parameters.cooperativeSpanThreshold;
+        shortNodeFlags[nodeIndex] = selectedCooperative ? 0 : 1;
+        cooperativeNodeFlags[nodeIndex] = selectedCooperative ? 1 : 0;
         prefixes[nodeIndex] = prefix;
     }
 
@@ -2346,6 +2783,8 @@ namespace {
     /// @param growthCalls Uploaded growth schedule.
     /// @param filterCounts Per-filter retained counts.
     /// @param candidateCounts Exact 64-bit span-length output.
+    /// @param prefixes Prepared immutable prefix and reduced span lengths.
+    /// @param counters Block-reduced diagnostic totals, never a growth decision.
     /// @return Nothing.
     /// @invariant Every node cursor lies inside its retained filter span.
     __global__ void phase2GrowthCandidateCountsKernel(
@@ -2354,19 +2793,32 @@ namespace {
         uint32_t nodeCount,
         const gl::gpu::DevicePhase2GrowthCall* growthCalls,
         const uint32_t* filterCounts,
-        uint64_t* candidateCounts) {
+        uint64_t* candidateCounts,
+        const gl::gpu::DeviceGrowthPrefix* prefixes,
+        DeviceGrowthCounters* counters) {
         const uint32_t orderIndex = blockIdx.x * blockDim.x + threadIdx.x;
-        if (orderIndex >= nodeCount) return;
-        const gl::gpu::DeviceGrowthNode& node = frontier[
-            canonicalNodeIndices[orderIndex]];
-        const gl::gpu::DevicePhase2GrowthCall& growthCall = growthCalls[
-            node.callIndex];
-        const uint32_t filteredCount = filterCounts[
-            growthCall.filterCallIndex];
-        assert(node.startPosition >= 0);
-        assert(static_cast<uint32_t>(node.startPosition) <= filteredCount);
-        candidateCounts[orderIndex] = filteredCount
-            - static_cast<uint32_t>(node.startPosition);
+        assert(blockDim.x == 256);
+        unsigned long long before = 0, after = 0;
+        if (orderIndex < nodeCount) {
+            const uint32_t index = canonicalNodeIndices[orderIndex];
+            const gl::gpu::DeviceGrowthNode& node = frontier[index];
+            const uint32_t filteredCount = filterCounts[growthCalls[node.callIndex].filterCallIndex];
+            assert(node.startPosition >= 0);
+            assert(static_cast<uint32_t>(node.startPosition) <= filteredCount);
+            before = filteredCount - static_cast<uint32_t>(node.startPosition);
+            after = prefixes[index].candidateCount;
+            assert(after <= before);
+            candidateCounts[orderIndex] = after;
+        }
+        using Reduction = cub::BlockReduce<unsigned long long, 256>;
+        __shared__ typename Reduction::TempStorage storage;
+        const unsigned long long beforeTotal = Reduction(storage).Sum(before);
+        __syncthreads();
+        const unsigned long long afterTotal = Reduction(storage).Sum(after);
+        if (threadIdx.x == 0) {
+            atomicAdd(&counters->candidatePositionsBeforePrefilter, beforeTotal);
+            atomicAdd(&counters->candidatePositionsAfterPrefilter, afterTotal);
+        }
     }
 
     /// @brief Scatter canonical candidate start ordinals back to frontier indices.
@@ -2444,7 +2896,7 @@ namespace {
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row mandatory-view bits.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
     /// @param suffixMasks Per-row suffix unions.
     /// @param parameters Analyzer request-shape limits.
     /// @param frontier Immutable current frontier.
@@ -2463,7 +2915,7 @@ namespace {
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        const uint8_t* viewMasks,
+        const uint32_t* viewMasks,
         const uint8_t* suffixMasks,
         gl::gpu::DevicePhase2GrowthParameters parameters,
         const gl::gpu::DeviceGrowthNode* frontier,
@@ -2509,12 +2961,18 @@ namespace {
                     candidateMask, suffix, newCount, targetLength,
                     termMasks, batch.termCount)) return false;
         }
-        if (!projectedValiditiesComparable(
+        gl::NameId newValidity;
+        if (projectedValidityIsAncestor(
                 columns, block, node.validityId, expression.validityId)) {
+            newValidity = expression.validityId;
+        }
+        else if (projectedValidityIsAncestor(
+                columns, block, expression.validityId, node.validityId)) {
+            newValidity = node.validityId;
+        }
+        else {
             return false;
         }
-        const gl::NameId newValidity = projectedDeeperValidity(
-            columns, block, node.validityId, expression.validityId);
 
         bool hypothesisFound = (prefix.packedSummary & 1u) != 0;
         gl::NameId hypothesisValidity = prefix.hypothesisValidity;
@@ -2539,19 +2997,21 @@ namespace {
             }
         }
 
+        if (hypothesisFound) {
+            if (newCount > parameters.maximumHypothesisKeyLength) return false;
+            if (nonExemptScopes > 1) return false;
+            if (nonExemptScopes == 1
+                && nonExemptValidity != hypothesisValidity) return false;
+        }
+
         constexpr gl::NameId maximumCandidateSecondary =
             gl::ExecutionParameters::MAX_EXPRESSIONS
                 * gl::ExecutionParameters::MAX_ARITY;
         int32_t secondaryCount = prefix.secondaryCount;
-        for (gl::NameId argument = 0;
-             argument < expression.arity; ++argument) {
-            if (expression.argIteration[argument] <= -1) continue;
-            if (findProjectedPodMapEntry(
-                    columns, block,
-                    gl::gpu::DevicePodMapKind::recursionProducts,
-                    static_cast<int64_t>(expression.argFullId[argument])) >= 0) {
-                continue;
-            }
+        uint32_t remainingArguments = viewMasks[globalRow] >> 8;
+        while (remainingArguments != 0) {
+            const uint32_t argument = static_cast<uint32_t>(__ffs(remainingArguments) - 1);
+            remainingArguments &= remainingArguments - 1;
             const gl::NameId id = expression.argFullId[argument];
             bool found = false;
             for (int32_t known = 0;
@@ -2563,21 +3023,10 @@ namespace {
                     break;
                 }
             }
-            for (gl::NameId prior = 0;
-                 !found && prior < argument; ++prior) {
-                if (expression.argIteration[prior] > -1
-                    && expression.argFullId[prior] == id) found = true;
-            }
             if (!found) {
                 ++secondaryCount;
                 assert(secondaryCount <= maximumCandidateSecondary);
             }
-        }
-        if (hypothesisFound) {
-            if (newCount > parameters.maximumHypothesisKeyLength) return false;
-            if (nonExemptScopes > 1) return false;
-            if (nonExemptScopes == 1
-                && nonExemptValidity != hypothesisValidity) return false;
         }
         if (secondaryCount > parameters.maximumSecondaryVariables) {
             if (secondaryCount
@@ -2625,12 +3074,13 @@ namespace {
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row mandatory-view bits.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
     /// @param suffixMasks Per-row suffix unions.
     /// @param parameters Analyzer request-shape limits.
     /// @param frontier Immutable current frontier.
     /// @param prefixes Immutable pooled-prefix headers.
     /// @param prefixSecondary Fixed distinct secondary-variable pool.
+    /// @param prefixVariables Fixed distinct normalization-variable pool.
     /// @param shortNodeIndices Stable compact short-node indices.
     /// @param shortNodeCount Number of short nodes.
     /// @param candidateStartsByNode Canonical start ordinal by node index.
@@ -2649,12 +3099,13 @@ namespace {
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        const uint8_t* viewMasks,
+        const uint32_t* viewMasks,
         const uint8_t* suffixMasks,
         gl::gpu::DevicePhase2GrowthParameters parameters,
         const gl::gpu::DeviceGrowthNode* frontier,
         const gl::gpu::DeviceGrowthPrefix* prefixes,
         const gl::NameId* prefixSecondary,
+        const gl::NameId* prefixVariables,
         const uint32_t* shortNodeIndices,
         uint32_t shortNodeCount,
         const uint64_t* candidateStartsByNode,
@@ -2671,27 +3122,34 @@ namespace {
         const uint32_t filteredCount = filterCounts[
             growthCall.filterCallIndex];
         const uint64_t nodeStart = candidateStartsByNode[nodeIndex];
-        const uint64_t nodeEnd = nodeStart + filteredCount
-            - static_cast<uint32_t>(node.startPosition);
         const uint64_t windowEnd = windowStart + windowCount;
-        const uint64_t overlapStart = nodeStart > windowStart
-            ? nodeStart : windowStart;
-        const uint64_t overlapEnd = nodeEnd < windowEnd ? nodeEnd : windowEnd;
-        for (uint64_t ordinal = overlapStart;
-             ordinal < overlapEnd; ++ordinal) {
-            const uint32_t localIndex = static_cast<uint32_t>(
-                ordinal - windowStart);
-            const uint32_t position = static_cast<uint32_t>(node.startPosition)
-                + static_cast<uint32_t>(ordinal - nodeStart);
-            gl::gpu::DeviceGrowthCandidateAttempt attempt{};
-            const bool accepted = preparePooledGrowthCandidate(
-                columns, batches, tasks, growthCalls, filterCounts,
-                filterOffsets, sortedKeys, viewMasks, suffixMasks, parameters,
-                frontier, prefixes, prefixSecondary, nodeIndex, position,
-                attempt);
-            flags[localIndex] = accepted ? 1u : 0u;
-            if (accepted) attempts[localIndex] = attempt;
-        }
+        const auto& block = columns.logicalBlocks[tasks[growthCall.taskIndex].logicalBlockIndex];
+        const uint32_t offset = filterOffsets[growthCall.filterCallIndex];
+        const uint32_t covered = forEachPooledCandidateRange(
+            columns, block, prefixes[nodeIndex], sortedKeys, offset, filteredCount,
+            static_cast<uint32_t>(node.startPosition),
+            [&](uint32_t positionBegin, uint32_t count, uint32_t word, uint32_t rangeOrdinal) {
+                const uint64_t rangeStart = nodeStart + rangeOrdinal;
+                const uint64_t begin = rangeStart > windowStart ? rangeStart : windowStart;
+                const uint64_t rangeEnd = rangeStart + count;
+                const uint64_t end = rangeEnd < windowEnd ? rangeEnd : windowEnd;
+                const gl::gpu::GrowthArgumentGate gate = gl::gpu::growthArgumentGate(
+                    word, prefixes[nodeIndex], prefixVariables);
+                for (uint64_t ordinal = begin; ordinal < end; ++ordinal) {
+                    const uint32_t localIndex = static_cast<uint32_t>(ordinal - windowStart);
+                    const uint32_t position = positionBegin + static_cast<uint32_t>(ordinal - rangeStart);
+                    const auto& expression = columns.statements[block.statementOffset
+                        + growthStatementIndex(sortedKeys, offset + position)];
+                    gl::gpu::DeviceGrowthCandidateAttempt attempt{};
+                    const bool accepted = gate.admits(expression)
+                        && preparePooledGrowthCandidate(columns, batches, tasks, growthCalls,
+                            filterCounts, filterOffsets, sortedKeys, viewMasks, suffixMasks,
+                            parameters, frontier, prefixes, prefixSecondary, nodeIndex, position, attempt);
+                    flags[localIndex] = accepted ? 1u : 0u;
+                    if (accepted) attempts[localIndex] = attempt;
+                }
+            });
+        assert(covered == prefixes[nodeIndex].candidateCount);
     }
 
     /// @brief Apply cheap gates to long-node candidates overlapping one window.
@@ -2708,12 +3166,13 @@ namespace {
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row mandatory-view bits.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
     /// @param suffixMasks Per-row suffix unions.
     /// @param parameters Analyzer request-shape limits.
     /// @param frontier Immutable current frontier.
     /// @param prefixes Immutable pooled-prefix headers.
     /// @param prefixSecondary Fixed distinct secondary-variable pool.
+    /// @param prefixVariables Fixed distinct normalization-variable pool.
     /// @param cooperativeNodeIndices Stable compact long-node indices.
     /// @param cooperativeNodeCount Number of long nodes.
     /// @param candidateStartsByNode Canonical start ordinal by node index.
@@ -2732,12 +3191,13 @@ namespace {
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        const uint8_t* viewMasks,
+        const uint32_t* viewMasks,
         const uint8_t* suffixMasks,
         gl::gpu::DevicePhase2GrowthParameters parameters,
         const gl::gpu::DeviceGrowthNode* frontier,
         const gl::gpu::DeviceGrowthPrefix* prefixes,
         const gl::NameId* prefixSecondary,
+        const gl::NameId* prefixVariables,
         const uint32_t* cooperativeNodeIndices,
         uint32_t cooperativeNodeCount,
         const uint64_t* candidateStartsByNode,
@@ -2753,27 +3213,34 @@ namespace {
         const uint32_t filteredCount = filterCounts[
             growthCall.filterCallIndex];
         const uint64_t nodeStart = candidateStartsByNode[nodeIndex];
-        const uint64_t nodeEnd = nodeStart + filteredCount
-            - static_cast<uint32_t>(node.startPosition);
         const uint64_t windowEnd = windowStart + windowCount;
-        const uint64_t overlapStart = nodeStart > windowStart
-            ? nodeStart : windowStart;
-        const uint64_t overlapEnd = nodeEnd < windowEnd ? nodeEnd : windowEnd;
-        for (uint64_t ordinal = overlapStart + threadIdx.x;
-             ordinal < overlapEnd; ordinal += blockDim.x) {
-            const uint32_t localIndex = static_cast<uint32_t>(
-                ordinal - windowStart);
-            const uint32_t position = static_cast<uint32_t>(node.startPosition)
-                + static_cast<uint32_t>(ordinal - nodeStart);
-            gl::gpu::DeviceGrowthCandidateAttempt attempt{};
-            const bool accepted = preparePooledGrowthCandidate(
-                columns, batches, tasks, growthCalls, filterCounts,
-                filterOffsets, sortedKeys, viewMasks, suffixMasks, parameters,
-                frontier, prefixes, prefixSecondary, nodeIndex, position,
-                attempt);
-            flags[localIndex] = accepted ? 1u : 0u;
-            if (accepted) attempts[localIndex] = attempt;
-        }
+        const auto& block = columns.logicalBlocks[tasks[growthCall.taskIndex].logicalBlockIndex];
+        const uint32_t offset = filterOffsets[growthCall.filterCallIndex];
+        const uint32_t covered = forEachPooledCandidateRange(
+            columns, block, prefixes[nodeIndex], sortedKeys, offset, filteredCount,
+            static_cast<uint32_t>(node.startPosition),
+            [&](uint32_t positionBegin, uint32_t count, uint32_t word, uint32_t rangeOrdinal) {
+                const uint64_t rangeStart = nodeStart + rangeOrdinal;
+                const uint64_t begin = rangeStart > windowStart ? rangeStart : windowStart;
+                const uint64_t rangeEnd = rangeStart + count;
+                const uint64_t end = rangeEnd < windowEnd ? rangeEnd : windowEnd;
+                const gl::gpu::GrowthArgumentGate gate = gl::gpu::growthArgumentGate(
+                    word, prefixes[nodeIndex], prefixVariables);
+                for (uint64_t ordinal = begin + threadIdx.x; ordinal < end; ordinal += blockDim.x) {
+                    const uint32_t localIndex = static_cast<uint32_t>(ordinal - windowStart);
+                    const uint32_t position = positionBegin + static_cast<uint32_t>(ordinal - rangeStart);
+                    const auto& expression = columns.statements[block.statementOffset
+                        + growthStatementIndex(sortedKeys, offset + position)];
+                    gl::gpu::DeviceGrowthCandidateAttempt attempt{};
+                    const bool accepted = gate.admits(expression)
+                        && preparePooledGrowthCandidate(columns, batches, tasks, growthCalls,
+                            filterCounts, filterOffsets, sortedKeys, viewMasks, suffixMasks,
+                            parameters, frontier, prefixes, prefixSecondary, nodeIndex, position, attempt);
+                    flags[localIndex] = accepted ? 1u : 0u;
+                    if (accepted) attempts[localIndex] = attempt;
+                }
+            });
+        assert(covered == prefixes[nodeIndex].candidateCount);
     }
 
     /// @brief Compare one owner-signature slot against a pooled candidate path.
@@ -2950,7 +3417,7 @@ namespace {
                 : static_cast<uint32_t>(node.filteredPositions[premise]);
             if (premise < node.count)
                 assert(node.filteredPositions[premise] >= 0);
-            assert(position < kProcessorMaximumFilteredRows);
+            assert(position < gl::ExecutionParameters::MAX_FILTERED_POSITION_CODE);
             event.statementIndices[premise] = growthStatementIndex(
                 sortedKeys, filteredOffset + position);
             event.filteredPositionCodes[premise] = static_cast<uint16_t>(
@@ -2978,10 +3445,11 @@ namespace {
     /// @brief Probe compact cheap-gate survivors and emit exact events and children.
     ///
     /// @details
-    /// One thread owns one stable survivor ordinal. It folds only the appended
-    /// expression suffix onto the pooled normalized prefix, probes subkey/owner
-    /// and whole-key maps, applies mandatory containment, and appends bounded
-    /// semantic events and next-frontier children. Window order is canonical;
+    /// Each thread strides over stable survivor ordinals, so any grid covers
+    /// the window. For each it folds only the appended expression suffix onto
+    /// the pooled normalized prefix, probes the subkey/owner map and, when its
+    /// answer can matter, the whole-key map, applies mandatory containment, and
+    /// appends bounded semantic events and next-frontier children. Window order is canonical;
     /// atomic append order remains non-semantic and is reconstructed later from
     /// the retained call, run, path, and candidate tokens.
     ///
@@ -3028,124 +3496,134 @@ namespace {
         uint32_t* taskSubkeyCounts,
         DeviceGrowthCounters* counters,
         gl::gpu::Phase2GrowthCapacity capacity) {
-        const uint32_t survivorIndex = blockIdx.x * blockDim.x + threadIdx.x;
-        if (survivorIndex >= survivorCount) return;
-        const gl::gpu::DeviceGrowthCandidateAttempt& candidate = attempts[
-            survivorIndices[survivorIndex]];
-        assert(candidate.nodeIndex < capacity.frontierRecords);
-        const gl::gpu::DeviceGrowthNode& node = frontier[candidate.nodeIndex];
-        const gl::gpu::DeviceGrowthPrefix& prefix = prefixes[
-            candidate.nodeIndex];
-        const gl::gpu::DevicePhase2GrowthCall& growthCall = growthCalls[
-            node.callIndex];
-        const gl::gpu::DevicePhase2Task& task = tasks[growthCall.taskIndex];
-        const gl::gpu::DeviceRequestBatch& batch = batches[
-            growthCall.batchIndex];
-        const gl::gpu::DeviceLogicalBlockProjection& block =
-            columns.logicalBlocks[task.logicalBlockIndex];
-        const uint32_t filteredOffset = filterOffsets[
-            growthCall.filterCallIndex];
-        const gl::NameId statementIndex = growthStatementIndex(
-            sortedKeys, filteredOffset + candidate.position);
-        const gl::IntEncodedExpr& expression = columns.statements[
-            block.statementOffset + static_cast<uint32_t>(statementIndex)];
-        const gl::NameId newCount = node.count + 1;
+        // Grid-stride: a launch sized to the resident blocks covers every
+        // survivor without a partial last wave.
+        for (uint32_t survivorIndex = blockIdx.x * blockDim.x + threadIdx.x;
+             survivorIndex < survivorCount; survivorIndex += gridDim.x * blockDim.x) {
+            const gl::gpu::DeviceGrowthCandidateAttempt& candidate = attempts[
+                survivorIndices[survivorIndex]];
+            assert(candidate.nodeIndex < capacity.frontierRecords);
+            const gl::gpu::DeviceGrowthNode& node = frontier[candidate.nodeIndex];
+            const gl::gpu::DeviceGrowthPrefix& prefix = prefixes[
+                candidate.nodeIndex];
+            const gl::gpu::DevicePhase2GrowthCall& growthCall = growthCalls[
+                node.callIndex];
+            const gl::gpu::DevicePhase2Task& task = tasks[growthCall.taskIndex];
+            const gl::gpu::DeviceRequestBatch& batch = batches[
+                growthCall.batchIndex];
+            const gl::gpu::DeviceLogicalBlockProjection& block =
+                columns.logicalBlocks[task.logicalBlockIndex];
+            const uint32_t filteredOffset = filterOffsets[
+                growthCall.filterCallIndex];
+            const gl::NameId statementIndex = growthStatementIndex(
+                sortedKeys, filteredOffset + candidate.position);
+            const gl::IntEncodedExpr& expression = columns.statements[
+                block.statementOffset + static_cast<uint32_t>(statementIndex)];
+            const gl::NameId newCount = node.count + 1;
 
-        gl::NameId normalizedSuffix[
-            2 + gl::ExecutionParameters::MAX_ARITY * 2]{};
-        gl::NameId suffixLength = 0;
-        normalizedSuffix[suffixLength++] = expression.nameId;
-        normalizedSuffix[suffixLength++] = expression.negation;
-        gl::NameId appendedVariableCount = 0;
-        for (gl::NameId argument = 0;
-             argument < expression.arity; ++argument) {
-            const gl::NameId variableId = expression.argId[argument];
-            gl::NameId normalizedId = 0;
-            for (gl::NameId known = 0;
-                 known < prefix.variableCount; ++known) {
-                if (prefixVariables[
-                        prefix.variableOffset + static_cast<uint32_t>(known)]
-                    == variableId) {
-                    normalizedId = known + 1;
-                    break;
+            gl::NameId normalizedSuffix[
+                2 + gl::ExecutionParameters::MAX_ARITY * 2]{};
+            gl::NameId suffixLength = 0;
+            normalizedSuffix[suffixLength++] = expression.nameId;
+            normalizedSuffix[suffixLength++] = expression.negation;
+            gl::NameId appendedVariableCount = 0;
+            for (gl::NameId argument = 0;
+                 argument < expression.arity; ++argument) {
+                const gl::NameId variableId = expression.argId[argument];
+                gl::NameId normalizedId = 0;
+                for (gl::NameId known = 0;
+                     known < prefix.variableCount; ++known) {
+                    if (prefixVariables[
+                            prefix.variableOffset + static_cast<uint32_t>(known)]
+                        == variableId) {
+                        normalizedId = known + 1;
+                        break;
+                    }
                 }
-            }
-            for (gl::NameId prior = 0;
-                 normalizedId == 0 && prior < argument; ++prior) {
-                if (expression.argId[prior] == variableId) {
-                    normalizedId = normalizedSuffix[2 + prior * 2];
-                    assert(normalizedId > prefix.variableCount);
-                    break;
+                for (gl::NameId prior = 0;
+                     normalizedId == 0 && prior < argument; ++prior) {
+                    if (expression.argId[prior] == variableId) {
+                        normalizedId = normalizedSuffix[2 + prior * 2];
+                        assert(normalizedId > prefix.variableCount);
+                        break;
+                    }
                 }
+                if (normalizedId == 0) {
+                    assert(appendedVariableCount
+                        < gl::ExecutionParameters::MAX_ARITY);
+                    normalizedId = prefix.variableCount
+                        + appendedVariableCount + 1;
+                    ++appendedVariableCount;
+                }
+                normalizedSuffix[suffixLength++] = normalizedId;
+                normalizedSuffix[suffixLength++] = 0;
             }
-            if (normalizedId == 0) {
-                assert(appendedVariableCount
-                    < gl::ExecutionParameters::MAX_ARITY);
-                normalizedId = prefix.variableCount
-                    + appendedVariableCount + 1;
-                ++appendedVariableCount;
+            assert(prefix.payloadLength + suffixLength
+                <= gl::ExecutionParameters::MAX_KEY_SLOTS);
+            gl::gpu::DeviceByteMapKind wholeKind =
+                gl::gpu::DeviceByteMapKind::overallWholeKeys;
+            gl::gpu::DeviceByteMapKind subkeyKind =
+                gl::gpu::DeviceByteMapKind::overallSubkeys;
+            filterMapKinds(batch.memory, wholeKind, subkeyKind);
+            // Both maps are probed with the same key bytes: one digest serves both.
+            const uint64_t keyHash = hashProjectedSegmentedKey(newCount,
+                prefixPayload + prefix.payloadOffset, prefix.payloadLength,
+                normalizedSuffix, suffixLength);
+            const int32_t subkeyEntry = findProjectedSegmentedByteMapEntryHashed(
+                columns, block, subkeyKind, newCount,
+                prefixPayload + prefix.payloadOffset, prefix.payloadLength,
+                normalizedSuffix, suffixLength, keyHash);
+            bool subkeySatisfied = false;
+            if (subkeyEntry >= 0) {
+                subkeySatisfied = newCount < 3
+                    || projectedPooledOwnerSetUSatisfied(
+                        columns, block,
+                        columns.byteMapEntries[static_cast<uint32_t>(subkeyEntry)],
+                        sortedKeys, filteredOffset, node, candidate.position);
             }
-            normalizedSuffix[suffixLength++] = normalizedId;
-            normalizedSuffix[suffixLength++] = 0;
-        }
-        assert(prefix.payloadLength + suffixLength
-            <= gl::ExecutionParameters::MAX_KEY_SLOTS);
-        gl::gpu::DeviceByteMapKind wholeKind =
-            gl::gpu::DeviceByteMapKind::overallWholeKeys;
-        gl::gpu::DeviceByteMapKind subkeyKind =
-            gl::gpu::DeviceByteMapKind::overallSubkeys;
-        filterMapKinds(batch.memory, wholeKind, subkeyKind);
-        const int32_t subkeyEntry = findProjectedSegmentedByteMapEntry(
-            columns, block, subkeyKind, newCount,
-            prefixPayload + prefix.payloadOffset, prefix.payloadLength,
-            normalizedSuffix, suffixLength);
-        bool subkeySatisfied = false;
-        if (subkeyEntry >= 0) {
-            subkeySatisfied = newCount < 3
-                || projectedPooledOwnerSetUSatisfied(
-                    columns, block,
-                    columns.byteMapEntries[static_cast<uint32_t>(subkeyEntry)],
-                    sortedKeys, filteredOffset, node, candidate.position);
-        }
-        const bool wholeKeyPresent = findProjectedSegmentedByteMapEntry(
-            columns, block, wholeKind, newCount,
-            prefixPayload + prefix.payloadOffset, prefix.payloadLength,
-            normalizedSuffix, suffixLength) >= 0;
-        const uint8_t termMasks[2]{
-            static_cast<uint8_t>((prefix.packedSummary >> 8) & 0xffu),
-            static_cast<uint8_t>((prefix.packedSummary >> 16) & 0xffu) };
-        const bool termsSatisfied = batch.termCount == 0
-            || growthTermsSatisfied(
-                candidate.termMask, termMasks, batch.termCount);
-        if (subkeySatisfied || (wholeKeyPresent && termsSatisfied)) {
-            appendPooledGrowthEvent(
-                sortedKeys, filteredOffset, node, candidate.position,
-                subkeySatisfied, wholeKeyPresent, termsSatisfied,
-                growthCall.taskIndex, events, requests,
-                taskSubkeyCounts, counters, capacity);
-        }
-        gl::NameId targetLength = 0;
-        selectedGrowthTargetLength(block, batch.memory, targetLength);
-        if (subkeySatisfied && newCount < targetLength) {
-            const uint32_t nextIndex = atomicAdd(
-                &counters->frontierCounts[nextFrontierOrdinal], 1u);
-            assert(nextIndex < capacity.frontierRecords);
-            gl::gpu::DeviceGrowthNode child{};
-            child.callIndex = node.callIndex;
-            child.runOrdinal = node.runOrdinal;
-            child.count = newCount;
-            child.startPosition = static_cast<gl::NameId>(
-                candidate.position + 1u);
-            child.validityId = candidate.validityId;
-            child.termMask = candidate.termMask;
-            for (gl::NameId premise = 0;
-                 premise < node.count; ++premise) {
-                child.filteredPositions[premise] =
-                    node.filteredPositions[premise];
+            const uint8_t termMasks[2]{
+                static_cast<uint8_t>((prefix.packedSummary >> 8) & 0xffu),
+                static_cast<uint8_t>((prefix.packedSummary >> 16) & 0xffu) };
+            const bool termsSatisfied = batch.termCount == 0
+                || growthTermsSatisfied(
+                    candidate.termMask, termMasks, batch.termCount);
+            // Only an event reads the whole key: beside a satisfied subkey, or
+            // alone once the terms hold. Otherwise its probe changes nothing.
+            const bool wholeKeyPresent = (subkeySatisfied || termsSatisfied)
+                && findProjectedSegmentedByteMapEntryHashed(
+                    columns, block, wholeKind, newCount,
+                    prefixPayload + prefix.payloadOffset, prefix.payloadLength,
+                    normalizedSuffix, suffixLength, keyHash) >= 0;
+            if (subkeySatisfied || (wholeKeyPresent && termsSatisfied)) {
+                appendPooledGrowthEvent(
+                    sortedKeys, filteredOffset, node, candidate.position,
+                    subkeySatisfied, wholeKeyPresent, termsSatisfied,
+                    growthCall.taskIndex, events, requests,
+                    taskSubkeyCounts, counters, capacity);
             }
-            child.filteredPositions[node.count] = static_cast<gl::NameId>(
-                candidate.position);
-            next[nextIndex] = child;
+            gl::NameId targetLength = 0;
+            selectedGrowthTargetLength(block, batch.memory, targetLength);
+            if (subkeySatisfied && newCount < targetLength) {
+                const uint32_t nextIndex = atomicAdd(
+                    &counters->frontierCounts[nextFrontierOrdinal], 1u);
+                assert(nextIndex < capacity.frontierStoreRecords);
+                gl::gpu::DeviceGrowthNode child{};
+                child.callIndex = node.callIndex;
+                child.runOrdinal = node.runOrdinal;
+                child.count = newCount;
+                child.startPosition = static_cast<gl::NameId>(
+                    candidate.position + 1u);
+                child.validityId = candidate.validityId;
+                child.termMask = candidate.termMask;
+                for (gl::NameId premise = 0;
+                     premise < node.count; ++premise) {
+                    child.filteredPositions[premise] =
+                        node.filteredPositions[premise];
+                }
+                child.filteredPositions[node.count] = static_cast<gl::NameId>(
+                    candidate.position);
+                next[nextIndex] = child;
+            }
         }
     }
 
@@ -3166,7 +3644,7 @@ namespace {
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row mandatory-view bits.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
     /// @param suffixMasks Per-row suffix unions.
     /// @param parameters Analyzer request-shape limits.
     /// @param current Current frontier input.
@@ -3194,7 +3672,7 @@ namespace {
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        const uint8_t* viewMasks,
+        const uint32_t* viewMasks,
         const uint8_t* suffixMasks,
         gl::gpu::DevicePhase2GrowthParameters parameters,
         const gl::gpu::DeviceGrowthNode* current,
@@ -3581,7 +4059,7 @@ namespace {
     /// @param filterCounts Per-filter retained counts.
     /// @param filterOffsets Per-filter retained offsets.
     /// @param sortedKeys Global sorted retained keys.
-    /// @param viewMasks Per-row mandatory-view bits.
+    /// @param viewMasks Membership bits 0..7 and secondary-argument bits 8..23.
     /// @param suffixMasks Per-row suffix unions.
     /// @param parameters Analyzer limits and measured cooperative cutoff.
     /// @param current Current immutable frontier.
@@ -3611,7 +4089,7 @@ namespace {
         const uint32_t* filterCounts,
         const uint32_t* filterOffsets,
         const uint64_t* sortedKeys,
-        const uint8_t* viewMasks,
+        const uint32_t* viewMasks,
         const uint8_t* suffixMasks,
         gl::gpu::DevicePhase2GrowthParameters parameters,
         const gl::gpu::DeviceGrowthNode* current,
@@ -4061,21 +4539,34 @@ namespace {
         const gl::gpu::DeviceAcceptedGrowthEvent& event,
         const gl::gpu::DevicePhase2GrowthCall* calls,
         uint32_t component) {
-        if (component < gl::ExecutionParameters::MAX_EXPRESSIONS) {
-            if (component >= static_cast<uint32_t>(event.count)) return 0;
-            const uint16_t code = event.filteredPositionCodes[component];
-            const uint32_t position = code == 0
-                ? 0u : static_cast<uint32_t>(code - 1);
-            assert(position < kProcessorMaximumFilteredRows);
-            if (component + 1 == static_cast<uint32_t>(event.count))
-                return position;
-            return 65536u
-                + (kProcessorMaximumFilteredRows - 1u - position);
-        }
+        if (component < gl::ExecutionParameters::MAX_EXPRESSIONS)
+            return gl::gpu::growthEventPathComponent(event, component);
         if (component == 8) return event.runOrdinal;
         if (component == 9) return event.callIndex;
         assert(component == 10);
         return calls[event.callIndex].taskIndex;
+    }
+
+    /// @brief Pack each measured prefix's three sizes into one 64-bit word.
+    ///
+    /// @details
+    /// Bits 0-15 payload length, 16-31 variable count, 32-47 secondary count
+    /// (`unpackPhase2PrefixSizes`). One thread per prefix record.
+    ///
+    /// @param prefixes Measured prefix records.
+    /// @param count Number of records.
+    /// @param packed Output word per record.
+    /// @return Nothing.
+    __global__ void phase2GrowthPackPrefixSizesKernel(
+        const gl::gpu::DeviceGrowthPrefix* prefixes,
+        uint32_t count,
+        uint64_t* packed) {
+        const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= count) return;
+        const gl::gpu::DeviceGrowthPrefix& prefix = prefixes[index];
+        packed[index] = static_cast<uint64_t>(prefix.payloadLength)
+            | (static_cast<uint64_t>(prefix.variableCount) << 16)
+            | (static_cast<uint64_t>(prefix.secondaryCount) << 32);
     }
 
     /// @brief Initialize one identity permutation over unordered growth events.
@@ -4144,196 +4635,51 @@ namespace {
         values[position] = value;
     }
 
-    /// @brief Fold one 64-bit word into an FNV-1a request hash.
-    ///
-    /// @param hash In/out running 64-bit FNV-1a state.
-    /// @param word Word whose little-endian bytes are folded.
-    /// @return Nothing.
-    /// @invariant Equality is still checked field-by-field; this hash selects slots.
-    __device__ void foldRequestHashWord(uint64_t& hash, uint64_t word) {
-        for (uint32_t byte = 0; byte < 8; ++byte) {
-            hash ^= static_cast<uint8_t>(word >> (byte * 8));
-            hash *= 1099511628211ull;
-        }
-    }
-
-    /// @brief Hash one event's per-call semantic request key.
+    /// @brief Emit every recordable event as an evaluation request.
     ///
     /// @details
-    /// Hashes call identity, premise count, and each statement's packed
-    /// `(originalId, validityId)` pair. Statement-vector indices are deliberately
-    /// excluded because duplicate rows with the same semantic key must deduplicate.
+    /// Equal premise identities remain separate requests. Each token refers to
+    /// its own event; the following sort restores deterministic event order.
     ///
-    /// @param columns Resident statement column.
-    /// @param tasks Uploaded task descriptors.
-    /// @param calls Uploaded growth calls.
-    /// @param event Candidate event.
-    /// @return 64-bit open-address slot hash.
-    /// @invariant Event call/task/block links are valid.
-    __device__ uint64_t semanticRequestHash(
-        const ProjectionSemanticColumns& columns,
-        const gl::gpu::DevicePhase2Task* tasks,
-        const gl::gpu::DevicePhase2GrowthCall* calls,
-        const gl::gpu::DeviceAcceptedGrowthEvent& event) {
-        uint64_t hash = 14695981039346656037ull;
-        foldRequestHashWord(hash, event.callIndex);
-        foldRequestHashWord(hash, static_cast<uint32_t>(event.count));
-        const gl::gpu::DevicePhase2Task& task =
-            tasks[calls[event.callIndex].taskIndex];
-        const gl::gpu::DeviceLogicalBlockProjection& block =
-            columns.logicalBlocks[task.logicalBlockIndex];
-        for (gl::NameId premise = 0; premise < event.count; ++premise) {
-            const gl::NameId statementIndex = event.statementIndices[premise];
-            assert(statementIndex >= 0);
-            assert(static_cast<uint32_t>(statementIndex) < block.statementCount);
-            const gl::IntEncodedExpr& expression = columns.statements[
-                block.statementOffset
-                    + static_cast<uint32_t>(statementIndex)];
-            const uint64_t packed =
-                (static_cast<uint64_t>(
-                    static_cast<uint32_t>(expression.originalId)) << 32)
-                | static_cast<uint32_t>(expression.validityId);
-            foldRequestHashWord(hash, packed);
-        }
-        return hash;
-    }
-
-    /// @brief Compare two events by the processor emitter's semantic request key.
-    ///
-    /// @param columns Resident statement column.
-    /// @param tasks Uploaded task descriptors.
-    /// @param calls Uploaded growth calls.
-    /// @param left First event.
-    /// @param right Second event.
-    /// @return True exactly for same call, count, and packed statement-key path.
-    /// @invariant Both events belong to valid uploaded calls.
-    __device__ bool semanticRequestKeysEqual(
-        const ProjectionSemanticColumns& columns,
-        const gl::gpu::DevicePhase2Task* tasks,
-        const gl::gpu::DevicePhase2GrowthCall* calls,
-        const gl::gpu::DeviceAcceptedGrowthEvent& left,
-        const gl::gpu::DeviceAcceptedGrowthEvent& right) {
-        if (left.callIndex != right.callIndex || left.count != right.count)
-            return false;
-        const gl::gpu::DevicePhase2Task& task =
-            tasks[calls[left.callIndex].taskIndex];
-        const gl::gpu::DeviceLogicalBlockProjection& block =
-            columns.logicalBlocks[task.logicalBlockIndex];
-        for (gl::NameId premise = 0; premise < left.count; ++premise) {
-            const gl::IntEncodedExpr& leftExpression = columns.statements[
-                block.statementOffset
-                    + static_cast<uint32_t>(
-                        left.statementIndices[premise])];
-            const gl::IntEncodedExpr& rightExpression = columns.statements[
-                block.statementOffset
-                    + static_cast<uint32_t>(
-                        right.statementIndices[premise])];
-            if (leftExpression.originalId != rightExpression.originalId
-                || leftExpression.validityId
-                    != rightExpression.validityId) return false;
-        }
-        return true;
-    }
-
-    /// @brief Insert recordable events into the collision-exact per-call table.
-    ///
-    /// @details
-    /// One thread handles one exact-order event. Open addressing uses the full
-    /// semantic equality test after every occupied-slot hash collision. Duplicate
-    /// requests atomically retain their minimum event order, independent of
-    /// thread timing.
-    ///
-    /// @param columns Resident semantic columns.
-    /// @param tasks Uploaded task descriptors.
-    /// @param calls Uploaded growth calls.
-    /// @param events Persistent unordered events.
-    /// @param orderedIndices Exact event permutation.
-    /// @param eventCount Number of events.
-    /// @param owners Deduplication-slot representative event indices.
-    /// @param minimumOrders Deduplication-slot minimum exact event orders.
-    /// @param slotCount Power-of-two slot count.
-    /// @return Nothing.
-    /// @invariant Slot load never exceeds one half at retained capacities.
-    __global__ void phase2DeduplicateRequestsKernel(
-        ProjectionSemanticColumns columns,
-        const gl::gpu::DevicePhase2Task* tasks,
-        const gl::gpu::DevicePhase2GrowthCall* calls,
-        const gl::gpu::DeviceAcceptedGrowthEvent* events,
-        const uint32_t* orderedIndices,
-        uint32_t eventCount,
-        uint32_t* owners,
-        uint32_t* minimumOrders,
-        uint32_t slotCount) {
-        const uint32_t order = blockIdx.x * blockDim.x + threadIdx.x;
-        if (order >= eventCount) return;
-        const uint32_t eventIndex = orderedIndices[order];
-        const gl::gpu::DeviceAcceptedGrowthEvent& event = events[eventIndex];
-        const uint32_t recordFlags =
-            gl::gpu::kDeviceGrowthEventWholeKeyPresent
-            | gl::gpu::kDeviceGrowthEventTermsSatisfied;
-        if ((event.flags & recordFlags) != recordFlags) return;
-        assert(slotCount > 0 && (slotCount & (slotCount - 1)) == 0);
-        uint32_t slot = static_cast<uint32_t>(projectionPodHash(
-            semanticRequestHash(columns, tasks, calls, event)))
-            & (slotCount - 1);
-        constexpr uint32_t emptySlot = 0xffffffffu;
-        for (uint32_t probe = 0; probe < slotCount; ++probe) {
-            const uint32_t observed = atomicCAS(
-                &owners[slot], emptySlot, eventIndex);
-            if (observed == emptySlot
-                || semanticRequestKeysEqual(
-                    columns, tasks, calls, events[observed], event)) {
-                atomicMin(&minimumOrders[slot], order);
-                return;
-            }
-            slot = (slot + 1) & (slotCount - 1);
-        }
-        assert(false);
-    }
-
-    /// @brief Emit one unique request token from every occupied deduplication slot.
-    ///
+    /// @param events Accepted growth events.
     /// @param orderedIndices Exact event permutation.
     /// @param scanValues Inclusive task-local growth positions by event order.
-    /// @param owners Deduplication-slot representative indices.
-    /// @param minimumOrders Deduplication-slot retained minimum orders.
-    /// @param slotCount Number of deduplication slots.
-    /// @param tokens Arbitrary-order unique token output.
+    /// @param eventCount Number of accepted events.
+    /// @param tokens Arbitrary-order request output.
     /// @param tokenCapacity Fixed output capacity.
     /// @param tokenCount Shared output counter.
     /// @return Nothing.
-    /// @invariant Every occupied slot has a finite minimum order.
-    __global__ void phase2EmitUniqueRequestsKernel(
+    /// @invariant Only events satisfying both request gates emit a token.
+    __global__ void phase2EmitRequestsKernel(
+        const gl::gpu::DeviceAcceptedGrowthEvent* events,
         const uint32_t* orderedIndices,
         const DeviceGrowthScanValue* scanValues,
-        const uint32_t* owners,
-        const uint32_t* minimumOrders,
-        uint32_t slotCount,
+        uint32_t eventCount,
         gl::gpu::DeviceOrderedRequestToken* tokens,
         uint32_t tokenCapacity,
         uint32_t* tokenCount) {
-        const uint32_t slot = blockIdx.x * blockDim.x + threadIdx.x;
-        if (slot >= slotCount) return;
-        constexpr uint32_t emptySlot = 0xffffffffu;
-        if (owners[slot] == emptySlot) return;
-        const uint32_t order = minimumOrders[slot];
-        assert(order != emptySlot);
+        const uint32_t order = blockIdx.x * blockDim.x + threadIdx.x;
+        if (order >= eventCount) return;
+        const uint32_t eventIndex = orderedIndices[order];
+        const uint32_t recordFlags = gl::gpu::kDeviceGrowthEventWholeKeyPresent
+            | gl::gpu::kDeviceGrowthEventTermsSatisfied;
+        if ((events[eventIndex].flags & recordFlags) != recordFlags) return;
         const uint32_t outputIndex = atomicAdd(tokenCount, 1u);
         assert(outputIndex < tokenCapacity);
         gl::gpu::DeviceOrderedRequestToken token{};
         token.growthPosition = scanValues[order].growthPosition;
-        token.eventIndex = orderedIndices[order];
+        token.eventIndex = eventIndex;
         token.eventOrder = order;
         tokens[outputIndex] = token;
     }
 
     /// @brief Materialize request event-order keys for the final radix sort.
     ///
-    /// @param tokens Arbitrary-order unique request tokens.
+    /// @param tokens Arbitrary-order request tokens.
     /// @param count Number of tokens.
     /// @param keys Output event-order keys.
     /// @return Nothing.
-    /// @invariant Every event order is unique after semantic deduplication.
+    /// @invariant Every event order is unique because each token refers to a different event.
     __global__ void phase2RequestOrderKeysKernel(
         const gl::gpu::DeviceOrderedRequestToken* tokens,
         uint32_t count,
@@ -4685,265 +5031,6 @@ namespace {
         }
         if (maximumIteration != nullptr) *maximumIteration = scanner.maximum;
         return length;
-    }
-
-    /// @brief Exact device summary of all `int_lev_<level>_<id>` occurrences.
-    ///
-    /// @details
-    /// Reproduces the processor's non-overlapping regex-iterator twin: failed
-    /// starts advance one byte and successful starts resume at the match end.
-    /// It records the first token, whether another distinct token exists, and
-    /// whether every parsed level is strictly below the logical-block level.
-    ///
-    /// @param source Canonical expression bytes.
-    /// @param length Expression byte length.
-    /// @param levelBound Exclusive logical-block level bound.
-    /// @param firstStart Receives the first token start when the verdict is nonzero.
-    /// @param firstLength Receives the first token length when nonzero.
-    /// @param allBelow Receives one exactly when every occurrence level is below.
-    /// @return Zero, one, or two for no token, one distinct token, or multiple.
-    /// @invariant Every matched digit run may be arbitrarily long; overflow makes
-    ///            `allBelow` false without changing occurrence recognition.
-    __device__ uint32_t scanProjectedIntLevSummary(
-        const char* source,
-        uint32_t length,
-        int32_t levelBound,
-        uint32_t& firstStart,
-        uint32_t& firstLength,
-        uint32_t& allBelow) {
-        uint32_t position = 0;
-        uint32_t haveFirst = 0;
-        uint32_t multiple = 0;
-        allBelow = 1;
-        while (position + 11 <= length) {
-            if (!projectionBytesEqual(source + position, "int_lev_", 8)) {
-                ++position;
-                continue;
-            }
-            uint32_t cursor = position + 8;
-            const uint32_t firstDigit = cursor;
-            while (cursor < length
-                && source[cursor] >= '0' && source[cursor] <= '9') ++cursor;
-            if (cursor == firstDigit || cursor >= length
-                || source[cursor] != '_') {
-                ++position;
-                continue;
-            }
-            const uint32_t firstDigitEnd = cursor;
-            ++cursor;
-            const uint32_t secondDigit = cursor;
-            while (cursor < length
-                && source[cursor] >= '0' && source[cursor] <= '9') ++cursor;
-            if (cursor == secondDigit) {
-                ++position;
-                continue;
-            }
-            const uint32_t tokenLength = cursor - position;
-            if (haveFirst == 0) {
-                firstStart = position;
-                firstLength = tokenLength;
-                haveFirst = 1;
-            }
-            else if (firstLength != tokenLength
-                || !projectionBytesEqual(
-                    source + firstStart, source + position, tokenLength)) {
-                multiple = 1;
-            }
-            uint64_t parsedLevel = 0;
-            uint32_t overflow = 0;
-            for (uint32_t digit = firstDigit;
-                 digit < firstDigitEnd; ++digit) {
-                const uint32_t value = static_cast<uint32_t>(
-                    source[digit] - '0');
-                if (parsedLevel
-                    > (static_cast<uint64_t>(INT_MAX) - value) / 10u) {
-                    overflow = 1;
-                }
-                else if (overflow == 0) {
-                    parsedLevel = parsedLevel * 10u + value;
-                }
-            }
-            if (overflow != 0
-                || static_cast<int64_t>(parsedLevel) >= levelBound) {
-                allBelow = 0;
-            }
-            position = cursor;
-        }
-        if (haveFirst == 0) return 0;
-        return multiple != 0 ? 2u : 1u;
-    }
-
-    /// @brief Cursor over bytes after replacing every exact occurrence of one token.
-    struct ProjectedSingleReplacementCursor {
-        const char* source{ nullptr };
-        uint32_t sourceLength{ 0 };
-        uint32_t sourcePosition{ 0 };
-        const char* token{ nullptr };
-        uint32_t tokenLength{ 0 };
-        const char* replacement{ nullptr };
-        uint32_t replacementLength{ 0 };
-        uint32_t replacementPosition{ 0 };
-        uint32_t emittingReplacement{ 0 };
-    };
-
-    /// @brief Emit one byte of an exact all-occurrences single-token replacement.
-    ///
-    /// @param cursor Mutable replacement cursor.
-    /// @param output Receives the next transformed byte.
-    /// @return True when a byte was emitted, false at transformed exhaustion.
-    /// @invariant The token and replacement are nonempty readable spans.
-    __device__ bool nextProjectedSingleReplacementByte(
-        ProjectedSingleReplacementCursor& cursor,
-        char& output) {
-        assert(cursor.tokenLength > 0);
-        assert(cursor.replacementLength > 0);
-        if (cursor.emittingReplacement != 0) {
-            output = cursor.replacement[cursor.replacementPosition++];
-            if (cursor.replacementPosition == cursor.replacementLength) {
-                cursor.replacementPosition = 0;
-                cursor.emittingReplacement = 0;
-            }
-            return true;
-        }
-        if (cursor.sourcePosition >= cursor.sourceLength) return false;
-        if (cursor.tokenLength <= cursor.sourceLength - cursor.sourcePosition
-            && projectionBytesEqual(
-                cursor.source + cursor.sourcePosition,
-                cursor.token, cursor.tokenLength)) {
-            cursor.sourcePosition += cursor.tokenLength;
-            output = cursor.replacement[0];
-            cursor.replacementPosition = 1;
-            cursor.emittingReplacement = cursor.replacementLength > 1 ? 1u : 0u;
-            if (cursor.emittingReplacement == 0)
-                cursor.replacementPosition = 0;
-            return true;
-        }
-        output = cursor.source[cursor.sourcePosition++];
-        return true;
-    }
-
-    /// @brief Probe NameMap after replacing one exact token by `marker` everywhere.
-    ///
-    /// @details
-    /// Hashes and compares the transformed stream directly against projected name
-    /// slots. No per-thread expression buffer is allocated; every collision probe
-    /// restarts the deterministic cursor and compares the complete byte stream.
-    ///
-    /// @param columns Resident projected NameMap columns.
-    /// @param block Owning logical block.
-    /// @param source Original expression bytes.
-    /// @param sourceLength Original expression byte length.
-    /// @param token Sole distinct `int_lev` token to replace.
-    /// @param tokenLength Token byte length.
-    /// @return Arena-global name-record index, or `-1` for a defined miss.
-    /// @invariant `block.nameSlots` is the fixed-load table for these name records.
-    __device__ int32_t findProjectedMarkerReplacementName(
-        const ProjectionSemanticColumns& columns,
-        const gl::gpu::DeviceLogicalBlockProjection& block,
-        const char* source,
-        uint32_t sourceLength,
-        const char* token,
-        uint32_t tokenLength) {
-        constexpr char replacement[] = "marker";
-        const auto makeCursor = [&]() {
-            ProjectedSingleReplacementCursor cursor{};
-            cursor.source = source;
-            cursor.sourceLength = sourceLength;
-            cursor.token = token;
-            cursor.tokenLength = tokenLength;
-            cursor.replacement = replacement;
-            cursor.replacementLength = 6;
-            return cursor;
-        };
-        ProjectedSingleReplacementCursor measure = makeCursor();
-        uint64_t hash = 14695981039346656037ull;
-        uint32_t transformedLength = 0;
-        char byte = '\0';
-        while (nextProjectedSingleReplacementByte(measure, byte)) {
-            hash ^= static_cast<uint8_t>(byte);
-            hash *= 1099511628211ull;
-            ++transformedLength;
-        }
-        if (block.nameSlotCount == 0) return -1;
-        uint32_t slot = static_cast<uint32_t>(hash)
-            & (block.nameSlotCount - 1);
-        for (;;) {
-            const int32_t recordIndex = columns.nameSlots[
-                block.nameSlotOffset + slot];
-            if (recordIndex == -1) return -1;
-            assert(recordIndex >= 0);
-            const gl::gpu::DeviceNameRecord& record = columns.nameRecords[
-                static_cast<uint32_t>(recordIndex)];
-            if (record.byteLength == transformedLength) {
-                ProjectedSingleReplacementCursor compare = makeCursor();
-                bool equal = true;
-                for (uint32_t index = 0; index < transformedLength; ++index) {
-                    char actual = '\0';
-                    const bool emitted = nextProjectedSingleReplacementByte(
-                        compare, actual);
-                    assert(emitted);
-                    if (actual != columns.nameBytes[record.byteOffset + index]) {
-                        equal = false;
-                        break;
-                    }
-                }
-                if (equal) return recordIndex;
-            }
-            slot = (slot + 1) & (block.nameSlotCount - 1);
-        }
-    }
-
-    /// @brief Exact GPU twin of `ExpressionAnalyzer::allowedForMail`.
-    ///
-    /// @param columns Resident name and plain-data columns.
-    /// @param block Owning logical block and level.
-    /// @param originalId Premise original-expression NameMap identifier.
-    /// @return True exactly when the premise is eligible for statement mail.
-    /// @invariant The original identifier belongs to the block NameMap and every
-    ///            compiled-category assertion matches the processor read fence.
-    __device__ bool projectedAllowedForMail(
-        const ProjectionSemanticColumns& columns,
-        const gl::gpu::DeviceLogicalBlockProjection& block,
-        gl::NameId originalId) {
-        assert(originalId > 0);
-        const uint32_t recordIndex = block.nameRecordOffset
-            + static_cast<uint32_t>(originalId);
-        assert(recordIndex < block.nameRecordOffset + block.nameRecordCount);
-        const gl::gpu::DeviceNameRecord& original =
-            columns.nameRecords[recordIndex];
-        const char* const expression = columns.nameBytes + original.byteOffset;
-        uint32_t tokenStart = 0;
-        uint32_t tokenLength = 0;
-        uint32_t allBelow = 0;
-        const uint32_t verdict = scanProjectedIntLevSummary(
-            expression, original.byteLength, block.level,
-            tokenStart, tokenLength, allBelow);
-        if (verdict == 0) return true;
-        const bool implication = original.byteLength >= 2
-            && expression[0] == '(' && expression[1] == '>';
-        if (!implication && allBelow != 0) return true;
-        if (findProjectedPodMapEntry(
-                columns, block,
-                gl::gpu::DevicePodMapKind::mailEligibleStatements,
-                originalId) >= 0) return true;
-        if (verdict != 1 || implication) return false;
-        const int32_t markerRecord = findProjectedMarkerReplacementName(
-            columns, block, expression, original.byteLength,
-            expression + tokenStart, tokenLength);
-        if (markerRecord < 0) return false;
-        assert(static_cast<uint32_t>(markerRecord) > block.nameRecordOffset);
-        assert(static_cast<uint32_t>(markerRecord)
-            < block.nameRecordOffset + block.nameRecordCount);
-        const gl::NameId markerId = static_cast<gl::NameId>(
-            static_cast<uint32_t>(markerRecord) - block.nameRecordOffset);
-        if (findProjectedPodMapEntry(
-                columns, block,
-                gl::gpu::DevicePodMapKind::mailEligibleMarkers,
-                markerId) < 0) return false;
-        assert(original.compiledCategory
-            != gl::gpu::DeviceCompiledCategory::absent);
-        return original.compiledCategory
-            != gl::gpu::DeviceCompiledCategory::atomic;
     }
 
     /// @brief Test the projected Site-F known-statement ancestor predicate.
@@ -5315,6 +5402,10 @@ namespace {
 
     /// @brief Apply request dependency and validity gates and count reverse work.
     ///
+    /// @details
+    /// Windowed evaluation retains per-request counts and scans them into wide
+    /// offsets instead of accumulating a complete 32-bit owner-work total.
+    ///
     /// @param columns Resident semantic projection.
     /// @param tasks Uploaded task descriptors.
     /// @param calls Uploaded growth-call schedule.
@@ -5324,6 +5415,7 @@ namespace {
     /// @param states Per-request semantic state output.
     /// @param ownerCounts Per-request reverse-owner count output.
     /// @param counters Shared dependency/reverse totals.
+    /// @param countOwnerTotal Whether to accumulate the bounded legacy total.
     /// @return Nothing.
     /// @invariant Every token/event/call/task/block link belongs to one sweep.
     __global__ void phase2EvaluationRequestKernel(
@@ -5335,7 +5427,7 @@ namespace {
         uint32_t requestCount,
         gl::gpu::DeviceEvaluationRequestState* states,
         uint32_t* ownerCounts,
-        DeviceEvaluationCounters* counters) {
+        DeviceEvaluationCounters* counters, bool countOwnerTotal = true) {
         const uint32_t requestIndex = blockIdx.x * blockDim.x + threadIdx.x;
         if (requestIndex >= requestCount) return;
         const gl::gpu::DeviceOrderedRequestToken& token = tokens[requestIndex];
@@ -5452,7 +5544,121 @@ namespace {
         state.active = 1;
         states[requestIndex] = state;
         ownerCounts[requestIndex] = ownerCount;
-        atomicAdd(&counters->reverseOwnerCount, ownerCount);
+        if (countOwnerTotal) atomicAdd(&counters->reverseOwnerCount, ownerCount);
+    }
+
+    /// @brief Scan bounded count metadata into wide expansion offsets.
+    ///
+    /// @details
+    /// Only metadata is scanned; semantic owner and value work remains parallel.
+    /// The total may exceed every processing array and the 32-bit index range.
+    ///
+    /// @param counts Per-input expansion lengths.
+    /// @param count Number of input records.
+    /// @param offsets Exclusive 64-bit starting positions.
+    /// @param total Exact complete expansion length.
+    /// @return Nothing.
+    /// @invariant Consecutive runs partition the complete expansion.
+    __global__ void phase2WideExpansionOffsetsKernel(const uint32_t* counts,
+        uint32_t count, uint64_t* offsets, uint64_t* total) {
+        uint64_t sum = 0;
+        for (uint32_t index = 0; index < count; ++index) {
+            offsets[index] = sum;
+            sum += counts[index];
+        }
+        *total = sum;
+    }
+
+    /// @brief Find the nonempty expansion run containing a logical position.
+    ///
+    /// @details
+    /// Upper-bound search handles repeated offsets from empty input runs.
+    ///
+    /// @param offsets Sorted exclusive run starts.
+    /// @param count Positive number of input records.
+    /// @param position Position below the complete expansion length.
+    /// @return Owning input record index.
+    /// @invariant The caller validates the returned run's positive remainder.
+    __device__ uint32_t phase2ExpansionRunAt(const uint64_t* offsets,
+        uint32_t count, uint64_t position) {
+        uint32_t low = 0, high = count;
+        while (low < high) {
+            const uint32_t middle = low + (high - low) / 2;
+            if (offsets[middle] <= position) low = middle + 1;
+            else high = middle;
+        }
+        assert(low > 0);
+        return low - 1;
+    }
+
+    /// @brief Emit a bounded consecutive slice of request-owner expansion.
+    ///
+    /// @details
+    /// Each lane maps one logical owner position to its request and owner row.
+    /// No complete owner image is reserved or materialized.
+    ///
+    /// @param columns Immutable projection columns.
+    /// @param states Evaluated request descriptors.
+    /// @param offsets Wide exclusive request-owner offsets.
+    /// @param requestCount Number of request descriptors.
+    /// @param begin First logical owner position in this window.
+    /// @param count Number of in-capacity output records.
+    /// @param output Bounded owner work array.
+    /// @return Nothing.
+    /// @invariant Every output lane names exactly one source owner.
+    __global__ void phase2EvaluationOwnerWindowKernel(
+        ProjectionSemanticColumns columns,
+        const gl::gpu::DeviceEvaluationRequestState* states,
+        const uint64_t* offsets, uint32_t requestCount,
+        uint64_t begin, uint32_t count,
+        gl::gpu::DeviceEvaluationOwnerWork* output) {
+        const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= count) return;
+        const uint64_t position = begin + index;
+        const uint32_t request = phase2ExpansionRunAt(offsets, requestCount, position);
+        const auto& state = states[request];
+        const uint64_t owner = position - offsets[request];
+        assert(owner < state.reverseOwnerCount && state.reverseEntryIndex >= 0);
+        const auto& entry = columns.reverseMapEntries[state.reverseEntryIndex];
+        const auto& block = columns.logicalBlocks[state.logicalBlockIndex];
+        const auto& remaining = columns.byteMapViews[block.byteMapViewOffset
+            + static_cast<uint32_t>(gl::gpu::DeviceByteMapKind::overallRemainingArgs)];
+        const int32_t local = columns.reverseOwners[entry.ownerOffset + owner];
+        assert(local > 0 && static_cast<uint32_t>(local) <= remaining.entryCount);
+        output[index] = {request, remaining.entryOffset + static_cast<uint32_t>(local - 1)};
+    }
+
+    /// @brief Emit a bounded slice of selected encoded-hit values.
+    ///
+    /// @details
+    /// A single encoded-hit run may be resumed across many output windows.
+    ///
+    /// @param columns Immutable encoded map entries.
+    /// @param hits Selected encoded-hit descriptors.
+    /// @param offsets Wide exclusive hit-value offsets.
+    /// @param hitCount Number of selected descriptors.
+    /// @param begin First logical value position in this window.
+    /// @param count Number of in-capacity output values.
+    /// @param output Bounded value work array.
+    /// @return Nothing.
+    /// @invariant Every output lane names exactly one selected rule value.
+    __global__ void phase2EvaluationValueWindowKernel(
+        ProjectionSemanticColumns columns,
+        const gl::gpu::DeviceEvaluationCandidate* hits,
+        const uint64_t* offsets, uint32_t hitCount,
+        uint64_t begin, uint32_t count,
+        gl::gpu::DeviceEvaluationValueWork* output) {
+        const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= count) return;
+        const uint64_t position = begin + index;
+        const uint32_t hitIndex = phase2ExpansionRunAt(offsets, hitCount, position);
+        const auto& hit = hits[hitIndex];
+        assert(hit.encodedEntryIndex >= 0);
+        const auto& entry = columns.byteMapEntries[hit.encodedEntryIndex];
+        const uint64_t value = position - offsets[hitIndex];
+        assert(value < entry.blobRecordCount);
+        output[index] = {hit.requestIndex,
+            entry.blobRecordOffset + static_cast<uint32_t>(value), hit.remainingEntryIndex};
     }
 
     /// @brief Expand request reverse-index runs into flat owner work.
@@ -5609,11 +5815,15 @@ namespace {
 
     /// @brief Count LocalMemoryValue blobs for each encoded hit.
     ///
+    /// @details
+    /// Windowed evaluation uses a separate wide scan of the per-hit counts.
+    ///
     /// @param columns Resident encoded-map entries.
     /// @param hits Compact encoded-hit candidates.
     /// @param count Number of encoded hits.
     /// @param valueCounts Per-hit LMV-run lengths.
     /// @param counters Shared local-value total.
+    /// @param countValueTotal Whether to accumulate the bounded legacy total.
     /// @return Nothing.
     /// @invariant Every hit names an encoded entry with a non-empty value run.
     __global__ void phase2EvaluationValueCountsKernel(
@@ -5621,7 +5831,7 @@ namespace {
         const gl::gpu::DeviceEvaluationCandidate* hits,
         uint32_t count,
         uint32_t* valueCounts,
-        DeviceEvaluationCounters* counters) {
+        DeviceEvaluationCounters* counters, bool countValueTotal = true) {
         const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= count) return;
         assert(hits[index].encodedEntryIndex >= 0);
@@ -5630,7 +5840,7 @@ namespace {
                 .blobRecordCount;
         assert(run > 0);
         valueCounts[index] = run;
-        atomicAdd(&counters->localValueCount, run);
+        if (countValueTotal) atomicAdd(&counters->localValueCount, run);
     }
 
     /// @brief Expand encoded-hit runs into flat LocalMemoryValue work.
@@ -5658,6 +5868,178 @@ namespace {
                 gl::gpu::DeviceEvaluationValueWork{
                     hit.requestIndex, entry.blobRecordOffset + value,
                     hit.remainingEntryIndex };
+        }
+    }
+
+    /// @brief Measure GPU firing-output requirements before reserving storage.
+    ///
+    /// @details
+    /// Shares the materializer's dependency-independent rule preparation and
+    /// exact transformed byte counts. Later head-verdict rejection may reduce
+    /// output, so the result is a safe reservation bound rather than a firing.
+    ///
+    /// @param columns Frozen semantic projection.
+    /// @param tasks Live task descriptors.
+    /// @param calls Live growth-call descriptors.
+    /// @param events Live request events.
+    /// @param tokens Unique request tokens.
+    /// @param states Completed request-gate states.
+    /// @param values Prepared rule values in this measurement window.
+    /// @param valueCount Number of in-capacity measurement rows.
+    /// @param bounds Output counts for each result column.
+    /// @param markerKeyBegin First marker key included in each record.
+    /// @param markerKeyLimit Maximum marker keys included in each record.
+    /// @return Nothing.
+    /// @invariant No output payload or proof state is modified.
+    __global__ void phase2FiringOutputBoundsKernel(
+        ProjectionSemanticColumns columns,
+        const gl::gpu::DevicePhase2Task* tasks,
+        const gl::gpu::DevicePhase2GrowthCall* calls,
+        const gl::gpu::DeviceAcceptedGrowthEvent* events,
+        const gl::gpu::DeviceOrderedRequestToken* tokens,
+        const gl::gpu::DeviceEvaluationRequestState* states,
+        const gl::gpu::DeviceEvaluationValueWork* values, uint32_t valueCount,
+        gl::gpu::Phase2OutputUsage* bounds,
+        uint32_t markerKeyBegin, uint32_t markerKeyLimit) {
+        const uint32_t valueIndex = blockIdx.x * blockDim.x + threadIdx.x;
+        if (valueIndex >= valueCount) return;
+        bounds[valueIndex] = {};
+        const gl::gpu::DeviceEvaluationValueWork& work = values[valueIndex];
+        const gl::gpu::DeviceEvaluationRequestState& state =
+            states[work.requestIndex];
+        assert(state.active != 0);
+        const gl::gpu::DeviceOrderedRequestToken& token =
+            tokens[work.requestIndex];
+        const gl::gpu::DeviceAcceptedGrowthEvent& event =
+            events[token.eventIndex];
+        const gl::gpu::DevicePhase2GrowthCall& call = calls[event.callIndex];
+        const gl::gpu::DevicePhase2Task& task = tasks[call.taskIndex];
+        assert(task.logicalBlockIndex == state.logicalBlockIndex);
+        const gl::gpu::DeviceLogicalBlockProjection& block =
+            columns.logicalBlocks[state.logicalBlockIndex];
+
+        const gl::gpu::DeviceBlobRecord& blob =
+            columns.blobRecords[work.blobRecordIndex];
+        const char* const lmv = columns.blobBytes + blob.byteOffset;
+        validateProjectedLmv(lmv, blob.byteLength);
+        const gl::NameId lmvValidity = static_cast<gl::NameId>(
+            readProjectedI32(lmv, blob.byteLength, 12));
+        if (!projectedValiditiesComparable(
+                columns, block, state.consensusValidityId, lmvValidity)) return;
+        const gl::NameId hitValidity = projectedDeeperValidity(
+            columns, block, state.consensusValidityId, lmvValidity);
+        if (hitValidity != state.consensusValidityId) {
+            for (gl::NameId validity = hitValidity; validity != 0;) {
+                if (findProjectedPodMapEntry(
+                        columns, block,
+                        gl::gpu::DevicePodMapKind::validityFilter,
+                        validity) >= 0) return;
+                const uint32_t nameIndex = block.nameRecordOffset
+                    + static_cast<uint32_t>(validity);
+                assert(nameIndex < block.nameRecordOffset + block.nameRecordCount);
+                validity = columns.nameRecords[nameIndex].parentId;
+            }
+        }
+
+        uint32_t flags = 0;
+        if (static_cast<uint8_t>(lmv[16]) != 0)
+            flags |= gl::gpu::deviceFiringMarker;
+        if (static_cast<uint8_t>(lmv[17]) != 0)
+            flags |= gl::gpu::deviceFiringProductOfDisintegration;
+        if (static_cast<uint8_t>(lmv[18]) != 0)
+            flags |= gl::gpu::deviceFiringDisintegrationAllowed;
+        if (static_cast<uint8_t>(lmv[19]) != 0)
+            flags |= gl::gpu::deviceFiringOrdisOnly;
+        if (static_cast<uint8_t>(lmv[20]) != 0)
+            flags |= gl::gpu::deviceFiringSubsetExclusion;
+        if (static_cast<uint8_t>(lmv[21]) != 0)
+            flags |= gl::gpu::deviceFiringOrdis2Demand;
+        const bool markerOrDemand = (flags
+            & (gl::gpu::deviceFiringMarker
+                | gl::gpu::deviceFiringOrdis2Demand)) != 0;
+        const bool integrationDemand =
+            (flags & gl::gpu::deviceFiringOrdis2Demand) != 0
+            && readProjectedI32(lmv, blob.byteLength, 8)
+                == gl::gpu::deviceIntegrationJustification;
+        if (markerOrDemand && state.pure == 0 && !integrationDemand) return;
+
+        const gl::gpu::DeviceByteMapEntry& remainingEntry =
+            columns.byteMapEntries[work.remainingEntryIndex];
+        gl::NameId reverseIds[gl::ExecutionParameters::MAX_KEY_SLOTS];
+        const gl::NameId reverseCount = buildProjectedEvaluationReverseMap(
+            columns, block, event, remainingEntry, reverseIds);
+        const int32_t valueId = readProjectedI32(lmv, blob.byteLength, 0);
+        assert(valueId > 0);
+        assert(static_cast<uint32_t>(valueId) < block.ruleStringRecordCount);
+        const gl::gpu::DeviceRuleStringRecord& sourceRecord =
+            columns.ruleStringRecords[
+                block.ruleStringRecordOffset + static_cast<uint32_t>(valueId)];
+        assert(sourceRecord.byteLength > 0);
+        const char* const source =
+            columns.ruleStringBytes + sourceRecord.byteOffset;
+        int32_t maximumIteration = -1;
+        const bool demand = (flags
+            & gl::gpu::deviceFiringOrdis2Demand) != 0;
+        const uint32_t expressionLength = transformProjectedFiringExpression(
+            columns, block, source, sourceRecord.byteLength,
+            reverseIds, reverseCount, nullptr,
+            demand ? &maximumIteration : nullptr);
+        assert(expressionLength > 0);
+        if (demand
+            && maximumIteration > task.maximumIterationNumberVariable) return;
+
+        const bool marker = !demand
+            && (flags & gl::gpu::deviceFiringMarker) != 0;
+        const bool head = !demand && !marker;
+        auto& output = bounds[valueIndex];
+        output.columns[0] = 1;
+        output.columns[1] = expressionLength;
+        if (!marker) output.columns[2] = mergeProjectedFiringLevels(
+            columns, block, event, lmv, blob.byteLength, head, nullptr);
+        if (head) output.columns[3] = static_cast<uint32_t>(event.count) + 1;
+        if (marker) {
+            const uint32_t levelCount = static_cast<uint32_t>(readProjectedI32(lmv, blob.byteLength, 22));
+            const uint32_t keyCountOffset = 26 + levelCount * sizeof(int32_t);
+            const uint32_t fullKeyCount = static_cast<uint32_t>(readProjectedI32(lmv, blob.byteLength, keyCountOffset));
+            assert(markerKeyBegin <= fullKeyCount);
+            const uint32_t keyCount = min(markerKeyLimit, fullKeyCount - markerKeyBegin);
+            output.columns[4] = keyCount;
+            for (uint32_t index = markerKeyBegin; index < markerKeyBegin + keyCount; ++index) {
+                const int32_t id = readProjectedI32(lmv, blob.byteLength,
+                    keyCountOffset + sizeof(int32_t) + index * sizeof(int32_t));
+                assert(id > 0 && static_cast<uint32_t>(id) < block.ruleStringRecordCount);
+                const auto& key = columns.ruleStringRecords[block.ruleStringRecordOffset + id];
+                output.columns[1] += transformProjectedFiringExpression(columns, block,
+                    columns.ruleStringBytes + key.byteOffset, key.byteLength,
+                    reverseIds, reverseCount, nullptr, nullptr);
+            }
+            const uint32_t remainingOffset = keyCountOffset + sizeof(int32_t)
+                + fullKeyCount * sizeof(int32_t);
+            const uint32_t remainingCount = static_cast<uint32_t>(readProjectedI32(lmv, blob.byteLength, remainingOffset));
+            for (uint32_t index = 0; index < remainingCount; ++index) {
+                const int32_t id = readProjectedI32(lmv, blob.byteLength,
+                    remainingOffset + sizeof(int32_t) + index * sizeof(int32_t));
+                bool unique = true;
+                for (uint32_t previous = 0; previous < index; ++previous) {
+                    if (id == readProjectedI32(lmv, blob.byteLength,
+                            remainingOffset + sizeof(int32_t) + previous * sizeof(int32_t))) {
+                        unique = false;
+                        break;
+                    }
+                }
+                if (unique) ++output.columns[5];
+            }
+            uint32_t open = 0;
+            while (open < sourceRecord.byteLength && source[open] != '[') ++open;
+            uint32_t begin = open + 1;
+            for (uint32_t index = begin; index < sourceRecord.byteLength; ++index) {
+                if (source[index] != ',' && source[index] != ']') continue;
+                if (index > begin && !(index - begin == 6
+                        && projectionBytesEqual(source + begin, "marker", 6)))
+                    ++output.columns[6];
+                begin = index + 1;
+                if (source[index] == ']') break;
+            }
         }
     }
 
@@ -5712,7 +6094,8 @@ namespace {
         uint32_t markerRemainingArgCapacity,
         gl::gpu::DeviceEvaluationByteSlice* markerArgs,
         uint32_t markerArgCapacity,
-        DeviceEvaluationCounters* counters) {
+        DeviceEvaluationCounters* counters, uint32_t markerKeyBegin = 0,
+        uint32_t markerKeyLimit = ~uint32_t{0}) {
         const uint32_t valueIndex = blockIdx.x * blockDim.x + threadIdx.x;
         if (valueIndex >= valueCount) return;
         const gl::gpu::DeviceEvaluationValueWork& work = values[valueIndex];
@@ -5768,9 +6151,11 @@ namespace {
         const bool markerOrDemand = (flags
             & (gl::gpu::deviceFiringMarker
                 | gl::gpu::deviceFiringOrdis2Demand)) != 0;
-        const bool inOrBranch = projectedNameContains(
-            columns, block, hitValidity, "_boundary_orint_", 16);
-        if (markerOrDemand && state.pure == 0 && !inOrBranch) return;
+        const bool integrationDemand =
+            (flags & gl::gpu::deviceFiringOrdis2Demand) != 0
+            && readProjectedI32(lmv, blob.byteLength, 8)
+                == gl::gpu::deviceIntegrationJustification;
+        if (markerOrDemand && state.pure == 0 && !integrationDemand) return;
 
         const gl::gpu::DeviceByteMapEntry& remainingEntry =
             columns.byteMapEntries[work.remainingEntryIndex];
@@ -5841,6 +6226,9 @@ namespace {
             columns, block, source, sourceRecord.byteLength,
             reverseIds, reverseCount, generatedBytes + byteOffset, nullptr);
         assert(written == expressionLength);
+        if (demand && projectedAncestorKnown(
+                columns, block, generatedBytes + byteOffset,
+                expressionLength, hitValidity)) return;
 
         uint32_t markerKeyOffset = 0;
         uint32_t markerKeyCount = 0;
@@ -5849,6 +6237,11 @@ namespace {
         uint32_t markerArgOffset = 0;
         uint32_t markerArgCount = 0;
         if (head) {
+            if (block.recursionAuxyImplId != 0
+                && readProjectedI32(lmv, blob.byteLength, 4)
+                    == block.recursionAuxyImplId) {
+                flags |= gl::gpu::deviceFiringRecursionHead;
+            }
             bool doNotDisintegrate = (flags
                 & gl::gpu::deviceFiringDisintegrationAllowed) == 0;
             const bool incubatorMode = (block.evaluationFlags
@@ -5897,16 +6290,6 @@ namespace {
                 && (flags & gl::gpu::deviceFiringSubsetExclusion) == 0) {
                 flags |= gl::gpu::deviceFiringAllowOrDisintegration;
             }
-            bool allGood = hitValidity == block.mainValidityId;
-            for (gl::NameId premise = 0;
-                 premise < event.count; ++premise) {
-                const gl::IntEncodedExpr& expression = columns.statements[
-                    block.statementOffset + static_cast<uint32_t>(
-                        event.statementIndices[premise])];
-                if (!projectedAllowedForMail(
-                        columns, block, expression.originalId)) allGood = false;
-            }
-            if (allGood) flags |= gl::gpu::deviceFiringAllGood;
             const bool compressorMode = (block.evaluationFlags
                 & gl::gpu::deviceEvaluationCompressorMode) != 0;
             if (!compressorMode && projectedAncestorKnown(
@@ -5918,10 +6301,6 @@ namespace {
         else if (marker) {
             assert(sourceRecord.compiledCategory
                 != gl::gpu::DeviceCompiledCategory::absent);
-            if (sourceRecord.compiledCategory
-                != gl::gpu::DeviceCompiledCategory::atomic) {
-                flags |= gl::gpu::deviceFiringMarkerNotAtomic;
-            }
 
             const int32_t levelCountSigned = readProjectedI32(
                 lmv, blob.byteLength, 22);
@@ -5931,7 +6310,9 @@ namespace {
             const int32_t keyCountSigned = readProjectedI32(
                 lmv, blob.byteLength, keyCountOffset);
             assert(keyCountSigned >= 0);
-            markerKeyCount = static_cast<uint32_t>(keyCountSigned);
+            const uint32_t fullMarkerKeyCount = static_cast<uint32_t>(keyCountSigned);
+            assert(markerKeyBegin <= fullMarkerKeyCount);
+            markerKeyCount = min(markerKeyLimit, fullMarkerKeyCount - markerKeyBegin);
             if (markerKeyCount > 0) {
                 markerKeyOffset = atomicAdd(
                     &counters->markerKeyCount, markerKeyCount);
@@ -5942,7 +6323,7 @@ namespace {
                     const int32_t keyId = readProjectedI32(
                         lmv, blob.byteLength,
                         keyCountOffset + sizeof(int32_t)
-                            + keyIndex * sizeof(int32_t));
+                            + (markerKeyBegin + keyIndex) * sizeof(int32_t));
                     assert(keyId > 0);
                     assert(static_cast<uint32_t>(keyId)
                         < block.ruleStringRecordCount);
@@ -5974,7 +6355,7 @@ namespace {
 
             const uint32_t remainingCountOffset = keyCountOffset
                 + sizeof(int32_t)
-                + markerKeyCount * sizeof(int32_t);
+                + fullMarkerKeyCount * sizeof(int32_t);
             const int32_t remainingRawCountSigned = readProjectedI32(
                 lmv, blob.byteLength, remainingCountOffset);
             assert(remainingRawCountSigned >= 0);
@@ -6300,7 +6681,6 @@ namespace {
             constexpr uint32_t headBits[] = {
                 gl::gpu::deviceFiringDoNotDisintegrate,
                 gl::gpu::deviceFiringAllowOrDisintegration,
-                gl::gpu::deviceFiringAllGood,
                 gl::gpu::deviceFiringAlreadyKnown
             };
             for (uint32_t bit : headBits) {
@@ -6332,11 +6712,6 @@ namespace {
                 return left.markerRemainingArgCount < right.markerRemainingArgCount
                     ? -1 : 1;
             }
-            const bool av =
-                (left.flags & gl::gpu::deviceFiringMarkerNotAtomic) != 0;
-            const bool bv =
-                (right.flags & gl::gpu::deviceFiringMarkerNotAtomic) != 0;
-            if (av != bv) return av ? 1 : -1;
         }
         return leftIndex < rightIndex ? -1 : (leftIndex == rightIndex ? 0 : 1);
     }
@@ -6559,6 +6934,26 @@ namespace {
             key) >= 0;
     }
 
+    /// @brief Mark the original deactivation verdict on every bounded output.
+    ///
+    /// @details Uses the same immutable predicate as the original GPU cutoff.
+    /// The bit accompanies downloaded headers; it changes no firing content.
+    ///
+    /// @param columns Immutable logical-block projection.
+    /// @param records Complete materialized output headers.
+    /// @param bytes Generated expression bytes referenced by those headers.
+    /// @param count Number of valid output headers.
+    /// @return Nothing.
+    __global__ void markDoomTriggersKernel(ProjectionSemanticColumns columns,
+        gl::gpu::DevicePhase2FiringRecord* records, const char* bytes, uint32_t count) {
+        const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= count) return;
+        auto& record = records[index];
+        record.flags &= ~gl::gpu::deviceFiringDoomTrigger;
+        if (deviceFiringDeactivates(columns, columns.logicalBlocks[record.logicalBlockIndex], record, bytes))
+            record.flags |= gl::gpu::deviceFiringDoomTrigger;
+    }
+
     /// @brief Initialize every logical block to the no-doom sentinel.
     ///
     /// @param doomLines Fixed per-block signed 64-bit output.
@@ -6779,6 +7174,124 @@ namespace {
 
 namespace gl::gpu {
 
+    /// @brief Allocate one card-sized reusable GPU reservation.
+    ///
+    /// @details
+    /// CUDA is initialized before the free-memory query. Metadata allocation
+    /// happens once; subsequent leases reuse this same device allocation.
+    ///
+    /// @param limitBytes Optional test ceiling, zero for automatic sizing.
+    /// @return An initialized pool with no live leases.
+    /// @invariant The working reservation leaves the runtime reserve free.
+    CudaPhase2BlockPool::CudaPhase2BlockPool(uint64_t limitBytes)
+        : metadataArena_(&staticMemory()), owners_(&metadataArena_, &metadataDirty_) {
+        metadataArena_.setPurpose(PoolPurpose::GpuHost);  // pool attribution
+        static_cast<void>(queryCudaDeviceContract());
+        GL_CUDA_ASSERT(cudaFree(nullptr));
+        std::size_t freeBytes = 0, totalBytes = 0;
+        GL_CUDA_ASSERT(cudaMemGetInfo(&freeBytes, &totalBytes));
+        deviceTotalBytes_ = static_cast<uint64_t>(totalBytes);
+        deviceFreeBeforePoolBytes_ = static_cast<uint64_t>(freeBytes);
+        budget_ = makePhase2GpuBudget(freeBytes, totalBytes, limitBytes);
+        for (uint32_t index = 0; index < budget_.blocks; ++index)
+            owners_.push_back(0);
+        GL_CUDA_ASSERT(cudaMalloc(&device_, static_cast<std::size_t>(budget_.bytes)));
+    }
+
+    /// @brief Free the device reservation after all lease owners are gone.
+    ///
+    /// @details
+    /// An outstanding lease would retain a pointer into freed device memory.
+    ///
+    /// @return Nothing.
+    /// @invariant No allocation may outlive its pool.
+    CudaPhase2BlockPool::~CudaPhase2BlockPool() {
+        assert(usedBlocks_ == 0);
+        GL_CUDA_ASSERT(cudaFree(device_));
+    }
+
+    /// @brief Measure the largest currently available contiguous block run.
+    ///
+    /// @details
+    /// Zero is a normal full-pool result that causes the scheduler to drain.
+    ///
+    /// @return Longest free run in physical blocks.
+    /// @invariant The ownership directory is unchanged by the measurement.
+    uint32_t CudaPhase2BlockPool::largestFreeRun() const {
+        uint32_t current = 0, largest = 0;
+        for (int32_t index = 0; index < owners_.size(); ++index) {
+            current = owners_[index] == 0 ? current + 1 : 0;
+            largest = std::max(largest, current);
+        }
+        return largest;
+    }
+
+    /// @brief Reserve a scheduler-admitted contiguous GPU block range.
+    ///
+    /// @details
+    /// Generations are unique across pool instances. Physical placement and
+    /// generation values validate ownership only and never enter proof state.
+    ///
+    /// @param count Positive block count known to fit one free run.
+    /// @return The uniquely identified live lease.
+    /// @invariant No two live leases overlap.
+    Phase2GpuLease CudaPhase2BlockPool::reserveBlocks(uint32_t count) {
+        assert(count > 0 && count <= availableBlocks());
+        uint32_t current = 0, first = budget_.blocks;
+        for (uint32_t index = 0; index < budget_.blocks; ++index) {
+            current = owners_[index] == 0 ? current + 1 : 0;
+            if (current == count) {
+                first = index + 1 - count;
+                break;
+            }
+        }
+        assert(first < budget_.blocks
+            && "GPU block allocation must be preceded by a fitting layout plan");
+        static std::atomic<uint64_t> nextGeneration{1};
+        const uint64_t generation = nextGeneration.fetch_add(1, std::memory_order_relaxed);
+        assert(generation != 0);
+        for (uint32_t index = first; index < first + count; ++index)
+            owners_.setAt(static_cast<int32_t>(index), generation);
+        usedBlocks_ += count;
+        return {first, count, generation};
+    }
+
+    /// @brief Resolve a live lease while checking every owned block.
+    ///
+    /// @details
+    /// The caller may retain this address only until the lease is released.
+    ///
+    /// @param lease Live range from this pool.
+    /// @return Address of its first device byte.
+    /// @invariant Range and generation match the ownership directory.
+    void* CudaPhase2BlockPool::address(const Phase2GpuLease& lease) const {
+        assert(lease.generation != 0 && lease.count > 0);
+        assert(lease.first < budget_.blocks);
+        assert(lease.count <= budget_.blocks - lease.first);
+        for (uint32_t index = lease.first; index < lease.first + lease.count; ++index)
+            assert(owners_[index] == lease.generation);
+        return static_cast<char*>(device_)
+            + static_cast<uint64_t>(lease.first) * kPhase2GpuBlockBytes;
+    }
+
+    /// @brief Recycle a live lease after device work and transfers complete.
+    ///
+    /// @details
+    /// Synchronization prevents a prior owner from writing into reused blocks.
+    /// Double release and foreign generations assert at the address check.
+    ///
+    /// @param lease Live range whose ownership is ending.
+    /// @return Nothing.
+    /// @invariant Released blocks become available together.
+    void CudaPhase2BlockPool::release(const Phase2GpuLease& lease) {
+        static_cast<void>(address(lease));
+        GL_CUDA_ASSERT(cudaDeviceSynchronize());
+        for (uint32_t index = lease.first; index < lease.first + lease.count; ++index)
+            owners_.setAt(static_cast<int32_t>(index), 0);
+        assert(usedBlocks_ >= lease.count);
+        usedBlocks_ -= lease.count;
+    }
+
     /// @brief Query and validate the active CUDA device for the Phase 2 backend.
     ///
     /// @details
@@ -6939,11 +7452,18 @@ namespace gl::gpu {
     /// Every capacity is positive and every CUDA allocation asserts success.
     ///
     /// @param fixedCapacity Immutable device element and byte ceilings.
+    /// @param allocation Optional shared arena; null owns standalone arrays.
     /// @return An empty device buffer owning all declared allocations.
     /// @invariant No method changes an allocation address or capacity.
     CudaPhase2ProjectionBuffer::CudaPhase2ProjectionBuffer(
-        Phase2ProjectionCapacity fixedCapacity)
+        Phase2ProjectionCapacity fixedCapacity, CudaPhase2Arena* allocation)
         : capacity_(fixedCapacity) {
+        ownsDeviceAllocations_ = allocation == nullptr;
+        const auto allocate = [allocation](void** destination, std::size_t bytes) {
+            if (allocation != nullptr) allocation->allocate(destination, bytes);
+            else GL_CUDA_ASSERT(cudaMalloc(destination, bytes));
+        };
+
         static_cast<void>(queryCudaDeviceContract());
         assert(capacity_.logicalBlocks > 0);
         assert(capacity_.statements > 0);
@@ -6991,28 +7511,26 @@ namespace gl::gpu {
             assert(allocationBytes[column] > 0);
             assert(allocationBytes[column]
                 <= std::numeric_limits<std::size_t>::max());
-            GL_CUDA_ASSERT(cudaMalloc(
+            allocate(
                 &deviceColumns_[column],
-                static_cast<std::size_t>(allocationBytes[column])));
+                static_cast<std::size_t>(allocationBytes[column]));
             assert(deviceColumns_[column] != nullptr);
             fixedAllocationBytes_ += allocationBytes[column];
         }
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceResultScratch_, sizeof(DeviceGrowthCandidateProbeResult)));
+        allocate(
+            &deviceResultScratch_, sizeof(DeviceGrowthCandidateProbeResult));
         assert(deviceResultScratch_ != nullptr);
         cudaStream_t deferredUploadStream = nullptr;
         GL_CUDA_ASSERT(cudaStreamCreateWithFlags(
             &deferredUploadStream, cudaStreamNonBlocking));
         assert(deferredUploadStream != nullptr);
         deferredUploadStream_ = reinterpret_cast<void*>(deferredUploadStream);
+        // The pinned staging of the deferred columns is allocated by the first
+        // deferred upload; streamed windows never use it.
         for (uint32_t deferredColumn : kDeferredPhase2Columns) {
             assert(allocationBytes[deferredColumn]
                 <= std::numeric_limits<std::size_t>::max());
-            GL_CUDA_ASSERT(cudaHostAlloc(
-                &deferredHostColumns_[deferredColumn],
-                static_cast<std::size_t>(allocationBytes[deferredColumn]),
-                cudaHostAllocDefault));
-            assert(deferredHostColumns_[deferredColumn] != nullptr);
+            deferredStagingBytes_[deferredColumn] = allocationBytes[deferredColumn];
         }
     }
 
@@ -7025,17 +7543,19 @@ namespace gl::gpu {
     /// @return Nothing.
     CudaPhase2ProjectionBuffer::~CudaPhase2ProjectionBuffer() {
         assert(!phase2UploadPending_);
+        const bool staged = pinnedHostBytes_ != 0;
         for (uint32_t deferredColumn : kDeferredPhase2Columns) {
-            assert(deferredHostColumns_[deferredColumn] != nullptr);
-            GL_CUDA_ASSERT(cudaFreeHost(
-                deferredHostColumns_[deferredColumn]));
+            assert((deferredHostColumns_[deferredColumn] != nullptr) == staged);
+            if (staged)
+                GL_CUDA_ASSERT(cudaFreeHost(
+                    deferredHostColumns_[deferredColumn]));
         }
         assert(deferredUploadStream_ != nullptr);
         GL_CUDA_ASSERT(cudaStreamDestroy(
             reinterpret_cast<cudaStream_t>(deferredUploadStream_)));
-        GL_CUDA_ASSERT(cudaFree(deviceResultScratch_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceResultScratch_));
         for (uint32_t column = kProjectionColumnCount; column > 0; --column)
-            GL_CUDA_ASSERT(cudaFree(deviceColumns_[column - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceColumns_[column - 1]));
     }
 
     /// @brief Copy one host projection's used prefixes into fixed device arrays.
@@ -7052,6 +7572,7 @@ namespace gl::gpu {
     ///            return; unused suffixes are semantically inaccessible.
     void CudaPhase2ProjectionBuffer::upload(
         const Phase2ProjectionArena& hostProjection) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2ProjectionBuffer::upload");
         beginPhase2Upload(hostProjection);
         finishPhase2Upload();
     }
@@ -7062,8 +7583,10 @@ namespace gl::gpu {
     /// Copies filter, growth, and ordering columns synchronously, then queues
     /// evaluation-only rule-string, reverse-map, run-value, and metadata prefixes
     /// through process-owned page-locked staging arrays on a nonblocking CUDA
-    /// stream. Kernels may consume only the early column set until
-    /// `finishPhase2Upload` returns.
+    /// stream. The first deferred upload of a buffer allocates that staging at
+    /// the buffer's full deferred-column capacities
+    /// (D-447). Kernels may consume only the
+    /// early column set until `finishPhase2Upload` returns.
     ///
     /// @param hostProjection Fixed-capacity host image to upload byte-for-byte.
     /// @return Nothing.
@@ -7071,7 +7594,19 @@ namespace gl::gpu {
     ///            remains immutable until `finishPhase2Upload`.
     void CudaPhase2ProjectionBuffer::beginPhase2Upload(
         const Phase2ProjectionArena& hostProjection) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2ProjectionBuffer::beginPhase2Upload");
         assert(!phase2UploadPending_);
+        if (pinnedHostBytes_ == 0) {
+            for (uint32_t deferredColumn : kDeferredPhase2Columns) {
+                assert(deferredHostColumns_[deferredColumn] == nullptr);
+                GL_CUDA_ASSERT(cudaHostAlloc(
+                    &deferredHostColumns_[deferredColumn],
+                    static_cast<std::size_t>(deferredStagingBytes_[deferredColumn]),
+                    cudaHostAllocDefault));
+                assert(deferredHostColumns_[deferredColumn] != nullptr);
+                pinnedHostBytes_ += deferredStagingBytes_[deferredColumn];
+            }
+        }
         const void* hostData[kProjectionColumnCount] = {
             hostProjection.logicalBlocks.data(),
             hostProjection.statements.data(),
@@ -7184,7 +7719,261 @@ namespace gl::gpu {
         phase2UploadPending_ = true;
     }
 
-    /// @brief Join the evaluation-only projection upload stream.
+    /// @brief Begin append uploads into one preallocated complete device image.
+    ///
+    /// @details Only used lengths reset. Host windows may be reclaimed after
+    /// their synchronous append and kernels begin only after final sealing.
+    /// @return Nothing.
+    /// @invariant No prior upload is pending.
+    void CudaPhase2ProjectionBuffer::beginStreamedUpload() {
+        assert(!phase2UploadPending_);
+        std::fill(usedCounts_, usedCounts_ + kProjectionColumnCount, uint32_t(0));
+        streamedUpload_ = true;
+        phase2UploadPending_ = true;
+    }
+
+    /// @brief Upload one complete rebased host window at its assigned offsets.
+    ///
+    /// @details Device allocations and logical work are unchanged. Synchronous
+    /// used-range copies make the source storage reusable when this returns.
+    /// @param source Rebased construction window.
+    /// @param bases Complete-image offsets equal to prior uploaded ends.
+    /// @return Nothing.
+    /// @invariant Every column fits and no semantic kernel runs before finish.
+    void CudaPhase2ProjectionBuffer::appendStreamedUpload(
+        const Phase2ProjectionArena& source,
+        const Phase2ProjectionArena::ShardBases& bases) {
+        assert(phase2UploadPending_ && streamedUpload_
+            && "append requires an active streamed projection upload");
+        const void* hostData[kProjectionColumnCount] = {
+            source.logicalBlocks.data(),
+            source.statements.data(),
+            source.nameRecords.data(),
+            source.nameBytes.data(),
+            source.nameSlots.data(),
+            source.ruleStringRecords.data(),
+            source.ruleStringBytes.data(),
+            source.byteMapViews.data(),
+            source.byteMapEntries.data(),
+            source.byteMapSlots.data(),
+            source.byteKeyBytes.data(),
+            source.blobRecords.data(),
+            source.blobBytes.data(),
+            source.reverseMapViews.data(),
+            source.reverseMapEntries.data(),
+            source.reverseMapSlots.data(),
+            source.reverseKeyBytes.data(),
+            source.reverseOwners.data(),
+            source.podMapViews.data(),
+            source.podMapEntries.data(),
+            source.podMapSlots.data(),
+            source.podRunValues.data(),
+            source.mandatoryStatementKeys.data(),
+            source.metadataBytes.data()
+        };
+        const uint64_t usedCounts[kProjectionColumnCount] = {
+            source.logicalBlocks.size(),
+            source.statements.size(),
+            source.nameRecords.size(),
+            source.nameBytes.size(),
+            source.nameSlots.size(),
+            source.ruleStringRecords.size(),
+            source.ruleStringBytes.size(),
+            source.byteMapViews.size(),
+            source.byteMapEntries.size(),
+            source.byteMapSlots.size(),
+            source.byteKeyBytes.size(),
+            source.blobRecords.size(),
+            source.blobBytes.size(),
+            source.reverseMapViews.size(),
+            source.reverseMapEntries.size(),
+            source.reverseMapSlots.size(),
+            source.reverseKeyBytes.size(),
+            source.reverseOwners.size(),
+            source.podMapViews.size(),
+            source.podMapEntries.size(),
+            source.podMapSlots.size(),
+            source.podRunValues.size(),
+            source.mandatoryStatementKeys.size(),
+            source.metadataBytes.size()
+        };
+        const uint32_t capacities[kProjectionColumnCount] = {
+            capacity_.logicalBlocks, capacity_.statements,
+            capacity_.nameRecords, capacity_.nameBytes, capacity_.nameSlots,
+            capacity_.ruleStringRecords, capacity_.ruleStringBytes,
+            capacity_.byteMapViews, capacity_.byteMapEntries,
+            capacity_.byteMapSlots, capacity_.byteKeyBytes,
+            capacity_.blobRecords, capacity_.blobBytes,
+            capacity_.reverseMapViews, capacity_.reverseMapEntries,
+            capacity_.reverseMapSlots, capacity_.reverseKeyBytes,
+            capacity_.reverseOwners, capacity_.podMapViews,
+            capacity_.podMapEntries, capacity_.podMapSlots,
+            capacity_.podRunValues, capacity_.mandatoryStatementKeys,
+            capacity_.metadataBytes
+        };
+        const uint32_t elementBytes[kProjectionColumnCount] = {
+            sizeof(DeviceLogicalBlockProjection), sizeof(IntEncodedExpr),
+            sizeof(DeviceNameRecord), 1, sizeof(int32_t),
+            sizeof(DeviceRuleStringRecord), 1, sizeof(DeviceByteMapView),
+            sizeof(DeviceByteMapEntry), sizeof(int32_t), 1,
+            sizeof(DeviceBlobRecord), 1, sizeof(DeviceReverseMapView),
+            sizeof(DeviceReverseMapEntry), sizeof(int32_t), 1,
+            sizeof(int32_t), sizeof(DevicePodMapView),
+            sizeof(DevicePodMapEntry), sizeof(int32_t), sizeof(int32_t),
+            sizeof(int64_t), 1
+        };
+        const uint32_t starts[kProjectionColumnCount] = {
+            bases.block,
+            bases.statement,
+            bases.nameRecord,
+            bases.nameByte,
+            bases.nameSlot,
+            bases.ruleRecord,
+            bases.ruleByte,
+            bases.byteView,
+            bases.byteEntry,
+            bases.byteSlot,
+            bases.byteKey,
+            bases.blobRecord,
+            bases.blobByte,
+            bases.reverseView,
+            bases.reverseEntry,
+            bases.reverseSlot,
+            bases.reverseKey,
+            bases.reverseOwner,
+            bases.podView,
+            bases.podEntry,
+            bases.podSlot,
+            bases.podRun,
+            bases.mandatoryKey,
+            bases.metadata
+        };
+        for (uint32_t column = 0; column < kProjectionColumnCount; ++column) {
+            assert(starts[column] == usedCounts_[column]);
+            assert(starts[column] <= capacities[column]);
+            assert(usedCounts[column] <= capacities[column] - starts[column]);
+            if (usedCounts[column] != 0) {
+                const std::size_t offset = std::size_t(starts[column]) * elementBytes[column];
+                const std::size_t bytes = std::size_t(usedCounts[column]) * elementBytes[column];
+                GL_CUDA_ASSERT(cudaMemcpy(static_cast<char*>(deviceColumns_[column]) + offset,
+                    hostData[column], bytes, cudaMemcpyHostToDevice));
+            }
+            usedCounts_[column] += static_cast<uint32_t>(usedCounts[column]);
+        }
+    }
+
+    /// @brief Start the upload thread for one streamed device image.
+    ///
+    /// @details
+    /// `device` must have begun its streamed upload; both references outlive the
+    /// uploader, and the caller touches neither until `finish` returns.
+    ///
+    /// @param device Device image receiving the windows at their bases.
+    /// @param sealing Retained host image receiving each window's sealing data.
+    /// @return An idle uploader.
+    Phase2WindowUploader::Phase2WindowUploader(CudaPhase2ProjectionBuffer& device,
+        Phase2ProjectionArena& sealing)
+        : device_(device), sealing_(sealing) {
+        thread_ = std::thread([this] { work(); });
+    }
+
+    /// @brief Destroy a finished uploader.
+    ///
+    /// @return Nothing.
+    /// @invariant `finish` has joined the thread.
+    Phase2WindowUploader::~Phase2WindowUploader() {
+        assert(finished_ && !thread_.joinable()
+            && "window uploader destroyed before finish");
+    }
+
+    /// @brief Hand one complete window to the upload thread.
+    ///
+    /// @details
+    /// Waits until the previous window is uploaded and retained, takes ownership
+    /// of `window`, wakes the thread and releases the previous window on the
+    /// calling thread.
+    ///
+    /// @param window Adopted window whose references already address their
+    ///        complete-image offsets; non-null.
+    /// @param bases Complete-image column positions of the window's first rows,
+    ///        equal to the ends of every earlier window.
+    /// @return Nothing.
+    /// @invariant `finish` has not been called.
+    void Phase2WindowUploader::submit(std::unique_ptr<Phase2ProjectionArena> window,
+        const Phase2ProjectionArena::ShardBases& bases) {
+        assert(window != nullptr);
+        std::unique_ptr<Phase2ProjectionArena> released;
+        {
+            gl::Phase2TraceScope phase2WaitTrace("GL.Phase2.Projection.UploadWait");
+            std::unique_lock<std::mutex> lock(mutex_);
+            assert(!finished_ && "window submitted after the uploader finished");
+            uploaded_.wait(lock, [this] { return !pending_; });
+            released = std::move(window_);
+            window_ = std::move(window);
+            bases_ = bases;
+            pending_ = true;
+        }
+        ready_.notify_one();
+        gl::Phase2TraceScope phase2ReleaseTrace("GL.Phase2.Projection.Release");
+        released.reset();
+    }
+
+    /// @brief Wait for the last window, release it and join the thread.
+    ///
+    /// @details
+    /// After return the device image holds every submitted window and the
+    /// sealing image their retained data; the caller may seal the upload.
+    ///
+    /// @return Nothing.
+    /// @invariant Called once.
+    void Phase2WindowUploader::finish() {
+        std::unique_ptr<Phase2ProjectionArena> released;
+        {
+            gl::Phase2TraceScope phase2WaitTrace("GL.Phase2.Projection.UploadWait");
+            std::unique_lock<std::mutex> lock(mutex_);
+            assert(!finished_ && "window uploader finished twice");
+            uploaded_.wait(lock, [this] { return !pending_; });
+            released = std::move(window_);
+            finished_ = true;
+        }
+        ready_.notify_one();
+        thread_.join();
+        gl::Phase2TraceScope phase2ReleaseTrace("GL.Phase2.Projection.Release");
+        released.reset();
+    }
+
+    /// @brief Thread body: upload and retain each submitted window in order.
+    ///
+    /// @details
+    /// Waits for a pending window or the finish request; copies the window's used
+    /// column ranges into the device image, appends its retained data to the
+    /// sealing image, clears the pending flag and wakes the submitter. The finish
+    /// request arrives only with no window pending.
+    ///
+    /// @return Nothing.
+    void Phase2WindowUploader::work() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (true) {
+            ready_.wait(lock, [this] { return pending_ || finished_; });
+            if (!pending_) return;
+            const Phase2ProjectionArena& window = *window_;
+            const Phase2ProjectionArena::ShardBases bases = bases_;
+            lock.unlock();
+            {
+                gl::Phase2TraceScope phase2UploadTrace("GL.Phase2.Projection.Upload");
+                device_.appendStreamedUpload(window, bases);
+            }
+            {
+                gl::Phase2TraceScope phase2SealingTrace("GL.Phase2.Projection.SealingCopy");
+                sealing_.appendSealingProjection(window, bases);
+            }
+            lock.lock();
+            pending_ = false;
+            uploaded_.notify_one();
+        }
+    }
+
+    /// @brief Seal a completed deferred or streamed projection upload.
     ///
     /// @details
     /// Synchronizes the process-owned nonblocking stream after independent host
@@ -7193,14 +7982,16 @@ namespace gl::gpu {
     /// first semantic kernel starts.
     ///
     /// @return Nothing.
-    /// @invariant Exactly one `beginPhase2Upload` is pending on entry.
+    /// @invariant Exactly one deferred or streamed upload is pending on entry.
     void CudaPhase2ProjectionBuffer::finishPhase2Upload() {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2ProjectionBuffer::finishPhase2Upload");
         assert(phase2UploadPending_);
         const cudaStream_t deferredUploadStream =
             reinterpret_cast<cudaStream_t>(deferredUploadStream_);
         assert(deferredUploadStream != nullptr);
         GL_CUDA_ASSERT(cudaStreamSynchronize(deferredUploadStream));
         phase2UploadPending_ = false;
+        streamedUpload_ = false;
     }
 
     /// @brief Hash the uploaded projection bytes on the CUDA device.
@@ -7401,11 +8192,18 @@ namespace gl::gpu {
     /// stumps, and one checksum word. No later method reallocates these arrays.
     ///
     /// @param fixedCapacity Immutable device task-column element ceilings.
+    /// @param allocation Optional shared arena; null owns standalone arrays.
     /// @return An empty device task buffer owning all declared allocations.
     /// @invariant No method changes an allocation address or capacity.
     CudaPhase2TaskBuffer::CudaPhase2TaskBuffer(
-        Phase2TaskProjectionCapacity fixedCapacity)
+        Phase2TaskProjectionCapacity fixedCapacity, CudaPhase2Arena* allocation)
         : capacity_(fixedCapacity) {
+        ownsDeviceAllocations_ = allocation == nullptr;
+        const auto allocate = [allocation](void** destination, std::size_t bytes) {
+            if (allocation != nullptr) allocation->allocate(destination, bytes);
+            else GL_CUDA_ASSERT(cudaMalloc(destination, bytes));
+        };
+
         static_cast<void>(queryCudaDeviceContract());
         assert(capacity_.tasks > 0);
         assert(capacity_.batches > 0);
@@ -7425,13 +8223,13 @@ namespace gl::gpu {
             assert(allocationBytes[column] > 0);
             assert(allocationBytes[column]
                 <= std::numeric_limits<std::size_t>::max());
-            GL_CUDA_ASSERT(cudaMalloc(
+            allocate(
                 &deviceColumns_[column],
-                static_cast<std::size_t>(allocationBytes[column])));
+                static_cast<std::size_t>(allocationBytes[column]));
             assert(deviceColumns_[column] != nullptr);
             fixedAllocationBytes_ += allocationBytes[column];
         }
-        GL_CUDA_ASSERT(cudaMalloc(&deviceChecksum_, sizeof(uint64_t)));
+        allocate(&deviceChecksum_, sizeof(uint64_t));
         assert(deviceChecksum_ != nullptr);
     }
 
@@ -7443,9 +8241,9 @@ namespace gl::gpu {
     ///
     /// @return Nothing.
     CudaPhase2TaskBuffer::~CudaPhase2TaskBuffer() {
-        GL_CUDA_ASSERT(cudaFree(deviceChecksum_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceChecksum_));
         for (uint32_t column = kTaskColumnCount; column > 0; --column)
-            GL_CUDA_ASSERT(cudaFree(deviceColumns_[column - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceColumns_[column - 1]));
     }
 
     /// @brief Copy one host task image's used prefixes into fixed device arrays.
@@ -7461,6 +8259,7 @@ namespace gl::gpu {
     ///            return; unused suffixes are semantically inaccessible.
     void CudaPhase2TaskBuffer::upload(
         const Phase2TaskProjectionArena& hostTasks) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2TaskBuffer::upload");
         const void* hostData[kTaskColumnCount] = {
             hostTasks.tasks.data(), hostTasks.batches.data(),
             hostTasks.terms.data(), hostTasks.stumps.data()
@@ -7545,11 +8344,18 @@ namespace gl::gpu {
     /// shared temporary storage.
     ///
     /// @param fixedCapacity Immutable filter/sort ceilings.
+    /// @param allocation Optional shared arena; null owns standalone arrays.
     /// @return An empty device filter/sort owner.
     /// @invariant No method changes an allocation address or capacity.
     CudaPhase2FilterSortBuffer::CudaPhase2FilterSortBuffer(
-        Phase2FilterScheduleCapacity fixedCapacity)
+        Phase2FilterScheduleCapacity fixedCapacity, CudaPhase2Arena* allocation)
         : capacity_(fixedCapacity) {
+        ownsDeviceAllocations_ = allocation == nullptr;
+        const auto allocate = [allocation](void** destination, std::size_t bytes) {
+            if (allocation != nullptr) allocation->allocate(destination, bytes);
+            else GL_CUDA_ASSERT(cudaMalloc(destination, bytes));
+        };
+
         static_cast<void>(queryCudaDeviceContract());
         assert(capacity_.calls > 0);
         assert(capacity_.examinedRows > 0);
@@ -7567,49 +8373,50 @@ namespace gl::gpu {
         GL_CUDA_ASSERT(cub::DeviceScan::ExclusiveSum(
             nullptr, scanTemporaryBytes_, nullCounts, nullOffsets,
             static_cast<int>(capacity_.calls)));
-        GL_CUDA_ASSERT(cub::DeviceRadixSort::SortKeys(
+        GL_CUDA_ASSERT(cub::DeviceSegmentedRadixSort::SortKeys(
             nullptr, sortTemporaryBytes_, nullKeysInput, nullKeysOutput,
-            static_cast<int>(capacity_.retainedRows)));
+            static_cast<int>(capacity_.retainedRows),
+            static_cast<int>(capacity_.calls), nullOffsets, nullOffsets));
         assert(scanTemporaryBytes_ > 0);
         assert(sortTemporaryBytes_ > 0);
 
-        GL_CUDA_ASSERT(cudaMalloc(
+        allocate(
             &deviceCalls_, static_cast<std::size_t>(capacity_.calls)
-                * sizeof(DevicePhase2FilterCall)));
-        GL_CUDA_ASSERT(cudaMalloc(
+                * sizeof(DevicePhase2FilterCall));
+        allocate(
             &deviceClasses_, static_cast<std::size_t>(capacity_.calls)
-                * sizeof(DevicePhase2FilterCall)));
-        GL_CUDA_ASSERT(cudaMalloc(
+                * sizeof(DevicePhase2FilterCall));
+        allocate(
             &deviceCallClassIndices_,
-            static_cast<std::size_t>(capacity_.calls) * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(capacity_.calls) * sizeof(uint32_t));
+        allocate(
             &deviceCounts_, static_cast<std::size_t>(capacity_.calls)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
+                * sizeof(uint32_t));
+        allocate(
             &deviceOffsets_, static_cast<std::size_t>(capacity_.calls)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
+                * sizeof(uint32_t));
+        allocate(
             &deviceClassCounts_, static_cast<std::size_t>(capacity_.calls)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceClassOffsets_, static_cast<std::size_t>(capacity_.calls)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
+                * sizeof(uint32_t));
+        allocate(
+            &deviceClassOffsets_, (static_cast<std::size_t>(capacity_.calls) + 1)
+                * sizeof(uint32_t));
+        allocate(
             &deviceKeysInput_, static_cast<std::size_t>(capacity_.retainedRows)
-                * sizeof(uint64_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
+                * sizeof(uint64_t));
+        allocate(
             &deviceKeysOutput_, static_cast<std::size_t>(capacity_.retainedRows)
-                * sizeof(uint64_t)));
+                * sizeof(uint64_t));
         const std::size_t temporaryBytes = scanTemporaryBytes_
             > sortTemporaryBytes_ ? scanTemporaryBytes_ : sortTemporaryBytes_;
         fixedAllocationBytes_ =
             static_cast<uint64_t>(capacity_.calls)
                 * sizeof(DevicePhase2FilterCall) * 2
-            + static_cast<uint64_t>(capacity_.calls) * sizeof(uint32_t) * 5
+            + static_cast<uint64_t>(capacity_.calls) * sizeof(uint32_t) * 5 + sizeof(uint32_t)
             + static_cast<uint64_t>(capacity_.retainedRows)
                 * sizeof(uint64_t) * 2
             + static_cast<uint64_t>(temporaryBytes);
-        GL_CUDA_ASSERT(cudaMalloc(&deviceTemporary_, temporaryBytes));
+        allocate(&deviceTemporary_, temporaryBytes);
         assert(deviceCalls_ != nullptr);
         assert(deviceClasses_ != nullptr);
         assert(deviceCallClassIndices_ != nullptr);
@@ -7631,16 +8438,16 @@ namespace gl::gpu {
     ///
     /// @return Nothing.
     CudaPhase2FilterSortBuffer::~CudaPhase2FilterSortBuffer() {
-        GL_CUDA_ASSERT(cudaFree(deviceTemporary_));
-        GL_CUDA_ASSERT(cudaFree(deviceKeysOutput_));
-        GL_CUDA_ASSERT(cudaFree(deviceKeysInput_));
-        GL_CUDA_ASSERT(cudaFree(deviceClassOffsets_));
-        GL_CUDA_ASSERT(cudaFree(deviceClassCounts_));
-        GL_CUDA_ASSERT(cudaFree(deviceOffsets_));
-        GL_CUDA_ASSERT(cudaFree(deviceCounts_));
-        GL_CUDA_ASSERT(cudaFree(deviceCallClassIndices_));
-        GL_CUDA_ASSERT(cudaFree(deviceClasses_));
-        GL_CUDA_ASSERT(cudaFree(deviceCalls_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceTemporary_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceKeysOutput_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceKeysInput_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceClassOffsets_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceClassCounts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceOffsets_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCounts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCallClassIndices_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceClasses_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCalls_));
     }
 
     /// @brief Filter and sort every scheduled call on the CUDA device.
@@ -7654,11 +8461,12 @@ namespace gl::gpu {
     /// @param projection Uploaded resident semantic projection.
     /// @param schedule Host schedule in processor call order.
     /// @return Total retained statement rows across all calls.
-    /// @invariant Sorted keys encode class, decoded-name rank, and ascending
+    /// @invariant Sorted keys encode full-width decoded-name rank and ascending
     ///            statement index; every original call maps to its exact span.
     uint32_t CudaPhase2FilterSortBuffer::filterAndSort(
         const CudaPhase2ProjectionBuffer& projection,
         const Phase2FilterScheduleArena& schedule) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2FilterSortBuffer::filterAndSort");
         assert(schedule.calls.size() <= capacity_.calls);
         assert(schedule.classes.size() <= capacity_.calls);
         assert(schedule.callClassIndices.size() == schedule.calls.size());
@@ -7763,6 +8571,10 @@ namespace gl::gpu {
         assert(lastOffset <= capacity_.retainedRows);
         assert(lastCount <= capacity_.retainedRows - lastOffset);
         usedRetainedRows_ = lastOffset + lastCount;
+        GL_CUDA_ASSERT(cudaMemcpy(
+            static_cast<uint32_t*>(deviceClassOffsets_) + usedClasses_,
+            &usedRetainedRows_, sizeof(usedRetainedRows_),
+            cudaMemcpyHostToDevice));
         constexpr uint32_t expandThreads = 256;
         phase2FilterExpandClassSpansKernel<<<
             (usedCalls_ + expandThreads - 1) / expandThreads,
@@ -7783,11 +8595,14 @@ namespace gl::gpu {
             static_cast<const uint32_t*>(deviceClassOffsets_),
             static_cast<uint64_t*>(deviceKeysInput_));
         GL_CUDA_ASSERT(cudaGetLastError());
-        GL_CUDA_ASSERT(cub::DeviceRadixSort::SortKeys(
+        GL_CUDA_ASSERT(cub::DeviceSegmentedRadixSort::SortKeys(
             deviceTemporary_, sortTemporaryBytes_,
             static_cast<const uint64_t*>(deviceKeysInput_),
             static_cast<uint64_t*>(deviceKeysOutput_),
-            static_cast<int>(usedRetainedRows_)));
+            static_cast<int>(usedRetainedRows_),
+            static_cast<int>(usedClasses_),
+            static_cast<const uint32_t*>(deviceClassOffsets_),
+            static_cast<const uint32_t*>(deviceClassOffsets_) + 1));
         GL_CUDA_ASSERT(cudaDeviceSynchronize());
         return usedRetainedRows_;
     }
@@ -7827,7 +8642,7 @@ namespace gl::gpu {
         return usedCalls_;
     }
 
-    /// @brief Download the most recent globally sorted composite keys.
+    /// @brief Download the most recent class-segmented composite keys.
     ///
     /// @details
     /// Copies exactly the compact retained prefix. A zero-result sweep returns
@@ -7849,6 +8664,56 @@ namespace gl::gpu {
         return usedRetainedRows_;
     }
 
+    /// @brief Keep predicate of the device cutoff: a row survives while its
+    ///        growth call's keep flag is nonzero.
+    /// @brief Copy device words into host-mapped memory.
+    ///
+    /// @details
+    /// One block strides over the words; a system-scope fence orders the host
+    /// writes before any later event on the stream completes.
+    ///
+    /// @param source Device words.
+    /// @param words Number of words.
+    /// @param destination Device view of host-mapped memory.
+    /// @return Nothing.
+    /// @invariant Launched with one block.
+    __global__ void phase2PublishWordsKernel(const uint32_t* source, uint32_t words,
+        uint32_t* destination) {
+        for (uint32_t word = threadIdx.x; word < words; word += blockDim.x)
+            destination[word] = source[word];
+        __threadfence_system();
+    }
+
+    /// @brief Copy device words into host-mapped memory on the compute engine.
+    ///
+    /// @details
+    /// Resolves the device view of the pinned destination and launches
+    /// `phase2PublishWordsKernel` with one block on the default stream, so the
+    /// read-back stays on the compute engine.
+    ///
+    /// @param source Device words, 4-byte aligned.
+    /// @param words Number of words; positive.
+    /// @param mappedDestination Pinned host memory, 4-byte aligned.
+    /// @return Nothing.
+    /// @invariant Visible to the host after a later event on the default stream.
+    void publishDeviceWords(const void* source, uint32_t words, void* mappedDestination) {
+        assert(source != nullptr && mappedDestination != nullptr && words > 0);
+        assert(reinterpret_cast<uintptr_t>(source) % alignof(uint32_t) == 0);
+        assert(reinterpret_cast<uintptr_t>(mappedDestination) % alignof(uint32_t) == 0);
+        void* deviceDestination = nullptr;
+        GL_CUDA_ASSERT(cudaHostGetDevicePointer(&deviceDestination, mappedDestination, 0));
+        phase2PublishWordsKernel<<<1, 64>>>(static_cast<const uint32_t*>(source), words,
+            static_cast<uint32_t*>(deviceDestination));
+        GL_CUDA_ASSERT(cudaGetLastError());
+    }
+
+    struct KeepGrowthNodeByCall {
+        const uint8_t* keepByCall;
+        __host__ __device__ bool operator()(const DeviceGrowthNode& node) const {
+            return keepByCall[node.callIndex] != 0;
+        }
+    };
+
     /// @brief Allocate every measured request-growth array once.
     ///
     /// @details
@@ -7863,11 +8728,18 @@ namespace gl::gpu {
     /// is established.
     ///
     /// @param fixedCapacity Immutable frontier, event, and request ceilings.
+    /// @param allocation Optional shared arena; null owns standalone arrays.
     /// @return An empty device growth owner.
     /// @invariant No later operation changes an allocation address or capacity.
     CudaPhase2GrowthBuffer::CudaPhase2GrowthBuffer(
-        Phase2GrowthCapacity fixedCapacity)
+        Phase2GrowthCapacity fixedCapacity, CudaPhase2Arena* allocation)
         : capacity_(fixedCapacity) {
+        ownsDeviceAllocations_ = allocation == nullptr;
+        const auto allocate = [allocation](void** destination, std::size_t bytes) {
+            if (allocation != nullptr) allocation->allocate(destination, bytes);
+            else GL_CUDA_ASSERT(cudaMalloc(destination, bytes));
+        };
+
         static_cast<void>(queryCudaDeviceContract());
         assert(capacity_.calls > 0);
         assert(capacity_.retainedRows > 0);
@@ -7878,9 +8750,14 @@ namespace gl::gpu {
         assert(capacity_.prefixVariableValues > 0);
         assert(capacity_.prefixSecondaryValues > 0);
         assert(capacity_.candidateWindowRecords > 0);
+        assert(capacity_.frontierStoreRecords >= capacity_.frontierRecords);
         const uint64_t callBytes = static_cast<uint64_t>(capacity_.calls)
             * sizeof(DevicePhase2GrowthCall);
+        const uint64_t frontierStoreBytes = static_cast<uint64_t>(
+            capacity_.frontierStoreRecords) * sizeof(DeviceGrowthNode);
+        const uint64_t keepByCallBytes = capacity_.calls;
         const uint64_t maskBytes = capacity_.retainedRows;
+        const uint64_t statementMaskBytes = maskBytes * sizeof(uint32_t);
         const uint64_t frontierBytes = static_cast<uint64_t>(
             capacity_.frontierRecords) * sizeof(DeviceGrowthNode);
         const uint64_t prefixBytes = static_cast<uint64_t>(
@@ -7911,7 +8788,7 @@ namespace gl::gpu {
         const uint64_t taskSubkeyCountBytes = static_cast<uint64_t>(
             capacity_.calls) * sizeof(uint32_t);
         assert(callBytes <= std::numeric_limits<std::size_t>::max());
-        assert(maskBytes <= std::numeric_limits<std::size_t>::max());
+        assert(statementMaskBytes <= std::numeric_limits<std::size_t>::max());
         assert(frontierBytes <= std::numeric_limits<std::size_t>::max());
         assert(prefixBytes <= std::numeric_limits<std::size_t>::max());
         assert(prefixPayloadBytes <= std::numeric_limits<std::size_t>::max());
@@ -7968,78 +8845,89 @@ namespace gl::gpu {
             capacity_.candidateWindowRecords));
         selectionTemporaryBytes_ = std::max(
             selectionTemporaryBytes_, requestedTemporaryBytes);
+        requestedTemporaryBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceSelect::If(
+            nullptr, requestedTemporaryBytes,
+            static_cast<const DeviceGrowthNode*>(nullptr),
+            static_cast<DeviceGrowthNode*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            capacity_.frontierStoreRecords,
+            KeepGrowthNodeByCall{nullptr}));
+        selectionTemporaryBytes_ = std::max(
+            selectionTemporaryBytes_, requestedTemporaryBytes);
         assert(selectionTemporaryBytes_ > 0);
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceCalls_, static_cast<std::size_t>(callBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceViewMasks_, static_cast<std::size_t>(maskBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceSuffixMasks_, static_cast<std::size_t>(maskBytes)));
+        allocate(
+            &deviceCalls_, static_cast<std::size_t>(callBytes));
+        allocate(
+            &deviceViewMasks_, static_cast<std::size_t>(statementMaskBytes));
+        allocate(
+            &deviceSuffixMasks_, static_cast<std::size_t>(maskBytes));
         for (uint32_t frontier = 0; frontier < 2; ++frontier) {
-            GL_CUDA_ASSERT(cudaMalloc(
+            allocate(
                 &deviceFrontiers_[frontier],
-                static_cast<std::size_t>(frontierBytes)));
+                static_cast<std::size_t>(frontierStoreBytes));
             assert(deviceFrontiers_[frontier] != nullptr);
         }
-        GL_CUDA_ASSERT(cudaMalloc(
-            &devicePrefixes_, static_cast<std::size_t>(prefixBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+        allocate(&deviceKeepByCall_, static_cast<std::size_t>(keepByCallBytes));
+        allocate(
+            &devicePrefixes_, static_cast<std::size_t>(prefixBytes));
+        allocate(
             &devicePrefixPayload_,
-            static_cast<std::size_t>(prefixPayloadBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(prefixPayloadBytes));
+        allocate(
             &devicePrefixVariables_,
-            static_cast<std::size_t>(prefixVariableBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(prefixVariableBytes));
+        allocate(
             &devicePrefixSecondary_,
-            static_cast<std::size_t>(prefixSecondaryBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(prefixSecondaryBytes));
+        allocate(
             &deviceShortNodeFlags_,
-            static_cast<std::size_t>(nodeFlagBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(nodeFlagBytes));
+        allocate(
             &deviceCooperativeNodeFlags_,
-            static_cast<std::size_t>(nodeFlagBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(nodeFlagBytes));
+        allocate(
             &deviceShortNodeIndices_,
-            static_cast<std::size_t>(nodeIndexBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(nodeIndexBytes));
+        allocate(
             &deviceCooperativeNodeIndices_,
-            static_cast<std::size_t>(nodeIndexBytes)));
+            static_cast<std::size_t>(nodeIndexBytes));
         for (uint32_t buffer = 0; buffer < 2; ++buffer) {
-            GL_CUDA_ASSERT(cudaMalloc(
+            allocate(
                 &deviceCanonicalNodeIndices_[buffer],
-                static_cast<std::size_t>(nodeIndexBytes)));
-            GL_CUDA_ASSERT(cudaMalloc(
+                static_cast<std::size_t>(nodeIndexBytes));
+            allocate(
                 &deviceNodeSortKeys_[buffer],
-                static_cast<std::size_t>(nodeSortKeyBytes)));
+                static_cast<std::size_t>(nodeSortKeyBytes));
         }
-        GL_CUDA_ASSERT(cudaMalloc(
+        allocate(
             &deviceNodeAttemptStarts_,
-            static_cast<std::size_t>(nodeAttemptOrdinalBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(nodeAttemptOrdinalBytes));
+        allocate(
             &deviceNodeAttemptEnds_,
-            static_cast<std::size_t>(nodeAttemptOrdinalBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(nodeAttemptOrdinalBytes));
+        allocate(
             &deviceCandidateAttempts_,
-            static_cast<std::size_t>(candidateAttemptBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(candidateAttemptBytes));
+        allocate(
             &deviceCandidateFlags_,
-            static_cast<std::size_t>(candidateFlagBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(candidateFlagBytes));
+        allocate(
             &deviceCandidateSurvivorIndices_,
-            static_cast<std::size_t>(candidateSurvivorBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceSelectionTemporary_, selectionTemporaryBytes_));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(candidateSurvivorBytes));
+        allocate(
+            &deviceSelectionTemporary_, selectionTemporaryBytes_);
+        allocate(
             &deviceAcceptedEvents_,
-            static_cast<std::size_t>(acceptedEventBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(acceptedEventBytes));
+        allocate(
             &deviceRawRequests_,
-            static_cast<std::size_t>(rawRequestBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
+            static_cast<std::size_t>(rawRequestBytes));
+        allocate(
             &deviceTaskSubkeyCounts_,
-            static_cast<std::size_t>(taskSubkeyCountBytes)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceCounters_, sizeof(DeviceGrowthCounters)));
+            static_cast<std::size_t>(taskSubkeyCountBytes));
+        allocate(
+            &deviceCounters_, sizeof(DeviceGrowthCounters));
         assert(deviceCalls_ != nullptr);
         assert(deviceViewMasks_ != nullptr);
         assert(deviceSuffixMasks_ != nullptr);
@@ -8079,33 +8967,34 @@ namespace gl::gpu {
     ///
     /// @return Nothing.
     CudaPhase2GrowthBuffer::~CudaPhase2GrowthBuffer() {
-        GL_CUDA_ASSERT(cudaFree(deviceCounters_));
-        GL_CUDA_ASSERT(cudaFree(deviceTaskSubkeyCounts_));
-        GL_CUDA_ASSERT(cudaFree(deviceRawRequests_));
-        GL_CUDA_ASSERT(cudaFree(deviceAcceptedEvents_));
-        GL_CUDA_ASSERT(cudaFree(deviceSelectionTemporary_));
-        GL_CUDA_ASSERT(cudaFree(deviceCandidateSurvivorIndices_));
-        GL_CUDA_ASSERT(cudaFree(deviceCandidateFlags_));
-        GL_CUDA_ASSERT(cudaFree(deviceCandidateAttempts_));
-        GL_CUDA_ASSERT(cudaFree(deviceNodeAttemptEnds_));
-        GL_CUDA_ASSERT(cudaFree(deviceNodeAttemptStarts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCounters_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceTaskSubkeyCounts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceRawRequests_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceAcceptedEvents_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceSelectionTemporary_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCandidateSurvivorIndices_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCandidateFlags_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCandidateAttempts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceNodeAttemptEnds_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceNodeAttemptStarts_));
         for (uint32_t buffer = 2; buffer > 0; --buffer) {
-            GL_CUDA_ASSERT(cudaFree(deviceNodeSortKeys_[buffer - 1]));
-            GL_CUDA_ASSERT(cudaFree(deviceCanonicalNodeIndices_[buffer - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceNodeSortKeys_[buffer - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCanonicalNodeIndices_[buffer - 1]));
         }
-        GL_CUDA_ASSERT(cudaFree(deviceCooperativeNodeIndices_));
-        GL_CUDA_ASSERT(cudaFree(deviceShortNodeIndices_));
-        GL_CUDA_ASSERT(cudaFree(deviceCooperativeNodeFlags_));
-        GL_CUDA_ASSERT(cudaFree(deviceShortNodeFlags_));
-        GL_CUDA_ASSERT(cudaFree(devicePrefixSecondary_));
-        GL_CUDA_ASSERT(cudaFree(devicePrefixVariables_));
-        GL_CUDA_ASSERT(cudaFree(devicePrefixPayload_));
-        GL_CUDA_ASSERT(cudaFree(devicePrefixes_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCooperativeNodeIndices_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceShortNodeIndices_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCooperativeNodeFlags_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceShortNodeFlags_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(devicePrefixSecondary_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(devicePrefixVariables_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(devicePrefixPayload_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(devicePrefixes_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceKeepByCall_));
         for (uint32_t frontier = 2; frontier > 0; --frontier)
-            GL_CUDA_ASSERT(cudaFree(deviceFrontiers_[frontier - 1]));
-        GL_CUDA_ASSERT(cudaFree(deviceSuffixMasks_));
-        GL_CUDA_ASSERT(cudaFree(deviceViewMasks_));
-        GL_CUDA_ASSERT(cudaFree(deviceCalls_));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceFrontiers_[frontier - 1]));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceSuffixMasks_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceViewMasks_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCalls_));
     }
 
     /// @brief Run bulk normalized-key request frontier growth.
@@ -8235,7 +9124,7 @@ namespace gl::gpu {
             static_cast<const uint32_t*>(filter.deviceCounts_),
             static_cast<const uint32_t*>(filter.deviceOffsets_),
             static_cast<const uint64_t*>(filter.deviceKeysOutput_),
-            static_cast<uint8_t*>(deviceViewMasks_),
+            static_cast<uint32_t*>(deviceViewMasks_),
             static_cast<uint8_t*>(deviceSuffixMasks_));
         GL_CUDA_ASSERT(cudaGetLastError());
 
@@ -8267,7 +9156,7 @@ namespace gl::gpu {
                 static_cast<const uint32_t*>(filter.deviceCounts_),
                 static_cast<const uint32_t*>(filter.deviceOffsets_),
                 static_cast<const uint64_t*>(filter.deviceKeysOutput_),
-                static_cast<const uint8_t*>(deviceViewMasks_),
+                static_cast<const uint32_t*>(deviceViewMasks_),
                 parameters, seedDepth,
                 static_cast<DeviceGrowthNode*>(deviceFrontiers_[0]),
                 static_cast<DeviceAcceptedGrowthEvent*>(deviceAcceptedEvents_),
@@ -8407,7 +9296,7 @@ namespace gl::gpu {
                             static_cast<const uint32_t*>(filter.deviceOffsets_),
                             static_cast<const uint64_t*>(
                                 filter.deviceKeysOutput_),
-                            static_cast<const uint8_t*>(deviceViewMasks_),
+                            static_cast<const uint32_t*>(deviceViewMasks_),
                             static_cast<const uint8_t*>(deviceSuffixMasks_),
                             parameters,
                             static_cast<const DeviceGrowthNode*>(
@@ -8488,7 +9377,9 @@ namespace gl::gpu {
                         static_cast<const DevicePhase2GrowthCall*>(
                             deviceCalls_),
                         static_cast<const uint32_t*>(filter.deviceCounts_),
-                        static_cast<uint64_t*>(deviceNodeSortKeys_[0]));
+                        static_cast<uint64_t*>(deviceNodeSortKeys_[0]),
+                        static_cast<const DeviceGrowthPrefix*>(devicePrefixes_),
+                        static_cast<DeviceGrowthCounters*>(deviceCounters_));
                     GL_CUDA_ASSERT(cudaGetLastError());
                     std::size_t scanBytes = selectionTemporaryBytes_;
                     GL_CUDA_ASSERT(cub::DeviceScan::InclusiveSum(
@@ -8540,7 +9431,7 @@ namespace gl::gpu {
                                     filter.deviceOffsets_),
                                 static_cast<const uint64_t*>(
                                     filter.deviceKeysOutput_),
-                                static_cast<const uint8_t*>(deviceViewMasks_),
+                                static_cast<const uint32_t*>(deviceViewMasks_),
                                 static_cast<const uint8_t*>(deviceSuffixMasks_),
                                 parameters,
                                 static_cast<const DeviceGrowthNode*>(
@@ -8549,6 +9440,8 @@ namespace gl::gpu {
                                     devicePrefixes_),
                                 static_cast<const NameId*>(
                                     devicePrefixSecondary_),
+                                static_cast<const NameId*>(
+                                    devicePrefixVariables_),
                                 static_cast<const uint32_t*>(
                                     deviceShortNodeIndices_),
                                 hostCounters.shortNodeCount,
@@ -8577,7 +9470,7 @@ namespace gl::gpu {
                                     filter.deviceOffsets_),
                                 static_cast<const uint64_t*>(
                                     filter.deviceKeysOutput_),
-                                static_cast<const uint8_t*>(deviceViewMasks_),
+                                static_cast<const uint32_t*>(deviceViewMasks_),
                                 static_cast<const uint8_t*>(deviceSuffixMasks_),
                                 parameters,
                                 static_cast<const DeviceGrowthNode*>(
@@ -8586,6 +9479,8 @@ namespace gl::gpu {
                                     devicePrefixes_),
                                 static_cast<const NameId*>(
                                     devicePrefixSecondary_),
+                                static_cast<const NameId*>(
+                                    devicePrefixVariables_),
                                 static_cast<const uint32_t*>(
                                     deviceCooperativeNodeIndices_),
                                 hostCounters.cooperativeNodeCount,
@@ -8683,7 +9578,7 @@ namespace gl::gpu {
                             static_cast<const uint32_t*>(filter.deviceOffsets_),
                             static_cast<const uint64_t*>(
                                 filter.deviceKeysOutput_),
-                            static_cast<const uint8_t*>(deviceViewMasks_),
+                            static_cast<const uint32_t*>(deviceViewMasks_),
                             static_cast<const uint8_t*>(deviceSuffixMasks_),
                             parameters,
                             static_cast<const DeviceGrowthNode*>(
@@ -8759,6 +9654,892 @@ namespace gl::gpu {
         return result;
     }
 
+    /// @brief Remove the frontier nodes of cut-off growth calls in place,
+    ///        keeping the survivors in their order.
+    ///
+    /// @details
+    /// The host half of the level-end cutoff in `runRequestGrowthWindows`. One
+    /// stable forward compaction walks the frontier page span by page span
+    /// (`PagedVector::contiguousRun`), reads each node's decision from the
+    /// per-call keep flags, writes a survivor only when an earlier node was
+    /// removed, and releases the tail with one `truncate`. The survivors and
+    /// their order equal the node-by-node predicate walk over the same flags.
+    ///
+    /// @param frontier   The completed level's frontier, compacted in place.
+    /// @param keepByCall One flag per scheduled growth call; 0 cuts the call's
+    ///                   nodes off, any other value keeps them.
+    /// @param callCount  Number of flags; every node's `callIndex` is below it.
+    /// @return The number of removed nodes.
+    /// @invariant Surviving nodes keep their relative order.
+    /// @see CudaPhase2GrowthBuffer::runRequestGrowthWindows.
+    uint64_t pruneFrontierByCall(PagedVector<DeviceGrowthNode>& frontier,
+        const uint8_t* keepByCall, uint32_t callCount) {
+        assert(keepByCall != nullptr);
+        const int32_t size = frontier.size();
+        int32_t kept = 0;
+        for (int32_t index = 0; index < size;) {
+            int32_t runLength = 0;
+            const DeviceGrowthNode* run = frontier.contiguousRun(index, runLength);
+            for (int32_t offset = 0; offset < runLength; ++offset) {
+                const DeviceGrowthNode node = run[offset];
+                assert(node.callIndex < callCount);
+                if (keepByCall[node.callIndex] == 0) continue;
+                if (kept != index + offset) frontier.setAt(kept, node);
+                ++kept;
+            }
+            index += runLength;
+        }
+        frontier.truncate(kept);
+        return static_cast<uint64_t>(size - kept);
+    }
+
+    /// @brief Remove the device-resident frontier rows of cut-off growth calls,
+    ///        keeping the survivors in their order.
+    ///
+    /// @details
+    /// One stable `cub::DeviceSelect::If` over the rows with the per-call keep
+    /// flags; the survivor count is read back synchronously.
+    ///
+    /// @param deviceRows       The level's device rows.
+    /// @param count            Number of rows; may be 0.
+    /// @param deviceKeepByCall One device flag per scheduled growth call.
+    /// @param deviceOutput     Disjoint destination, at least @p count rows.
+    /// @param deviceTemporary  CUB workspace.
+    /// @param temporaryBytes   Its size.
+    /// @param deviceSelected   One device word receiving the survivor count.
+    /// @return The number of surviving rows.
+    /// @invariant Surviving rows keep their relative order.
+    uint32_t pruneDeviceFrontierByCall(const DeviceGrowthNode* deviceRows,
+        uint32_t count, const uint8_t* deviceKeepByCall, DeviceGrowthNode* deviceOutput,
+        void* deviceTemporary, std::size_t temporaryBytes, uint32_t* deviceSelected) {
+        if (count == 0) return 0;
+        assert(deviceRows != nullptr && deviceKeepByCall != nullptr && deviceOutput != nullptr);
+        assert(deviceTemporary != nullptr && deviceSelected != nullptr);
+        assert(deviceRows + count <= deviceOutput || deviceOutput + count <= deviceRows);
+        std::size_t required = 0;
+        GL_CUDA_ASSERT(cub::DeviceSelect::If(nullptr, required, deviceRows, deviceOutput,
+            deviceSelected, count, KeepGrowthNodeByCall{deviceKeepByCall}));
+        assert(required <= temporaryBytes);
+        GL_CUDA_ASSERT(cub::DeviceSelect::If(deviceTemporary, temporaryBytes, deviceRows,
+            deviceOutput, deviceSelected, count, KeepGrowthNodeByCall{deviceKeepByCall}));
+        uint32_t kept = 0;
+        GL_CUDA_ASSERT(cudaMemcpy(&kept, deviceSelected, sizeof(kept), cudaMemcpyDeviceToHost));
+        assert(kept <= count);
+        return kept;
+    }
+
+    /// @brief Run `pruneDeviceFrontierByCall` on host rows through private
+    ///        device copies.
+    ///
+    /// @details
+    /// Uploads the rows and flags, runs the production selection, downloads the
+    /// survivors and frees every private allocation. Zero rows return 0.
+    ///
+    /// @param hostRows       Host frontier rows.
+    /// @param count          Number of rows.
+    /// @param hostKeepByCall One host flag per growth call.
+    /// @param callCount      Number of flags.
+    /// @param hostOutput     Host destination, @p count rows.
+    /// @return The number of surviving rows.
+    uint32_t pruneDeviceFrontierByCallOnHost(const DeviceGrowthNode* hostRows,
+        uint32_t count, const uint8_t* hostKeepByCall, uint32_t callCount,
+        DeviceGrowthNode* hostOutput) {
+        if (count == 0) return 0;
+        assert(hostRows != nullptr && hostKeepByCall != nullptr && hostOutput != nullptr);
+        assert(callCount > 0);
+        for (uint32_t row = 0; row < count; ++row) assert(hostRows[row].callIndex < callCount);
+        DeviceGrowthNode* rows = nullptr;
+        DeviceGrowthNode* output = nullptr;
+        uint8_t* keep = nullptr;
+        uint32_t* selected = nullptr;
+        void* temporary = nullptr;
+        std::size_t temporaryBytes = 0;
+        GL_CUDA_ASSERT(cudaMalloc(reinterpret_cast<void**>(&rows), count * sizeof(DeviceGrowthNode)));
+        GL_CUDA_ASSERT(cudaMalloc(reinterpret_cast<void**>(&output), count * sizeof(DeviceGrowthNode)));
+        GL_CUDA_ASSERT(cudaMalloc(reinterpret_cast<void**>(&keep), callCount));
+        GL_CUDA_ASSERT(cudaMalloc(reinterpret_cast<void**>(&selected), sizeof(uint32_t)));
+        GL_CUDA_ASSERT(cub::DeviceSelect::If(nullptr, temporaryBytes, rows, output,
+            selected, count, KeepGrowthNodeByCall{keep}));
+        GL_CUDA_ASSERT(cudaMalloc(&temporary, temporaryBytes));
+        GL_CUDA_ASSERT(cudaMemcpy(rows, hostRows, count * sizeof(DeviceGrowthNode), cudaMemcpyHostToDevice));
+        GL_CUDA_ASSERT(cudaMemcpy(keep, hostKeepByCall, callCount, cudaMemcpyHostToDevice));
+        const uint32_t kept = pruneDeviceFrontierByCall(rows, count, keep, output,
+            temporary, temporaryBytes, selected);
+        GL_CUDA_ASSERT(cudaMemcpy(hostOutput, output, kept * sizeof(DeviceGrowthNode), cudaMemcpyDeviceToHost));
+        GL_CUDA_ASSERT(cudaFree(temporary));
+        GL_CUDA_ASSERT(cudaFree(selected));
+        GL_CUDA_ASSERT(cudaFree(keep));
+        GL_CUDA_ASSERT(cudaFree(output));
+        GL_CUDA_ASSERT(cudaFree(rows));
+        return kept;
+    }
+
+    /// @brief Pack the measured prefix sizes of `count` device prefix records
+    ///        into one 64-bit word each, on the device.
+    ///
+    /// @details
+    /// Launches one thread per record on the default stream; the words keep the
+    /// record order. The layout is the one `unpackPhase2PrefixSizes` reads. The
+    /// call returns after the launch; stream order places a following copy
+    /// behind it.
+    ///
+    /// @param devicePrefixes Device prefix records, as the measuring
+    ///        preparation wrote them.
+    /// @param count Number of records; 0 launches nothing.
+    /// @param devicePacked Device output, one word per record.
+    /// @return Nothing.
+    void packPhase2PrefixSizes(const DeviceGrowthPrefix* devicePrefixes,
+        uint32_t count, uint64_t* devicePacked) {
+        if (count == 0) return;
+        assert(devicePrefixes != nullptr && devicePacked != nullptr);
+        constexpr uint32_t threads = 256;
+        phase2GrowthPackPrefixSizesKernel<<<(count + threads - 1) / threads, threads>>>(
+            devicePrefixes, count, devicePacked);
+        GL_CUDA_ASSERT(cudaGetLastError());
+    }
+
+    /// @brief Pack prefix sizes through the device for host-resident records:
+    ///        upload, `packPhase2PrefixSizes`, download.
+    ///
+    /// @details
+    /// The unit-test seam of the growth driver's prefix-size transfer: runs the
+    /// production packing kernel on a private device copy of @p hostPrefixes and
+    /// returns the packed words, synchronously. Zero records is a defined no-op.
+    ///
+    /// @param hostPrefixes Host prefix records.
+    /// @param count Number of records.
+    /// @param hostPacked Host output, one packed word per record.
+    /// @return Nothing.
+    void packPhase2PrefixSizesOnHost(const DeviceGrowthPrefix* hostPrefixes,
+        uint32_t count, uint64_t* hostPacked) {
+        if (count == 0) return;
+        assert(hostPrefixes != nullptr && hostPacked != nullptr);
+        DeviceGrowthPrefix* devicePrefixes = nullptr;
+        uint64_t* devicePacked = nullptr;
+        GL_CUDA_ASSERT(cudaMalloc(reinterpret_cast<void**>(&devicePrefixes),
+            count * sizeof(DeviceGrowthPrefix)));
+        GL_CUDA_ASSERT(cudaMalloc(reinterpret_cast<void**>(&devicePacked),
+            count * sizeof(uint64_t)));
+        GL_CUDA_ASSERT(cudaMemcpy(devicePrefixes, hostPrefixes,
+            count * sizeof(DeviceGrowthPrefix), cudaMemcpyHostToDevice));
+        packPhase2PrefixSizes(devicePrefixes, count, devicePacked);
+        GL_CUDA_ASSERT(cudaMemcpy(hostPacked, devicePacked,
+            count * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+        GL_CUDA_ASSERT(cudaFree(devicePacked));
+        GL_CUDA_ASSERT(cudaFree(devicePrefixes));
+    }
+
+    /// @brief Generate complete requests through bounded GPU work windows.
+    ///
+    /// @details
+    /// A pass-local device frontier store (`frontierStoreRecords` rows per
+    /// buffer) holds the level being grown and collects its children; pages are
+    /// read in place, device rows first. Rows of a level that outgrows a buffer
+    /// spill to host static-pool pages, which upload through two alternating
+    /// registered staging blocks into the consumed buffer. Cheap rejection fills
+    /// bounded candidate scratch; consecutive selected survivors reserve
+    /// worst-case append space against host upper bounds of the append counters,
+    /// settled by one exact read only before a window the bounds cannot cover,
+    /// at prefix windows and at level ends. A synchronous request drain retains
+    /// its results before reuse without replaying candidate rejection and keeps
+    /// pending store rows. All semantic construction and probing remain on CUDA.
+    /// Nothing in the store outlives the call.
+    ///
+    /// @param projection Frozen device logical-block image.
+    /// @param tasks Uploaded task image.
+    /// @param hostTasks Host twin used only for scheduling sizes.
+    /// @param filter Completed filter spans for all scheduled calls.
+    /// @param schedule Original generator calls in this physical task image.
+    /// @param parameters Semantic request limits; census mode must be zero.
+    /// @param drain Synchronous consumer; true commits a completed logical level, even when empty.
+    /// @param context Opaque caller-owned drain context.
+    /// @param taskSubkeyCounts Output cumulative accepted-subkey totals.
+    /// @param taskCapacity Number of caller-owned task counter slots.
+    /// @param retainedCalls Optional cutoff query run after each completed
+    ///        level's drain: fills one keep flag per scheduled call (0 stops the
+    ///        call's descendants) and returns whether any flag is 0.
+    /// @return Logical totals and frontier transfer/backing measurements.
+    /// @invariant A prefix fits minimum execution scratch and a drain completes
+    ///            before any pending request event is overwritten.
+    Phase2GrowthStreamResult CudaPhase2GrowthBuffer::runRequestGrowthWindows(
+        const CudaPhase2ProjectionBuffer& projection,
+        const CudaPhase2TaskBuffer& tasks,
+        const Phase2TaskProjectionArena& hostTasks,
+        const CudaPhase2FilterSortBuffer& filter,
+        const Phase2GrowthScheduleArena& schedule,
+        DevicePhase2GrowthParameters parameters,
+        void (*drain)(void*, const CudaPhase2GrowthBuffer&, bool), void* context,
+        uint64_t* taskSubkeyCounts, uint32_t taskCapacity,
+        bool (*retainedCalls)(void*, uint8_t*, uint32_t)) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2GrowthBuffer::runRequestGrowthWindows");
+        assert(drain != nullptr && taskSubkeyCounts != nullptr);
+        assert(parameters.collectSpanCensus == 0);
+        assert(parameters.maximumHypothesisKeyLength >= 0);
+        assert(parameters.maximumSecondaryVariables >= 0);
+        assert(parameters.maximumSecondaryVariablesOrint >= parameters.maximumSecondaryVariables);
+        assert(parameters.cooperativeSpanThreshold > 0);
+        assert(schedule.calls.size() <= capacity_.calls);
+        assert(schedule.calls.size() <= filter.usedCalls_);
+        assert(filter.usedRetainedRows_ <= capacity_.retainedRows);
+        assert(hostTasks.tasks.size() == tasks.usedCounts_[0]);
+        assert(tasks.usedCounts_[0] <= capacity_.calls && tasks.usedCounts_[0] <= taskCapacity);
+        usedAcceptedEvents_ = usedRawRequests_ = 0;
+        usedTaskCount_ = tasks.usedCounts_[0];
+        for (uint32_t i = 0; i < usedTaskCount_; ++i) taskSubkeyCounts[i] = 0;
+        GL_CUDA_ASSERT(cudaMemset(deviceTaskSubkeyCounts_, 0, capacity_.calls * sizeof(uint32_t)));
+        GL_CUDA_ASSERT(cudaMemset(deviceCounters_, 0, sizeof(DeviceGrowthCounters)));
+        Phase2GrowthStreamResult result{};
+        const uint32_t callCount = static_cast<uint32_t>(schedule.calls.size());
+        if (callCount == 0) return result;
+        assert(projection.usedCounts_[0] > 0 && tasks.usedCounts_[1] > 0);
+        GL_CUDA_ASSERT(cudaMemcpy(deviceCalls_, schedule.calls.data(),
+            callCount * sizeof(DevicePhase2GrowthCall), cudaMemcpyHostToDevice));
+        ProjectionSemanticColumns columns{};
+        columns.logicalBlocks = static_cast<
+            const DeviceLogicalBlockProjection*>(projection.deviceColumns_[0]);
+        columns.statements = static_cast<const IntEncodedExpr*>(
+            projection.deviceColumns_[1]);
+        columns.nameRecords = static_cast<const DeviceNameRecord*>(
+            projection.deviceColumns_[2]);
+        columns.nameBytes = static_cast<const char*>(
+            projection.deviceColumns_[3]);
+        columns.nameSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[4]);
+        columns.ruleStringRecords = static_cast<const DeviceRuleStringRecord*>(
+            projection.deviceColumns_[5]);
+        columns.ruleStringBytes = static_cast<const char*>(
+            projection.deviceColumns_[6]);
+        columns.byteMapViews = static_cast<const DeviceByteMapView*>(
+            projection.deviceColumns_[7]);
+        columns.byteMapEntries = static_cast<const DeviceByteMapEntry*>(
+            projection.deviceColumns_[8]);
+        columns.byteMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[9]);
+        columns.byteKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[10]);
+        columns.blobRecords = static_cast<const DeviceBlobRecord*>(
+            projection.deviceColumns_[11]);
+        columns.blobBytes = static_cast<const char*>(
+            projection.deviceColumns_[12]);
+        columns.reverseMapViews = static_cast<const DeviceReverseMapView*>(
+            projection.deviceColumns_[13]);
+        columns.reverseMapEntries = static_cast<const DeviceReverseMapEntry*>(
+            projection.deviceColumns_[14]);
+        columns.reverseMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[15]);
+        columns.reverseKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[16]);
+        columns.reverseOwners = static_cast<const int32_t*>(
+            projection.deviceColumns_[17]);
+        columns.podMapViews = static_cast<const DevicePodMapView*>(
+            projection.deviceColumns_[18]);
+        columns.podMapEntries = static_cast<const DevicePodMapEntry*>(
+            projection.deviceColumns_[19]);
+        columns.podMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[20]);
+        columns.podRunValues = static_cast<const int32_t*>(
+            projection.deviceColumns_[21]);
+        columns.mandatoryStatementKeys = static_cast<const int64_t*>(
+            projection.deviceColumns_[22]);
+        columns.metadataBytes = static_cast<const char*>(
+            projection.deviceColumns_[23]);
+
+
+        const auto* deviceTasks = static_cast<const DevicePhase2Task*>(tasks.deviceColumns_[0]);
+        const auto* batches = static_cast<const DeviceRequestBatch*>(tasks.deviceColumns_[1]);
+        const auto* terms = static_cast<const DeviceMandatoryTerm*>(tasks.deviceColumns_[2]);
+        const auto* stumps = static_cast<const DeviceExpressionStump*>(tasks.deviceColumns_[3]);
+        const auto* calls = static_cast<const DevicePhase2GrowthCall*>(deviceCalls_);
+        const auto* filterCounts = static_cast<const uint32_t*>(filter.deviceCounts_);
+        const auto* filterOffsets = static_cast<const uint32_t*>(filter.deviceOffsets_);
+        const auto* sortedKeys = static_cast<const uint64_t*>(filter.deviceKeysOutput_);
+        const auto* viewMasks = static_cast<const uint32_t*>(deviceViewMasks_);
+        const auto* suffixMasks = static_cast<const uint8_t*>(deviceSuffixMasks_);
+        auto* counters = static_cast<DeviceGrowthCounters*>(deviceCounters_);
+        auto* events = static_cast<DeviceAcceptedGrowthEvent*>(deviceAcceptedEvents_);
+        auto* requests = static_cast<DeviceRawGrowthRequest*>(deviceRawRequests_);
+        auto* subkeyCounts = static_cast<uint32_t*>(deviceTaskSubkeyCounts_);
+        // Pass-local frontier store: one buffer holds the level being grown and
+        // the other collects its children; a level that outgrows a buffer
+        // spills those rows to the host pages below. Nothing in the store
+        // outlives this call.
+        DeviceGrowthNode* const store[2] = {
+            static_cast<DeviceGrowthNode*>(deviceFrontiers_[0]),
+            static_cast<DeviceGrowthNode*>(deviceFrontiers_[1])};
+        assert(capacity_.frontierStoreRecords >= capacity_.frontierRecords);
+        auto* prefixes = static_cast<DeviceGrowthPrefix*>(devicePrefixes_);
+        auto* payload = static_cast<NameId*>(devicePrefixPayload_);
+        auto* variables = static_cast<NameId*>(devicePrefixVariables_);
+        auto* secondary = static_cast<NameId*>(devicePrefixSecondary_);
+        auto* shortFlags = static_cast<uint8_t*>(deviceShortNodeFlags_);
+        auto* cooperativeFlags = static_cast<uint8_t*>(deviceCooperativeNodeFlags_);
+        auto* shortIndices = static_cast<uint32_t*>(deviceShortNodeIndices_);
+        auto* cooperativeIndices = static_cast<uint32_t*>(deviceCooperativeNodeIndices_);
+        auto* nodeIndices = static_cast<uint32_t*>(deviceCanonicalNodeIndices_[0]);
+        auto* attemptEnds = static_cast<uint64_t*>(deviceNodeAttemptEnds_);
+        auto* attemptStarts = static_cast<uint64_t*>(deviceNodeAttemptStarts_);
+        auto* attempts = static_cast<DeviceGrowthCandidateAttempt*>(deviceCandidateAttempts_);
+        auto* candidateFlags = static_cast<uint8_t*>(deviceCandidateFlags_);
+        auto* survivors = static_cast<uint32_t*>(deviceCandidateSurvivorIndices_);
+        constexpr uint32_t threads = 256;
+        // Probe windows launch at most the blocks the device keeps resident.
+        int probeBlocksPerProcessor = 0, device = 0, processors = 0;
+        GL_CUDA_ASSERT(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&probeBlocksPerProcessor,
+            phase2GrowthProbeSurvivorsKernel, threads, 0));
+        GL_CUDA_ASSERT(cudaGetDevice(&device));
+        GL_CUDA_ASSERT(cudaDeviceGetAttribute(&processors, cudaDevAttrMultiProcessorCount, device));
+        assert(probeBlocksPerProcessor > 0 && processors > 0);
+        const uint32_t residentProbeBlocks =
+            static_cast<uint32_t>(probeBlocksPerProcessor) * static_cast<uint32_t>(processors);
+        // Dedicated registered host blocks keep transfer pages bounded and
+        // avoid pageable-memory staging. Registration ends before pool release.
+        LbArena backing(&staticMemory());
+        backing.setPurpose(PoolPurpose::GpuHost);  // pool attribution
+        const uint32_t blockBytes = static_cast<uint32_t>(staticMemory().blockBytes());
+        const uint32_t hostPageRows = std::min(phase2FrontierCopyRows,
+            static_cast<uint32_t>(blockBytes / std::max(sizeof(DeviceGrowthNode), sizeof(DeviceGrowthPrefix))));
+        assert(hostPageRows > 0 && blockBytes <= INT32_MAX);
+        const auto pinnedScratch = [&]() {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.pinnedScratch");
+            const ArenaOffset offset = backing.alloc(static_cast<int32_t>(blockBytes), 16);
+            void* const address = backing.resolve(offset);
+            assert(reinterpret_cast<uintptr_t>(address) % 4096 == 0);
+            GL_CUDA_ASSERT(cudaHostRegister(address, blockBytes, cudaHostRegisterDefault));
+            return address;
+        };
+        auto* nodeTransfer = static_cast<DeviceGrowthNode*>(pinnedScratch());
+        auto* packedSizeTransfer = static_cast<uint64_t*>(pinnedScratch());
+        auto* countTransfer = static_cast<uint32_t*>(pinnedScratch());
+        // Frontier-page uploads alternate between two registered staging
+        // blocks, so filling one overlaps the other's transfer; stream order
+        // keeps every upload ahead of the downloads that reuse nodeTransfer.
+        DeviceGrowthNode* const uploadStages[2] = {nodeTransfer,
+            static_cast<DeviceGrowthNode*>(pinnedScratch())};
+        cudaEvent_t uploadDone[2]{};
+        for (cudaEvent_t& event : uploadDone)
+            GL_CUDA_ASSERT(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        bool uploadPending[2]{false, false};
+        uint32_t uploadStage = 0;
+        uint8_t* keepByCall = nullptr;
+        if (retainedCalls != nullptr) {
+            assert(callCount <= blockBytes);
+            keepByCall = reinterpret_cast<uint8_t*>(backing.resolve(
+                backing.alloc(static_cast<int32_t>(callCount), 16)));
+        }
+        result.frontierTransferRows = hostPageRows;
+        DirtyState dirty = DirtyState::Clean;
+        PagedVector<DeviceGrowthNode> first(&backing, &dirty), second(&backing, &dirty);
+        PagedVector<uint64_t> measuredSizes(&backing, &dirty);
+        // The packed prefix sizes download whole pinned blocks at a time.
+        const uint32_t packedPageRows = blockBytes / static_cast<uint32_t>(sizeof(uint64_t));
+        auto* packedSizes = static_cast<uint64_t*>(deviceNodeSortKeys_[1]);
+        auto* current = &first;
+        auto* next = &second;
+        DeviceGrowthCounters counts{};
+        uint32_t currentStore = 0;
+        uint32_t currentDeviceRows = 0;
+        // Upper bounds of the device append counters since their last exact read
+        // (seeds, children, events, requests): a seed launch appends at most one
+        // node, event and request per (call, stump) pair, a probe at most one
+        // child, event and request per survivor.
+        uint32_t seedBound = 0, childBound = 0, eventBound = 0, requestBound = 0;
+        static_assert(offsetof(DeviceGrowthCounters, frontierCounts) == 0);
+        // Lagged exact counts: every probe launch is followed by an asynchronous
+        // copy of the counters into one of two pinned snapshots. The pending
+        // snapshots belong to the most recent probe windows, oldest first, and
+        // no probe was launched after the newest one. Exact reads and counter
+        // resets discard them.
+        // Host-mapped slots, written on the compute engine: two lagged
+        // snapshots, the exact read and a prefix window's attempt total.
+        auto* counterSnapshots = static_cast<DeviceGrowthCounters*>(pinnedScratch());
+        assert(3 * sizeof(DeviceGrowthCounters) + sizeof(uint64_t) <= blockBytes);
+        DeviceGrowthCounters* const exactCounts = counterSnapshots + 2;
+        auto* const attemptTotal = reinterpret_cast<uint64_t*>(counterSnapshots + 3);
+        constexpr uint32_t counterWords = sizeof(DeviceGrowthCounters) / sizeof(uint32_t);
+        static_assert(sizeof(DeviceGrowthCounters) % sizeof(uint64_t) == 0);
+        // A snapshot needs only the leading append counters.
+        constexpr uint32_t snapshotWords = 4;
+        static_assert(offsetof(DeviceGrowthCounters, rawRequestCount) + sizeof(uint32_t)
+            <= snapshotWords * sizeof(uint32_t));
+        cudaEvent_t exactDone{};
+        GL_CUDA_ASSERT(cudaEventCreateWithFlags(&exactDone, cudaEventDisableTiming));
+        cudaEvent_t snapshotDone[2]{};
+        for (cudaEvent_t& event : snapshotDone)
+            GL_CUDA_ASSERT(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        uint32_t snapshotSelected[2]{};
+        uint32_t pendingSnapshots = 0, oldestSnapshot = 0;
+        auto readCounts = [&] {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.readCounts");
+            publishDeviceWords(deviceCounters_, counterWords, exactCounts);
+            GL_CUDA_ASSERT(cudaEventRecord(exactDone, 0));
+            GL_CUDA_ASSERT(cudaEventSynchronize(exactDone));
+            counts = *exactCounts;
+            ++result.exactCountReads;
+            pendingSnapshots = 0;
+        };
+        auto clearCounterRange = [&](std::size_t offset, std::size_t bytes) {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.clearCounterRange");
+            GL_CUDA_ASSERT(cudaMemset(static_cast<char*>(deviceCounters_) + offset, 0, bytes));
+        };
+        auto flushRequests = [&](bool finalDrain = false, bool cutoffDrain = false) {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.flushRequests");
+            readCounts();
+            usedAcceptedEvents_ = counts.acceptedEventCount;
+            usedRawRequests_ = counts.rawRequestCount;
+            assert(usedAcceptedEvents_ <= capacity_.acceptedEvents);
+            assert(usedRawRequests_ <= capacity_.rawRequests);
+            result.acceptedEventCount += usedAcceptedEvents_;
+            result.rawRequestCount += usedRawRequests_;
+            result.candidatePositionsBeforePrefilter += counts.candidatePositionsBeforePrefilter;
+            result.candidatePositionsAfterPrefilter += counts.candidatePositionsAfterPrefilter;
+            for (uint32_t begin = 0; begin < usedTaskCount_; begin += hostPageRows) {
+                const uint32_t count = std::min(hostPageRows, usedTaskCount_ - begin);
+                GL_CUDA_ASSERT(cudaMemcpy(countTransfer, subkeyCounts + begin,
+                    count * sizeof(uint32_t), cudaMemcpyDeviceToHost));
+                for (uint32_t i = 0; i < count; ++i) taskSubkeyCounts[begin + i] += countTransfer[i];
+            }
+            if (usedAcceptedEvents_ > 0 || finalDrain || cutoffDrain) {
+                drain(context, *this, finalDrain || cutoffDrain);
+                if (usedAcceptedEvents_ > 0) {
+                    ++result.drainCount;
+                    if (cutoffDrain) ++result.cutoffDrainCount;
+                }
+            }
+            const uint32_t frontierCounts[2] = {counts.frontierCounts[0], counts.frontierCounts[1]};
+            GL_CUDA_ASSERT(cudaDeviceSynchronize());
+            GL_CUDA_ASSERT(cudaMemset(deviceTaskSubkeyCounts_, 0, capacity_.calls * sizeof(uint32_t)));
+            GL_CUDA_ASSERT(cudaMemset(deviceCounters_, 0, sizeof(DeviceGrowthCounters)));
+            // Rows pending in the frontier store survive the drain.
+            GL_CUDA_ASSERT(cudaMemcpy(deviceCounters_, frontierCounts, sizeof(frontierCounts),
+                cudaMemcpyHostToDevice));
+            counts = {};
+            counts.frontierCounts[0] = frontierCounts[0];
+            counts.frontierCounts[1] = frontierCounts[1];
+            usedAcceptedEvents_ = usedRawRequests_ = 0;
+            seedBound = frontierCounts[0];
+            childBound = frontierCounts[1];
+            eventBound = requestBound = 0;
+        };
+        auto finishLevel = [&] {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.finishLevel");
+            if (retainedCalls != nullptr) {
+                flushRequests(false, true);
+                if (retainedCalls(context, keepByCall, callCount)) {
+                    result.prunedFrontierNodes += pruneFrontierByCall(
+                        *current, keepByCall, callCount);
+                    if (currentDeviceRows > 0) {
+                        // The other store buffer is free at a level boundary.
+                        GL_CUDA_ASSERT(cudaMemcpy(deviceKeepByCall_, keepByCall, callCount,
+                            cudaMemcpyHostToDevice));
+                        const uint32_t kept = pruneDeviceFrontierByCall(store[currentStore],
+                            currentDeviceRows, static_cast<const uint8_t*>(deviceKeepByCall_),
+                            store[1u - currentStore], deviceSelectionTemporary_,
+                            selectionTemporaryBytes_, reinterpret_cast<uint32_t*>(
+                                static_cast<char*>(deviceCounters_)
+                                    + offsetof(DeviceGrowthCounters, shortNodeCount)));
+                        result.prunedFrontierNodes += currentDeviceRows - kept;
+                        currentDeviceRows = kept;
+                        currentStore = 1u - currentStore;
+                    }
+                }
+            }
+        };
+        auto retainFrontier = [&](const DeviceGrowthNode* rows, uint32_t count,
+            PagedVector<DeviceGrowthNode>& destination) {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.retainFrontier");
+            assert(count <= capacity_.frontierStoreRecords);
+            for (uint32_t begin = 0; begin < count; begin += hostPageRows) {
+                const uint32_t copied = std::min(hostPageRows, count - begin);
+                GL_CUDA_ASSERT(cudaMemcpy(nodeTransfer, rows + begin,
+                    copied * sizeof(DeviceGrowthNode), cudaMemcpyDeviceToHost));
+                ++result.frontierTransferCalls;
+                destination.appendRun(nodeTransfer, static_cast<int32_t>(copied));
+            }
+            result.downloadedFrontierBytes += count * sizeof(DeviceGrowthNode);
+            result.maximumHostBackingBytes = std::max(result.maximumHostBackingBytes,
+                (static_cast<uint64_t>(first.size()) + second.size()) * sizeof(DeviceGrowthNode));
+        };
+        // Exact device counts replace every bound.
+        auto settleCounts = [&] {
+            readCounts();
+            seedBound = counts.frontierCounts[0];
+            childBound = counts.frontierCounts[1];
+            eventBound = counts.acceptedEventCount;
+            requestBound = counts.rawRequestCount;
+        };
+        // After a probe launch: queue its counter snapshot. With two pending,
+        // the oldest is dropped unread (its slot's later publication follows in
+        // stream order).
+        auto recordSnapshot = [&](uint32_t selected) {
+            if (pendingSnapshots == 2) {
+                oldestSnapshot ^= 1u;
+                --pendingSnapshots;
+            }
+            const uint32_t slot = (oldestSnapshot + pendingSnapshots) & 1u;
+            publishDeviceWords(deviceCounters_, snapshotWords, &counterSnapshots[slot]);
+            GL_CUDA_ASSERT(cudaEventRecord(snapshotDone[slot], 0));
+            snapshotSelected[slot] = selected;
+            ++pendingSnapshots;
+        };
+        // Tighten the child, event and request bounds from the oldest pending
+        // snapshot: its exact counts plus one row per survivor of the newer
+        // pending window, which keeps running meanwhile.
+        auto retireOldestSnapshot = [&] {
+            assert(pendingSnapshots > 0);
+            GL_CUDA_ASSERT(cudaEventSynchronize(snapshotDone[oldestSnapshot]));
+            const DeviceGrowthCounters& snapshot = counterSnapshots[oldestSnapshot];
+            oldestSnapshot ^= 1u;
+            --pendingSnapshots;
+            const uint32_t inFlight = pendingSnapshots > 0 ? snapshotSelected[oldestSnapshot] : 0u;
+            assert(snapshot.frontierCounts[1] + inFlight <= childBound);
+            assert(snapshot.acceptedEventCount + inFlight <= eventBound);
+            assert(snapshot.rawRequestCount + inFlight <= requestBound);
+            childBound = snapshot.frontierCounts[1] + inFlight;
+            eventBound = snapshot.acceptedEventCount + inFlight;
+            requestBound = snapshot.rawRequestCount + inFlight;
+        };
+        auto clearFrontierCount = [&](uint32_t ordinal) {
+            assert(ordinal < 2);
+            clearCounterRange(offsetof(DeviceGrowthCounters, frontierCounts)
+                + ordinal * sizeof(uint32_t), sizeof(uint32_t));
+            counts.frontierCounts[ordinal] = 0;
+            (ordinal == 0 ? seedBound : childBound) = 0;
+        };
+        // After settleCounts: a store buffer's rows move behind the host pages
+        // this level already spilled.
+        auto spillRows = [&](uint32_t ordinal, const DeviceGrowthNode* rows,
+                             PagedVector<DeviceGrowthNode>& destination) {
+            retainFrontier(rows, counts.frontierCounts[ordinal], destination);
+            ++result.frontierSpills;
+            clearFrontierCount(ordinal);
+        };
+        auto noteLevelSize = [&] {
+            result.maximumFrontierCount = std::max(result.maximumFrontierCount,
+                static_cast<uint64_t>(current->size()) + currentDeviceRows);
+        };
+        phase2GrowthMandatoryMaskKernel<<<callCount, 128>>>(columns, deviceTasks,
+            tasks.usedCounts_[0], batches, tasks.usedCounts_[1], terms, calls, callCount,
+            static_cast<const DevicePhase2FilterCall*>(filter.deviceCalls_), filter.usedCalls_,
+            filterCounts, filterOffsets, sortedKeys, static_cast<uint32_t*>(deviceViewMasks_),
+            static_cast<uint8_t*>(deviceSuffixMasks_));
+        GL_CUDA_ASSERT(cudaGetLastError());
+        const uint32_t seedCapacity = std::min({capacity_.frontierRecords,
+            capacity_.acceptedEvents, capacity_.rawRequests});
+        assert(seedCapacity > 0);
+        for (uint32_t depth = 0; depth <= ExecutionParameters::MAX_EXPRESSIONS; ++depth) {
+            assert(current->empty() && next->empty() && currentDeviceRows == 0);
+            assert(seedBound == 0 && childBound == 0);
+            for (uint32_t callBegin = 0; callBegin < callCount;) {
+                const uint32_t selectedCalls = std::min(seedCapacity, callCount - callBegin);
+                uint32_t maximumStumps = depth == 0 ? 1u : 0u;
+                for (uint32_t i = 0; i < selectedCalls; ++i) {
+                    const auto& call = schedule.calls[callBegin + i];
+                    assert(call.taskIndex < hostTasks.tasks.size());
+                    if (depth != 0) maximumStumps = std::max(maximumStumps,
+                        hostTasks.tasks[call.taskIndex].stumpCount);
+                }
+                for (uint32_t stumpBegin = 0; stumpBegin < maximumStumps;) {
+                    uint32_t available = std::min({capacity_.frontierStoreRecords - seedBound,
+                        capacity_.acceptedEvents - eventBound, capacity_.rawRequests - requestBound});
+                    if (available < selectedCalls) {
+                        settleCounts();
+                        if (capacity_.frontierStoreRecords - seedBound < selectedCalls)
+                            spillRows(0, store[currentStore], *current);
+                        if (capacity_.acceptedEvents - eventBound < selectedCalls
+                            || capacity_.rawRequests - requestBound < selectedCalls)
+                            flushRequests();
+                        available = std::min({capacity_.frontierStoreRecords - seedBound,
+                            capacity_.acceptedEvents - eventBound, capacity_.rawRequests - requestBound});
+                        assert(available >= selectedCalls);
+                    }
+                    const uint32_t selectedStumps = std::min(maximumStumps - stumpBegin,
+                        available / selectedCalls);
+                    assert(selectedStumps > 0);
+                    // One thread per (call, stump) pair: a few calls with long
+                    // stump runs still fill the device.
+                    const uint32_t launched = selectedCalls * selectedStumps;
+                    phase2GrowthSeedPairsKernel<<<(launched + threads - 1) / threads, threads>>>(
+                        columns, deviceTasks, batches, terms, stumps, calls, callCount,
+                        filterCounts, filterOffsets, sortedKeys, viewMasks, parameters, depth,
+                        store[currentStore], events, requests, subkeyCounts, counters, capacity_,
+                        callBegin, selectedCalls, stumpBegin, selectedStumps);
+                    GL_CUDA_ASSERT(cudaGetLastError());
+                    seedBound += launched;
+                    eventBound += launched;
+                    requestBound += launched;
+                    stumpBegin += selectedStumps;
+                }
+                callBegin += selectedCalls;
+            }
+            // The seeds form the first level: spilled host pages plus the rows
+            // left in the current store buffer.
+            settleCounts();
+            currentDeviceRows = counts.frontierCounts[0];
+            clearFrontierCount(0);
+            noteLevelSize();
+            finishLevel();
+            for (uint32_t level = depth; level < ExecutionParameters::MAX_EXPRESSIONS
+                && (currentDeviceRows > 0 || !current->empty()); ++level) {
+                DeviceGrowthNode* const levelRows = store[currentStore];
+                DeviceGrowthNode* const childRows = store[1u - currentStore];
+                assert(childBound == 0);
+                // Device rows first; once consumed, their buffer stages the
+                // spilled host pages.
+                uint32_t deviceDone = 0;
+                int32_t hostDone = 0;
+                while (deviceDone < currentDeviceRows || hostDone < current->size()) {
+                    const bool devicePage = deviceDone < currentDeviceRows;
+                    const uint32_t pageCount = devicePage
+                        ? std::min({phase2FrontierExecutionRows, capacity_.frontierRecords,
+                              currentDeviceRows - deviceDone})
+                        : std::min({phase2FrontierExecutionRows, capacity_.frontierRecords,
+                              static_cast<uint32_t>(current->size() - hostDone)});
+                    gl::Phase2TraceScope phase2FrontierPageTrace("GL.Phase2.Growth.FrontierPage",
+                        devicePage ? deviceDone : static_cast<uint32_t>(hostDone));
+                    DeviceGrowthNode* const pageNodes = devicePage ? levelRows + deviceDone : levelRows;
+                    if (!devicePage) {
+                        for (uint32_t begin = 0; begin < pageCount; begin += hostPageRows) {
+                            const uint32_t copied = std::min(hostPageRows, pageCount - begin);
+                            if (uploadPending[uploadStage]) {
+                                GL_CUDA_ASSERT(cudaEventSynchronize(uploadDone[uploadStage]));
+                                uploadPending[uploadStage] = false;
+                            }
+                            DeviceGrowthNode* const staging = uploadStages[uploadStage];
+                            current->copyRunTo(hostDone + static_cast<int32_t>(begin),
+                                static_cast<int32_t>(copied), staging);
+                            GL_CUDA_ASSERT(cudaMemcpyAsync(pageNodes + begin, staging,
+                                copied * sizeof(DeviceGrowthNode), cudaMemcpyHostToDevice, 0));
+                            GL_CUDA_ASSERT(cudaEventRecord(uploadDone[uploadStage], 0));
+                            uploadPending[uploadStage] = true;
+                            uploadStage ^= 1u;
+                            ++result.frontierTransferCalls;
+                        }
+                        result.uploadedFrontierBytes += pageCount * sizeof(DeviceGrowthNode);
+                    }
+                    auto prepare = [&](const DeviceGrowthNode* nodes, uint32_t count, bool measure) {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.prepare");
+                        phase2GrowthPreparePrefixesKernel<<<(count + threads - 1) / threads, threads>>>(
+                            columns, batches, terms, deviceTasks, calls, filterCounts, filterOffsets,
+                            sortedKeys, parameters, nodes, count, prefixes, payload, variables,
+                            secondary, shortFlags, cooperativeFlags, counters, capacity_, measure);
+                        GL_CUDA_ASSERT(cudaGetLastError());
+                    };
+                    prepare(pageNodes, pageCount, true);
+                    packPhase2PrefixSizes(prefixes, pageCount, packedSizes);
+                    measuredSizes.resetKeepingPages();
+                    for (uint32_t begin = 0; begin < pageCount; begin += packedPageRows) {
+                        const uint32_t copied = std::min(packedPageRows, pageCount - begin);
+                        GL_CUDA_ASSERT(cudaMemcpy(packedSizeTransfer, packedSizes + begin,
+                            copied * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+                        measuredSizes.appendRun(packedSizeTransfer, static_cast<int32_t>(copied));
+                    }
+                    assert(measuredSizes.size() == static_cast<int32_t>(pageCount));
+                    for (uint32_t pageAt = 0; pageAt < pageCount;) {
+                            gl::Phase2TraceScope phase2PrefixWindowTrace("GL.Phase2.Growth.PrefixWindow", pageAt);
+                        uint32_t nodeCount = 0;
+                        uint64_t payloadCount = 0, variableCount = 0, secondaryCount = 0;
+                        bool windowFull = false;
+                        while (!windowFull && pageAt + nodeCount < pageCount) {
+                            int32_t runLength = 0;
+                            const uint64_t* run = measuredSizes.contiguousRun(
+                                static_cast<int32_t>(pageAt + nodeCount), runLength);
+                            for (int32_t offset = 0; offset < runLength; ++offset) {
+                                const Phase2PrefixSizes sizes = unpackPhase2PrefixSizes(run[offset]);
+                                if (payloadCount + sizes.payloadLength > capacity_.prefixPayloadValues
+                                    || variableCount + sizes.variableCount > capacity_.prefixVariableValues
+                                    || secondaryCount + sizes.secondaryCount > capacity_.prefixSecondaryValues) {
+                                    windowFull = true;
+                                    break;
+                                }
+                                payloadCount += sizes.payloadLength;
+                                variableCount += sizes.variableCount;
+                                secondaryCount += sizes.secondaryCount;
+                                ++nodeCount;
+                            }
+                        }
+                        assert(nodeCount > 0 && "Minimum execution scratch must fit one prefix");
+                        uint32_t tracedBlock = 0;
+                        bool tracedMixed = false;
+                        if (gl::phase2TraceEnabled() && !devicePage) {
+                            for (uint32_t offset = 0; offset < nodeCount; ++offset) {
+                                const auto& node = (*current)[static_cast<int32_t>(hostDone + pageAt + offset)];
+                                const uint32_t task = schedule.calls[node.callIndex].taskIndex;
+                                assert(task < hostTasks.tasks.size());
+                                const uint32_t block = hostTasks.tasks[task].logicalBlockIndex;
+                                if (offset == 0) tracedBlock = block;
+                                else if (block != tracedBlock) tracedMixed = true;
+                            }
+                        }
+                        gl::Phase2TraceScope phase2BlockWindowTrace(
+                            devicePage ? "GL.Phase2.DeviceWindow"
+                                : tracedMixed ? "GL.Phase2.MixedLBWindow" : "GL.Phase2.LBWindow",
+                            tracedBlock);
+
+                        ++result.prefixWindows;
+                        result.maximumPrefixPayloadValues = std::max(result.maximumPrefixPayloadValues, payloadCount);
+                        result.maximumPrefixVariableValues = std::max(result.maximumPrefixVariableValues, variableCount);
+                        result.maximumPrefixSecondaryValues = std::max(result.maximumPrefixSecondaryValues, secondaryCount);
+                        const auto* nodes = pageNodes + pageAt;
+                        clearCounterRange(offsetof(DeviceGrowthCounters, shortNodeCount), 5 * sizeof(uint32_t));
+                        prepare(nodes, nodeCount, false);
+                        auto selectNodes = [&](const uint8_t* flags, uint32_t* indices, std::size_t offset) {
+            gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.selectNodes");
+                            std::size_t bytes = selectionTemporaryBytes_;
+                            GL_CUDA_ASSERT(cub::DeviceSelect::Flagged(deviceSelectionTemporary_, bytes,
+                                thrust::counting_iterator<uint32_t>(0), flags, indices,
+                                reinterpret_cast<uint32_t*>(static_cast<char*>(deviceCounters_) + offset), nodeCount));
+                        };
+                        selectNodes(shortFlags, shortIndices, offsetof(DeviceGrowthCounters, shortNodeCount));
+                        selectNodes(cooperativeFlags, cooperativeIndices, offsetof(DeviceGrowthCounters, cooperativeNodeCount));
+                        phase2OrderingInitializeIndicesKernel<<<(nodeCount + threads - 1) / threads, threads>>>(
+                            nodeCount, nodeIndices);
+                        GL_CUDA_ASSERT(cudaGetLastError());
+                        phase2GrowthCandidateCountsKernel<<<(nodeCount + threads - 1) / threads, threads>>>(
+                            nodes, nodeIndices, nodeCount, calls, filterCounts,
+                            static_cast<uint64_t*>(deviceNodeSortKeys_[0]), prefixes, counters);
+                        GL_CUDA_ASSERT(cudaGetLastError());
+                        std::size_t scanBytes = selectionTemporaryBytes_;
+                        GL_CUDA_ASSERT(cub::DeviceScan::InclusiveSum(deviceSelectionTemporary_, scanBytes,
+                            static_cast<const uint64_t*>(deviceNodeSortKeys_[0]), attemptEnds, nodeCount));
+                        // One exact read covers both selections and the attempt total.
+                        publishDeviceWords(attemptEnds + nodeCount - 1, 2, attemptTotal);
+                        settleCounts();
+                        const uint32_t shortCount = counts.shortNodeCount;
+                        const uint32_t cooperativeCount = counts.cooperativeNodeCount;
+                        assert(shortCount + cooperativeCount == nodeCount);
+                        const uint64_t totalAttempts = *attemptTotal;
+                        phase2GrowthCandidateStartsKernel<<<(nodeCount + threads - 1) / threads, threads>>>(
+                            nodeIndices, attemptEnds, nodeCount, attemptStarts);
+                        GL_CUDA_ASSERT(cudaGetLastError());
+                        for (uint64_t attemptBegin = 0; attemptBegin < totalAttempts;) {
+                            gl::Phase2TraceScope phase2CandidateWindowTrace("GL.Phase2.Growth.CandidateWindow", attemptBegin);
+                            const uint32_t attemptCount = static_cast<uint32_t>(
+                                std::min<uint64_t>(totalAttempts - attemptBegin, capacity_.candidateWindowRecords));
+                            assert(attemptCount > 0);
+                            ++result.candidateWindows;
+                            result.maximumCandidateWindow = std::max(result.maximumCandidateWindow,
+                                static_cast<uint64_t>(attemptCount));
+                            DeviceGrowthNodeWindow shortWindow{0, shortCount};
+                            DeviceGrowthNodeWindow cooperativeWindow{0, cooperativeCount};
+                            if (nodeCount > 1 && totalAttempts > attemptCount) {
+                                phase2GrowthCandidateNodeWindowsKernel<<<1, 32>>>(
+                                    shortIndices, shortCount, cooperativeIndices, cooperativeCount,
+                                    attemptStarts, attemptEnds, attemptBegin, attemptBegin + attemptCount, counters);
+                                GL_CUDA_ASSERT(cudaGetLastError());
+                                publishDeviceWords(counters->candidateNodeWindows,
+                                    2 * sizeof(DeviceGrowthNodeWindow) / sizeof(uint32_t), countTransfer);
+                                GL_CUDA_ASSERT(cudaEventRecord(exactDone, 0));
+                                GL_CUDA_ASSERT(cudaEventSynchronize(exactDone));
+                                std::memcpy(&shortWindow, countTransfer, sizeof(shortWindow));
+                                std::memcpy(&cooperativeWindow, countTransfer + 2, sizeof(cooperativeWindow));
+                                ++result.candidateNodeWindowQueries;
+                            }
+                            assert(shortWindow.begin <= shortCount && shortWindow.count <= shortCount - shortWindow.begin);
+                            assert(cooperativeWindow.begin <= cooperativeCount
+                                && cooperativeWindow.count <= cooperativeCount - cooperativeWindow.begin);
+                            assert(shortWindow.count + cooperativeWindow.count > 0);
+                            result.unslicedGateNodes += nodeCount;
+                            result.scheduledGateNodes += shortWindow.count + cooperativeWindow.count;
+                            if (shortWindow.count > 0) {
+                                phase2GrowthShortCheapGateKernel<<<(shortWindow.count + threads - 1) / threads, threads>>>(
+                                    columns, batches, deviceTasks, calls, filterCounts, filterOffsets,
+                                    sortedKeys, viewMasks, suffixMasks, parameters, nodes, prefixes,
+                                    secondary, variables, shortIndices + shortWindow.begin, shortWindow.count, attemptStarts, attemptBegin,
+                                    attemptCount, attempts, candidateFlags);
+                                GL_CUDA_ASSERT(cudaGetLastError());
+                            }
+                            if (cooperativeWindow.count > 0) {
+                                phase2GrowthCooperativeCheapGateKernel<<<cooperativeWindow.count, 64>>>(
+                                    columns, batches, deviceTasks, calls, filterCounts, filterOffsets,
+                                    sortedKeys, viewMasks, suffixMasks, parameters, nodes, prefixes,
+                                    secondary, variables, cooperativeIndices + cooperativeWindow.begin, cooperativeWindow.count,
+                                    attemptStarts, attemptBegin, attemptCount, attempts, candidateFlags);
+                                GL_CUDA_ASSERT(cudaGetLastError());
+                            }
+                            std::size_t bytes = selectionTemporaryBytes_;
+                            GL_CUDA_ASSERT(cub::DeviceSelect::Flagged(deviceSelectionTemporary_, bytes,
+                                thrust::counting_iterator<uint32_t>(0), candidateFlags, survivors,
+                                reinterpret_cast<uint32_t*>(static_cast<char*>(deviceCounters_)
+                                    + offsetof(DeviceGrowthCounters, shortNodeCount)), attemptCount));
+                            // One exact read gives the survivor count and refreshes
+                            // every bound after the previous probes.
+                            settleCounts();
+                            const uint32_t survivorCount = counts.shortNodeCount;
+                            assert(survivorCount <= attemptCount);
+                            for (uint32_t survivorBegin = 0; survivorBegin < survivorCount;) {
+                            gl::Phase2TraceScope phase2ProbeWindowTrace("GL.Phase2.Growth.ProbeWindow", survivorBegin);
+                                const uint32_t maximumWindow = std::min({capacity_.frontierRecords,
+                                    capacity_.acceptedEvents, capacity_.rawRequests});
+                                // Half windows keep two probes in flight: the host tightens
+                                // its bounds from the older probe's snapshot while the newer
+                                // one runs, instead of waiting for the device.
+                                const uint32_t desired = std::min(survivorCount - survivorBegin,
+                                    std::max(1u, maximumWindow / 2));
+                                const uint32_t minimumWindow = std::min(desired, std::max(1u, maximumWindow / 4));
+                                const auto freeRows = [&] {
+                                    return std::min({capacity_.frontierStoreRecords - childBound,
+                                        capacity_.acceptedEvents - eventBound,
+                                        capacity_.rawRequests - requestBound});
+                                };
+                                if (pendingSnapshots == 2 && desired > freeRows()) retireOldestSnapshot();
+                                // Settle exactly only when the bounds cannot cover the minimum
+                                // window; spill and drain only on exact counts. A small tail
+                                // drains before it creates repeated tiny launches.
+                                if (freeRows() < minimumWindow) {
+                                    settleCounts();
+                                    if (minimumWindow > capacity_.frontierStoreRecords - childBound)
+                                        spillRows(1, childRows, *next);
+                                    if (minimumWindow > capacity_.acceptedEvents - eventBound
+                                        || minimumWindow > capacity_.rawRequests - requestBound)
+                                        flushRequests();
+                                }
+                                const uint32_t selected = std::min(desired, freeRows());
+                                assert(selected > 0);
+                                phase2GrowthProbeSurvivorsKernel<<<std::min((selected + threads - 1) / threads,
+                                    residentProbeBlocks), threads>>>(
+                                    columns, batches, deviceTasks, calls, filterOffsets, sortedKeys, nodes,
+                                    prefixes, payload, variables, attempts, survivors + survivorBegin, selected, childRows, 1,
+                                    events, requests, subkeyCounts, counters, capacity_);
+                                GL_CUDA_ASSERT(cudaGetLastError());
+                                childBound += selected;
+                                eventBound += selected;
+                                requestBound += selected;
+                                survivorBegin += selected;
+                                ++result.probeWindows;
+                                recordSnapshot(selected);
+                            }
+                            attemptBegin += attemptCount;
+                        }
+                        pageAt += nodeCount;
+                    }
+                    if (devicePage) deviceDone += pageCount;
+                    else hostDone += static_cast<int32_t>(pageCount);
+                }
+                // The children form the next level: spilled host pages plus the
+                // rows left in the child buffer, which becomes the current one.
+                settleCounts();
+                currentDeviceRows = counts.frontierCounts[1];
+                clearFrontierCount(1);
+                current->resetKeepingPages();
+                std::swap(current, next);
+                currentStore = 1u - currentStore;
+                noteLevelSize();
+                finishLevel();
+            }
+            assert(current->empty() && next->empty() && currentDeviceRows == 0);
+        }
+        flushRequests(true);
+        for (cudaEvent_t event : uploadDone) GL_CUDA_ASSERT(cudaEventDestroy(event));
+        for (cudaEvent_t event : snapshotDone) GL_CUDA_ASSERT(cudaEventDestroy(event));
+        GL_CUDA_ASSERT(cudaEventDestroy(exactDone));
+        GL_CUDA_ASSERT(cudaHostUnregister(counterSnapshots));
+        GL_CUDA_ASSERT(cudaHostUnregister(uploadStages[1]));
+        GL_CUDA_ASSERT(cudaHostUnregister(countTransfer));
+        GL_CUDA_ASSERT(cudaHostUnregister(packedSizeTransfer));
+        GL_CUDA_ASSERT(cudaHostUnregister(nodeTransfer));
+        return result;
+    }
+
     /// @brief Download the most recent accepted growth-event ledger.
     ///
     /// @details
@@ -8786,7 +10567,7 @@ namespace gl::gpu {
     /// @brief Download the most recent raw whole-key request ledger.
     ///
     /// @details
-    /// Copies every pre-dedup whole-key hit. Positions remain zero pending the
+    /// Copies every recordable whole-key hit. Positions remain zero pending the
     /// exact processor-order reconstruction stage.
     ///
     /// @param destination Caller-owned raw-request output array.
@@ -8833,6 +10614,26 @@ namespace gl::gpu {
         return usedTaskCount_;
     }
 
+    /// @brief Download a bounded consecutive metadata window.
+    ///
+    /// @details Copies retained GPU decisions without changing ownership
+    /// or imposing a whole-buffer contiguous host allocation.
+    ///
+    /// @param begin First retained row, including the end for an empty range.
+    /// @param count Number of consecutive rows to copy.
+    /// @param destination Caller-owned space for count rows; null only if empty.
+    /// @return Nothing.
+    /// @invariant The requested range lies in the last completed device image.
+    void CudaPhase2GrowthBuffer::downloadAcceptedEventWindow(uint32_t begin, uint32_t count,
+        DeviceAcceptedGrowthEvent* destination) const {
+        assert(begin <= usedAcceptedEvents_ && count <= usedAcceptedEvents_ - begin);
+        if (count == 0) return;
+        assert(destination != nullptr);
+        GL_CUDA_ASSERT(cudaMemcpy(destination,
+            static_cast<const DeviceAcceptedGrowthEvent*>(deviceAcceptedEvents_) + begin,
+            static_cast<std::size_t>(count) * sizeof(DeviceAcceptedGrowthEvent), cudaMemcpyDeviceToHost));
+    }
+
     /// @brief Report the immutable bytes owned by the growth arrays.
     ///
     /// @details
@@ -8845,9 +10646,10 @@ namespace gl::gpu {
     uint64_t CudaPhase2GrowthBuffer::fixedAllocationBytes() const {
         return static_cast<uint64_t>(capacity_.calls)
                 * sizeof(DevicePhase2GrowthCall)
-            + static_cast<uint64_t>(capacity_.retainedRows) * 2
-            + static_cast<uint64_t>(capacity_.frontierRecords)
+            + static_cast<uint64_t>(capacity_.retainedRows) * (sizeof(uint32_t) + sizeof(uint8_t))
+            + static_cast<uint64_t>(capacity_.frontierStoreRecords)
                 * sizeof(DeviceGrowthNode) * 2
+            + capacity_.calls
             + static_cast<uint64_t>(capacity_.frontierRecords)
                 * sizeof(DeviceGrowthPrefix)
             + static_cast<uint64_t>(capacity_.prefixPayloadValues)
@@ -8875,25 +10677,29 @@ namespace gl::gpu {
             + sizeof(DeviceGrowthCounters);
     }
 
-    /// @brief Allocate all exact-order and deduplication scratch once.
+    /// @brief Allocate all exact-order scratch once.
     ///
     /// @details
-    /// Validates positive ceilings and a power-of-two deduplication table, queries
+    /// Validates positive ceilings and queries
     /// event radix-sort, segmented-scan, and request radix-sort scratch at maximum
     /// occupancy, then allocates every reusable array plus one shared temporary
     /// region large enough for the largest primitive.
     ///
-    /// @param fixedCapacity Immutable event, slot, and request ceilings.
+    /// @param fixedCapacity Immutable event and request ceilings.
+    /// @param allocation Optional shared arena; null owns standalone arrays.
     /// @return An empty reusable ordering owner.
     /// @invariant No later method changes an allocation address or capacity.
     CudaPhase2OrderingBuffer::CudaPhase2OrderingBuffer(
-        Phase2OrderingCapacity fixedCapacity)
+        Phase2OrderingCapacity fixedCapacity, CudaPhase2Arena* allocation)
         : capacity_(fixedCapacity) {
+        ownsDeviceAllocations_ = allocation == nullptr;
+        const auto allocate = [allocation](void** destination, std::size_t bytes) {
+            if (allocation != nullptr) allocation->allocate(destination, bytes);
+            else GL_CUDA_ASSERT(cudaMalloc(destination, bytes));
+        };
+
         static_cast<void>(queryCudaDeviceContract());
         assert(capacity_.events > 0);
-        assert(capacity_.deduplicationSlots > 0);
-        assert((capacity_.deduplicationSlots
-            & (capacity_.deduplicationSlots - 1)) == 0);
         assert(capacity_.requests > 0);
         assert(capacity_.events
             <= static_cast<uint32_t>(std::numeric_limits<int>::max()));
@@ -8936,30 +10742,24 @@ namespace gl::gpu {
             capacity_.events) * sizeof(uint32_t);
         const std::size_t scanValueBytes = static_cast<std::size_t>(
             capacity_.events) * sizeof(DeviceGrowthScanValue);
-        const std::size_t slotBytes = static_cast<std::size_t>(
-            capacity_.deduplicationSlots) * sizeof(uint32_t);
         const std::size_t tokenBytes = static_cast<std::size_t>(
             capacity_.requests) * sizeof(DeviceOrderedRequestToken);
         for (uint32_t ordinal = 0; ordinal < 2; ++ordinal) {
-            GL_CUDA_ASSERT(cudaMalloc(
-                &deviceKeys_[ordinal], eventWordBytes));
-            GL_CUDA_ASSERT(cudaMalloc(
-                &deviceIndices_[ordinal], eventWordBytes));
-            GL_CUDA_ASSERT(cudaMalloc(
-                &deviceScanValues_[ordinal], scanValueBytes));
-            GL_CUDA_ASSERT(cudaMalloc(
-                &deviceRequestTokens_[ordinal], tokenBytes));
+            allocate(
+                &deviceKeys_[ordinal], eventWordBytes);
+            allocate(
+                &deviceIndices_[ordinal], eventWordBytes);
+            allocate(
+                &deviceScanValues_[ordinal], scanValueBytes);
+            allocate(
+                &deviceRequestTokens_[ordinal], tokenBytes);
         }
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceOrderedIndices_, eventWordBytes));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceDeduplicationOwners_, slotBytes));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceDeduplicationMinimumOrders_, slotBytes));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceUniqueRequestCount_, sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceTemporary_, temporaryBytes_));
+        allocate(
+            &deviceOrderedIndices_, eventWordBytes);
+        allocate(
+            &deviceRequestCount_, sizeof(uint32_t));
+        allocate(
+            &deviceTemporary_, temporaryBytes_);
         for (uint32_t ordinal = 0; ordinal < 2; ++ordinal) {
             assert(deviceKeys_[ordinal] != nullptr);
             assert(deviceIndices_[ordinal] != nullptr);
@@ -8967,62 +10767,55 @@ namespace gl::gpu {
             assert(deviceRequestTokens_[ordinal] != nullptr);
         }
         assert(deviceOrderedIndices_ != nullptr);
-        assert(deviceDeduplicationOwners_ != nullptr);
-        assert(deviceDeduplicationMinimumOrders_ != nullptr);
-        assert(deviceUniqueRequestCount_ != nullptr);
+        assert(deviceRequestCount_ != nullptr);
         assert(deviceTemporary_ != nullptr);
     }
 
     /// @brief Release every exact-order device allocation.
     ///
     /// @details
-    /// Frees shared scratch, the unique counter, deduplication tables, preserved
+    /// Frees shared scratch, the request counter, preserved
     /// order, then both token, scan, index, and key arrays in reverse order.
     ///
     /// @return Nothing.
     CudaPhase2OrderingBuffer::~CudaPhase2OrderingBuffer() {
-        GL_CUDA_ASSERT(cudaFree(deviceTemporary_));
-        GL_CUDA_ASSERT(cudaFree(deviceUniqueRequestCount_));
-        GL_CUDA_ASSERT(cudaFree(deviceDeduplicationMinimumOrders_));
-        GL_CUDA_ASSERT(cudaFree(deviceDeduplicationOwners_));
-        GL_CUDA_ASSERT(cudaFree(deviceOrderedIndices_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceTemporary_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceRequestCount_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceOrderedIndices_));
         for (uint32_t ordinal = 2; ordinal > 0; --ordinal) {
-            GL_CUDA_ASSERT(cudaFree(deviceRequestTokens_[ordinal - 1]));
-            GL_CUDA_ASSERT(cudaFree(deviceScanValues_[ordinal - 1]));
-            GL_CUDA_ASSERT(cudaFree(deviceIndices_[ordinal - 1]));
-            GL_CUDA_ASSERT(cudaFree(deviceKeys_[ordinal - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceRequestTokens_[ordinal - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceScanValues_[ordinal - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceIndices_[ordinal - 1]));
+            if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceKeys_[ordinal - 1]));
         }
     }
 
-    /// @brief Reconstruct processor event order and deduplicate requests.
+    /// @brief Reconstruct event order and retain every recordable request.
     ///
     /// @details
-    /// Runs eleven stable least-significant-first radix passes over path, run,
-    /// call, and task components; preserves the final event permutation; assigns
-    /// task-local growth positions by segmented inclusive scan; inserts every
-    /// recordable event into a collision-exact per-call semantic hash table using
-    /// atomic minimum order; emits one token per occupied slot; and radix-sorts
-    /// those tokens by their retained event order.
+    /// Stable radix passes order task, call, stump and statement paths. A
+    /// segmented scan assigns task-local growth positions. Every recordable
+    /// event emits its own token, including repeated semantic request keys;
+    /// tokens are sorted by event order before evaluation.
     ///
     /// @param projection Uploaded resident logical-block image.
     /// @param tasks Uploaded task and batch image used by the growth calls.
     /// @param growth Completed unordered growth content.
-    /// @return Ordered event and unique request counts.
+    /// @return Ordered event and request counts.
     /// @invariant Growth content and its uploaded call schedule are unchanged.
-    Phase2OrderingResult CudaPhase2OrderingBuffer::orderAndDeduplicate(
+    Phase2OrderingResult CudaPhase2OrderingBuffer::orderRequests(
         const CudaPhase2ProjectionBuffer& projection,
         const CudaPhase2TaskBuffer& tasks,
         const CudaPhase2GrowthBuffer& growth) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2OrderingBuffer::orderRequests");
         assert(growth.usedAcceptedEvents_ <= capacity_.events);
         assert(growth.usedRawRequests_ <= capacity_.requests);
-        assert(growth.usedRawRequests_
-            <= capacity_.deduplicationSlots / 2);
         assert(projection.usedCounts_[0] > 0);
         assert(tasks.usedCounts_[0] > 0);
         usedEvents_ = growth.usedAcceptedEvents_;
         usedRequests_ = 0;
         GL_CUDA_ASSERT(cudaMemset(
-            deviceUniqueRequestCount_, 0, sizeof(uint32_t)));
+            deviceRequestCount_, 0, sizeof(uint32_t)));
         if (usedEvents_ == 0) return Phase2OrderingResult{};
         assert(usedEvents_
             <= static_cast<uint32_t>(std::numeric_limits<int>::max()));
@@ -9085,42 +10878,18 @@ namespace gl::gpu {
             static_cast<DeviceGrowthScanValue*>(deviceScanValues_[1]),
             DeviceGrowthSegmentedAdd{}, static_cast<int>(usedEvents_)));
 
-        const std::size_t slotBytes = static_cast<std::size_t>(
-            capacity_.deduplicationSlots) * sizeof(uint32_t);
-        GL_CUDA_ASSERT(cudaMemset(
-            deviceDeduplicationOwners_, 0xff, slotBytes));
-        GL_CUDA_ASSERT(cudaMemset(
-            deviceDeduplicationMinimumOrders_, 0xff, slotBytes));
-        phase2DeduplicateRequestsKernel<<<eventBlocks, threads>>>(
-            columns,
-            static_cast<const DevicePhase2Task*>(tasks.deviceColumns_[0]),
-            static_cast<const DevicePhase2GrowthCall*>(growth.deviceCalls_),
-            static_cast<const DeviceAcceptedGrowthEvent*>(
-                growth.deviceAcceptedEvents_),
-            static_cast<const uint32_t*>(deviceOrderedIndices_),
-            usedEvents_,
-            static_cast<uint32_t*>(deviceDeduplicationOwners_),
-            static_cast<uint32_t*>(deviceDeduplicationMinimumOrders_),
-            capacity_.deduplicationSlots);
-        GL_CUDA_ASSERT(cudaGetLastError());
-        const uint32_t slotBlocks =
-            (capacity_.deduplicationSlots + threads - 1) / threads;
-        phase2EmitUniqueRequestsKernel<<<slotBlocks, threads>>>(
+        phase2EmitRequestsKernel<<<eventBlocks, threads>>>(
+            static_cast<const DeviceAcceptedGrowthEvent*>(growth.deviceAcceptedEvents_),
             static_cast<const uint32_t*>(deviceOrderedIndices_),
             static_cast<const DeviceGrowthScanValue*>(deviceScanValues_[1]),
-            static_cast<const uint32_t*>(deviceDeduplicationOwners_),
-            static_cast<const uint32_t*>(
-                deviceDeduplicationMinimumOrders_),
-            capacity_.deduplicationSlots,
-            static_cast<DeviceOrderedRequestToken*>(deviceRequestTokens_[0]),
-            capacity_.requests,
-            static_cast<uint32_t*>(deviceUniqueRequestCount_));
+            usedEvents_, static_cast<DeviceOrderedRequestToken*>(deviceRequestTokens_[0]),
+            capacity_.requests, static_cast<uint32_t*>(deviceRequestCount_));
         GL_CUDA_ASSERT(cudaGetLastError());
         GL_CUDA_ASSERT(cudaDeviceSynchronize());
         GL_CUDA_ASSERT(cudaMemcpy(
-            &usedRequests_, deviceUniqueRequestCount_, sizeof(usedRequests_),
+            &usedRequests_, deviceRequestCount_, sizeof(usedRequests_),
             cudaMemcpyDeviceToHost));
-        assert(usedRequests_ <= growth.usedRawRequests_);
+        assert(usedRequests_ == growth.usedRawRequests_);
         if (usedRequests_ > 0) {
             const uint32_t requestBlocks =
                 (usedRequests_ + threads - 1) / threads;
@@ -9163,12 +10932,12 @@ namespace gl::gpu {
         return usedEvents_;
     }
 
-    /// @brief Download unique request tokens in exact processor stream order.
+    /// @brief Download request tokens in exact processor stream order.
     ///
     /// @param destination Caller-owned ordered-token output.
     /// @param capacity Destination element capacity.
-    /// @return Number of unique request tokens copied.
-    /// @invariant `capacity` covers the last unique request count.
+    /// @return Number of request tokens copied.
+    /// @invariant `capacity` covers the last request count.
     uint32_t CudaPhase2OrderingBuffer::downloadOrderedRequests(
         DeviceOrderedRequestToken* destination,
         uint32_t capacity) const {
@@ -9183,6 +10952,26 @@ namespace gl::gpu {
         return usedRequests_;
     }
 
+    /// @brief Download a bounded consecutive metadata window.
+    ///
+    /// @details Copies retained GPU decisions without changing ownership
+    /// or imposing a whole-buffer contiguous host allocation.
+    ///
+    /// @param begin First retained row, including the end for an empty range.
+    /// @param count Number of consecutive rows to copy.
+    /// @param destination Caller-owned space for count rows; null only if empty.
+    /// @return Nothing.
+    /// @invariant The requested range lies in the last completed device image.
+    void CudaPhase2OrderingBuffer::downloadOrderedRequestWindow(uint32_t begin, uint32_t count,
+        DeviceOrderedRequestToken* destination) const {
+        assert(begin <= usedRequests_ && count <= usedRequests_ - begin);
+        if (count == 0) return;
+        assert(destination != nullptr);
+        GL_CUDA_ASSERT(cudaMemcpy(destination,
+            static_cast<const DeviceOrderedRequestToken*>(deviceRequestTokens_[1]) + begin,
+            static_cast<std::size_t>(count) * sizeof(DeviceOrderedRequestToken), cudaMemcpyDeviceToHost));
+    }
+
     /// @brief Report every fixed ordering allocation including CUB scratch.
     ///
     /// @return Exact startup bytes owned by this ordering buffer.
@@ -9192,8 +10981,6 @@ namespace gl::gpu {
                 * sizeof(uint32_t) * 5
             + static_cast<uint64_t>(capacity_.events)
                 * sizeof(DeviceGrowthScanValue) * 2
-            + static_cast<uint64_t>(capacity_.deduplicationSlots)
-                * sizeof(uint32_t) * 2
             + static_cast<uint64_t>(capacity_.requests)
                 * sizeof(DeviceOrderedRequestToken) * 2
             + sizeof(uint32_t)
@@ -9209,11 +10996,18 @@ namespace gl::gpu {
     /// counters, and one shared scratch region sized for the largest scan.
     ///
     /// @param fixedCapacity Immutable evaluator work and output ceilings.
+    /// @param allocation Optional shared arena; null owns standalone arrays.
     /// @return An empty reusable evaluator owner.
     /// @invariant No later method changes an allocation address or capacity.
     CudaPhase2EvaluationBuffer::CudaPhase2EvaluationBuffer(
-        Phase2EvaluationCapacity fixedCapacity)
+        Phase2EvaluationCapacity fixedCapacity, CudaPhase2Arena* allocation)
         : capacity_(fixedCapacity) {
+        ownsDeviceAllocations_ = allocation == nullptr;
+        const auto allocate = [allocation](void** destination, std::size_t bytes) {
+            if (allocation != nullptr) allocation->allocate(destination, bytes);
+            else GL_CUDA_ASSERT(cudaMalloc(destination, bytes));
+        };
+
         static_cast<void>(queryCudaDeviceContract());
         const uint32_t capacities[13] = {
             capacity_.logicalBlocks, capacity_.requests, capacity_.reverseOwners,
@@ -9252,68 +11046,74 @@ namespace gl::gpu {
         if (doomScanBytes > temporaryBytes_) temporaryBytes_ = doomScanBytes;
         assert(temporaryBytes_ > 0);
 
-        GL_CUDA_ASSERT(cudaMalloc(&deviceRequestStates_,
+        allocate(&deviceRequestStates_,
             static_cast<std::size_t>(capacity_.requests)
-                * sizeof(DeviceEvaluationRequestState)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceRequestCounts_,
-            static_cast<std::size_t>(capacity_.requests) * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceRequestOffsets_,
-            static_cast<std::size_t>(capacity_.requests) * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceOwnerWork_,
+                * sizeof(DeviceEvaluationRequestState));
+        allocate(&deviceRequestCounts_,
+            static_cast<std::size_t>(capacity_.requests) * sizeof(uint32_t));
+        allocate(&deviceRequestOffsets_,
+            static_cast<std::size_t>(capacity_.requests) * sizeof(uint32_t));
+        allocate(&deviceOwnerWork_,
             static_cast<std::size_t>(capacity_.reverseOwners)
-                * sizeof(DeviceEvaluationOwnerWork)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceCandidates_,
+                * sizeof(DeviceEvaluationOwnerWork));
+        allocate(&deviceCandidates_,
             static_cast<std::size_t>(capacity_.candidateOwners)
-                * sizeof(DeviceEvaluationCandidate)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceEncodedHits_,
+                * sizeof(DeviceEvaluationCandidate));
+        allocate(&deviceEncodedHits_,
             static_cast<std::size_t>(capacity_.encodedHits)
-                * sizeof(DeviceEvaluationCandidate)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceValueCounts_,
+                * sizeof(DeviceEvaluationCandidate));
+        allocate(&deviceValueCounts_,
             static_cast<std::size_t>(capacity_.encodedHits)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceValueOffsets_,
+                * sizeof(uint32_t));
+        allocate(&deviceValueOffsets_,
             static_cast<std::size_t>(capacity_.encodedHits)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceValueWork_,
+                * sizeof(uint32_t));
+        allocate(&deviceValueWork_,
             static_cast<std::size_t>(capacity_.localValues)
-                * sizeof(DeviceEvaluationValueWork)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceFiringRecords_,
+                * sizeof(DeviceEvaluationValueWork));
+        allocate(&deviceFiringRecords_,
             static_cast<std::size_t>(capacity_.firingRecords)
-                * sizeof(DevicePhase2FiringRecord)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceGeneratedBytes_,
-            capacity_.generatedBytes));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceLevelValues_,
-            static_cast<std::size_t>(capacity_.levelValues) * sizeof(int32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceOriginDependencies_,
+                * sizeof(DevicePhase2FiringRecord));
+        allocate(&deviceGeneratedBytes_,
+            capacity_.generatedBytes);
+        allocate(&deviceLevelValues_,
+            static_cast<std::size_t>(capacity_.levelValues) * sizeof(int32_t));
+        allocate(&deviceOriginDependencies_,
             static_cast<std::size_t>(capacity_.originDependencies)
-                * sizeof(DeviceEvaluationDependency)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceMarkerKeys_,
+                * sizeof(DeviceEvaluationDependency));
+        allocate(&deviceMarkerKeys_,
             static_cast<std::size_t>(capacity_.markerKeys)
-                * sizeof(DeviceEvaluationByteSlice)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceMarkerRemainingArgs_,
+                * sizeof(DeviceEvaluationByteSlice));
+        allocate(&deviceMarkerRemainingArgs_,
             static_cast<std::size_t>(capacity_.markerRemainingArgs)
-                * sizeof(int32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceMarkerArgs_,
+                * sizeof(int32_t));
+        allocate(&deviceMarkerArgs_,
             static_cast<std::size_t>(capacity_.markerArgs)
-                * sizeof(DeviceEvaluationByteSlice)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceFiringOrderA_,
+                * sizeof(DeviceEvaluationByteSlice));
+        allocate(&deviceFiringOrderA_,
             static_cast<std::size_t>(capacity_.firingRecords)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceFiringOrderB_,
+                * sizeof(uint32_t));
+        allocate(&deviceFiringOrderB_,
             static_cast<std::size_t>(capacity_.firingRecords)
-                * sizeof(uint32_t)));
+                * sizeof(uint32_t));
         deviceFiringOrderResult_ = deviceFiringOrderA_;
-        GL_CUDA_ASSERT(cudaMalloc(&deviceDoomLines_,
+        allocate(&deviceDoomLines_,
             static_cast<std::size_t>(capacity_.logicalBlocks)
-                * sizeof(int64_t)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceDoomRequestIndices_,
+                * sizeof(int64_t));
+        allocate(&deviceDoomRequestIndices_,
             static_cast<std::size_t>(capacity_.logicalBlocks)
-                * sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceSelectedCount_, sizeof(uint32_t)));
-        GL_CUDA_ASSERT(cudaMalloc(
-            &deviceCounters_, sizeof(DeviceEvaluationCounters)));
-        GL_CUDA_ASSERT(cudaMalloc(&deviceTemporary_, temporaryBytes_));
+                * sizeof(uint32_t));
+        allocate(
+            &deviceSelectedCount_, sizeof(uint32_t));
+        allocate(
+            &deviceCounters_, sizeof(DeviceEvaluationCounters));
+        allocate(&deviceTemporary_, temporaryBytes_);
+        allocate(&deviceOutputBounds_, outputPlanningRows * sizeof(Phase2OutputUsage));
+        allocate(&deviceStreamOwnerOffsets_,
+            static_cast<std::size_t>(capacity_.requests) * sizeof(uint64_t));
+        allocate(&deviceStreamValueOffsets_,
+            static_cast<std::size_t>(capacity_.encodedHits) * sizeof(uint64_t));
+        allocate(&deviceStreamTotal_, sizeof(uint64_t));
         assert(deviceRequestStates_ != nullptr);
         assert(deviceRequestCounts_ != nullptr);
         assert(deviceRequestOffsets_ != nullptr);
@@ -9349,29 +11149,33 @@ namespace gl::gpu {
     ///
     /// @return Nothing.
     CudaPhase2EvaluationBuffer::~CudaPhase2EvaluationBuffer() {
-        GL_CUDA_ASSERT(cudaFree(deviceTemporary_));
-        GL_CUDA_ASSERT(cudaFree(deviceCounters_));
-        GL_CUDA_ASSERT(cudaFree(deviceSelectedCount_));
-        GL_CUDA_ASSERT(cudaFree(deviceDoomRequestIndices_));
-        GL_CUDA_ASSERT(cudaFree(deviceDoomLines_));
-        GL_CUDA_ASSERT(cudaFree(deviceFiringOrderB_));
-        GL_CUDA_ASSERT(cudaFree(deviceFiringOrderA_));
-        GL_CUDA_ASSERT(cudaFree(deviceMarkerArgs_));
-        GL_CUDA_ASSERT(cudaFree(deviceMarkerRemainingArgs_));
-        GL_CUDA_ASSERT(cudaFree(deviceMarkerKeys_));
-        GL_CUDA_ASSERT(cudaFree(deviceOriginDependencies_));
-        GL_CUDA_ASSERT(cudaFree(deviceLevelValues_));
-        GL_CUDA_ASSERT(cudaFree(deviceGeneratedBytes_));
-        GL_CUDA_ASSERT(cudaFree(deviceFiringRecords_));
-        GL_CUDA_ASSERT(cudaFree(deviceValueWork_));
-        GL_CUDA_ASSERT(cudaFree(deviceValueOffsets_));
-        GL_CUDA_ASSERT(cudaFree(deviceValueCounts_));
-        GL_CUDA_ASSERT(cudaFree(deviceEncodedHits_));
-        GL_CUDA_ASSERT(cudaFree(deviceCandidates_));
-        GL_CUDA_ASSERT(cudaFree(deviceOwnerWork_));
-        GL_CUDA_ASSERT(cudaFree(deviceRequestOffsets_));
-        GL_CUDA_ASSERT(cudaFree(deviceRequestCounts_));
-        GL_CUDA_ASSERT(cudaFree(deviceRequestStates_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceOutputBounds_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceStreamTotal_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceStreamValueOffsets_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceStreamOwnerOffsets_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceTemporary_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCounters_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceSelectedCount_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceDoomRequestIndices_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceDoomLines_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceFiringOrderB_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceFiringOrderA_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceMarkerArgs_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceMarkerRemainingArgs_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceMarkerKeys_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceOriginDependencies_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceLevelValues_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceGeneratedBytes_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceFiringRecords_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceValueWork_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceValueOffsets_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceValueCounts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceEncodedHits_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceCandidates_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceOwnerWork_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceRequestOffsets_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceRequestCounts_));
+        if (ownsDeviceAllocations_) GL_CUDA_ASSERT(cudaFree(deviceRequestStates_));
     }
 
     /// @brief Expand exact ordered requests through projected LMV work.
@@ -9386,7 +11190,7 @@ namespace gl::gpu {
     /// @param projection Uploaded resident logical-block image.
     /// @param tasks Uploaded executor task image.
     /// @param growth Completed growth content and call schedule.
-    /// @param ordering Exact ordered unique request tokens.
+    /// @param ordering Exact ordered request tokens.
     /// @return Used counts at every work-expansion boundary.
     /// @invariant All inputs belong to the same uploaded Phase 2 sweep.
     Phase2EvaluationResult CudaPhase2EvaluationBuffer::expandEvaluationWork(
@@ -9587,32 +11391,39 @@ namespace gl::gpu {
             usedEncodedHits_, usedValues_ };
     }
 
-    /// @brief Materialize byte-exact substituted firing expressions on the GPU.
+    /// @brief Initialize a resumable evaluation stream.
     ///
     /// @details
-    /// Consumes the selected LMV prefix from the preceding expansion, applies
-    /// rule-scope and source-type gates, reconstructs normalized-variable reverse
-    /// maps, and writes transformed expressions plus source classification into
-    /// fixed firing arenas. It also merges sorted-unique premise/rule levels and
-    /// writes source-first, decoded-premise-ordered head provenance. Only the four
-    /// output counters are cleared; expansion counts remain available for
-    /// diagnostics.
+    /// The frozen request image stays in VRAM while bounded owner and rule-value
+    /// windows advance. Complete expansion counts use 64-bit offsets.
     ///
-    /// @param projection Uploaded resident logical-block image.
-    /// @param tasks Uploaded executor task image.
-    /// @param growth Completed growth content and call schedule.
-    /// @param ordering Exact ordered unique request tokens.
-    /// @return Exact firing-record, generated-byte, level, and provenance counts.
-    /// @invariant The four inputs are the same objects passed to the immediately
-    ///            preceding `expandEvaluationWork` call.
-    Phase2FiringExpressionResult
-    CudaPhase2EvaluationBuffer::materializeFiringExpressions(
+    /// @param projection Immutable uploaded LB image.
+    /// @param tasks Immutable task descriptors.
+    /// @param growth Live growth events and call identities.
+    /// @param ordering Unique live request tokens.
+    /// @param metrics Optional observation-only expansion totals and occupancy.
+    /// @return Nothing.
+    /// @invariant Input ownership remains unchanged until exhaustion.
+    void CudaPhase2EvaluationBuffer::beginEvaluationWindows(
         const CudaPhase2ProjectionBuffer& projection,
         const CudaPhase2TaskBuffer& tasks,
         const CudaPhase2GrowthBuffer& growth,
-        const CudaPhase2OrderingBuffer& ordering) {
-        assert(usedValues_ <= capacity_.localValues);
+        const CudaPhase2OrderingBuffer& ordering, Phase2EvaluationStreamMetrics* metrics) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::beginEvaluationWindows");
+        streamMetrics_ = metrics;
+        if (metrics != nullptr) *metrics = {};
+        assert(!streamOpen_);
+        streamOpen_ = true;
+        streamOwnerAt_ = streamValueAt_ = streamValueCount_ = 0;
+        streamOwnerCount_ = 0;
+        streamRequestCount_ = ordering.usedRequests_;
         assert(ordering.usedRequests_ <= capacity_.requests);
+        assert(projection.usedCounts_[0] > 0);
+        assert(tasks.usedCounts_[0] > 0);
+        assert(growth.usedAcceptedEvents_ > 0 || ordering.usedRequests_ == 0);
+        usedCandidates_ = 0;
+        usedEncodedHits_ = 0;
+        usedValues_ = 0;
         usedFiringRecords_ = 0;
         usedGeneratedBytes_ = 0;
         usedLevelValues_ = 0;
@@ -9620,11 +11431,14 @@ namespace gl::gpu {
         usedMarkerKeys_ = 0;
         usedMarkerRemainingArgs_ = 0;
         usedMarkerArgs_ = 0;
+        usedFiringOrder_ = 0;
+        usedDoomLines_ = 0;
+        deviceFiringOrderResult_ = deviceFiringOrderA_;
         GL_CUDA_ASSERT(cudaMemset(
-            static_cast<char*>(deviceCounters_)
-                + offsetof(DeviceEvaluationCounters, firingRecordCount),
-            0, sizeof(uint32_t) * 7));
-        if (usedValues_ == 0) return Phase2FiringExpressionResult{};
+            deviceCounters_, 0, sizeof(DeviceEvaluationCounters)));
+        GL_CUDA_ASSERT(cudaMemset(
+            deviceSelectedCount_, 0, sizeof(uint32_t)));
+        if (ordering.usedRequests_ == 0) return;
 
         ProjectionSemanticColumns columns{};
         columns.logicalBlocks = static_cast<
@@ -9676,7 +11490,372 @@ namespace gl::gpu {
             projection.deviceColumns_[23]);
 
         constexpr uint32_t threads = 256;
-        const uint32_t blocks = (usedValues_ + threads - 1) / threads;
+        const uint32_t requestBlocks =
+            (ordering.usedRequests_ + threads - 1) / threads;
+        phase2EvaluationRequestKernel<<<requestBlocks, threads>>>(
+            columns,
+            static_cast<const DevicePhase2Task*>(tasks.deviceColumns_[0]),
+            static_cast<const DevicePhase2GrowthCall*>(growth.deviceCalls_),
+            static_cast<const DeviceAcceptedGrowthEvent*>(
+                growth.deviceAcceptedEvents_),
+            static_cast<const DeviceOrderedRequestToken*>(
+                ordering.deviceRequestTokens_[1]),
+            ordering.usedRequests_,
+            static_cast<DeviceEvaluationRequestState*>(deviceRequestStates_),
+            static_cast<uint32_t*>(deviceRequestCounts_),
+            static_cast<DeviceEvaluationCounters*>(deviceCounters_), false);
+        GL_CUDA_ASSERT(cudaGetLastError());
+        phase2WideExpansionOffsetsKernel<<<1, 1>>>(
+            static_cast<const uint32_t*>(deviceRequestCounts_), streamRequestCount_,
+            static_cast<uint64_t*>(deviceStreamOwnerOffsets_),
+            static_cast<uint64_t*>(deviceStreamTotal_));
+        GL_CUDA_ASSERT(cudaGetLastError());
+        GL_CUDA_ASSERT(cudaMemcpy(&streamOwnerCount_, deviceStreamTotal_,
+            sizeof(uint64_t), cudaMemcpyDeviceToHost));
+        if (streamMetrics_ != nullptr) streamMetrics_->owners = streamOwnerCount_;
+    }
+
+    /// @brief Prepare the next bounded rule-value window.
+    ///
+    /// @details
+    /// The frozen request image stays in VRAM while bounded owner and rule-value
+    /// windows advance. Complete expansion counts use 64-bit offsets.
+    ///
+    /// @param projection Immutable uploaded LB image.
+    /// @param tasks Immutable task descriptors.
+    /// @param growth Live growth events and call identities.
+    /// @param ordering Unique live request tokens.
+    /// @return True for prepared values, false at complete exhaustion.
+    /// @invariant Input ownership remains unchanged until exhaustion.
+    bool CudaPhase2EvaluationBuffer::nextEvaluationValues(
+        const CudaPhase2ProjectionBuffer& projection,
+        const CudaPhase2TaskBuffer& tasks,
+        const CudaPhase2GrowthBuffer& growth,
+        const CudaPhase2OrderingBuffer& ordering) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::nextEvaluationValues");
+        assert(streamOpen_ && ordering.usedRequests_ == streamRequestCount_);
+        ProjectionSemanticColumns columns{};
+        columns.logicalBlocks = static_cast<
+            const DeviceLogicalBlockProjection*>(projection.deviceColumns_[0]);
+        columns.statements = static_cast<const IntEncodedExpr*>(
+            projection.deviceColumns_[1]);
+        columns.nameRecords = static_cast<const DeviceNameRecord*>(
+            projection.deviceColumns_[2]);
+        columns.nameBytes = static_cast<const char*>(projection.deviceColumns_[3]);
+        columns.nameSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[4]);
+        columns.ruleStringRecords = static_cast<const DeviceRuleStringRecord*>(
+            projection.deviceColumns_[5]);
+        columns.ruleStringBytes = static_cast<const char*>(
+            projection.deviceColumns_[6]);
+        columns.byteMapViews = static_cast<const DeviceByteMapView*>(
+            projection.deviceColumns_[7]);
+        columns.byteMapEntries = static_cast<const DeviceByteMapEntry*>(
+            projection.deviceColumns_[8]);
+        columns.byteMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[9]);
+        columns.byteKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[10]);
+        columns.blobRecords = static_cast<const DeviceBlobRecord*>(
+            projection.deviceColumns_[11]);
+        columns.blobBytes = static_cast<const char*>(
+            projection.deviceColumns_[12]);
+        columns.reverseMapViews = static_cast<const DeviceReverseMapView*>(
+            projection.deviceColumns_[13]);
+        columns.reverseMapEntries = static_cast<const DeviceReverseMapEntry*>(
+            projection.deviceColumns_[14]);
+        columns.reverseMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[15]);
+        columns.reverseKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[16]);
+        columns.reverseOwners = static_cast<const int32_t*>(
+            projection.deviceColumns_[17]);
+        columns.podMapViews = static_cast<const DevicePodMapView*>(
+            projection.deviceColumns_[18]);
+        columns.podMapEntries = static_cast<const DevicePodMapEntry*>(
+            projection.deviceColumns_[19]);
+        columns.podMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[20]);
+        columns.podRunValues = static_cast<const int32_t*>(
+            projection.deviceColumns_[21]);
+        columns.mandatoryStatementKeys = static_cast<const int64_t*>(
+            projection.deviceColumns_[22]);
+        columns.metadataBytes = static_cast<const char*>(
+            projection.deviceColumns_[23]);
+
+        constexpr uint32_t threads = 256;
+        for (;;) {
+            if (streamValueAt_ < streamValueCount_) {
+                usedValues_ = static_cast<uint32_t>(std::min(
+                    streamValueCount_ - streamValueAt_,
+                    static_cast<uint64_t>(capacity_.localValues)));
+                phase2EvaluationValueWindowKernel<<<(usedValues_ + threads - 1) / threads, threads>>>(
+                    columns, static_cast<const DeviceEvaluationCandidate*>(deviceEncodedHits_),
+                    static_cast<const uint64_t*>(deviceStreamValueOffsets_), usedEncodedHits_,
+                    streamValueAt_, usedValues_,
+                    static_cast<DeviceEvaluationValueWork*>(deviceValueWork_));
+                GL_CUDA_ASSERT(cudaGetLastError());
+                GL_CUDA_ASSERT(cudaDeviceSynchronize());
+                if (streamMetrics_ != nullptr) {
+                    streamMetrics_->values += usedValues_;
+                    ++streamMetrics_->valueWindows;
+                    streamMetrics_->maximumValueWindow = std::max(streamMetrics_->maximumValueWindow, usedValues_);
+                }
+                streamValueAt_ += usedValues_;
+                return true;
+            }
+            if (streamOwnerAt_ == streamOwnerCount_) {
+                usedValues_ = 0;
+                streamOpen_ = false;
+                return false;
+            }
+            const uint32_t ownerCount = static_cast<uint32_t>(std::min(
+                streamOwnerCount_ - streamOwnerAt_, static_cast<uint64_t>(
+                    std::min(capacity_.reverseOwners,
+                        std::min(capacity_.candidateOwners, capacity_.encodedHits)))));
+            assert(ownerCount > 0);
+            if (streamMetrics_ != nullptr) {
+                ++streamMetrics_->ownerWindows;
+                streamMetrics_->maximumOwnerWindow = std::max(streamMetrics_->maximumOwnerWindow, ownerCount);
+            }
+            phase2EvaluationOwnerWindowKernel<<<(ownerCount + threads - 1) / threads, threads>>>(
+                columns, static_cast<const DeviceEvaluationRequestState*>(deviceRequestStates_),
+                static_cast<const uint64_t*>(deviceStreamOwnerOffsets_), streamRequestCount_,
+                streamOwnerAt_, ownerCount, static_cast<DeviceEvaluationOwnerWork*>(deviceOwnerWork_));
+            GL_CUDA_ASSERT(cudaGetLastError());
+            GL_CUDA_ASSERT(cudaMemset(deviceSelectedCount_, 0, sizeof(uint32_t)));
+            phase2EvaluationCandidateKernel<<<(ownerCount + threads - 1) / threads, threads>>>(
+                columns, static_cast<const DevicePhase2Task*>(tasks.deviceColumns_[0]),
+                static_cast<const DevicePhase2GrowthCall*>(growth.deviceCalls_),
+                static_cast<const DeviceAcceptedGrowthEvent*>(growth.deviceAcceptedEvents_),
+                static_cast<const DeviceOrderedRequestToken*>(ordering.deviceRequestTokens_[1]),
+                static_cast<const DeviceEvaluationOwnerWork*>(deviceOwnerWork_), ownerCount,
+                static_cast<DeviceEvaluationCandidate*>(deviceCandidates_), capacity_.candidateOwners,
+                static_cast<uint32_t*>(deviceSelectedCount_));
+            GL_CUDA_ASSERT(cudaGetLastError());
+            GL_CUDA_ASSERT(cudaMemcpy(&usedCandidates_, deviceSelectedCount_,
+                sizeof(uint32_t), cudaMemcpyDeviceToHost));
+            assert(usedCandidates_ <= ownerCount);
+            if (streamMetrics_ != nullptr) streamMetrics_->candidates += usedCandidates_;
+            streamOwnerAt_ += ownerCount;
+            usedEncodedHits_ = 0;
+            if (usedCandidates_ == 0) continue;
+            GL_CUDA_ASSERT(cudaMemset(deviceSelectedCount_, 0, sizeof(uint32_t)));
+            phase2EvaluationCompactEncodedKernel<<<(usedCandidates_ + threads - 1) / threads, threads>>>(
+                static_cast<const DeviceEvaluationCandidate*>(deviceCandidates_), usedCandidates_,
+                static_cast<DeviceEvaluationCandidate*>(deviceEncodedHits_), capacity_.encodedHits,
+                static_cast<uint32_t*>(deviceSelectedCount_));
+            GL_CUDA_ASSERT(cudaGetLastError());
+            GL_CUDA_ASSERT(cudaMemcpy(&usedEncodedHits_, deviceSelectedCount_,
+                sizeof(uint32_t), cudaMemcpyDeviceToHost));
+            assert(usedEncodedHits_ <= usedCandidates_);
+            if (streamMetrics_ != nullptr) streamMetrics_->hits += usedEncodedHits_;
+            if (usedEncodedHits_ == 0) continue;
+            phase2EvaluationValueCountsKernel<<<(usedEncodedHits_ + threads - 1) / threads, threads>>>(
+                columns, static_cast<const DeviceEvaluationCandidate*>(deviceEncodedHits_), usedEncodedHits_,
+                static_cast<uint32_t*>(deviceValueCounts_),
+                static_cast<DeviceEvaluationCounters*>(deviceCounters_), false);
+            GL_CUDA_ASSERT(cudaGetLastError());
+            phase2WideExpansionOffsetsKernel<<<1, 1>>>(
+                static_cast<const uint32_t*>(deviceValueCounts_), usedEncodedHits_,
+                static_cast<uint64_t*>(deviceStreamValueOffsets_),
+                static_cast<uint64_t*>(deviceStreamTotal_));
+            GL_CUDA_ASSERT(cudaGetLastError());
+            GL_CUDA_ASSERT(cudaMemcpy(&streamValueCount_, deviceStreamTotal_,
+                sizeof(uint64_t), cudaMemcpyDeviceToHost));
+            streamValueAt_ = 0;
+        }
+    }
+
+    /// @brief Measure bounded output metadata using the GPU's rule preparation.
+    ///
+    /// @details
+    /// Downloads counts only. All semantic work and transformed-byte sizing
+    /// execute on the device against the same frozen request image.
+    ///
+    /// @param projection Frozen LB input.
+    /// @param tasks Live task descriptors.
+    /// @param growth Live request events and call descriptors.
+    /// @param ordering Live request tokens.
+    /// @param valueBegin First prepared value in the measurement window.
+    /// @param valueCount Number of metadata records, at most outputPlanningRows.
+    /// @param destination Caller-owned counts for every output column.
+    /// @param markerKeyBegin First included marker key.
+    /// @param markerKeyCount Maximum included marker keys per value.
+    /// @return Nothing.
+    /// @invariant Measurement neither consumes work nor reserves output payloads.
+    void CudaPhase2EvaluationBuffer::measureFiringOutputBounds(
+        const CudaPhase2ProjectionBuffer& projection,
+        const CudaPhase2TaskBuffer& tasks,
+        const CudaPhase2GrowthBuffer& growth,
+        const CudaPhase2OrderingBuffer& ordering, uint32_t valueBegin,
+        uint32_t valueCount, Phase2OutputUsage* destination,
+        uint32_t markerKeyBegin, uint32_t markerKeyCount) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::measureFiringOutputBounds");
+        assert(valueBegin <= usedValues_ && valueCount <= usedValues_ - valueBegin);
+        assert(valueCount > 0 && valueCount <= outputPlanningRows && destination != nullptr);
+        ProjectionSemanticColumns columns{};
+        columns.logicalBlocks = static_cast<
+            const DeviceLogicalBlockProjection*>(projection.deviceColumns_[0]);
+        columns.statements = static_cast<const IntEncodedExpr*>(
+            projection.deviceColumns_[1]);
+        columns.nameRecords = static_cast<const DeviceNameRecord*>(
+            projection.deviceColumns_[2]);
+        columns.nameBytes = static_cast<const char*>(projection.deviceColumns_[3]);
+        columns.nameSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[4]);
+        columns.ruleStringRecords = static_cast<const DeviceRuleStringRecord*>(
+            projection.deviceColumns_[5]);
+        columns.ruleStringBytes = static_cast<const char*>(
+            projection.deviceColumns_[6]);
+        columns.byteMapViews = static_cast<const DeviceByteMapView*>(
+            projection.deviceColumns_[7]);
+        columns.byteMapEntries = static_cast<const DeviceByteMapEntry*>(
+            projection.deviceColumns_[8]);
+        columns.byteMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[9]);
+        columns.byteKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[10]);
+        columns.blobRecords = static_cast<const DeviceBlobRecord*>(
+            projection.deviceColumns_[11]);
+        columns.blobBytes = static_cast<const char*>(
+            projection.deviceColumns_[12]);
+        columns.reverseMapViews = static_cast<const DeviceReverseMapView*>(
+            projection.deviceColumns_[13]);
+        columns.reverseMapEntries = static_cast<const DeviceReverseMapEntry*>(
+            projection.deviceColumns_[14]);
+        columns.reverseMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[15]);
+        columns.reverseKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[16]);
+        columns.reverseOwners = static_cast<const int32_t*>(
+            projection.deviceColumns_[17]);
+        columns.podMapViews = static_cast<const DevicePodMapView*>(
+            projection.deviceColumns_[18]);
+        columns.podMapEntries = static_cast<const DevicePodMapEntry*>(
+            projection.deviceColumns_[19]);
+        columns.podMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[20]);
+        columns.podRunValues = static_cast<const int32_t*>(
+            projection.deviceColumns_[21]);
+        columns.mandatoryStatementKeys = static_cast<const int64_t*>(
+            projection.deviceColumns_[22]);
+        columns.metadataBytes = static_cast<const char*>(
+            projection.deviceColumns_[23]);
+
+        constexpr uint32_t threads = 128;
+        phase2FiringOutputBoundsKernel<<<(valueCount + threads - 1) / threads, threads>>>(
+            columns, static_cast<const DevicePhase2Task*>(tasks.deviceColumns_[0]),
+            static_cast<const DevicePhase2GrowthCall*>(growth.deviceCalls_),
+            static_cast<const DeviceAcceptedGrowthEvent*>(growth.deviceAcceptedEvents_),
+            static_cast<const DeviceOrderedRequestToken*>(ordering.deviceRequestTokens_[1]),
+            static_cast<const DeviceEvaluationRequestState*>(deviceRequestStates_),
+            static_cast<const DeviceEvaluationValueWork*>(deviceValueWork_) + valueBegin,
+            valueCount, static_cast<Phase2OutputUsage*>(deviceOutputBounds_),
+            markerKeyBegin, markerKeyCount);
+        GL_CUDA_ASSERT(cudaGetLastError());
+        GL_CUDA_ASSERT(cudaMemcpy(destination, deviceOutputBounds_,
+            valueCount * sizeof(Phase2OutputUsage), cudaMemcpyDeviceToHost));
+    }
+
+    /// @brief Materialize byte-exact substituted firing expressions on the GPU.
+    ///
+    /// @details
+    /// Consumes the selected LMV prefix from the preceding expansion, applies
+    /// rule-scope and source-type gates, reconstructs normalized-variable reverse
+    /// maps, and writes transformed expressions plus source classification into
+    /// fixed firing arenas. It also merges sorted-unique premise/rule levels and
+    /// writes source-first, decoded-premise-ordered head provenance. Only the four
+    /// output counters are cleared; expansion counts remain available for
+    /// diagnostics.
+    ///
+    /// @param projection Uploaded resident logical-block image.
+    /// @param tasks Uploaded executor task image.
+    /// @param growth Completed growth content and call schedule.
+    /// @param ordering Exact ordered request tokens.
+    /// @param valueBegin First prepared value to materialize.
+    /// @param valueCount Maximum prepared values to materialize.
+    /// @param markerKeyBegin First marker key included in each value.
+    /// @param markerKeyCount Maximum marker keys included in each value.
+    /// @return Exact firing-record, generated-byte, level, and provenance counts.
+    /// @invariant The four inputs are the same objects passed to the immediately
+    ///            preceding `expandEvaluationWork` call.
+    Phase2FiringExpressionResult
+    CudaPhase2EvaluationBuffer::materializeFiringExpressions(
+        const CudaPhase2ProjectionBuffer& projection,
+        const CudaPhase2TaskBuffer& tasks,
+        const CudaPhase2GrowthBuffer& growth,
+        const CudaPhase2OrderingBuffer& ordering, uint32_t valueBegin,
+        uint32_t valueCount, uint32_t markerKeyBegin, uint32_t markerKeyCount) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::materializeFiringExpressions");
+        assert(valueBegin <= usedValues_);
+        const uint32_t selectedValues = std::min(valueCount, usedValues_ - valueBegin);
+        assert(usedValues_ <= capacity_.localValues);
+        assert(ordering.usedRequests_ <= capacity_.requests);
+        usedFiringRecords_ = 0;
+        usedGeneratedBytes_ = 0;
+        usedLevelValues_ = 0;
+        usedOriginDependencies_ = 0;
+        usedMarkerKeys_ = 0;
+        usedMarkerRemainingArgs_ = 0;
+        usedMarkerArgs_ = 0;
+        GL_CUDA_ASSERT(cudaMemset(
+            static_cast<char*>(deviceCounters_)
+                + offsetof(DeviceEvaluationCounters, firingRecordCount),
+            0, sizeof(uint32_t) * 7));
+        if (selectedValues == 0) return Phase2FiringExpressionResult{};
+
+        ProjectionSemanticColumns columns{};
+        columns.logicalBlocks = static_cast<
+            const DeviceLogicalBlockProjection*>(projection.deviceColumns_[0]);
+        columns.statements = static_cast<const IntEncodedExpr*>(
+            projection.deviceColumns_[1]);
+        columns.nameRecords = static_cast<const DeviceNameRecord*>(
+            projection.deviceColumns_[2]);
+        columns.nameBytes = static_cast<const char*>(projection.deviceColumns_[3]);
+        columns.nameSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[4]);
+        columns.ruleStringRecords = static_cast<const DeviceRuleStringRecord*>(
+            projection.deviceColumns_[5]);
+        columns.ruleStringBytes = static_cast<const char*>(
+            projection.deviceColumns_[6]);
+        columns.byteMapViews = static_cast<const DeviceByteMapView*>(
+            projection.deviceColumns_[7]);
+        columns.byteMapEntries = static_cast<const DeviceByteMapEntry*>(
+            projection.deviceColumns_[8]);
+        columns.byteMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[9]);
+        columns.byteKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[10]);
+        columns.blobRecords = static_cast<const DeviceBlobRecord*>(
+            projection.deviceColumns_[11]);
+        columns.blobBytes = static_cast<const char*>(
+            projection.deviceColumns_[12]);
+        columns.reverseMapViews = static_cast<const DeviceReverseMapView*>(
+            projection.deviceColumns_[13]);
+        columns.reverseMapEntries = static_cast<const DeviceReverseMapEntry*>(
+            projection.deviceColumns_[14]);
+        columns.reverseMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[15]);
+        columns.reverseKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[16]);
+        columns.reverseOwners = static_cast<const int32_t*>(
+            projection.deviceColumns_[17]);
+        columns.podMapViews = static_cast<const DevicePodMapView*>(
+            projection.deviceColumns_[18]);
+        columns.podMapEntries = static_cast<const DevicePodMapEntry*>(
+            projection.deviceColumns_[19]);
+        columns.podMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[20]);
+        columns.podRunValues = static_cast<const int32_t*>(
+            projection.deviceColumns_[21]);
+        columns.mandatoryStatementKeys = static_cast<const int64_t*>(
+            projection.deviceColumns_[22]);
+        columns.metadataBytes = static_cast<const char*>(
+            projection.deviceColumns_[23]);
+
+        constexpr uint32_t threads = 256;
+        const uint32_t blocks = (selectedValues + threads - 1) / threads;
         phase2FiringExpressionKernel<<<blocks, threads>>>(
             columns,
             static_cast<const DevicePhase2Task*>(tasks.deviceColumns_[0]),
@@ -9687,8 +11866,8 @@ namespace gl::gpu {
                 ordering.deviceRequestTokens_[1]),
             static_cast<const DeviceEvaluationRequestState*>(
                 deviceRequestStates_),
-            static_cast<const DeviceEvaluationValueWork*>(deviceValueWork_),
-            usedValues_,
+            static_cast<const DeviceEvaluationValueWork*>(deviceValueWork_) + valueBegin,
+            selectedValues,
             static_cast<DevicePhase2FiringRecord*>(deviceFiringRecords_),
             capacity_.firingRecords,
             static_cast<char*>(deviceGeneratedBytes_),
@@ -9704,7 +11883,7 @@ namespace gl::gpu {
             capacity_.markerRemainingArgs,
             static_cast<DeviceEvaluationByteSlice*>(deviceMarkerArgs_),
             capacity_.markerArgs,
-            static_cast<DeviceEvaluationCounters*>(deviceCounters_));
+            static_cast<DeviceEvaluationCounters*>(deviceCounters_), markerKeyBegin, markerKeyCount);
         GL_CUDA_ASSERT(cudaGetLastError());
         GL_CUDA_ASSERT(cudaDeviceSynchronize());
         DeviceEvaluationCounters hostCounters{};
@@ -9832,6 +12011,73 @@ namespace gl::gpu {
         GL_CUDA_ASSERT(cudaDeviceSynchronize());
         deviceFiringOrderResult_ = input;
         return usedFiringOrder_;
+    }
+
+    /// @brief Attach original GPU early-exit verdicts to the current output.
+    ///
+    /// @details The deactivation predicate is unchanged. Selection is deferred
+    /// until original request positions are known across all capacity drains.
+    ///
+    /// @param projection Frozen logical-block image used for materialization.
+    /// @return Nothing.
+    /// @invariant Every retained header refers to the current generated bytes.
+    void CudaPhase2EvaluationBuffer::markDoomTriggers(
+        const CudaPhase2ProjectionBuffer& projection) {
+        if (usedFiringRecords_ == 0) return;
+        ProjectionSemanticColumns columns{};
+        columns.logicalBlocks = static_cast<
+            const DeviceLogicalBlockProjection*>(projection.deviceColumns_[0]);
+        columns.statements = static_cast<const IntEncodedExpr*>(
+            projection.deviceColumns_[1]);
+        columns.nameRecords = static_cast<const DeviceNameRecord*>(
+            projection.deviceColumns_[2]);
+        columns.nameBytes = static_cast<const char*>(projection.deviceColumns_[3]);
+        columns.nameSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[4]);
+        columns.ruleStringRecords = static_cast<const DeviceRuleStringRecord*>(
+            projection.deviceColumns_[5]);
+        columns.ruleStringBytes = static_cast<const char*>(
+            projection.deviceColumns_[6]);
+        columns.byteMapViews = static_cast<const DeviceByteMapView*>(
+            projection.deviceColumns_[7]);
+        columns.byteMapEntries = static_cast<const DeviceByteMapEntry*>(
+            projection.deviceColumns_[8]);
+        columns.byteMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[9]);
+        columns.byteKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[10]);
+        columns.blobRecords = static_cast<const DeviceBlobRecord*>(
+            projection.deviceColumns_[11]);
+        columns.blobBytes = static_cast<const char*>(
+            projection.deviceColumns_[12]);
+        columns.reverseMapViews = static_cast<const DeviceReverseMapView*>(
+            projection.deviceColumns_[13]);
+        columns.reverseMapEntries = static_cast<const DeviceReverseMapEntry*>(
+            projection.deviceColumns_[14]);
+        columns.reverseMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[15]);
+        columns.reverseKeyBytes = static_cast<const char*>(
+            projection.deviceColumns_[16]);
+        columns.reverseOwners = static_cast<const int32_t*>(
+            projection.deviceColumns_[17]);
+        columns.podMapViews = static_cast<const DevicePodMapView*>(
+            projection.deviceColumns_[18]);
+        columns.podMapEntries = static_cast<const DevicePodMapEntry*>(
+            projection.deviceColumns_[19]);
+        columns.podMapSlots = static_cast<const int32_t*>(
+            projection.deviceColumns_[20]);
+        columns.podRunValues = static_cast<const int32_t*>(
+            projection.deviceColumns_[21]);
+        columns.mandatoryStatementKeys = static_cast<const int64_t*>(
+            projection.deviceColumns_[22]);
+        columns.metadataBytes = static_cast<const char*>(
+            projection.deviceColumns_[23]);
+
+        constexpr uint32_t threads = 256;
+        markDoomTriggersKernel<<<(usedFiringRecords_ + threads - 1) / threads, threads>>>(
+            columns, static_cast<DevicePhase2FiringRecord*>(deviceFiringRecords_),
+            static_cast<const char*>(deviceGeneratedBytes_), usedFiringRecords_);
+        GL_CUDA_ASSERT(cudaGetLastError());
     }
 
     /// @brief Select exact doom winners and retain only their canonical prefixes.
@@ -10042,6 +12288,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadFiringRecords(
         DevicePhase2FiringRecord* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadFiringRecords");
         assert(usedFiringRecords_ <= capacity);
         if (usedFiringRecords_ == 0) return 0;
         assert(destination != nullptr);
@@ -10062,6 +12309,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadGeneratedBytes(
         char* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadGeneratedBytes");
         assert(usedGeneratedBytes_ <= capacity);
         if (usedGeneratedBytes_ == 0) return 0;
         assert(destination != nullptr);
@@ -10080,6 +12328,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadLevelValues(
         int32_t* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadLevelValues");
         assert(usedLevelValues_ <= capacity);
         if (usedLevelValues_ == 0) return 0;
         assert(destination != nullptr);
@@ -10099,6 +12348,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadOriginDependencies(
         DeviceEvaluationDependency* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadOriginDependencies");
         assert(usedOriginDependencies_ <= capacity);
         if (usedOriginDependencies_ == 0) return 0;
         assert(destination != nullptr);
@@ -10119,6 +12369,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadMarkerKeys(
         DeviceEvaluationByteSlice* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadMarkerKeys");
         assert(usedMarkerKeys_ <= capacity);
         if (usedMarkerKeys_ == 0) return 0;
         assert(destination != nullptr);
@@ -10139,6 +12390,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadMarkerRemainingArgs(
         int32_t* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadMarkerRemainingArgs");
         assert(usedMarkerRemainingArgs_ <= capacity);
         if (usedMarkerRemainingArgs_ == 0) return 0;
         assert(destination != nullptr);
@@ -10159,6 +12411,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadMarkerArgs(
         DeviceEvaluationByteSlice* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadMarkerArgs");
         assert(usedMarkerArgs_ <= capacity);
         if (usedMarkerArgs_ == 0) return 0;
         assert(destination != nullptr);
@@ -10179,6 +12432,7 @@ namespace gl::gpu {
     uint32_t CudaPhase2EvaluationBuffer::downloadFiringOrder(
         uint32_t* destination,
         uint32_t capacity) const {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::downloadFiringOrder");
         assert(usedFiringOrder_ <= capacity);
         if (usedFiringOrder_ == 0) return 0;
         assert(destination != nullptr);
@@ -10233,7 +12487,10 @@ namespace gl::gpu {
     /// @return Exact startup bytes owned by this evaluator buffer.
     /// @invariant The value is constant for the object's lifetime.
     uint64_t CudaPhase2EvaluationBuffer::fixedAllocationBytes() const {
-        return static_cast<uint64_t>(capacity_.requests)
+        return outputPlanningRows * sizeof(Phase2OutputUsage)
+            + (static_cast<uint64_t>(capacity_.requests) + capacity_.encodedHits + 1)
+                * sizeof(uint64_t)
+            + static_cast<uint64_t>(capacity_.requests)
                 * (sizeof(DeviceEvaluationRequestState)
                     + sizeof(uint32_t) * 2)
             + static_cast<uint64_t>(capacity_.reverseOwners)
@@ -10263,6 +12520,940 @@ namespace gl::gpu {
             + sizeof(uint32_t) + sizeof(DeviceEvaluationCounters)
             + static_cast<uint64_t>(temporaryBytes_);
     }
+
+    /// @brief Measure device and aligned arena bytes before creating a buffer.
+    ///
+    /// @details
+    /// Validates the capacity shape and queries current CUDA library workspace
+    /// without allocating device arrays. Includes every processing column and
+    /// the 256-byte padding required by the common arena.
+    ///
+    /// @param capacity Proposed processing and input column capacities.
+    /// @return Device payload bytes and exact aligned arena footprint.
+    /// @invariant No buffer ownership or proof state is created or changed.
+    Phase2DeviceAllocationSize CudaPhase2ProjectionBuffer::measureAllocation(
+        Phase2ProjectionCapacity capacity) {
+        static_cast<void>(queryCudaDeviceContract());
+        assert(capacity.logicalBlocks > 0);
+        assert(capacity.statements > 0);
+        assert(capacity.nameRecords > 0);
+        assert(capacity.nameBytes > 0);
+        const uint64_t allocationBytes[kProjectionColumnCount] = {
+            static_cast<uint64_t>(capacity.logicalBlocks)
+                * sizeof(DeviceLogicalBlockProjection),
+            static_cast<uint64_t>(capacity.statements) * sizeof(IntEncodedExpr),
+            static_cast<uint64_t>(capacity.nameRecords)
+                * sizeof(DeviceNameRecord),
+            capacity.nameBytes,
+            static_cast<uint64_t>(capacity.nameSlots) * sizeof(int32_t),
+            static_cast<uint64_t>(capacity.ruleStringRecords)
+                * sizeof(DeviceRuleStringRecord),
+            capacity.ruleStringBytes,
+            static_cast<uint64_t>(capacity.byteMapViews)
+                * sizeof(DeviceByteMapView),
+            static_cast<uint64_t>(capacity.byteMapEntries)
+                * sizeof(DeviceByteMapEntry),
+            static_cast<uint64_t>(capacity.byteMapSlots) * sizeof(int32_t),
+            capacity.byteKeyBytes,
+            static_cast<uint64_t>(capacity.blobRecords)
+                * sizeof(DeviceBlobRecord),
+            capacity.blobBytes,
+            static_cast<uint64_t>(capacity.reverseMapViews)
+                * sizeof(DeviceReverseMapView),
+            static_cast<uint64_t>(capacity.reverseMapEntries)
+                * sizeof(DeviceReverseMapEntry),
+            static_cast<uint64_t>(capacity.reverseMapSlots) * sizeof(int32_t),
+            capacity.reverseKeyBytes,
+            static_cast<uint64_t>(capacity.reverseOwners) * sizeof(int32_t),
+            static_cast<uint64_t>(capacity.podMapViews)
+                * sizeof(DevicePodMapView),
+            static_cast<uint64_t>(capacity.podMapEntries)
+                * sizeof(DevicePodMapEntry),
+            static_cast<uint64_t>(capacity.podMapSlots) * sizeof(int32_t),
+            static_cast<uint64_t>(capacity.podRunValues) * sizeof(int32_t),
+            static_cast<uint64_t>(capacity.mandatoryStatementKeys)
+                * sizeof(int64_t),
+            capacity.metadataBytes
+        };
+        Phase2DeviceAllocationSize result{};
+        const auto add = [&](uint64_t bytes) {
+            assert(bytes > 0);
+            assert(bytes <= UINT64_MAX - result.deviceBytes);
+            result.deviceBytes += bytes;
+            assert(result.arenaBytes <= UINT64_MAX - 255);
+            result.arenaBytes = (result.arenaBytes + 255) & ~uint64_t{255};
+            assert(bytes <= UINT64_MAX - result.arenaBytes);
+            result.arenaBytes += bytes;
+        };
+        for (uint64_t bytes : allocationBytes) add(bytes);
+        add(sizeof(DeviceGrowthCandidateProbeResult));
+        return result;
+    }
+
+    /// @brief Measure device and aligned arena bytes before creating a buffer.
+    ///
+    /// @details
+    /// Validates the capacity shape and queries current CUDA library workspace
+    /// without allocating device arrays. Includes every processing column and
+    /// the 256-byte padding required by the common arena.
+    ///
+    /// @param capacity Proposed processing and input column capacities.
+    /// @return Device payload bytes and exact aligned arena footprint.
+    /// @invariant No buffer ownership or proof state is created or changed.
+    Phase2DeviceAllocationSize CudaPhase2TaskBuffer::measureAllocation(
+        Phase2TaskProjectionCapacity capacity) {
+        static_cast<void>(queryCudaDeviceContract());
+        assert(capacity.tasks > 0);
+        assert(capacity.batches > 0);
+        assert(capacity.terms > 0);
+        assert(capacity.stumps > 0);
+        const uint64_t allocationBytes[kTaskColumnCount] = {
+            static_cast<uint64_t>(capacity.tasks) * sizeof(DevicePhase2Task),
+            static_cast<uint64_t>(capacity.batches)
+                * sizeof(DeviceRequestBatch),
+            static_cast<uint64_t>(capacity.terms)
+                * sizeof(DeviceMandatoryTerm),
+            static_cast<uint64_t>(capacity.stumps)
+                * sizeof(DeviceExpressionStump)
+        };
+        Phase2DeviceAllocationSize result{};
+        const auto add = [&](uint64_t bytes) {
+            assert(bytes > 0);
+            assert(bytes <= UINT64_MAX - result.deviceBytes);
+            result.deviceBytes += bytes;
+            assert(result.arenaBytes <= UINT64_MAX - 255);
+            result.arenaBytes = (result.arenaBytes + 255) & ~uint64_t{255};
+            assert(bytes <= UINT64_MAX - result.arenaBytes);
+            result.arenaBytes += bytes;
+        };
+        for (uint64_t bytes : allocationBytes) add(bytes);
+        add(sizeof(uint64_t));
+        return result;
+    }
+
+    /// @brief Measure device and aligned arena bytes before creating a buffer.
+    ///
+    /// @details
+    /// Validates the capacity shape and queries current CUDA library workspace
+    /// without allocating device arrays. Includes every processing column and
+    /// the 256-byte padding required by the common arena.
+    ///
+    /// @param capacity Proposed processing and input column capacities.
+    /// @return Device payload bytes and exact aligned arena footprint.
+    /// @invariant No buffer ownership or proof state is created or changed.
+    Phase2DeviceAllocationSize CudaPhase2FilterSortBuffer::measureAllocation(
+        Phase2FilterScheduleCapacity capacity) {
+        std::size_t scanTemporaryBytes = 0, sortTemporaryBytes = 0;
+        static_cast<void>(queryCudaDeviceContract());
+        assert(capacity.calls > 0);
+        assert(capacity.examinedRows > 0);
+        assert(capacity.retainedRows > 0);
+        assert(capacity.maximumExaminedRowsPerCall > 0);
+        assert(capacity.calls
+            <= static_cast<uint32_t>(std::numeric_limits<int>::max()));
+        assert(capacity.retainedRows
+            <= static_cast<uint32_t>(std::numeric_limits<int>::max()));
+
+        uint32_t* nullCounts = nullptr;
+        uint32_t* nullOffsets = nullptr;
+        uint64_t* nullKeysInput = nullptr;
+        uint64_t* nullKeysOutput = nullptr;
+        GL_CUDA_ASSERT(cub::DeviceScan::ExclusiveSum(
+            nullptr, scanTemporaryBytes, nullCounts, nullOffsets,
+            static_cast<int>(capacity.calls)));
+        GL_CUDA_ASSERT(cub::DeviceSegmentedRadixSort::SortKeys(
+            nullptr, sortTemporaryBytes, nullKeysInput, nullKeysOutput,
+            static_cast<int>(capacity.retainedRows),
+            static_cast<int>(capacity.calls), nullOffsets, nullOffsets));
+        assert(scanTemporaryBytes > 0);
+        assert(sortTemporaryBytes > 0);
+
+        const std::size_t temporaryBytes = std::max(scanTemporaryBytes, sortTemporaryBytes);
+        Phase2DeviceAllocationSize result{};
+        const auto add = [&](uint64_t bytes) {
+            assert(bytes > 0);
+            assert(bytes <= UINT64_MAX - result.deviceBytes);
+            result.deviceBytes += bytes;
+            assert(result.arenaBytes <= UINT64_MAX - 255);
+            result.arenaBytes = (result.arenaBytes + 255) & ~uint64_t{255};
+            assert(bytes <= UINT64_MAX - result.arenaBytes);
+            result.arenaBytes += bytes;
+        };
+        add(static_cast<std::size_t>(capacity.calls) * sizeof(DevicePhase2FilterCall));
+        add(static_cast<std::size_t>(capacity.calls) * sizeof(DevicePhase2FilterCall));
+        add(static_cast<std::size_t>(capacity.calls) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.calls) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.calls) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.calls) * sizeof(uint32_t));
+        add((static_cast<std::size_t>(capacity.calls) + 1) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.retainedRows) * sizeof(uint64_t));
+        add(static_cast<std::size_t>(capacity.retainedRows) * sizeof(uint64_t));
+        add(temporaryBytes);
+        return result;
+    }
+
+    /// @brief Measure device and aligned arena bytes before creating a buffer.
+    ///
+    /// @details
+    /// Validates the capacity shape and queries current CUDA library workspace
+    /// without allocating device arrays. Includes every processing column and
+    /// the 256-byte padding required by the common arena.
+    ///
+    /// @param capacity Proposed processing and input column capacities.
+    /// @return Device payload bytes and exact aligned arena footprint.
+    /// @invariant No buffer ownership or proof state is created or changed.
+    Phase2DeviceAllocationSize CudaPhase2GrowthBuffer::measureAllocation(
+        Phase2GrowthCapacity capacity) {
+        std::size_t selectionTemporaryBytes = 0;
+        static_cast<void>(queryCudaDeviceContract());
+        assert(capacity.calls > 0);
+        assert(capacity.retainedRows > 0);
+        assert(capacity.frontierRecords > 0);
+        assert(capacity.acceptedEvents > 0);
+        assert(capacity.rawRequests > 0);
+        assert(capacity.prefixPayloadValues > 0);
+        assert(capacity.prefixVariableValues > 0);
+        assert(capacity.prefixSecondaryValues > 0);
+        assert(capacity.candidateWindowRecords > 0);
+        assert(capacity.frontierStoreRecords >= capacity.frontierRecords);
+        const uint64_t frontierStoreBytes = static_cast<uint64_t>(
+            capacity.frontierStoreRecords) * sizeof(DeviceGrowthNode);
+        const uint64_t keepByCallBytes = capacity.calls;
+        const uint64_t callBytes = static_cast<uint64_t>(capacity.calls)
+            * sizeof(DevicePhase2GrowthCall);
+        const uint64_t maskBytes = capacity.retainedRows;
+        const uint64_t statementMaskBytes = maskBytes * sizeof(uint32_t);
+        const uint64_t frontierBytes = static_cast<uint64_t>(
+            capacity.frontierRecords) * sizeof(DeviceGrowthNode);
+        const uint64_t prefixBytes = static_cast<uint64_t>(
+            capacity.frontierRecords) * sizeof(DeviceGrowthPrefix);
+        const uint64_t prefixPayloadBytes = static_cast<uint64_t>(
+            capacity.prefixPayloadValues) * sizeof(NameId);
+        const uint64_t prefixVariableBytes = static_cast<uint64_t>(
+            capacity.prefixVariableValues) * sizeof(NameId);
+        const uint64_t prefixSecondaryBytes = static_cast<uint64_t>(
+            capacity.prefixSecondaryValues) * sizeof(NameId);
+        const uint64_t nodeIndexBytes = static_cast<uint64_t>(
+            capacity.frontierRecords) * sizeof(uint32_t);
+        const uint64_t nodeSortKeyBytes = static_cast<uint64_t>(
+            capacity.frontierRecords) * sizeof(uint64_t);
+        const uint64_t nodeAttemptOrdinalBytes = static_cast<uint64_t>(
+            capacity.frontierRecords) * sizeof(uint64_t);
+        const uint64_t nodeFlagBytes = capacity.frontierRecords;
+        const uint64_t candidateAttemptBytes = static_cast<uint64_t>(
+            capacity.candidateWindowRecords)
+            * sizeof(DeviceGrowthCandidateAttempt);
+        const uint64_t candidateFlagBytes = capacity.candidateWindowRecords;
+        const uint64_t candidateSurvivorBytes = static_cast<uint64_t>(
+            capacity.candidateWindowRecords) * sizeof(uint32_t);
+        const uint64_t acceptedEventBytes = static_cast<uint64_t>(
+            capacity.acceptedEvents) * sizeof(DeviceAcceptedGrowthEvent);
+        const uint64_t rawRequestBytes = static_cast<uint64_t>(
+            capacity.rawRequests) * sizeof(DeviceRawGrowthRequest);
+        const uint64_t taskSubkeyCountBytes = static_cast<uint64_t>(
+            capacity.calls) * sizeof(uint32_t);
+        assert(callBytes <= std::numeric_limits<std::size_t>::max());
+        assert(statementMaskBytes <= std::numeric_limits<std::size_t>::max());
+        assert(frontierBytes <= std::numeric_limits<std::size_t>::max());
+        assert(prefixBytes <= std::numeric_limits<std::size_t>::max());
+        assert(prefixPayloadBytes <= std::numeric_limits<std::size_t>::max());
+        assert(prefixVariableBytes <= std::numeric_limits<std::size_t>::max());
+        assert(prefixSecondaryBytes <= std::numeric_limits<std::size_t>::max());
+        assert(nodeIndexBytes <= std::numeric_limits<std::size_t>::max());
+        assert(nodeSortKeyBytes <= std::numeric_limits<std::size_t>::max());
+        assert(nodeAttemptOrdinalBytes
+            <= std::numeric_limits<std::size_t>::max());
+        assert(nodeFlagBytes <= std::numeric_limits<std::size_t>::max());
+        assert(candidateAttemptBytes
+            <= std::numeric_limits<std::size_t>::max());
+        assert(candidateFlagBytes <= std::numeric_limits<std::size_t>::max());
+        assert(candidateSurvivorBytes
+            <= std::numeric_limits<std::size_t>::max());
+        assert(acceptedEventBytes <= std::numeric_limits<std::size_t>::max());
+        assert(rawRequestBytes <= std::numeric_limits<std::size_t>::max());
+        assert(taskSubkeyCountBytes
+            <= std::numeric_limits<std::size_t>::max());
+        thrust::counting_iterator<uint32_t> countingIndices(0);
+        std::size_t requestedTemporaryBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceSelect::Flagged(
+            nullptr, requestedTemporaryBytes, countingIndices,
+            static_cast<const uint8_t*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            capacity.frontierRecords));
+        selectionTemporaryBytes = std::max(
+            selectionTemporaryBytes, requestedTemporaryBytes);
+        requestedTemporaryBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceRadixSort::SortPairs(
+            nullptr, requestedTemporaryBytes,
+            static_cast<const uint64_t*>(nullptr),
+            static_cast<uint64_t*>(nullptr),
+            static_cast<const uint32_t*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            capacity.frontierRecords, 0, 32));
+        selectionTemporaryBytes = std::max(
+            selectionTemporaryBytes, requestedTemporaryBytes);
+        requestedTemporaryBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceScan::InclusiveSum(
+            nullptr, requestedTemporaryBytes,
+            static_cast<const uint64_t*>(nullptr),
+            static_cast<uint64_t*>(nullptr),
+            capacity.frontierRecords));
+        selectionTemporaryBytes = std::max(
+            selectionTemporaryBytes, requestedTemporaryBytes);
+        requestedTemporaryBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceSelect::Flagged(
+            nullptr, requestedTemporaryBytes, countingIndices,
+            static_cast<const uint8_t*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            capacity.candidateWindowRecords));
+        selectionTemporaryBytes = std::max(
+            selectionTemporaryBytes, requestedTemporaryBytes);
+        requestedTemporaryBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceSelect::If(
+            nullptr, requestedTemporaryBytes,
+            static_cast<const DeviceGrowthNode*>(nullptr),
+            static_cast<DeviceGrowthNode*>(nullptr),
+            static_cast<uint32_t*>(nullptr),
+            capacity.frontierStoreRecords,
+            KeepGrowthNodeByCall{nullptr}));
+        selectionTemporaryBytes = std::max(
+            selectionTemporaryBytes, requestedTemporaryBytes);
+        assert(selectionTemporaryBytes > 0);
+        Phase2DeviceAllocationSize result{};
+        const auto add = [&](uint64_t bytes) {
+            assert(bytes > 0);
+            assert(bytes <= UINT64_MAX - result.deviceBytes);
+            result.deviceBytes += bytes;
+            assert(result.arenaBytes <= UINT64_MAX - 255);
+            result.arenaBytes = (result.arenaBytes + 255) & ~uint64_t{255};
+            assert(bytes <= UINT64_MAX - result.arenaBytes);
+            result.arenaBytes += bytes;
+        };
+        add(static_cast<std::size_t>(callBytes));
+        add(static_cast<std::size_t>(statementMaskBytes));
+        add(static_cast<std::size_t>(maskBytes));
+        add(static_cast<std::size_t>(frontierStoreBytes));
+        add(static_cast<std::size_t>(frontierStoreBytes));
+        add(static_cast<std::size_t>(keepByCallBytes));
+        add(static_cast<std::size_t>(prefixBytes));
+        add(static_cast<std::size_t>(prefixPayloadBytes));
+        add(static_cast<std::size_t>(prefixVariableBytes));
+        add(static_cast<std::size_t>(prefixSecondaryBytes));
+        add(static_cast<std::size_t>(nodeFlagBytes));
+        add(static_cast<std::size_t>(nodeFlagBytes));
+        add(static_cast<std::size_t>(nodeIndexBytes));
+        add(static_cast<std::size_t>(nodeIndexBytes));
+        add(static_cast<std::size_t>(nodeIndexBytes));
+        add(static_cast<std::size_t>(nodeIndexBytes));
+        add(static_cast<std::size_t>(nodeSortKeyBytes));
+        add(static_cast<std::size_t>(nodeSortKeyBytes));
+        add(static_cast<std::size_t>(nodeAttemptOrdinalBytes));
+        add(static_cast<std::size_t>(nodeAttemptOrdinalBytes));
+        add(static_cast<std::size_t>(candidateAttemptBytes));
+        add(static_cast<std::size_t>(candidateFlagBytes));
+        add(static_cast<std::size_t>(candidateSurvivorBytes));
+        add(selectionTemporaryBytes);
+        add(static_cast<std::size_t>(acceptedEventBytes));
+        add(static_cast<std::size_t>(rawRequestBytes));
+        add(static_cast<std::size_t>(taskSubkeyCountBytes));
+        add(sizeof(DeviceGrowthCounters));
+        return result;
+    }
+
+    /// @brief Measure device and aligned arena bytes before creating a buffer.
+    ///
+    /// @details
+    /// Validates the capacity shape and queries current CUDA library workspace
+    /// without allocating device arrays. Includes every processing column and
+    /// the 256-byte padding required by the common arena.
+    ///
+    /// @param capacity Proposed processing and input column capacities.
+    /// @return Device payload bytes and exact aligned arena footprint.
+    /// @invariant No buffer ownership or proof state is created or changed.
+    Phase2DeviceAllocationSize CudaPhase2OrderingBuffer::measureAllocation(
+        Phase2OrderingCapacity capacity) {
+        std::size_t temporaryBytes = 0;
+        static_cast<void>(queryCudaDeviceContract());
+        assert(capacity.events > 0);
+        assert(capacity.requests > 0);
+        assert(capacity.events
+            <= static_cast<uint32_t>(std::numeric_limits<int>::max()));
+        assert(capacity.requests
+            <= static_cast<uint32_t>(std::numeric_limits<int>::max()));
+
+        uint32_t* nullKeysInput = nullptr;
+        uint32_t* nullKeysOutput = nullptr;
+        uint32_t* nullIndicesInput = nullptr;
+        uint32_t* nullIndicesOutput = nullptr;
+        DeviceGrowthScanValue* nullScanInput = nullptr;
+        DeviceGrowthScanValue* nullScanOutput = nullptr;
+        DeviceOrderedRequestToken* nullTokenInput = nullptr;
+        DeviceOrderedRequestToken* nullTokenOutput = nullptr;
+        std::size_t eventSortBytes = 0;
+        std::size_t scanBytes = 0;
+        std::size_t requestSortBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceRadixSort::SortPairs(
+            nullptr, eventSortBytes,
+            nullKeysInput, nullKeysOutput,
+            nullIndicesInput, nullIndicesOutput,
+            static_cast<int>(capacity.events)));
+        GL_CUDA_ASSERT(cub::DeviceScan::InclusiveScan(
+            nullptr, scanBytes,
+            nullScanInput, nullScanOutput,
+            DeviceGrowthSegmentedAdd{},
+            static_cast<int>(capacity.events)));
+        GL_CUDA_ASSERT(cub::DeviceRadixSort::SortPairs(
+            nullptr, requestSortBytes,
+            nullKeysInput, nullKeysOutput,
+            nullTokenInput, nullTokenOutput,
+            static_cast<int>(capacity.requests)));
+        temporaryBytes = eventSortBytes;
+        if (scanBytes > temporaryBytes) temporaryBytes = scanBytes;
+        if (requestSortBytes > temporaryBytes)
+            temporaryBytes = requestSortBytes;
+        assert(temporaryBytes > 0);
+
+        const std::size_t eventWordBytes = static_cast<std::size_t>(
+            capacity.events) * sizeof(uint32_t);
+        const std::size_t scanValueBytes = static_cast<std::size_t>(
+            capacity.events) * sizeof(DeviceGrowthScanValue);
+        const std::size_t tokenBytes = static_cast<std::size_t>(
+            capacity.requests) * sizeof(DeviceOrderedRequestToken);
+        Phase2DeviceAllocationSize result{};
+        const auto add = [&](uint64_t bytes) {
+            assert(bytes > 0);
+            assert(bytes <= UINT64_MAX - result.deviceBytes);
+            result.deviceBytes += bytes;
+            assert(result.arenaBytes <= UINT64_MAX - 255);
+            result.arenaBytes = (result.arenaBytes + 255) & ~uint64_t{255};
+            assert(bytes <= UINT64_MAX - result.arenaBytes);
+            result.arenaBytes += bytes;
+        };
+        add(eventWordBytes);
+        add(eventWordBytes);
+        add(eventWordBytes);
+        add(eventWordBytes);
+        add(scanValueBytes);
+        add(scanValueBytes);
+        add(tokenBytes);
+        add(tokenBytes);
+        add(eventWordBytes);
+        add(sizeof(uint32_t));
+        add(temporaryBytes);
+        return result;
+    }
+
+    /// @brief Measure device and aligned arena bytes before creating a buffer.
+    ///
+    /// @details
+    /// Validates the capacity shape and queries current CUDA library workspace
+    /// without allocating device arrays. Includes every processing column and
+    /// the 256-byte padding required by the common arena.
+    ///
+    /// @param capacity Proposed processing and input column capacities.
+    /// @return Device payload bytes and exact aligned arena footprint.
+    /// @invariant No buffer ownership or proof state is created or changed.
+    Phase2DeviceAllocationSize CudaPhase2EvaluationBuffer::measureAllocation(
+        Phase2EvaluationCapacity capacity) {
+        std::size_t temporaryBytes = 0;
+        static_cast<void>(queryCudaDeviceContract());
+        const uint32_t capacities[13] = {
+            capacity.logicalBlocks, capacity.requests, capacity.reverseOwners,
+            capacity.candidateOwners, capacity.encodedHits,
+            capacity.localValues, capacity.firingRecords,
+            capacity.generatedBytes, capacity.levelValues,
+            capacity.originDependencies, capacity.markerKeys,
+            capacity.markerRemainingArgs, capacity.markerArgs
+        };
+        for (uint32_t value : capacities) {
+            assert(value > 0);
+            assert((value & (value - 1)) == 0);
+            assert(value <= static_cast<uint32_t>(
+                std::numeric_limits<int>::max()));
+        }
+        assert(capacity.candidateOwners <= capacity.reverseOwners);
+        assert(capacity.encodedHits <= capacity.candidateOwners);
+        assert(capacity.localValues >= capacity.encodedHits);
+
+        uint32_t* nullInput = nullptr;
+        uint32_t* nullOutput = nullptr;
+        std::size_t requestScanBytes = 0;
+        std::size_t valueScanBytes = 0;
+        std::size_t doomScanBytes = 0;
+        GL_CUDA_ASSERT(cub::DeviceScan::ExclusiveSum(
+            nullptr, requestScanBytes, nullInput, nullOutput,
+            static_cast<int>(capacity.requests)));
+        GL_CUDA_ASSERT(cub::DeviceScan::ExclusiveSum(
+            nullptr, valueScanBytes, nullInput, nullOutput,
+            static_cast<int>(capacity.encodedHits)));
+        GL_CUDA_ASSERT(cub::DeviceScan::ExclusiveSum(
+            nullptr, doomScanBytes, nullInput, nullOutput,
+            static_cast<int>(capacity.firingRecords)));
+        temporaryBytes = requestScanBytes > valueScanBytes
+            ? requestScanBytes : valueScanBytes;
+        if (doomScanBytes > temporaryBytes) temporaryBytes = doomScanBytes;
+        assert(temporaryBytes > 0);
+
+        Phase2DeviceAllocationSize result{};
+        const auto add = [&](uint64_t bytes) {
+            assert(bytes > 0);
+            assert(bytes <= UINT64_MAX - result.deviceBytes);
+            result.deviceBytes += bytes;
+            assert(result.arenaBytes <= UINT64_MAX - 255);
+            result.arenaBytes = (result.arenaBytes + 255) & ~uint64_t{255};
+            assert(bytes <= UINT64_MAX - result.arenaBytes);
+            result.arenaBytes += bytes;
+        };
+        add(static_cast<std::size_t>(capacity.requests) * sizeof(DeviceEvaluationRequestState));
+        add(static_cast<std::size_t>(capacity.requests) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.requests) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.reverseOwners) * sizeof(DeviceEvaluationOwnerWork));
+        add(static_cast<std::size_t>(capacity.candidateOwners) * sizeof(DeviceEvaluationCandidate));
+        add(static_cast<std::size_t>(capacity.encodedHits) * sizeof(DeviceEvaluationCandidate));
+        add(static_cast<std::size_t>(capacity.encodedHits) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.encodedHits) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.localValues) * sizeof(DeviceEvaluationValueWork));
+        add(static_cast<std::size_t>(capacity.firingRecords) * sizeof(DevicePhase2FiringRecord));
+        add(capacity.generatedBytes);
+        add(static_cast<std::size_t>(capacity.levelValues) * sizeof(int32_t));
+        add(static_cast<std::size_t>(capacity.originDependencies) * sizeof(DeviceEvaluationDependency));
+        add(static_cast<std::size_t>(capacity.markerKeys) * sizeof(DeviceEvaluationByteSlice));
+        add(static_cast<std::size_t>(capacity.markerRemainingArgs) * sizeof(int32_t));
+        add(static_cast<std::size_t>(capacity.markerArgs) * sizeof(DeviceEvaluationByteSlice));
+        add(static_cast<std::size_t>(capacity.firingRecords) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.firingRecords) * sizeof(uint32_t));
+        add(static_cast<std::size_t>(capacity.logicalBlocks) * sizeof(int64_t));
+        add(static_cast<std::size_t>(capacity.logicalBlocks) * sizeof(uint32_t));
+        add(sizeof(uint32_t));
+        add(sizeof(DeviceEvaluationCounters));
+        add(temporaryBytes);
+        add(outputPlanningRows * sizeof(Phase2OutputUsage));
+        add(static_cast<std::size_t>(capacity.requests) * sizeof(uint64_t));
+        add(static_cast<std::size_t>(capacity.encodedHits) * sizeof(uint64_t));
+        add(sizeof(uint64_t));
+        return result;
+    }
+
+
+    /// @brief Seed allocation proportions from recorded complete-pipeline demand.
+    ///
+    /// @details
+    /// Candidate-window demand follows the observed frontier peak, as does the
+    /// pass-local frontier store (whole levels, unclipped). The evaluation
+    /// window shares owner, candidate, hit and value row capacities. Byte costs
+    /// are measured separately with current CUDA workspace requirements.
+    ///
+    /// @return Nonzero initial demand for every processing dimension.
+    Phase2WorkDemand initialPhase2WorkDemand() {
+        return {{5694237, 153915, 2278373, 59034226, 13786768, 4109368,
+            2278373, 4187198, 148615, 4711915, 421624, 605387, 62211, 62211, 48747,
+            2278373}};
+    }
+
+    /// @brief Bound one CPU-supported firing with one marker-key fragment.
+    ///
+    /// @details
+    /// The CPU constructs transformed strings and sealed spans in one host
+    /// arena block. The GPU byte column holds at most the head and one key in
+    /// this minimum fragment; provenance strings remain projected identifiers.
+    /// Existing CPU span limits are preserved, not introduced by GPU batching.
+    ///
+    /// @param hostBlockBytes Existing CPU arena block size.
+    /// @return Minimum simultaneous output-column requirements.
+    Phase2OutputUsage minimumPhase2OutputUsage(uint32_t hostBlockBytes) {
+        assert(hostBlockBytes >= sizeof(SealedString));
+        return {{1, 2ull * hostBlockBytes, hostBlockBytes / sizeof(int32_t),
+            ExecutionParameters::MAX_EXPRESSIONS + 1, 1,
+            hostBlockBytes / sizeof(SealedString), ExecutionParameters::MAX_ARITY}};
+    }
+
+    /// @brief Update storage demand from completed-batch occupancy and drain pressure.
+    ///
+    /// @details
+    /// Retains seven eighths of the previous peak and raises demand when current
+    /// occupancy or repeated drains show that a dimension needs more blocks.
+    /// Arithmetic saturates only the resource estimate; no work count is truncated.
+    ///
+    /// @param demand In/out prior processing demand.
+    /// @param feedback Completed-batch occupancy and drain counts.
+    /// @return Nothing.
+    /// @invariant Feedback never changes proof gates or result selection.
+    void observePhase2WorkDemand(Phase2WorkDemand& demand, const Phase2WorkFeedback& feedback) {
+        for (uint32_t i = 0; i < phase2WorkDimensionCount; ++i) {
+            assert(demand.items[i] > 0);
+            const uint64_t recent = std::max(uint64_t{1}, feedback.occupied[i]);
+            const uint64_t multiplier = 1 + std::min(uint64_t{7}, feedback.drains[i]);
+            const uint64_t pressured = recent > UINT64_MAX / multiplier
+                ? UINT64_MAX : recent * multiplier;
+            const uint64_t retained = demand.items[i] - demand.items[i] / 8;
+            demand.items[i] = std::max(retained, pressured);
+        }
+    }
+
+    /// @brief Convert a measured immutable input census into allocation capacities.
+    ///
+    /// @details
+    /// Every one of the 24 projection columns and four task columns receives
+    /// its measured count, with one reserved element for empty arrays. Repeated
+    /// filter scans have a wide logical count and share physical retained spans.
+    /// No measurement is silently narrowed or omitted.
+    ///
+    /// @param usage Measured projection column counts for the complete chunk.
+    /// @param tasks Measured task, batch, term and stump counts.
+    /// @param examinedRows Complete repeated-call filter scan volume.
+    /// @param retainedRows Maximum retained rows across distinct filter classes.
+    /// @param maximumRows Largest individual filter statement slice.
+    /// @return Positive capacities for every immutable input allocation.
+    /// @invariant Physical column counts fit signed 32-bit device indexing.
+    Phase2BufferPlanInput makePhase2BufferPlanInput(const Phase2ProjectionUsage& usage,
+        const Phase2TaskProjectionUsage& tasks, uint64_t examinedRows,
+        uint64_t retainedRows, uint64_t maximumRows) {
+        const auto count = [](uint64_t value) {
+            assert(value <= static_cast<uint64_t>(INT32_MAX));
+            return static_cast<uint32_t>(std::max(uint64_t{1}, value));
+        };
+        Phase2BufferPlanInput input{};
+        input.projection.logicalBlocks = count(usage.logicalBlocks);
+        input.projection.statements = count(usage.statements);
+        input.projection.nameRecords = count(usage.nameRecords);
+        input.projection.nameBytes = count(usage.nameBytes);
+        input.projection.nameSlots = count(usage.nameSlots);
+        input.projection.ruleStringRecords = count(usage.ruleStringRecords);
+        input.projection.ruleStringBytes = count(usage.ruleStringBytes);
+        input.projection.byteMapViews = count(usage.byteMapViews);
+        input.projection.byteMapEntries = count(usage.byteMapEntries);
+        input.projection.byteMapSlots = count(usage.byteMapSlots);
+        input.projection.byteKeyBytes = count(usage.byteKeyBytes);
+        input.projection.blobRecords = count(usage.blobRecords);
+        input.projection.blobBytes = count(usage.blobBytes);
+        input.projection.reverseMapViews = count(usage.reverseMapViews);
+        input.projection.reverseMapEntries = count(usage.reverseMapEntries);
+        input.projection.reverseMapSlots = count(usage.reverseMapSlots);
+        input.projection.reverseKeyBytes = count(usage.reverseKeyBytes);
+        input.projection.reverseOwners = count(usage.reverseOwners);
+        input.projection.podMapViews = count(usage.podMapViews);
+        input.projection.podMapEntries = count(usage.podMapEntries);
+        input.projection.podMapSlots = count(usage.podMapSlots);
+        input.projection.podRunValues = count(usage.podRunValues);
+        input.projection.mandatoryStatementKeys = count(usage.mandatoryStatementKeys);
+        input.projection.metadataBytes = count(usage.metadataBytes);
+        input.tasks = {count(tasks.tasks), count(tasks.batches), count(tasks.terms), count(tasks.stumps)};
+        input.filter = {count(tasks.batches), std::max(uint64_t{1}, examinedRows),
+            count(retainedRows), count(maximumRows)};
+        return input;
+    }
+
+    /// @brief Fit immutable input and weighted processing storage into whole blocks.
+    ///
+    /// @details
+    /// Exact sizing queries account for all arrays, padding and CUDA workspace.
+    /// A monotone search scales relative demand after minimum progress is secured.
+    /// Leftover blocks are lent to the largest flexible demand. Prefix and child
+    /// windows stop growing at the amount one bounded execution window can use.
+    ///
+    /// @param input Immutable input and schedule column capacities.
+    /// @param availableBlocks Whole 2 MiB blocks available for the chunk.
+    /// @param demand Nonzero recent processing demand.
+    /// @param minimumOutput Simultaneous pending-fragment output requirements.
+    /// @param minimumOnly Measure only the minimum progress reservation.
+    /// @return Fitting capacities or an explicit scheduling continuation.
+    Phase2BufferPlan planPhase2Buffers(const Phase2BufferPlanInput& input,
+        uint64_t availableBlocks, const Phase2WorkDemand& demand,
+        Phase2OutputUsage minimumOutput, bool minimumOnly) {
+        constexpr uint32_t maximumRows = uint32_t{1} << 30;
+        constexpr uint32_t maximumRequests = uint32_t{1} << 29;
+        for (uint64_t count : demand.items) assert(count > 0);
+        const auto floorPower = [](uint32_t count) {
+            assert(count > 0);
+            uint32_t power = 1;
+            while (power <= count / 2) power *= 2;
+            return power;
+        };
+        const auto ceilPower = [maximumRows](uint64_t count) {
+            assert(count <= maximumRows);
+            uint32_t power = 1;
+            while (power < count) power *= 2;
+            return power;
+        };
+        const Phase2DeviceAllocationSize immutableSizes[] = {
+            CudaPhase2ProjectionBuffer::measureAllocation(input.projection),
+            CudaPhase2TaskBuffer::measureAllocation(input.tasks),
+            CudaPhase2FilterSortBuffer::measureAllocation(input.filter)};
+        const auto cpuOutputFloor = minimumPhase2OutputUsage(
+            static_cast<uint32_t>(staticMemory().blockBytes()));
+        for (uint64_t count : cpuOutputFloor.columns) {
+            if (count > maximumRows) {
+                Phase2BufferPlan plan{};
+                plan.state = Phase2BufferPlanState::needsOutputSegmentation;
+                return plan;
+            }
+        }
+        const auto make = [&](const uint32_t* items, const Phase2OutputUsage& outputFloor) {
+            Phase2BufferPlan plan{};
+            const uint32_t requests = floorPower(std::min(items[1], maximumRequests));
+            const uint32_t maximumCandidates = static_cast<uint32_t>(std::min<uint64_t>(
+                maximumRows, static_cast<uint64_t>(phase2FrontierExecutionRows)
+                    * input.filter.maximumExaminedRowsPerCall));
+            const uint32_t candidates = std::min(items[6], maximumCandidates);
+            constexpr uint32_t prefixArguments = (ExecutionParameters::MAX_EXPRESSIONS - 1)
+                * ExecutionParameters::MAX_ARITY;
+            // Candidate rejection and accepted-child probing have independent
+            // windows. Frontier rows need only cover one bounded preparation or
+            // survivor probe; candidate attempts may be much more numerous.
+            const uint32_t frontierRecords = std::min(std::max(candidates, std::min(items[2], maximumCandidates)),
+                std::max(phase2FrontierExecutionRows, requests));
+            // The pass-local store holds a whole measured level when the budget
+            // allows; a larger level spills its oldest rows to host pages.
+            const uint32_t frontierStoreRecords = std::max(frontierRecords,
+                ceilPower(std::min(items[static_cast<uint32_t>(Phase2WorkDimension::frontierStore)],
+                    phase2FrontierStoreMaximumRows)));
+            plan.growth = {std::max(input.tasks.tasks, input.filter.calls), input.filter.retainedRows,
+                frontierRecords, std::max(items[0], requests),
+                requests,
+                std::max(static_cast<uint32_t>(ExecutionParameters::MAX_KEY_SLOTS),
+                    std::min(items[3], phase2FrontierExecutionRows * ExecutionParameters::MAX_KEY_SLOTS)),
+                std::max(prefixArguments, std::min(items[4], phase2FrontierExecutionRows * prefixArguments)),
+                std::max(prefixArguments, std::min(items[5], phase2FrontierExecutionRows * prefixArguments)),
+                candidates, frontierStoreRecords};
+            plan.ordering = {plan.growth.acceptedEvents, requests};
+            const uint32_t work = floorPower(items[7]);
+            plan.evaluation = {ceilPower(input.projection.logicalBlocks), requests, work, work, work, work,
+                std::max(floorPower(std::min(items[8], work)), ceilPower(outputFloor.columns[0])),
+                std::max(floorPower(items[9]), ceilPower(outputFloor.columns[1])),
+                std::max(floorPower(items[10]), ceilPower(outputFloor.columns[2])),
+                std::max(floorPower(items[11]), ceilPower(std::max<uint64_t>(
+                    outputFloor.columns[3], ExecutionParameters::MAX_EXPRESSIONS + 1))),
+                std::max(floorPower(items[12]), ceilPower(outputFloor.columns[4])),
+                std::max(floorPower(items[13]), ceilPower(outputFloor.columns[5])),
+                std::max(floorPower(items[14]), ceilPower(outputFloor.columns[6]))};
+            for (uint32_t i = 0; i < 3; ++i) plan.allocations[i] = immutableSizes[i];
+            plan.allocations[3] = CudaPhase2GrowthBuffer::measureAllocation(plan.growth);
+            plan.allocations[4] = CudaPhase2OrderingBuffer::measureAllocation(plan.ordering);
+            plan.allocations[5] = CudaPhase2EvaluationBuffer::measureAllocation(plan.evaluation);
+            for (uint32_t i = 0; i < 6; ++i) {
+                plan.blocks[i] = (plan.allocations[i].arenaBytes + kPhase2GpuBlockBytes - 1)
+                    / kPhase2GpuBlockBytes;
+                plan.totalBlocks += plan.blocks[i];
+            }
+            if (plan.totalBlocks <= availableBlocks) plan.state = Phase2BufferPlanState::fits;
+            return plan;
+        };
+        uint32_t minimumItems[phase2WorkDimensionCount];
+        for (uint32_t& count : minimumItems) count = 1;
+        Phase2BufferPlan basic = make(minimumItems, cpuOutputFloor);
+        if (basic.state != Phase2BufferPlanState::fits || minimumOnly) return basic;
+        for (uint32_t i = 0; i < static_cast<uint32_t>(Phase2OutputColumn::count); ++i)
+            minimumOutput.columns[i] = std::max(minimumOutput.columns[i], cpuOutputFloor.columns[i]);
+        for (uint64_t count : minimumOutput.columns) {
+            if (count > maximumRows) {
+                basic.state = Phase2BufferPlanState::needsOutputSegmentation;
+                return basic;
+            }
+        }
+        Phase2BufferPlan best = make(minimumItems, minimumOutput);
+        if (best.state != Phase2BufferPlanState::fits) {
+            best.state = Phase2BufferPlanState::needsOutputSegmentation;
+            return best;
+        }
+        // Preserve a complete measured event/request stream when the budget can
+        // hold it. Transient candidate pressure must not shrink retained history
+        // into repeated drains and expensive original-order reconstruction.
+        uint32_t retainedMinimum[phase2WorkDimensionCount];
+        for (uint32_t& count : retainedMinimum) count = 1;
+        retainedMinimum[0] = uint32_t{1} << 23;
+        retainedMinimum[1] = uint32_t{1} << 18;
+        const auto retainedPlan = make(retainedMinimum, minimumOutput);
+        if (retainedPlan.state != Phase2BufferPlanState::fits)
+            for (uint32_t& count : retainedMinimum) count = 1;
+        const auto scaledItems = [&](uint32_t scale, uint32_t* items) {
+            for (uint32_t i = 0; i < phase2WorkDimensionCount; ++i) {
+                items[i] = static_cast<uint32_t>(std::max(uint64_t{retainedMinimum[i]}, std::min<uint64_t>(
+                    maximumRows, std::min<uint64_t>(demand.items[i], maximumRows) * scale / 1024)));
+            }
+        };
+        uint32_t items[phase2WorkDimensionCount];
+        uint32_t low = 0, high = 1024;
+        for (;;) {
+            scaledItems(high, items);
+            auto trial = make(items, minimumOutput);
+            if (trial.state != Phase2BufferPlanState::fits) break;
+            low = high;
+            best = trial;
+            if (high == maximumRows) return best;
+            high = std::min(maximumRows, high * 2);
+        }
+        while (low + 1 < high) {
+            const uint32_t middle = low + (high - low) / 2;
+            scaledItems(middle, items);
+            auto trial = make(items, minimumOutput);
+            if (trial.state == Phase2BufferPlanState::fits) {
+                low = middle;
+                best = trial;
+            } else high = middle;
+        }
+        scaledItems(low, items);
+        const uint32_t flexible[] = {0, 2, 3, 4, 5, 6};
+        const uint64_t rowCosts[] = {
+            sizeof(DeviceAcceptedGrowthEvent) + 5 * sizeof(uint32_t) + 2 * sizeof(DeviceGrowthScanValue),
+            2 * sizeof(DeviceGrowthNode) + sizeof(DeviceGrowthPrefix) + 4 * sizeof(uint32_t)
+                + 4 * sizeof(uint64_t) + 2,
+            sizeof(NameId), sizeof(NameId), sizeof(NameId),
+            sizeof(DeviceGrowthCandidateAttempt) + sizeof(uint32_t) + 1};
+        bool visited[6]{};
+        const uint32_t candidateMaximum = static_cast<uint32_t>(std::min<uint64_t>(maximumRows,
+            static_cast<uint64_t>(phase2FrontierExecutionRows) * input.filter.maximumExaminedRowsPerCall));
+        const uint32_t argumentMaximum = phase2FrontierExecutionRows
+            * (ExecutionParameters::MAX_EXPRESSIONS - 1) * ExecutionParameters::MAX_ARITY;
+        const uint32_t usefulMaximum[] = {maximumRows, std::max(phase2FrontierExecutionRows, best.growth.rawRequests),
+            phase2FrontierExecutionRows * ExecutionParameters::MAX_KEY_SLOTS,
+            argumentMaximum, argumentMaximum, candidateMaximum};
+        for (uint32_t pass = 0; pass < 6 && best.totalBlocks < availableBlocks; ++pass) {
+            uint32_t selectedSlot = 0;
+            uint64_t weight = 0;
+            for (uint32_t i = 0; i < 6; ++i) {
+                if (visited[i]) continue;
+                const uint64_t candidateWeight = std::min<uint64_t>(maximumRows,
+                    demand.items[flexible[i]]) * rowCosts[i];
+                if (candidateWeight > weight) { weight = candidateWeight; selectedSlot = i; }
+            }
+            visited[selectedSlot] = true;
+            const uint32_t selected = flexible[selectedSlot];
+            const uint32_t occupied[] = {best.growth.acceptedEvents, best.growth.frontierRecords,
+                best.growth.prefixPayloadValues, best.growth.prefixVariableValues,
+                best.growth.prefixSecondaryValues, best.growth.candidateWindowRecords};
+            low = occupied[selectedSlot];
+            high = usefulMaximum[selectedSlot];
+            assert(low <= high);
+            while (low < high) {
+                const uint32_t middle = low + (high - low + 1) / 2;
+                items[selected] = middle;
+                auto trial = make(items, minimumOutput);
+                if (trial.state == Phase2BufferPlanState::fits) {
+                    low = middle;
+                    best = trial;
+                } else high = middle - 1;
+            }
+            items[selected] = low;
+        }
+        return best;
+    }
+
+    /// @brief Materialize the next capacity-reserved firing window.
+    ///
+    /// @details
+    /// GPU-measured bounds accumulate across bounded metadata transfers until
+    /// an actual output column fills. The metadata page size does not split a
+    /// fitting materialization. Marker keys use the largest fitting slice. An unfit minimum fragment
+    /// reports its requirements without advancing or materializing any work.
+    ///
+    /// @param projection Frozen uploaded LB input.
+    /// @param tasks Live task descriptors.
+    /// @param growth Live request events and call identities.
+    /// @param ordering Live request tokens.
+    /// @param cursor In/out next value/key position in this prepared window.
+    /// @return Ready output, stream completion or a capacity request.
+    /// @invariant Ready output is retained before its buffers are reused.
+    Phase2FiringWindow CudaPhase2EvaluationBuffer::nextFiringWindow(
+        const CudaPhase2ProjectionBuffer& projection,
+        const CudaPhase2TaskBuffer& tasks, const CudaPhase2GrowthBuffer& growth,
+        const CudaPhase2OrderingBuffer& ordering, Phase2FiringCursor& cursor) {
+        gl::Phase2TraceScope phase2OperationTrace("CudaPhase2EvaluationBuffer::nextFiringWindow");
+        assert(cursor.value <= usedValues_);
+        Phase2FiringWindow result{};
+        if (cursor.value == usedValues_) {
+            assert(cursor.markerKey == 0);
+            return result;
+        }
+        const Phase2OutputUsage capacity{{capacity_.firingRecords, capacity_.generatedBytes,
+            capacity_.levelValues, capacity_.originDependencies, capacity_.markerKeys,
+            capacity_.markerRemainingArgs, capacity_.markerArgs}};
+        Phase2OutputUsage bounds[outputPlanningRows];
+        const uint32_t count = std::min(outputPlanningRows, usedValues_ - cursor.value);
+        measureFiringOutputBounds(projection, tasks, growth, ordering, cursor.value, count, bounds);
+        result.valueBegin = cursor.value;
+        if (cursor.markerKey == 0) {
+            Phase2OutputUsage occupied{};
+            uint32_t retained = 0;
+            uint32_t pageCount = count;
+            for (;;) {
+                const uint32_t accepted = boundedPhase2OutputPrefix(bounds, pageCount, capacity, occupied);
+                retained += accepted;
+                if (accepted < pageCount || cursor.value + retained == usedValues_) break;
+                pageCount = std::min(outputPlanningRows, usedValues_ - cursor.value - retained);
+                measureFiringOutputBounds(projection, tasks, growth, ordering,
+                    cursor.value + retained, pageCount, bounds);
+            }
+            if (retained > 0) {
+                result.state = Phase2FiringWindowState::ready;
+                result.required = occupied;
+                result.valueCount = retained;
+                result.used = materializeFiringExpressions(
+                    projection, tasks, growth, ordering, cursor.value, retained);
+                cursor.value += retained;
+                return result;
+            }
+        }
+        result.state = Phase2FiringWindowState::needsCapacity;
+        result.required = bounds[0];
+        const uint64_t keyCount = bounds[0].columns[static_cast<uint32_t>(Phase2OutputColumn::markerKeys)];
+        if (keyCount == 0) {
+            assert(cursor.markerKey == 0);
+            return result;
+        }
+        assert(keyCount <= UINT_MAX);
+        assert(cursor.markerKey < keyCount);
+        const uint32_t totalKeys = static_cast<uint32_t>(keyCount);
+        uint32_t low = 0;
+        uint32_t high = std::min(totalKeys - cursor.markerKey, capacity_.markerKeys);
+        const auto measureKeys = [&](uint32_t selected, Phase2OutputUsage& requirement) {
+            measureFiringOutputBounds(projection, tasks, growth, ordering,
+                cursor.value, 1, &requirement, cursor.markerKey, selected);
+            Phase2OutputUsage occupied{};
+            return boundedPhase2OutputPrefix(&requirement, 1, capacity, occupied) == 1;
+        };
+        while (low < high) {
+            const uint32_t middle = low + (high - low + 1) / 2;
+            Phase2OutputUsage requirement{};
+            if (measureKeys(middle, requirement)) low = middle;
+            else high = middle - 1;
+        }
+        if (low == 0) {
+            static_cast<void>(measureKeys(1, result.required));
+            return result;
+        }
+        const bool selectedFits = measureKeys(low, result.required);
+        assert(selectedFits);
+        result.state = Phase2FiringWindowState::ready;
+        result.valueCount = 1;
+        result.markerFragment = true;
+        result.markerKeyBegin = cursor.markerKey;
+        result.markerKeyCount = low;
+        result.totalMarkerKeys = totalKeys;
+        result.used = materializeFiringExpressions(projection, tasks, growth, ordering,
+            cursor.value, 1, cursor.markerKey, low);
+        assert(result.used.firingRecordCount <= 1);
+        if (result.used.firingRecordCount == 0) {
+            assert(cursor.markerKey == 0);
+            result.markerFragment = false;
+            ++cursor.value;
+        } else {
+            cursor.markerKey += low;
+            if (cursor.markerKey == totalKeys) {
+                ++cursor.value;
+                cursor.markerKey = 0;
+            }
+        }
+        return result;
+    }
+
+
+
+
+
+
+
 
 }  // namespace gl::gpu
 

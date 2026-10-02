@@ -13,7 +13,7 @@ and a commercial license — see https://generative-logic.com/license.
 
 > **Input:** `files/raw_proof_graph/*.txt` (prover output from stage 5).
 > **Output:** `files/processed_proof_graph/*.txt` (tab-separated chapters + `global_theorem_list.txt` + `external_theorems.txt`).
-> **Owner:** `process_proof_graphs.py` (≈600 lines).
+> **Owner:** `process_proof_graphs.py` and `create_processed_proof_graph`.
 > **Entry:** `create_processed_proof_graph(config, …)` at [`process_proof_graphs.py`](../../process_proof_graphs.py).
 
 ---
@@ -24,13 +24,13 @@ The prover's raw per-theorem chapters are full of internal names — `x<N>` x-pr
 
 1. Pruned — remove chapters for theorems that did not survive the compressor.
 2. Renamed — translate internal names to a stable `v1`, `v2`, …, `N`, `i0`, `s`, `+`, `*`, `i1`, …, `<N>_copy` scheme.
-3. Canonicalised — reorder rows, strip anchor-variable lists from outer implications where they are redundant.
+3. Citation-normalised — rewrite theorem references into their global naming forms while preserving chapter row order.
 4. Tag-extended — associate each chapter with its theorem entry in `global_theorem_list.txt` so the verifier can match chapters to rows.
 
-Stage 8 is where all of that happens. Output artefacts:
+Stage 6 performs this processing. Output artefacts:
 
-- `files/processed_proof_graph/<N>_direct_proof.txt` — one per direct-proof theorem.
-- `files/processed_proof_graph/<N>_check_zero.txt` + `<N+1>_check_induction_condition.txt` + `<N+2>_induction_typing.txt` — per induction theorem (induction-typing chapter new on the current branch; see [I-18](../30_invariants.md#i-18)).
+- `files/processed_proof_graph/<N>_single_chapter_proof.txt` — one per single-chapter theorem.
+- `files/processed_proof_graph/<N>_induction_typing.txt` + `<N+1>_check_zero.txt` + `<N+2>_check_induction_condition.txt` — per induction theorem (induction-typing chapter new on the current branch; see [I-18](../30_invariants.md#i-18)).
 - `files/processed_proof_graph/<N>_reformulated_statement.txt` — per reformulation.
 - `files/processed_proof_graph/<N>_back_reformulated_statement.txt` — per back-reformulation (incubator).
 - `files/processed_proof_graph/<N>_or_theorem.txt` — per OR theorem.
@@ -55,7 +55,7 @@ Anchor variables have fixed, config-dictated names; they must never be renumbere
 
 Walk the arguments of the theorem expression in order. Each non-anchor variable not already in `repl_map` is minted with a **type-aware case**: `v<digit_counter>` if the position's defset is `(1)` (digit / element of N) and `V<set_counter>` if the defset is `P(...)` (set). Two independent counters; both start at 1.
 
-The defset is read from the operator's config entry (`config[op].definition_sets[1-based-position]`) by the helper `classify_args_by_defset` ([`process_proof_graphs.py`](../../process_proof_graphs.py)). Classification is computed ONCE per chapter from the union of the theorem expression and every chapter cell, so a variable that appears in multiple positions across the chapter is consistently digit OR consistently set; a true digit-vs-set conflict in the same chapter triggers an assert.
+The defset is read from the operator's config entry (`config[op].definition_sets[1-based-position]`) by the helper `classify_args_by_defset` ([`process_proof_graphs.py`](../../process_proof_graphs.py)). Classification is combined once per chapter from the theorem expression and every chapter cell. The first concrete classification wins; an unknown classification can be replaced by a concrete one. Conflicting uses across implication scopes do not assert in this display-naming pass.
 
 **This is the seeding step that matters.** Without it, chapters could assign `v1` to a variable that appears first in chapter lines but is a *different* raw variable from the `v1` in `global_theorem_list.txt`. The verifier's theorem-match and task-formulation checks would then spuriously fail. See [I-10](../30_invariants.md#i-10).
 
@@ -164,7 +164,7 @@ Pipeline integration in `create_processed_proof_graph`:
 - ITERATION 4 chapter-cell substitution gets a new branch: if `orig_cell ∈ external_renames`, use the v/V form. Otherwise the prior fallback (chapter-local repl_map) still applies.
 - The post-iteration external-theorem collection emits `external_theorems.txt` carrying all three shapes (raw, v/V, w/W) — the verifier's three lookup paths each find a hit.
 
-**Visual confirmation** on `1209_direct_proof.txt` (incubator chapter heavily citing Peano externals):
+**Visual confirmation** on `1209_single_chapter_proof.txt` (incubator chapter heavily citing Peano externals):
 
 ```text
 before: (>[N,i0,s](AnchorPeano[..])(>[i2](in[i2,N])(>[]!(=[i2,i0])(existence2[N,i2,s]))))
@@ -201,7 +201,7 @@ Seeding from the theorem expression (same left-to-right scan, same type-aware ca
 
 ## Anchored implications are replaced wholesale
 
-Implications cited as `theorem` justifications — e.g. chapter row 2 of `0_direct_proof.txt`:
+Implications cited as `theorem` justifications — e.g. chapter row 2 of `0_single_chapter_proof.txt`:
 
 ```text
 (>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	main	theorem
@@ -249,7 +249,7 @@ expression \t namespace \t tag \t [rest fields...]
 
 The rest fields alternate `expression \t namespace \t expression \t namespace \t...`, citing dependencies and arguments specific to the tag.
 
-Example row (from `0_direct_proof.txt`):
+Example row (from `0_single_chapter_proof.txt`):
 
 ```text
 (in3[i0,i1,v1,+])	main	implication	(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	main	(AnchorPeano[N,0_copy,s,+,*,i1])	main	(in2[i0,v1,s])	main
@@ -277,12 +277,12 @@ Three columns:
 theorem_expression \t method \t reference
 ```
 
-Methods: `direct | induction | reformulated statement`. Reference: `-1` for direct, induction variable name for induction, source-theorem expression for reformulated.
+Methods include `single chapter proof`, `induction`, `reformulated statement`, `incubator back reformulation`, `or theorem`, `or elimination`, and `proved not broadcast` (plus debug-only `debug`). Reference is `-1` for a single-chapter proof, the induction variable for induction, and the source-theorem expression for derived chapter kinds.
 
 Representative rows (from the current branch's `global_theorem_list.txt`):
 
 ```text
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))	direct	-1
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))	single chapter proof	-1
 (>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(in3[i1,v1,i0,+])))	induction	v1
 (>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](interval[N,+,i0,v2,v3])(existence4[N,+,v3,v1,i0]))))	reformulated statement	(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](limitSet[1,4,9,10,11])(>[12](in2[10,12,3])(>[](interval[1,4,2,12,9])(interval[1,4,2,10,11])))))
 ```
@@ -317,7 +317,7 @@ The `reformulated statement` reference field uses the *raw integer-indexed* form
  - Otherwise, register the replacement `args[index] → "x" + args[index]` in `replacementMap`.
 
  The resulting `replacedAnchor` is deposited into the memory block's local and global statement registries. This is the *prover* side of the convention; the *processor* side (Priority 2.5 above) then renames each `x<N>` back to `<digit>_copy` based on the anchor's slot-digit. Changing the convention would require coordinated edits at both sites.
-- **OPEN-15 — RESOLVED.** A chapter-less survivor would appear in `global_theorem_list.txt` but have no chapter file referring to it. The chapter iteration in `process_proof_graphs.py` (at `:349-375`) constructs `fname_to_raw_thm` by mapping expected filenames (per theorem method) to theorem expressions — so the map covers every survivor, but if the file doesn't exist on disk, no chapter-processing call visits it. Downstream: the HTML generator's per-file render loop similarly skips non-existent files; the verifier's chapter-glob at `verifier.py` also skips non-existent files (glob only returns existing ones). The theorem is effectively invisible to chapter-level audit — present in the registry but unverifiable. Detection: run the verifier and check whether the theorem's rendered chapter appears in its expected row count; if a `method = induction` theorem has no accompanying `induction_typing/check_zero/check_induction_condition` triad, the induction-triad assertion in `build_chapter_theorem_map` (at [`verifier.py`](../../verifier.py)) raises `AssertionError` loudly — but for `method = direct` / `reformulated`, no such assertion exists, so the miss is silent. Hardening: add a cross-check that every `global_theorem_list.txt` row has a corresponding chapter file.
+- **OPEN-15 — RESOLVED.** A chapter-less survivor would appear in `global_theorem_list.txt` but have no chapter file referring to it. The chapter iteration in `process_proof_graphs.py` constructs `fname_to_raw_thm` by mapping expected filenames (per theorem method) to theorem expressions — so the map covers every survivor, but if the file does not exist on disk, no chapter-processing call visits it. Downstream, the HTML generator and verifier likewise visit only existing files. The theorem is effectively invisible to chapter-level audit. Detection: run the verifier and check whether the theorem's rendered chapter appears in its expected row count; if a `method = induction` theorem has no accompanying `induction_typing/check_zero/check_induction_condition` triad, `build_chapter_theorem_map` raises loudly, while `method = single chapter proof` and reformulation chapters need the general correspondence cross-check.
 
 ---
 
@@ -327,6 +327,15 @@ The `reformulated statement` reference field uses the *raw integer-indexed* form
 - [`10_pipeline/08_verifier.md`](08_verifier.md) — downstream consumer + chapter-format enforcer.
 - [I-10](../30_invariants.md#i-10), [I-11](../30_invariants.md#i-11) — renaming invariants.
 - [`20_core_concepts/08_proof_tags.md`](../20_core_concepts/08_proof_tags.md) — tag vocabulary.
+
+## Repeated expression processing
+
+`process_proof_graphs.py` and `create_processed_proof_graph` memoize argument
+extraction, type classification, theorem-shape recognition, and binder/citation
+renaming within one call. The configuration is fixed for that call and the caches
+are released on return. Chapter-specific replacement maps and variable counters
+remain separate and retain their existing visitation order. Mutable chapter rows
+are copied independently; immutable string cells are shared until replacement.
 
 ---
 

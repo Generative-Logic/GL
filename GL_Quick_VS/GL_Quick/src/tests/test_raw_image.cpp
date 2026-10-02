@@ -38,13 +38,14 @@
 /// rebuild (the raw image carries the pages verbatim); and the new
 /// `DeloadStats` raw counters folding into the per-phase out/in totals.
 ///
-/// Every raw-arena round trip drives the primitives directly (no
-/// `ExpressionAnalyzer`, no pipeline state) with a PRIVATE `GlobalMemoryManager`
-/// per test (D-139: unit tests never touch the process-wide pool).
+/// Arena-level round trips drive the primitives with a private memory manager.
+/// Memory-level lifecycle tests also exercise the owning block's release paths
+/// and reconstruction of canonical lookup state.
 
 #include "test_harness.hpp"
 
 #include "../memory.hpp"
+#include "../prover.hpp"
 #include "../memory_infra/deload_stats.hpp"
 #include "../memory_infra/dirty_state.hpp"
 #include "../memory_infra/global_memory_manager.hpp"
@@ -151,6 +152,63 @@ TEST(raw_image, pool_bulk_acquire_release_equivalence) {
     ASSERT_EQ(m.blocksInUse(), static_cast<int64_t>(8));
     m.releaseBlocks(singles, 8);
     ASSERT_EQ(m.blocksInUse(), static_cast<int64_t>(0));
+}
+
+TEST(raw_image, or_source_state_survives_raw_eviction) {
+    const std::string dir = freshRawDir("or_source_state");
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory memory(&manager);
+    const gl::OrImplicationLeaf leaves[] = {{15, 16}, {7, 8}};
+    const int levels[] = {4};
+    const int64_t key = gl::packInt32Pair(101, 3);
+    ASSERT_TRUE(memory.orImplications.insert(key, 102, leaves, 2, levels, 1, true));
+    memory.orImplications.pendingFacts.push_back(gl::packInt32Pair(16, 1));
+    const int64_t cacheKey = gl::packInt32Pair(16, 3);
+    gl::ScratchArena cacheScratch(&manager);
+    memory.orImplicationMatches.publishCache(cacheKey, gl::OrCanonicalCache{16, 52, 0}, [](auto&&) {}, cacheScratch);
+    const int32_t viewId = memory.orImplicationMatches.bindView(gl::OrViewIdentity::sourceLeaf(key, 3, 0), cacheKey);
+    memory.orImplicationMatches.built = true;
+    memory.orImplicationMatches.classScopesBuilt = true;
+    memory.existenceLookups.algebraSources.postings.insert(cacheKey, key);
+    memory.existenceLookups.algebraSources.built = true;
+    memory.existenceReplays.insert(cacheKey, 1);
+    memory.existenceLookups.receipts.ensureCurrent(memory.existenceReplays,
+        [](int64_t packed) { return int64_t(gl::Codec<gl::StatementKey>::decode(packed).validity); });
+    const int64_t liveBefore = memory.liveBytes();
+    const std::string chain = "or-source-raw-storage";
+    const int64_t ordinal = 900101;
+    gl::lbdeload::dumpLbMemoryRaw(memory, chain, ordinal, dir);
+    memory.manager.releaseAll();
+    memory.manager.markDeloaded();
+    memory.manager.markResident();
+    gl::lbdeload::loadLbMemoryRaw(memory, chain, ordinal,
+        gl::lbdeload::rawFileName(ordinal), dir);
+    const gl::OrImplicationSource source = *memory.orImplications.find(key);
+    ASSERT_EQ(source.canonicalId, 102);
+    ASSERT_EQ(memory.orImplications.leaves[source.leafStart].literalId, 15);
+    ASSERT_EQ(memory.orImplications.leaves[source.leafStart + 1].complementId, 8);
+    ASSERT_EQ(memory.orImplications.levels[source.levelStart], 4);
+    ASSERT_EQ(memory.orImplications.pendingSources[0], key);
+    ASSERT_EQ(memory.orImplications.pendingFacts[0], gl::packInt32Pair(16, 1));
+    ASSERT_EQ(memory.liveBytes(), liveBefore);
+    ASSERT_EQ(memory.orImplicationMatches.liveViews, 1);
+    ASSERT_EQ(memory.orImplicationMatches.views[viewId].cacheKey, cacheKey);
+    ASSERT_TRUE(memory.orImplicationMatches.built);
+    ASSERT_TRUE(memory.orImplicationMatches.classScopesBuilt);
+    ASSERT_TRUE(memory.existenceLookups.algebraSources.built);
+    int sourceHits = 0;
+    memory.existenceLookups.algebraSources.postings.forEach(cacheKey, [&](int64_t found) {
+        ASSERT_EQ(found, key); ++sourceHits;
+    });
+    ASSERT_EQ(sourceHits, 1);
+    int receiptHits = 0;
+    memory.existenceLookups.receipts.forEach(3, [&](int64_t found) {
+        ASSERT_EQ(found, cacheKey); ++receiptHits;
+    });
+    ASSERT_EQ(receiptHits, 1);
+    ASSERT_TRUE(memory.orImplicationMatches.postings().containsKey(gl::orPostingKey(
+        gl::OrPostingKind::WatchKey, gl::packInt32Pair(52, 3))));
 }
 
 TEST(raw_image, pool_bulk_acquire_fires_grant_trigger_once) {
@@ -549,6 +607,21 @@ TEST(raw_image, memory_raw_roundtrip_preserves_all_containers_no_rebuild) {
         m.intLocalEncodedStatementsSet.mint(7 * i + 3);
     ASSERT_TRUE(m.intLocalEncodedStatementsSet.contains(7 * 10 + 3));
 
+    const gl::NameId releaseScope = m.nameMap.encode("main");
+    const gl::NameId releaseOriginal = m.nameMap.encode("(or90[a,b])");
+    const int64_t releasePair = gl::packInt32Pair(releaseOriginal, releaseOriginal);
+
+
+    auto& canonical=m.lbMemory.canonicalUses;
+    canonical.statements.add(releasePair,releaseScope,gl::StrSpan("a"));
+    canonical.pendingCarriers.insert(releasePair,91);
+    canonical.pendingIdentity.upsert(91,releasePair);
+    canonical.pendingBuilt=true;
+    canonical.statementMatches.forms.upsert(releasePair,17);
+    canonical.statementMatches.rebuildCount=9;
+    gl::EquivalenceClass complete; complete.memberIds={2,3};
+    m.canonicalEquivalenceClassesMap.assignRun(releaseScope,{complete});
+
     m.deloadStaticContainersRaw(dir);           // v4 dump + release
     ASSERT_FALSE(m.lbMemory.manager.resident());
     ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Raw);
@@ -563,6 +636,14 @@ TEST(raw_image, memory_raw_roundtrip_preserves_all_containers_no_rebuild) {
     ASSERT_TRUE(gl::deloadStats().rawLoadCount.load() > 0);
 
     // Statements intact.
+    int hits=0;
+    canonical.statements.forEach(releaseScope,gl::StrSpan("a"),[&](int64_t key){ASSERT_EQ(key,releasePair);++hits;});
+    ASSERT_EQ(hits,1);
+    ASSERT_EQ(*canonical.pendingIdentity.find(91),releasePair);
+    ASSERT_TRUE(canonical.pendingBuilt);
+    ASSERT_EQ(*canonical.statementMatches.forms.find(releasePair),17);
+    ASSERT_EQ(canonical.statementMatches.rebuildCount,9);
+    ASSERT_EQ(m.canonicalEquivalenceClassesMap.recordAt(m.canonicalEquivalenceClassesMap.lookup(releaseScope),0).memberIds.size(),size_t(2));
     ASSERT_EQ(m.intEncodedStatements.size(), kStmts);
     for (int16_t i = 0; i < kStmts; ++i) {
         ASSERT_EQ(m.intEncodedStatements[i].nameId, rawExpr(i).nameId);
@@ -629,6 +710,41 @@ TEST(raw_image, memory_raw_cold_metadata_readable_while_deloaded) {
     ASSERT_FALSE(m.lbMemory.manager.resident());
     // The count reads deloadedCounts while cold — no reload triggered.
     ASSERT_EQ(m.intEncodedStatementsCount(), kStmts);
+}
+
+TEST(raw_image, canonical_cache_only_mutation_requires_a_fresh_raw_snapshot) {
+    gl::deloadStats().reset();
+    const auto directory=freshRawDir("canonical_cache_mutation");
+    gl::Memory memory;
+    memory.setExprKey("(canonical_cache_mutation)");
+    auto& uses=memory.lbMemory.canonicalUses;
+    const auto root=gl::NameMap::MAIN_ID;
+    uses.statements.add(11,root,gl::StrSpan("a"));
+    ASSERT_TRUE(uses.statements.hasRawChanges());
+    uses.statements.markRawClean();
+    ASSERT_FALSE(uses.statements.hasRawChanges());
+    uses.statementMatches.forms.upsert(21,31);
+    ASSERT_TRUE(uses.statementMatches.hasRawChanges());
+    uses.statementMatches.markRawClean();
+    ASSERT_FALSE(uses.statementMatches.hasRawChanges());
+    uses.markRawClean();
+    ASSERT_FALSE(uses.hasRawChanges());
+    memory.dumpStaticContainersRaw(directory);
+    const auto dumps=gl::deloadStats().fullDumpCount.load();
+    uses.statements.add(12,root,gl::StrSpan("b"));
+    uses.statementMatches.forms.upsert(21,32);
+    ASSERT_EQ(memory.lbMemory.dirty,gl::DirtyState::Clean);
+    ASSERT_TRUE(uses.hasRawChanges());
+    memory.deloadStaticContainersRaw(directory);
+    ASSERT_EQ(gl::deloadStats().fullDumpCount.load(),dumps+1);
+    memory.ensureLoaded(directory);
+    int hits=0;
+    uses.statements.forEach(root,gl::StrSpan("b"),[&](int64_t key){ASSERT_EQ(key,12);++hits;});
+    ASSERT_EQ(hits,1);
+    ASSERT_EQ(*uses.statementMatches.forms.find(21),32);
+    ASSERT_FALSE(uses.hasRawChanges());
+    memory.dumpStaticContainersRaw(directory);
+    ASSERT_EQ(gl::deloadStats().fullDumpCount.load(),dumps+1);
 }
 
 TEST(raw_image, v3_image_still_loads_through_dispatch_and_rebuilds) {
@@ -1135,6 +1251,37 @@ TEST(raw_image, canonical_export_release_cycle_dispatches_to_v3) {
     ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(20));
 }
 
+TEST(raw_image, or_matching_canonical_release_discards_derived_views_only) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.trackHistory = false;
+    const std::string dir = freshRawDir("or_matching_canonical_release");
+    gl::Memory memory;
+    memory.setExprKey("(or_matching_canonical_release)");
+    const auto main = gl::NameMap::MAIN_ID;
+    const auto original = memory.nameMap.encode("(p[a])");
+    const auto complement = memory.nameMap.encode("!(p[a])");
+    const int64_t key = gl::packInt32Pair(original, main);
+    const gl::OrImplicationLeaf leaves[] = {{original, complement}, {complement, original}};
+    const int levels[] = {0};
+    memory.orImplications.insert(key, original, leaves, 2, levels, 1, true);
+    analyzer.bindOrCanonicalView(memory, memory.orImplicationMatches,
+        {key, main, 0}, complement);
+    memory.orImplicationMatches.built = true;
+    memory.deloadStaticContainers(dir);
+    ASSERT_FALSE(memory.lbMemory.manager.resident());
+    memory.ensureLoadedForRead(dir);
+    ASSERT_TRUE(memory.orImplications.find(key) != nullptr);
+    ASSERT_EQ(memory.orImplicationMatches.liveBytes(), int64_t{0});
+    ASSERT_FALSE(memory.orImplicationMatches.built);
+    const int32_t view = analyzer.bindOrCanonicalView(memory,
+        memory.orImplicationMatches, {key, main, 0}, complement);
+    ASSERT_EQ(memory.orImplicationMatches.liveViews, 1);
+    const auto* cache = memory.orImplicationMatches.caches().find(
+        memory.orImplicationMatches.views[view].cacheKey);
+    ASSERT_TRUE(cache != nullptr);
+    ASSERT_EQ(cache->canonicalId, complement);
+}
+
 TEST(raw_image, extent_slab_registry_tracks_alloc_free_and_file_growth) {
     // The manager-level slab bookkeeping behind registry.txt's extent columns:
     // allocateExtentSlab records ordinal->slab, freeExtentSlab drops the row
@@ -1276,4 +1423,93 @@ TEST(raw_image, extent_ordinal_tripwire_tracks_slab_occupant) {
     gl::lbdeload::loadLbMemoryRawAt(b, chainB, 700002, file, slab.offset);
     checkArenaPages(b, 6, pb);
     file.close();
+}
+
+TEST(raw_image, parked_source_and_pending_receipt_survive_eviction) {
+    const std::string dir = freshRawDir("parked_source_state");
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory memory(&manager);
+    gl::RejectedMapValue record;
+    record.sourceExpression = 41;
+    record.iteration = 3;
+    record.flags = 9;
+    record.rewrites = {20,41,30};
+    record.levels = {0,5};
+    const int64_t key = gl::packInt32Pair(7,3);
+    const int64_t receipt = gl::packInt32Pair(41,3);
+    memory.overallHashMemory.rejectedMap.assignRun(key,{record});
+    memory.existenceReplays.upsert(receipt,25);
+    const int64_t bytes = memory.liveBytes();
+    const std::string chain = "parked-existence-raw-storage";
+    const int64_t ordinal = 900102;
+    gl::lbdeload::dumpLbMemoryRaw(memory,chain,ordinal,dir);
+    memory.manager.releaseAll();
+    memory.manager.markDeloaded();
+    memory.manager.markResident();
+    gl::lbdeload::loadLbMemoryRaw(memory,chain,ordinal,gl::lbdeload::rawFileName(ordinal),dir);
+    ASSERT_EQ(*memory.existenceReplays.find(receipt),25);
+    const auto after = memory.overallHashMemory.rejectedMap.recordAt(
+        memory.overallHashMemory.rejectedMap.lookup(key),0);
+    ASSERT_TRUE(gl::Codec<gl::RejectedMapValue>::serialize(after) == gl::Codec<gl::RejectedMapValue>::serialize(record));
+    ASSERT_EQ(memory.liveBytes(),bytes);
+}
+
+
+TEST(raw_image, shared_rule_values_keep_private_large_payload_through_both_formats) {
+    const std::string directory = freshRawDir("shared_rule_values_large");
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbMemory source(&manager), restored(&manager);
+    gl::ScratchArena scratch(&manager);
+    gl::NormKey key{3, {1, 0, 2, 0, 3, 0}};
+    gl::OwnerSet large, small;
+    large.hasLooseOwner = true;
+    for (int32_t owner = 1; owner <= 800; ++owner)
+        large.owners.push_back({static_cast<gl::RuleOwner>(owner), -1});
+    const auto expected = gl::Codec<gl::OwnerSet>::serialize(large);
+    ASSERT_TRUE(expected.size() > 2048);
+    source.overallHashMemory.normalizedEncodedSubkeys.assignRun(key, {large});
+    source.workingMemory.normalizedEncodedSubkeys.assignRun(key, {small});
+    source.sharedNativeKeys.collect(scratch);
+    const std::string chain = "shared-rule-values";
+    const int64_t ordinal = 900111;
+    gl::lbdeload::dumpLbMemoryRaw(source, chain, ordinal, directory);
+    source.manager.releaseAll(); source.manager.markDeloaded(); source.manager.markResident();
+    gl::lbdeload::loadLbMemoryRaw(source, chain, ordinal,
+        gl::lbdeload::rawFileName(ordinal), directory);
+    auto& map = source.overallHashMemory.normalizedEncodedSubkeys;
+    ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(map.recordAt(map.lookup(key), 0)) == expected);
+    source.workingMemory.resetToFresh();
+    source.sharedNativeKeys.collect(scratch);
+    ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(map.recordAt(map.lookup(key), 0)) == expected);
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, ordinal + 1, directory, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, directory);
+    auto& result = restored.overallHashMemory.normalizedEncodedSubkeys;
+    ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(result.recordAt(result.lookup(key), 0)) == expected);
+    ASSERT_TRUE(restored.workingMemory.normalizedEncodedSubkeys.empty());
+}
+
+
+TEST(raw_image, shared_expression_handles_and_lifetime_survive_raw_reload) {
+    gl::GlobalMemoryManager manager; manager.init(kRawCfg16);
+    gl::LbMemory memory(&manager);
+    for (int i = 0; i < 300; ++i) {
+        memory.intEncodedStatements.push_back(rawExpr(i));
+        memory.intExternalStatements.push_back(rawExpr(i));
+    }
+    const auto shape = memory.manager.rawShape();
+    std::vector<uint8_t> bitmap(static_cast<size_t>((shape.vidCount + 7) / 8));
+    memory.manager.fillLiveBitmap(bitmap.data(), static_cast<int64_t>(bitmap.size()));
+    const auto bytes = emitToBuffer(memory.manager);
+    memory.manager.releaseAll(); memory.manager.markDeloaded();
+    memory.manager.markResident();
+    memory.manager.restoreForRawLoad(shape.vidCount, bitmap.data(), shape.livePages, shape.byteBumpCursor);
+    fillFromBuffer(memory.manager, bytes);
+    ASSERT_EQ(memory.sharedExpressions.count(), 300);
+    ASSERT_TRUE(&memory.intEncodedStatements[83] == &memory.intExternalStatements[83]);
+    memory.intEncodedStatements.clear(); ASSERT_EQ(memory.sharedExpressions.count(), 300);
+    memory.intExternalStatements.erase(83); ASSERT_EQ(memory.sharedExpressions.count(), 299);
+    memory.intExternalStatements.push_back(rawExpr(83)); ASSERT_EQ(memory.sharedExpressions.count(), 300);
+    memory.intExternalStatements.clear(); ASSERT_EQ(memory.sharedExpressions.liveBytes(), 0);
 }

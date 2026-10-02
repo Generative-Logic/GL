@@ -54,14 +54,15 @@ namespace gl {
     /// @details
     /// One MAIN-pool data block holds `262144 / 8 = 32768` `char*` entries. With
     /// `kArenaDirRootCap == 128` the spilled region addresses up to `128 * 32768
-    /// = 4194304` entries on top of the inline buffer. The binding consumer is
+    /// = 4194304` entries on top of the direct storage (inline buffer or
+    /// attached storage). The binding consumer is
     /// `LbArena::pageTable_`, whose entry count is the arena's LIVE-page high
     /// water: freed vids recycle through the free-vid LIFO threaded through the
     /// dead slots (D-228), so the table is bounded by peak
-    /// simultaneous live pages — ~4.2M entries ≈ 33 GiB of 8 KiB pages per
+    /// simultaneous live pages — ~4.2M entries ≈ 8 GiB of 2 KiB pages per
     /// arena, far past any single LB. The block directories (`blocks_` /
-    /// `pageBlocks_`) are bounded by the pool itself — 12 GiB / 256 KiB =
-    /// 49,152 blocks, two spill blocks — and can never approach this cap.
+    /// `pageBlocks_`) are bounded by the pool itself — 6 GiB / 256 KiB =
+    /// 24,576 blocks, one spill block — and can never approach this cap.
     /// Exhaustion (a spill block past the cap is needed) is a hard assert
     /// naming this constant (Rule 19 / I-19) — never a third directory level,
     /// never a fallback.
@@ -78,7 +79,7 @@ namespace gl {
     /// page table (the main deloadable arena, thousands of pages) spills to pool
     /// blocks, where the one directory block is negligible against its data. At
     /// `128` the inline cost is `128 * sizeof(char*) = 1 KiB` per page table; the
-    /// inline buffer covers up to a 1 MiB page footprint (128 * 8 KiB pages).
+    /// inline buffer covers up to a 256 KiB page footprint (128 * 2 KiB pages).
     constexpr int32_t kArenaPageTableInline = 128;
 
     /// @brief Inline-buffer size for the per-LB block tables (`LbArena::blocks_`,
@@ -101,14 +102,18 @@ namespace gl {
     /// overflows, draws data blocks DIRECTLY from the `GlobalMemoryManager`
     /// (`acquireBlock` / `releaseBlock`) — the same grant path `LbArena` uses.
     ///
-    /// **Small-buffer optimization.** The first `kInline` entries live in the
-    /// inline array `inline_[kInline]` (part of the `LbArena` / `Memory` object,
-    /// already pool-backed via `LbStore`), so a table that never exceeds `kInline`
-    /// costs no separate pool block at all. Entries `[kInline, ...)` "spill" and
-    /// pack contiguously across data blocks held by a small wired inline root
-    /// `root_[kArenaDirRootCap]`; spilled entry `s = i - kInline` resolves as
-    /// `root_[s >> shift_] + (s & mask_) * sizeof(char*)`. One level of
-    /// indirection, NO recursion: the root IS the spilled directory, the data
+    /// **Small-buffer optimization.** The first `capacity()` entries live in the
+    /// directory's direct storage: by default the inline array
+    /// `inline_[kInline]` (part of the `LbArena` / `Memory` object, already
+    /// pool-backed via `LbStore`), or a larger caller-owned array attached once
+    /// by `attachStorage` before the first entry (a logic block's main arena
+    /// attaches arrays owned by its `LbMemory`, which occupy otherwise unused
+    /// room of its `LbStore` slot). A table that never exceeds its direct
+    /// capacity costs no separate pool block at all. Entries `[capacity(), ...)`
+    /// "spill" and pack contiguously across data blocks held by a small wired
+    /// inline root `root_[kArenaDirRootCap]`; spilled entry `s = i - capacity()`
+    /// resolves as `root_[s >> shift_] + (s & mask_) * sizeof(char*)`. One level
+    /// of indirection, NO recursion: the root IS the spilled directory, the data
     /// blocks are its leaves, and overflowing the root asserts (see
     /// `kArenaDirRootCap`).
     ///
@@ -127,9 +132,10 @@ namespace gl {
     /// directory is never serialized into a deload image (it is rebuilt on reload,
     /// exactly like the `std::vector` it replaces).
     ///
-    /// @tparam kInline Inline-buffer length; a table of at most `kInline` entries
-    ///         holds no pool block.
-    /// @invariant `numBlocks_ >= ceil(max(0, size_ - kInline) / entriesPerBlock_)`
+    /// @tparam kInline Inline-buffer length; a table of at most `capacity()`
+    ///         entries (`kInline` unless storage is attached) holds no pool
+    ///         block.
+    /// @invariant `numBlocks_ >= ceil(max(0, size_ - capacity()) / entriesPerBlock_)`
     ///            (spilled data blocks are retained on shrink and returned only by
     ///            `clear` / `shrinkToFit`); root slots `[0, numBlocks_)` are
     ///            non-null pool blocks and `[numBlocks_, kArenaDirRootCap)` null.
@@ -176,6 +182,52 @@ namespace gl {
             global_ = global;
         }
 
+        /// @brief Set the pool purpose the directory's spilled blocks are
+        ///        attributed to (the owning arena's purpose).
+        ///
+        /// @details
+        /// Called by `LbArena::setPurpose` so a spilled directory block is
+        /// counted under the same consumer as the data blocks it indexes.
+        /// Legal only while no spilled block is held (asserted), because the
+        /// grant and the return of one block must carry the same purpose.
+        ///
+        /// @param purpose The owner's purpose; not `PoolPurpose::Count`.
+        void setPurpose(PoolPurpose purpose) {
+            assert(purpose != PoolPurpose::Count);
+            assert(numBlocks_ == 0
+                && "PtrDirectory::setPurpose while spilled blocks are held");
+            purpose_ = purpose;
+        }
+
+        /// @brief Replace the inline buffer by caller-owned direct storage for
+        ///        the first `capacity` entries.
+        ///
+        /// @details
+        /// For an owner whose table is routinely larger than the inline buffer
+        /// and which has room to spare elsewhere: a logic block's `LbMemory`
+        /// attaches arrays in the unused room of its `LbStore` slot, so its
+        /// page table needs no spilled pool block. Entries `[0, capacity)` then
+        /// live in `storage`, entries past it spill to pool blocks exactly as
+        /// before, and the inline buffer is unused. Called once, on an empty
+        /// directory that holds no spilled block (asserted). The storage must
+        /// outlive the directory (declared before the owning arena) and is
+        /// never read past `size()`, so it needs no initialization.
+        ///
+        /// @param storage  Caller-owned array of `capacity` pointers; non-null.
+        /// @param capacity Number of direct entries; at least `kInline`.
+        void attachStorage(char** storage, int32_t capacity) {
+            assert(storage != nullptr && capacity >= kInline);
+            assert(size_ == 0 && numBlocks_ == 0 && base_ == inline_
+                && "PtrDirectory::attachStorage on a used or attached directory");
+            base_ = storage;
+            cap_ = capacity;
+        }
+
+        /// @brief Number of entries the directory holds without a pool block.
+        ///
+        /// @return `kInline`, or the capacity given to `attachStorage`.
+        int32_t capacity() const { return cap_; }
+
         /// @brief Number of entries currently stored.
         int32_t size() const { return size_; }
 
@@ -183,7 +235,7 @@ namespace gl {
         bool empty() const { return size_ == 0; }
 
         /// @brief Append one entry, spilling onto a fresh pool data block only
-        ///        when the inline buffer is full and the current spilled block
+        ///        when the direct storage is full and the current spilled block
         ///        fills.
         ///
         /// @details
@@ -193,9 +245,9 @@ namespace gl {
         /// @param entry The pointer to store (may be null — the owner's semantics
         ///              decide, e.g. a freed-vid slot).
         void push_back(char* entry) {
-            if (size_ >= kInline) {
+            if (size_ >= cap_) {
                 ensureGeometry();
-                const int32_t s = size_ - kInline;
+                const int32_t s = size_ - cap_;
                 const int32_t blockIdx = s >> shift_;
                 if (blockIdx >= numBlocks_) {
                     assert(blockIdx == numBlocks_
@@ -204,7 +256,7 @@ namespace gl {
                         && "PtrDirectory exceeded kArenaDirRootCap spilled blocks "
                            "— raise kArenaDirRootCap (and re-measure the pool "
                            "budget); never a second directory level");
-                    root_[numBlocks_] = global_->acquireBlock();
+                    root_[numBlocks_] = global_->acquireBlock(purpose_);
                     assert(root_[numBlocks_] != nullptr);
                     ++numBlocks_;
                 }
@@ -278,24 +330,24 @@ namespace gl {
         ///        the last spilled directory block, so the LB ends at zero held
         ///        blocks.
         void shrinkToFit() {
-            const int32_t spilled = (size_ > kInline) ? (size_ - kInline) : 0;
+            const int32_t spilled = (size_ > cap_) ? (size_ - cap_) : 0;
             const int32_t need =
                 (spilled == 0) ? 0 : (((spilled - 1) >> shift_) + 1);
             while (numBlocks_ > need) {
                 --numBlocks_;
                 assert(root_[numBlocks_] != nullptr);
-                global_->releaseBlock(root_[numBlocks_]);
+                global_->releaseBlock(root_[numBlocks_], purpose_);
                 root_[numBlocks_] = nullptr;
             }
         }
 
         /// @brief Return every held spilled data block to the pool and reset to
-        ///        empty (cached geometry kept; the inline buffer is abandoned in
-        ///        place, costing no pool block).
+        ///        empty (cached geometry and attached storage kept; the direct
+        ///        entries are abandoned in place, costing no pool block).
         void clear() {
             for (int32_t b = 0; b < numBlocks_; ++b) {
                 assert(root_[b] != nullptr);
-                global_->releaseBlock(root_[b]);
+                global_->releaseBlock(root_[b], purpose_);
                 root_[b] = nullptr;
             }
             numBlocks_ = 0;
@@ -303,7 +355,7 @@ namespace gl {
         }
 
         /// @brief Spilled data blocks currently held (the owner adds these into
-        ///        `LbArena::blocksHeld`; the inline buffer holds no pool block).
+        ///        `LbArena::blocksHeld`; the direct storage holds no pool block).
         int32_t blocksHeld() const { return numBlocks_; }
 
         /// @brief Deep structural self-audit — asserts the whole directory is
@@ -313,7 +365,8 @@ namespace gl {
 #ifndef NDEBUG
             assert(size_ >= 0);
             assert(numBlocks_ >= 0 && numBlocks_ <= kArenaDirRootCap);
-            const int32_t spilled = (size_ > kInline) ? (size_ - kInline) : 0;
+            assert(base_ != nullptr && cap_ >= kInline);
+            const int32_t spilled = (size_ > cap_) ? (size_ - cap_) : 0;
             if (shift_ < 0) {                    // never spilled
                 assert(numBlocks_ == 0);
             } else {
@@ -335,19 +388,19 @@ namespace gl {
         }
 
     private:
-        /// @brief Read entry `i` (inline or spilled), no bounds check.
+        /// @brief Read entry `i` (direct or spilled), no bounds check.
         GL_FORCEINLINE char* readAt(int32_t i) const {
-            if (i < kInline) return inline_[i];
-            const int32_t s = i - kInline;
+            if (i < cap_) return base_[i];
+            const int32_t s = i - cap_;
             return *reinterpret_cast<char* const*>(
                 root_[s >> shift_]
                 + static_cast<std::size_t>(s & mask_) * sizeof(char*));
         }
 
-        /// @brief Write entry `i` (inline or spilled), no bounds check.
+        /// @brief Write entry `i` (direct or spilled), no bounds check.
         void writeAt(int32_t i, char* v) {
-            if (i < kInline) { inline_[i] = v; return; }
-            const int32_t s = i - kInline;
+            if (i < cap_) { base_[i] = v; return; }
+            const int32_t s = i - cap_;
             *reinterpret_cast<char**>(
                 root_[s >> shift_]
                 + static_cast<std::size_t>(s & mask_) * sizeof(char*)) = v;
@@ -376,7 +429,10 @@ namespace gl {
         }
 
         GlobalMemoryManager* global_ = nullptr;   // null until bound
-        char* inline_[kInline] = {};              // first kInline entries (no pool block)
+        PoolPurpose purpose_ = PoolPurpose::Unattributed;  // attribution of spilled blocks
+        char** base_ = inline_;                   // direct storage: inline_ or attached
+        int32_t cap_ = kInline;                   // direct entries before the spill
+        char* inline_[kInline] = {};              // default direct storage (no pool block)
         char* root_[kArenaDirRootCap] = {};       // spilled data blocks; null past numBlocks_
         int32_t size_ = 0;                         // entries stored (inline + spilled)
         int32_t numBlocks_ = 0;                    // spilled data blocks held

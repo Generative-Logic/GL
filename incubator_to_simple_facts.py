@@ -45,6 +45,7 @@ import re
 import os
 import itertools
 from pathlib import Path
+from assertion_guard import require_assertions
 from configuration_reader import configuration_reader
 import expression_utils
 
@@ -254,7 +255,7 @@ def convert_incubator_theorems(tag, config_path=None, theorems_dir=None,
 
     # Read from global theorem list (has method column) instead of theorems.txt
     # Only use 'direct' and 'incubator back reformulation' methods
-    _ALLOWED_METHODS = {"direct", "incubator back reformulation"}
+    _ALLOWED_METHODS = {"single chapter proof", "incubator back reformulation"}
     gtl_path = PROJECT_ROOT / "files" / "incubator" / "processed_proof_graph" / "global_theorem_list.txt"
     if not gtl_path.exists():
         print(f"Warning: {gtl_path} not found.")
@@ -436,4 +437,5 @@ def convert_incubator_theorems(tag, config_path=None, theorems_dir=None,
 
 
 if __name__ == "__main__":
+    require_assertions("incubator_to_simple_facts.py")
     convert_incubator_theorems("Peano")

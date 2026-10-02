@@ -9,6 +9,9 @@
 from __future__ import annotations
 
 import copy
+import os
+import hashlib
+from collections import Counter
 import json
 import re
 import tempfile
@@ -17,6 +20,7 @@ from pathlib import Path
 
 from proof_export.certificate import (
     _constructed_or_definition,
+    _chapter_certificate,
     _defined_output_totality,
     _schema3_action_metadata,
     _validate_theorem_adaptation,
@@ -29,19 +33,24 @@ from proof_export.graph import (
     ProofRow,
     ScopedExpression,
     TheoremRecord,
+    load_theorem_records,
     parse_scoped_expression,
 )
+from proof_export.certificate import is_subset_implication
 from proof_export.lean import (
     _assert_manifest_coverage,
     _context_application,
     _context_signature,
     _definition_body,
     _definition_order,
+    _definition_variable_types,
+    _extensionality_lemma,
     _external_reference_interfaces,
     _helper_free_tokens,
     _render_reformulated_theorem,
     _render_scoped_proposition,
     _scope_entry_and_specializations,
+    _scope_inheritance_proof,
     _scoped_dependency,
     _scoped_expression,
     lean_name,
@@ -51,12 +60,13 @@ from proof_export.lean import (
     render_peano_theory,
     write_lean,
 )
-from proof_export.mpl import parse_mpl, to_mpl
+from proof_export.mpl import Implication, iter_atoms, parse_mpl, to_mpl
 from proof_export.types import (
     BINARY_RELATION,
     ELEMENT,
     SET,
     TERNARY_RELATION,
+    infer_expression_variables,
     load_type_environment,
 )
 
@@ -65,15 +75,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 LEAN_FIXTURES = REPOSITORY_ROOT / "tests" / "fixtures" / "lean_certificates"
 FULL_CERTIFICATE = LEAN_FIXTURES / "lean_full_65.json"
 GAUSS_CERTIFICATE = LEAN_FIXTURES / "lean_gauss_main_29.json"
-LIVE_MAIN_EXPORT = REPOSITORY_ROOT / "files" / "full_proof_graph" / "lean_export"
-LIVE_SHORTCUT_EXPORT = (
-    REPOSITORY_ROOT / "files" / "shortcut" / "full_proof_graph" / "lean_export"
-)
-FTA_CERTIFICATE = LIVE_SHORTCUT_EXPORT / "certificates" / "fta" / "certificate.json"
+LIVE_MAIN_EXPORT = Path(os.environ.get(
+    "GL_TEST_LEAN_EXPORT", str(REPOSITORY_ROOT / "files/full_proof_graph/lean_export")))
+FTA_CERTIFICATE = LIVE_MAIN_EXPORT / "certificates/fta/certificate.json"
 live_exports_present = unittest.skipUnless(
     FTA_CERTIFICATE.is_file()
-    and (LIVE_MAIN_EXPORT / "GLExport" / "Generated" / "Peano.lean").is_file(),
-    "no run Lean export on disk (run main.py and main.py --shortcut with Lean installed)",
+    and (LIVE_MAIN_EXPORT / "GLExport/Generated/Peano.lean").is_file(),
+    "No full-run Lean export on disk (run main.py --GPU with Lean installed)",
 )
 PEANO_CONFIG = REPOSITORY_ROOT / "files" / "config" / "ConfigPeano.json"
 PEANO_BINARY = (
@@ -88,7 +96,30 @@ PEANO_BINARY = (
 class NeutralFrontendTests(unittest.TestCase):
     """Exercise graph loading, typing, certification, and stable serialization."""
 
-    @live_exports_present
+    def test_explicit_citation_source_preserves_both_exported_proofs(self) -> None:
+        theorem = "(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(AnchorPeano[N,i0,s,+,*,i1]))"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            graph = root / "graph"
+            graph.mkdir()
+            (graph / "global_theorem_list.txt").write_text(
+                f"{theorem}\tsingle chapter proof\t-1\n" * 2, encoding="utf-8")
+            for index in range(2):
+                (graph / f"{index}_single_chapter_proof.txt").write_text(
+                    "(AnchorPeano[N,i0,s,+,*,i1])\tmain\ttask formulation\n", encoding="utf-8")
+            selection = root / "selection.json"
+            selection.write_text(json.dumps({
+                "schema_version": 2, "id": "duplicate_proofs",
+                "theorem_list_sha256": hashlib.sha256((graph / "global_theorem_list.txt").read_bytes()).hexdigest().upper(),
+                "source_range": {"first": 0, "last": 1}, "excluded_sources": [],
+                "citation_source_indices": [0],
+            }), encoding="utf-8")
+            certificate = build_certificate(selection, graph, PEANO_CONFIG, PEANO_BINARY)
+            self.assertEqual([item["source_index"] for item in certificate["theorems"]], [0, 1])
+            self.assertEqual(certificate["theorems"][0]["theorem"], certificate["theorems"][1]["theorem"])
+            self.assertEqual(len(certificate["theorems"][0]["chapters"]), 1)
+            self.assertEqual(len(certificate["theorems"][1]["chapters"]), 1)
+
     def test_synthetic_selection_builds_deterministically_without_gl(self) -> None:
         theorem = (
             "(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])"
@@ -99,10 +130,10 @@ class NeutralFrontendTests(unittest.TestCase):
             graph = root / "graph"
             graph.mkdir()
             (graph / "global_theorem_list.txt").write_text(
-                f"{theorem}\tdirect\t-1\n",
+                f"{theorem}\tsingle chapter proof\t-1\n",
                 encoding="utf-8",
             )
-            (graph / "0_direct_proof.txt").write_text(
+            (graph / "0_single_chapter_proof.txt").write_text(
                 "(AnchorPeano[N,i0,s,+,*,i1])\tmain\ttask formulation\n",
                 encoding="utf-8",
             )
@@ -115,7 +146,7 @@ class NeutralFrontendTests(unittest.TestCase):
                             {
                                 "id": "synthetic_anchor_identity",
                                 "name": "Synthetic anchor identity",
-                                "method": "direct",
+                                "method": "single chapter proof",
                                 "self_contained": True,
                                 "theorem": theorem,
                             }
@@ -160,10 +191,9 @@ def _gauss_certificate() -> dict[str, object]:
 
 def _fta_certificate() -> dict[str, object]:
     """
-    @brief Load the FTA certificate the last shortcut run exported.
-    @details The live export under `files/shortcut/full_proof_graph/lean_export/`
-    is read as written by `proof_export.live`; tests using it are skipped when
-    no shortcut run with a Lean toolchain has been made on this host.
+    @brief Load the connected FTA certificate from the last complete full export.
+    @details The default path is the full pipeline result. An explicit test-only
+    output directory also permits replaying a captured complete proof graph.
     @return Parsed schema-3 FTA shortlist certificate.
     """
 
@@ -242,6 +272,118 @@ class LeanOrdinaryTypeTests(unittest.TestCase):
         self.assertIn("cases disjunction with", source)
         self.assertIn("no_disjunction (Or.inr right_value)", source)
         self.assertNotIn("grind", source)
+
+    def test_proof_support_extensionality_is_explicit(self) -> None:
+        source = (
+            REPOSITORY_ROOT / "lean_export" / "GLExport" / "ProofSupport.lean"
+        ).read_text(encoding="utf-8")
+        for lemma in (
+            "setEqIffSubsets",
+            "binaryRelationEqIffSubsets",
+            "ternaryRelationEqIffSubsets",
+        ):
+            self.assertIn(f"theorem {lemma}", source)
+        self.assertIn("exact propext ⟨subsets.1 x, subsets.2 x⟩", source)
+        self.assertIn("exact propext ⟨subsets.1 x y z, subsets.2 x y z⟩", source)
+        self.assertNotIn("grind", source)
+
+    def test_equality_is_typed_per_occurrence(self) -> None:
+        signatures = {"tset": (SET,), "tel": (ELEMENT,), "=": (ELEMENT, ELEMENT)}
+        expressions = [
+            parse_mpl("(&(tset[A])(=[A,B]))"),
+            parse_mpl("(=[x,y])"),
+            parse_mpl("(tel[z])"),
+        ]
+        self.assertEqual(
+            infer_expression_variables(expressions, signatures),
+            {"A": SET, "B": SET, "x": ELEMENT, "y": ELEMENT, "z": ELEMENT},
+        )
+        with self.assertRaisesRegex(AssertionError, "GL type conflict"):
+            infer_expression_variables(
+                [parse_mpl("(&(tset[A])(&(=[A,b])(tel[b])))")], signatures)
+
+    def test_definition_variables_type_equality_per_occurrence(self) -> None:
+        entry = {
+            "category": "implication",
+            "signature": [SET, SET],
+            "elements": ["(in[1,u_1])", "(=[u_2,3])", "(=[1,4])"],
+        }
+        self.assertEqual(
+            _definition_variable_types(entry, {"in": [ELEMENT, SET]}),
+            {"u_1": SET, "u_2": SET, "1": ELEMENT, "3": SET, "4": ELEMENT},
+        )
+        with self.assertRaisesRegex(AssertionError, "GL type conflict"):
+            _definition_variable_types(
+                {"category": "and", "signature": [SET, ELEMENT],
+                 "elements": ["(=[u_1,u_2])"]},
+                {},
+            )
+
+    def test_type_environment_types_equality_per_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config.json"
+            binary = root / "binary.json"
+            config.write_text(json.dumps({
+                "in": {"arity": 2, "definition_sets": {
+                    "1": ["(1)", True], "2": ["P(1)", True]}},
+                "=": {"arity": 2, "definition_sets": {
+                    "1": ["(1)", True], "2": ["(1)", True]}},
+            }), encoding="utf-8")
+            binary.write_text(json.dumps({
+                "sameSets": {
+                    "arity": 2, "category": "implication",
+                    "signature": "(sameSets[u_1,u_2])",
+                    "elements": ["(in[1,u_1])", "(=[u_1,u_2])"],
+                },
+                "sameElements": {
+                    "arity": 2, "category": "implication",
+                    "signature": "(sameElements[u_1,u_2])",
+                    "elements": ["(=[u_1,u_2])", "(=[u_2,u_1])"],
+                },
+            }), encoding="utf-8")
+            environment = load_type_environment(
+                config, binary, root="sameSets", extra_roots=("sameElements",))
+        self.assertEqual(environment.signatures["sameSets"], (SET, SET))
+        self.assertEqual(environment.signatures["sameElements"], (ELEMENT, ELEMENT))
+        self.assertEqual(environment.signatures["="], (ELEMENT, ELEMENT))
+
+    def test_subset_implications_are_recognized(self) -> None:
+        def entry(elements: list[str], category: str = "implication") -> dict:
+            return {
+                "category": category,
+                "signature": "(subset[u_1,u_2])",
+                "elements": elements,
+            }
+
+        self.assertTrue(is_subset_implication(entry(["(in[1,u_1])", "(in[1,u_2])"])))
+        self.assertTrue(is_subset_implication(entry(["(in2[1,2,u_1])", "(in2[1,2,u_2])"])))
+        self.assertTrue(is_subset_implication(
+            entry(["(in3[1,2,3,u_1])", "(in3[1,2,3,u_2])"])))
+        self.assertFalse(is_subset_implication(entry(["(in[1,u_2])", "(in[1,u_1])"])))
+        self.assertFalse(is_subset_implication(entry(["(in[1,u_1])", "(in[2,u_2])"])))
+        self.assertFalse(is_subset_implication(entry(["(in2[1,1,u_1])", "(in2[1,1,u_2])"])))
+        self.assertFalse(is_subset_implication(
+            entry(["(in[1,u_1])", "(in[1,u_2])"], category="and")))
+
+    def test_extensionality_lemma_matches_the_equality_type(self) -> None:
+        equality = parse_mpl("(=[A,B])")
+        self.assertEqual(
+            _extensionality_lemma(equality, {"A": SET, "B": SET}),
+            "GLExport.setEqIffSubsets",
+        )
+        self.assertEqual(
+            _extensionality_lemma(equality, {"A": BINARY_RELATION, "B": BINARY_RELATION}),
+            "GLExport.binaryRelationEqIffSubsets",
+        )
+        self.assertEqual(
+            _extensionality_lemma(equality, {"A": TERNARY_RELATION, "B": TERNARY_RELATION}),
+            "GLExport.ternaryRelationEqIffSubsets",
+        )
+        with self.assertRaisesRegex(AssertionError, "no extensionality"):
+            _extensionality_lemma(equality, {"A": ELEMENT, "B": ELEMENT})
+        with self.assertRaisesRegex(AssertionError, "typed equality joins"):
+            _extensionality_lemma(equality, {"A": SET, "B": ELEMENT})
 
     def test_helper_free_tokens_prefer_original_over_copy_alias(self) -> None:
         chapter = {
@@ -353,7 +495,7 @@ class LeanFullCertificateTests(unittest.TestCase):
             {
                 "actions": 3247,
                 "chapters": 143,
-                "methods": {"direct": 22, "induction": 39, "or theorem": 4},
+                "methods": {"single chapter proof": 22, "induction": 39, "or theorem": 4},
                 "rows": 3247,
                 "theorems": 65,
             },
@@ -422,7 +564,7 @@ class LeanGaussCertificateTests(unittest.TestCase):
                 "actions": 1511,
                 "chapters": 33,
                 "methods": {
-                    "direct": 19,
+                    "single chapter proof": 19,
                     "induction": 2,
                     "reformulated statement": 8,
                 },
@@ -583,228 +725,126 @@ class LeanGaussCertificateTests(unittest.TestCase):
         self.assertIn("fun (x_1 : α) =>", rendered)
         self.assertIn("defined_output output_result", rendered)
         self.assertIn("exact reformulationSource", rendered)
-        self.assertIn("exact ⟨member, ordering⟩", rendered)
+        self.assertIn("⟨definition_premise_0, definition_premise_1⟩", rendered)
         self.assertNotIn("grind", rendered)
         self.assertEqual(manifest["method"], "reformulated statement")
 
 
 class LeanFTACertificateTests(unittest.TestCase):
-    """Exercise FTA shortlist closure, external facts, adaptations, and isolated output."""
+    """The full FTA corpus imports proved dependencies and has no assumed externals."""
 
     @live_exports_present
-    def test_fta_certificate_has_exact_internal_and_external_closure(self) -> None:
+    def test_fta_certificate_has_exact_internal_and_external_closure(self):
         certificate = _fta_certificate()
-        self.assertEqual(
-            certificate["corpus"]["coverage"],
-            {
-                "actions": 2782,
-                "chapters": 109,
-                "methods": {
-                    "direct": 55,
-                    "induction": 15,
-                    "or elimination": 1,
-                    "or theorem": 7,
-                    "proved not broadcast": 1,
-                },
-                "rows": 2782,
-                "theorems": 79,
-            },
-        )
-        self.assertEqual(len(certificate["corpus"]["target_source_indices"]), 79)
+        indices = {item["source_index"] for item in certificate["theorems"]}
+        theorem_list = REPOSITORY_ROOT / certificate["source"]["theorem_list"]
+        self.assertEqual(hashlib.sha256(theorem_list.read_bytes()).hexdigest().upper(),
+                         certificate["source"]["theorem_list_sha256"])
+        records = load_theorem_records(theorem_list.parent)
+        selected = [record for record in records if record.source_index in indices]
+        rows = sum(sum(bool(line) for line in chapter.path.read_text(encoding="utf-8").splitlines())
+                   for record in selected for chapter in record.chapters)
+        coverage = certificate["corpus"]["coverage"]
+        self.assertEqual(coverage["theorems"], len(selected))
+        self.assertEqual(coverage["chapters"], sum(len(record.chapters) for record in selected))
+        self.assertEqual(coverage["rows"], rows)
+        self.assertEqual(coverage["actions"], rows)
+        self.assertEqual(coverage["methods"], dict(Counter(record.method for record in selected)))
+        self.assertEqual(set(certificate["corpus"]["target_source_indices"]), indices)
         self.assertEqual(certificate["corpus"]["support_source_indices"], [])
-        dependencies = {
-            dependency["id"]: dependency
-            for dependency in certificate["certificate_dependencies"]
-        }
-        self.assertTrue(
-            all(
-                "target_variable_types" in reference
-                for dependency in certificate["certificate_dependencies"]
-                for reference in dependency["required_theorems"]
-            )
-        )
-        self.assertEqual(
-            [item["source_index"] for item in dependencies["peano_externals_36"]["required_theorems"]],
-            [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 17, 18, 19, 21, 22, 24, 25, 27, 28, 29, 31, 33, 34, 35],
-        )
-        self.assertEqual(
-            [item["source_index"] for item in dependencies["gauss_externals_24"]["required_theorems"]],
-            [18, 21],
-        )
-        actions = {
-            step["action"]
-            for theorem in certificate["theorems"]
-            for chapter in theorem["chapters"]
-            for step in chapter["steps"]
-        }
-        self.assertTrue(
-            {"definition_compact", "or_branch", "or_eliminate", "inequality_symmetric"}
-            .issubset(actions)
-        )
-        self.assertFalse(
-            any(
-                step["source_tag"] == "externally provided theorem"
-                for theorem in certificate["theorems"]
-                for chapter in theorem["chapters"]
-                for step in chapter["steps"]
-            )
-        )
+        self.assertTrue(certificate["corpus"]["combined_dependency_closure_acyclic"])
+        self.assertEqual({d["id"].split("_")[0] for d in certificate["certificate_dependencies"]}, {"peano", "gauss"})
+        self.assertTrue(all(d["theorem_list_scope"] == "same" for d in certificate["certificate_dependencies"]))
 
     @live_exports_present
-    def test_external_adaptation_validator_checks_reordering_and_definition_aliases(self) -> None:
+    def test_dependency_references_are_actual_hashed_proved_theorems(self):
         certificate = _fta_certificate()
-        peano_dependency = next(
-            dependency
-            for dependency in certificate["certificate_dependencies"]
-            if dependency["id"] == "peano_externals_36"
-        )
-        source_certificate = json.loads(
-            (REPOSITORY_ROOT / peano_dependency["certificate"]).read_text(encoding="utf-8")
-        )
-        adapted = {
-            item["source_index"]: item
-            for item in peano_dependency["required_theorems"]
-            if "adaptation" in item
-        }
-        self.assertEqual(set(adapted), {2, 8, 9, 34, 35})
-        for item in adapted.values():
-            adaptation = item["adaptation"]
-            renaming = _validate_theorem_adaptation(
-                parse_mpl(str(adaptation["source_theorem"]["mpl"])),
-                parse_mpl(str(item["theorem"]["mpl"])),
-                source_certificate["binary_definitions"],
-                certificate["binary_definitions"],
-                adaptation["head_aliases"],
-                base_form_adaptation=adaptation["base_form"],
-            )
-            self.assertEqual(renaming, adaptation["variable_renaming"])
-
-        item = adapted[34]
-        with self.assertRaises(AssertionError):
-            _validate_theorem_adaptation(
-                parse_mpl(str(item["adaptation"]["source_theorem"]["mpl"])),
-                parse_mpl(str(item["theorem"]["mpl"])),
-                source_certificate["binary_definitions"],
-                certificate["binary_definitions"],
-                item["adaptation"]["head_aliases"],
-            )
+        for dependency in certificate["certificate_dependencies"]:
+            matches = [path for path in (LIVE_MAIN_EXPORT / "certificates").glob("*/certificate.json")
+                       if hashlib.sha256(path.read_bytes()).hexdigest().upper() == dependency["certificate_sha256"]]
+            self.assertEqual(len(matches), 1, dependency["id"])
+            path = matches[0]
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest().upper(), dependency["certificate_sha256"])
+            source = json.loads(path.read_text(encoding="utf-8"))
+            by_index = {theorem["source_index"]: theorem for theorem in source["theorems"]}
+            for reference in dependency["required_theorems"]:
+                theorem = by_index[reference["source_index"]]
+                self.assertEqual(reference["theorem_id"], theorem["id"])
+                self.assertEqual(reference["theorem"]["mpl"], theorem["theorem"]["mpl"])
+                self.assertTrue(theorem["chapters"])
 
     @live_exports_present
-    def test_fta_render_is_deterministic_row_total_and_admission_free(self) -> None:
+    def test_fta_render_is_deterministic_row_total_and_admission_free(self):
         certificate = _fta_certificate()
-        first_source, first_manifest = render_gauss_theory(certificate)
-        second_source, second_manifest = render_gauss_theory(certificate)
-        self.assertEqual(first_source, second_source)
-        self.assertEqual(first_manifest, second_manifest)
-        self.assertEqual(first_source.count("GL tag "), 2782)
-        self.assertEqual(first_source.count("\ntheorem fta_"), 79)
-        self.assertIn("namespace GLExport.FTA", first_source)
-        self.assertIn("anchorPeanoOfFTA", first_source)
-        self.assertIn("anchorGaussOfFTA", first_source)
-        self.assertEqual(first_source.count("\n  exact anchor.1.1\n"), 1)
-        self.assertIn("external_peano_externals_36_000", first_source)
-        self.assertNotIn("GLExport.peano_source_", first_source)
-        self.assertNotIn("GLExport.gauss_source_", first_source)
-        self.assertIn("\ntheorem fta_source_001\n", first_source)
-        self.assertIn("  have row_9 : (add v3 v5 v2) := by", first_source)
-        self.assertIn(
-            "simpa only [gl_or2, GLExport.orIffNotAndNot]",
-            first_source,
-        )
-        self.assertIn(
-            "simpa only [gl_or0, GLExport.orIffNotAndNot]",
-            first_source,
-        )
-        self.assertIn("gl_implication211 (α := α)", first_source)
-        self.assertIn("∀ (induction_N : GLSet α)", first_source)
-        self.assertIn(
-            "exact relationalInduction N zero succ add mul one two identity anchor",
-            first_source,
-        )
-        self.assertIn(
-            "intro compiled_N compiled_zero compiled_succ compiled_add "
-            "compiled_mul compiled_one compiled_two compiled_identity",
-            first_source,
-        )
-        self.assertIn(
-            "exact fta_source_056 compiled_N compiled_zero compiled_succ "
-            "compiled_add compiled_mul compiled_one compiled_two "
-            "compiled_identity compiled_anchor relationalInduction "
-            "external_peano_externals_36_019",
-            first_source,
-        )
-        self.assertNotIn("grind", first_source)
-        self.assertEqual(len(_assert_manifest_coverage(certificate, first_manifest)), 79)
-        for forbidden in ("sorry", "admit", "axiom ", "opaque ", "unsafe "):
-            self.assertNotIn(forbidden, first_source.lower())
+        source, manifest = render_gauss_theory(certificate)
+        repeated, repeated_manifest = render_gauss_theory(certificate)
+        self.assertEqual(source, repeated)
+        self.assertEqual(manifest, repeated_manifest)
+        self.assertEqual(source.count("GL tag "), certificate["corpus"]["coverage"]["rows"])
+        self.assertEqual(source.count("\ntheorem fta_"), len(certificate["theorems"]))
+        self.assertIn("import GLExport.Generated.Gauss", source)
+        self.assertIn("anchorPeanoOfFTA", source)
+        self.assertIn("anchorGaussOfFTA", source)
+        self.assertIn("peano_source_", source)
+        self.assertIn("gauss_source_", source)
+        self.assertNotIn("(external_", source)
+        self.assertNotIn("induction_N", source)
+        self.assertIn("intro compiled_anchor compiled_induction", source)
+        self.assertEqual(len(_assert_manifest_coverage(certificate, manifest)), len(certificate["theorems"]))
+        for forbidden in ("grind", "sorry", "admit", "axiom ", "opaque ", "unsafe "):
+            self.assertNotIn(forbidden, source.lower())
 
     @live_exports_present
-    def test_fta_external_interfaces_render_validated_target_facts(self) -> None:
+    def test_proved_dependencies_do_not_become_external_parameters(self):
         certificate = _fta_certificate()
-        theorem = next(
-            item for item in certificate["theorems"] if item["id"] == "fta_source_003"
-        )
-        interfaces, facts = _external_reference_interfaces(theorem["chapters"])
-        self.assertEqual(
-            facts[("peano_externals_36", 8)],
-            "external_peano_externals_36_008 N zero succ add mul one "
-            "(anchorPeanoOfFTA N zero succ add mul one two identity anchor)",
-        )
-        proposition = dict(interfaces)["external_peano_externals_36_008"]
-        self.assertIn("∀ (w1 : α)", proposition)
-        self.assertIn("gl_AnchorPeano", proposition)
+        for theorem in certificate["theorems"]:
+            interfaces, facts = _external_reference_interfaces(theorem["chapters"])
+            self.assertEqual(interfaces, [])
+            self.assertEqual(facts, {})
 
     @live_exports_present
-    def test_fta_writer_emits_a_self_contained_project(self) -> None:
-        certificate = _fta_certificate()
+    def test_writer_connects_all_modules_and_nat_instances(self):
+        from proof_export.nat import write_nat_model
+        certificates = [json.loads((LIVE_MAIN_EXPORT / f"certificates/{kind}/certificate.json").read_text(encoding="utf-8"))
+                        for kind in ("peano", "gauss", "fta")]
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            write_lean(certificate, output)
-            generated = output / "GLExport" / "Generated"
-            self.assertEqual(
-                sorted(path.name for path in generated.iterdir()),
-                ["Definitions.lean", "FTA.lean"],
-            )
-            self.assertIn(
-                "import GLExport.Generated.Definitions",
-                (generated / "FTA.lean").read_text(encoding="utf-8"),
-            )
+            for certificate in certificates[:2]:
+                write_lean(certificate, output)
+            generated = output / "GLExport/Generated"
+            previous = {name: (generated / name).read_bytes() for name in ("Peano.lean", "Gauss.lean")}
+            write_lean(certificates[-1], output)
+            for name, content in previous.items():
+                self.assertEqual((generated / name).read_bytes(), content)
+            self.assertIn("import GLExport.Generated.Gauss", (generated / "FTA.lean").read_text(encoding="utf-8"))
+            write_nat_model(certificates, output)
             root = (output / "GLExport.lean").read_text(encoding="utf-8")
-            self.assertIn("import GLExport.Generated.FTA", root)
-            self.assertNotIn("Generated.Peano", root)
-            manifest = json.loads(
-                (output / "lean_fta_manifest.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(manifest["coverage"]["theorems"], 79)
-            self.assertEqual(
-                manifest["target_source_indices"],
-                certificate["corpus"]["target_source_indices"],
-            )
-            self.assertEqual(manifest["support_source_indices"], [])
+            self.assertIn("import GLExport.NatResults", root)
+            concrete = (output / "GLExport/NatResults.lean").read_text(encoding="utf-8")
+            self.assertEqual(len(re.findall(r"^theorem ", concrete, re.M)), sum(len(c["theorems"]) for c in certificates))
+            self.assertNotIn("(relationalInduction :", concrete)
 
 
 def _generated_module(name: str) -> Path:
     """
     @brief Return the run-export path of one generated theory module.
-    @details Peano and Gauss modules live in the full run's export, the FTA
-    module in the shortcut's; both are run artifacts, not tracked files.
+    @details All three modules belong to the connected full run's export.
     @param name Module file name (`Peano.lean`, `Gauss.lean`, `FTA.lean`).
     @return Path inside the owning export's `GLExport/Generated/`.
     """
 
-    export = LIVE_SHORTCUT_EXPORT if name == "FTA.lean" else LIVE_MAIN_EXPORT
-    return export / "GLExport" / "Generated" / name
+    return LIVE_MAIN_EXPORT / "GLExport" / "Generated" / name
 
 
 def _generated_modules() -> list[Path]:
     """
-    @brief List every generated `.lean` file of both run exports.
-    @return Sorted module paths of the full run's and the shortcut's export.
+    @brief List every generated `.lean` file of the connected full export.
+    @return Sorted module paths of the connected full export.
     """
 
     return sorted(
         path
-        for export in (LIVE_MAIN_EXPORT, LIVE_SHORTCUT_EXPORT)
+        for export in (LIVE_MAIN_EXPORT,)
         for path in (export / "GLExport" / "Generated").glob("*.lean")
     )
 
@@ -843,6 +883,76 @@ def _expected_rows(tag_pattern: str, names, predicate=lambda step: True) -> int:
                     if re.fullmatch(tag_pattern, step["source_tag"]) and predicate(step):
                         total += 1
     return total
+
+
+def _or_witness_rows(certificate: dict) -> set[str]:
+    """Find OR conclusions whose cited branch proof consumes its assumed witness.
+
+    Follow the certificate dependency graph to a projection of the branch's
+    own existential assumption. This expectation follows the proof input,
+    independently of the generated Lean text or the renderer's witness flags.
+    """
+    expected = set()
+    for theorem in certificate["theorems"]:
+        for chapter in theorem["chapters"]:
+            steps = {step["id"]: step for step in chapter["steps"]}
+            contexts = {context["namespace"]: context for context in chapter.get("scope_contexts", [])}
+            for conclusion in chapter["steps"]:
+                if conclusion["source_tag"] != "or convergence":
+                    continue
+                for branch in conclusion["dependencies"][1:]:
+                    namespace = branch["namespace"]
+                    if namespace == "main":
+                        continue
+                    premise = contexts[namespace]["template"]["premise"]
+                    definition = certificate["binary_definitions"].get(premise.get("head"))
+                    if definition is None or definition["category"] != "existence":
+                        continue
+                    pending = [branch["step"]]
+                    seen = set()
+                    while pending:
+                        identity = pending.pop()
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                        step = steps[identity]
+                        supplied_witnesses = set()
+                        for dependency in step["dependencies"]:
+                            projection = steps.get(dependency.get("step"))
+                            if projection is None or projection["action"] != "compound_project":
+                                continue
+                            for source in projection["dependencies"]:
+                                expansion = steps.get(source.get("step"))
+                                if expansion is not None and expansion["action"] == "definition_expand" and any(
+                                    assumption["namespace"] == namespace
+                                    and assumption["expression"]["mpl"] == premise["mpl"]
+                                    for assumption in expansion["dependencies"]
+                                ):
+                                    supplied_witnesses.update(
+                                        argument for atom in iter_atoms(parse_mpl(projection["conclusion"]["mpl"]))
+                                        for argument in atom.arguments if argument not in premise["arguments"])
+                        conclusion_arguments = {argument for atom in iter_atoms(parse_mpl(step["conclusion"]["mpl"]))
+                                                for argument in atom.arguments}
+                        if supplied_witnesses and not supplied_witnesses.intersection(conclusion_arguments):
+                            # This consequence receives its existential projection
+                            # directly and closes that witness inside the branch.
+                            continue
+                        if step["action"] == "compound_project" and step["namespace"] == namespace:
+                            for dependency in step["dependencies"]:
+                                if dependency.get("step") not in steps:
+                                    continue
+                                expansion = steps[dependency["step"]]
+                                if expansion["action"] == "definition_expand" and any(
+                                    source["namespace"] == namespace
+                                    and source["expression"]["mpl"] == premise["mpl"]
+                                    for source in expansion["dependencies"]
+                                ):
+                                    expected.add(conclusion["id"])
+                        pending.extend(dependency["step"] for dependency in step["dependencies"]
+                                       if dependency.get("step") in steps)
+    return expected
+
+
 SCOPE_TEMPLATE = "(>[v2,v5](in2[v2,v5,V2])(in[v2,V1]))"
 
 
@@ -1124,11 +1234,21 @@ class ExplicitRowReplayTests(unittest.TestCase):
 
     @live_exports_present
     def test_or_convergence_rows_eliminate_each_cited_branch(self) -> None:
-        """Every OR convergence must expose its two certificate branch cases."""
+        """Every OR convergence must expose all its certificate branch cases."""
 
         emitted = 0
-        witness_rows = 0
+        witness_rows = set()
+        expected_witness_rows = set()
         for name in ("Peano.lean", "Gauss.lean", "FTA.lean"):
+            certificate = json.loads(_LIVE_CERTIFICATE_FILES[name].read_text(encoding="utf-8"))
+            expected_witness_rows.update((name, identity) for identity in _or_witness_rows(certificate))
+            expected_cases = {
+                step["id"]: len(certificate["binary_definitions"][step["or_definition_head"]]["elements"])
+                for theorem in certificate["theorems"]
+                for chapter in theorem["chapters"]
+                for step in chapter["steps"]
+                if step["source_tag"] == "or convergence"
+            }
             source = _generated_module(name).read_text(encoding="utf-8").splitlines()
             for index, line in enumerate(source):
                 if not re.match(
@@ -1145,13 +1265,17 @@ class ExplicitRowReplayTests(unittest.TestCase):
                 proof = "\n".join(body)
                 self.assertIn("rcases or_cases", proof, f"{name}: {line}")
                 self.assertNotIn("grind", proof, f"{name}: {line}")
+                identity = re.search(r"chapter_\d+_line_\d+", line).group(0)
+                self.assertEqual(proof.count("· have branch_compact := or_branch_"),
+                                 expected_cases[identity], f"{name}: {line}")
                 if "existsAndOfNotForallImpNot" in proof:
-                    witness_rows += 1
+                    identity = re.search(r"chapter_\d+_line_\d+", line).group(0)
+                    witness_rows.add((name, identity))
 
         self.assertEqual(
             emitted, _expected_rows(r"or convergence", ("Peano.lean", "Gauss.lean", "FTA.lean"))
         )
-        self.assertEqual(witness_rows, 2)
+        self.assertEqual(witness_rows, expected_witness_rows)
 
     @live_exports_present
     def test_or_theorem_rows_construct_the_disjunction_explicitly(self) -> None:
@@ -1203,7 +1327,23 @@ class ExplicitRowReplayTests(unittest.TestCase):
                         break
                     body.append(part)
                 proof = "\n".join(body)
-                self.assertIn("exact scope_premise_1", proof, f"{name}: {line}")
+                certificate = json.loads(_LIVE_CERTIFICATE_FILES[name].read_text(encoding="utf-8"))
+                identifier = re.search(r"(chapter_\d+_line_\d+):", line).group(1)
+                matches = [(step, chapter) for theorem in certificate["theorems"]
+                           for chapter in theorem["chapters"] for step in chapter["steps"]
+                           if step["id"] == identifier]
+                self.assertEqual(len(matches), 1)
+                step, chapter = matches[0]
+                context = next(context for context in chapter["scope_contexts"]
+                               if context["namespace"] == step["namespace"])
+                cursor = parse_mpl(context["template"]["mpl"])
+                layers = 0
+                while isinstance(cursor, Implication):
+                    last_premise = cursor.premise
+                    layers += 1
+                    cursor = cursor.conclusion
+                self.assertEqual(to_mpl(last_premise), step["conclusion"]["mpl"])
+                self.assertIn(f"exact scope_premise_{layers}", proof, f"{name}: {line}")
                 self.assertNotIn("grind", proof, f"{name}: {line}")
 
         self.assertEqual(
@@ -1495,7 +1635,17 @@ class ExplicitRowReplayTests(unittest.TestCase):
                         break
                     body.append(part)
                 proof = "\n".join(body)
-                self.assertIn("exact Iff.rfl", proof, f"{name}: {line}")
+                if "EqIffSubsets" in proof:
+                    # A typed `=` goal expands to its two subsets by
+                    # extensionality (I-267).
+                    self.assertRegex(
+                        proof,
+                        r"exact GLExport\.(set|binaryRelation|ternaryRelation)"
+                        r"EqIffSubsets _ _",
+                        f"{name}: {line}",
+                    )
+                else:
+                    self.assertIn("exact Iff.rfl", proof, f"{name}: {line}")
                 self.assertNotRegex(proof, r"(?m)\bsimp\s*$", f"{name}: {line}")
 
         self.assertEqual(
@@ -1515,6 +1665,116 @@ class ExplicitRowReplayTests(unittest.TestCase):
                     re.search(r"\bsimp\s*$", line),
                     f"{path.name}:{line_number}: {line}",
                 )
+
+
+
+
+
+class ScopeInheritanceTests(unittest.TestCase):
+    def test_main_fact_is_reused_in_child_context(self) -> None:
+        contexts = {"main_boundary_child": {"template": {"mpl": "(>[] (P[x]) (Q[x]))".replace(" ", "")}}}
+        lines = _scope_inheritance_proof("main_boundary_child", contexts, (), (),
+            ({"namespace": "main"}, "parent_fact", (), (), (), False), {})
+        self.assertEqual(lines, ["    intro scope_premise_1", "    exact parent_fact"])
+
+    def test_parent_fact_uses_only_its_prefix_of_child_assumptions(self) -> None:
+        parent = "main_boundary_parent"
+        child = parent + "_boundary_child"
+        contexts = {
+            parent: {"template": {"mpl": "(>[](P[x])(R[x]))"}},
+            child: {"template": {"mpl": "(>[](P[x])(>[](Q[x])(R[x])))"}},
+        }
+        lines = _scope_inheritance_proof(child, contexts, (), (),
+            ({"namespace": parent}, "parent_fact", (), (), (), False), {})
+        self.assertEqual(lines, ["    intro scope_premise_1", "    intro scope_premise_2",
+                                 "    exact parent_fact scope_premise_1"])
+        contexts[child]["template"]["mpl"] = "(>[](Q[x])(R[x]))"
+        with self.assertRaisesRegex(AssertionError, "source premise is absent"):
+            _scope_inheritance_proof(child, contexts, (), (),
+                ({"namespace": parent}, "parent_fact", (), (), (), False), {})
+
+    def test_witness_guards_are_forwarded_without_minting_a_witness(self) -> None:
+        child = "main_boundary_child"
+        contexts = {child: {"template": {"mpl": "(>[](P[x])(R[x]))"}}}
+        lines = _scope_inheritance_proof(child, contexts, (), ("w",),
+            ({"namespace": "main"}, "parent_fact", (), ("w",), (), False), {})
+        self.assertEqual(lines[-1], "    exact parent_fact w witness_guard_1")
+        with self.assertRaisesRegex(AssertionError, "lacks a target guard"):
+            _scope_inheritance_proof(child, contexts, (), (),
+                ({"namespace": "main"}, "parent_fact", (), ("w",), (), False), {})
+
+    def test_same_or_sibling_scope_is_rejected(self) -> None:
+        child = "main_boundary_child"
+        contexts = {child: {"template": {"mpl": "(>[](P[x])(R[x]))"}}}
+        for source in (child, "main_boundary_sibling"):
+            with self.assertRaises(AssertionError):
+                _scope_inheritance_proof(child, contexts, (), (),
+                    ({"namespace": source}, "parent_fact", (), (), (), False), {})
+
+    def test_gauss_renderer_replays_a_zoom_in_step(self) -> None:
+        certificate = _gauss_certificate()
+        chapter = next(chapter for theorem in certificate["theorems"] for chapter in theorem["chapters"]
+                       if chapter.get("scope_contexts") and any(step["namespace"] == "main" for step in chapter["steps"]))
+        parent = next(step for step in chapter["steps"] if step["namespace"] == "main" and step["action"] == "assume")
+        namespace = chapter["scope_contexts"][0]["namespace"]
+        self.assertTrue(namespace.startswith("main_boundary_"))
+        source_line = max(step["source_line"] for step in chapter["steps"]) + 1
+        step_id = parent["id"].rsplit("_line_", 1)[0] + "_line_" + str(source_line)
+        chapter["steps"].insert(len(chapter["steps"]) - 1, {
+            "id": step_id, "source_line": source_line,
+            "source_tag": "zoom in", "action": "scope_inherit", "namespace": namespace,
+            "conclusion": copy.deepcopy(parent["conclusion"]),
+            "dependencies": [{"expression": copy.deepcopy(parent["conclusion"]), "namespace": "main",
+                              "source_kind": "local_step", "step": parent["id"]}],
+        })
+        rendered, manifest = render_gauss_theory(certificate)
+        self.assertIn("GL tag zoom in", rendered)
+        self.assertIn("explicit ancestor-scope inheritance", json.dumps(manifest))
+
+    def test_processed_graph_keeps_zoom_in_expression_and_scope_pairs(self) -> None:
+        from configuration_reader import configuration_reader
+        from process_proof_graphs import create_processed_proof_graph
+        from verifier import check_zoom_in
+        from tests.test_harness import make_proof_line, make_state_minimal
+        theorem = "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(in2[2,7,3])))"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raw = root / "raw"
+            raw.mkdir()
+            (raw / "global_theorem_list.txt").write_text(theorem + "\tsingle chapter proof\t-1\n", encoding="utf-8")
+            (raw / "0_single_chapter_proof.txt").write_text(
+                "\t".join([theorem, "main_boundary_child", "zoom in", theorem, "main"]) + "\n"
+                + "\t".join([theorem, "main", "task formulation"]) + "\n", encoding="utf-8")
+            processed = root / "processed"
+            create_processed_proof_graph(configuration_reader(REPOSITORY_ROOT / "files/config/ConfigVisu.json"),
+                                         raw_dir=raw, proc_dir=processed, theorems_dir=root / "theorems")
+            rows = [line.split("\t") for line in (processed / "0_single_chapter_proof.txt").read_text(encoding="utf-8").splitlines()]
+            zoom = next(row for row in rows if row[2] == "zoom in")
+            self.assertEqual(zoom[0], zoom[3])
+            self.assertEqual(zoom[1], "main_boundary_child")
+            self.assertEqual(zoom[4], "main")
+            lines = [make_proof_line(row[0], row[1], row[2], *row[3:]) for row in rows]
+            self.assertTrue(check_zoom_in(next(row for row in lines if row.tag == "zoom in"), lines, make_state_minimal()))
+
+    def test_certificate_records_exact_parent_dependency(self) -> None:
+        expression = parse_scoped_expression("(in[x,N])")
+        parent = ProofRow(1, expression, "main", "task formulation", ())
+        child = ProofRow(2, expression, "main_boundary_child", "zoom in",
+                         (Dependency(expression, "main"),))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "zoom.txt"
+            path.write_text("(in[x,N])\tmain\ttask formulation\n", encoding="utf-8")
+            chapter = Chapter(path, 0, "single_chapter_proof", (child, parent))
+            certificate = _chapter_certificate(chapter, {"in": (ELEMENT, SET)}, {}, {}, certificate_schema=2)
+            zoom = next(step for step in certificate["steps"] if step["source_tag"] == "zoom in")
+            self.assertEqual(zoom["action"], "scope_inherit")
+            self.assertEqual(zoom["dependencies"][0]["namespace"], "main")
+            self.assertEqual(zoom["dependencies"][0]["source_kind"], "local_step")
+            malformed = ProofRow(2, parse_scoped_expression("(in[y,N])"), "main_boundary_child", "zoom in",
+                                 (Dependency(expression, "main"),))
+            with self.assertRaises(AssertionError):
+                _chapter_certificate(Chapter(path, 0, "single_chapter_proof", (parent, malformed)),
+                                     {"in": (ELEMENT, SET)}, {}, {}, certificate_schema=2)
 
 
 if __name__ == "__main__":

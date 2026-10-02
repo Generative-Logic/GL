@@ -930,3 +930,29 @@ TEST(typed_cold_map, idveckey_inner_door_probe_matches_typed) {
     ASSERT_TRUE(setA.contains(gl::IdVecKey{ { 1, 2, 3 } }));
     ASSERT_TRUE(setB.contains(gl::IdVecKey{ { 1, 2, 3 } }));
 }
+
+// The typed find-then-insert doors (lookupForInsert, insertAt, setValueAt by id)
+// build the same map as upsert, which now uses them.
+TEST(typed_cold_map, insert_at_and_set_value_at_match_upsert) {
+    gl::GlobalMemoryManager g;
+    g.init(kTypedCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::TypedColdMap<int64_t, int32_t> upserted(&lb, &d);
+    gl::TypedColdMap<int64_t, int32_t> probed(&lb, &d);
+    for (int32_t step = 0; step < 1500; ++step) {
+        const int64_t key = static_cast<int64_t>((step * 7919) % 613) << 20;
+        upserted.upsert(key, step);
+        gl::TypedColdMap<int64_t, int32_t>::InsertHint hint;
+        const int32_t id = probed.lookupForInsert(key, hint);
+        if (id == 0) probed.insertAt(key, step, hint);
+        else probed.setValueAt(id, step);
+    }
+    ASSERT_EQ(probed.count(), upserted.count());
+    for (int32_t id = 1; id <= upserted.count(); ++id) {
+        ASSERT_EQ(probed.decodeKey(id), upserted.decodeKey(id));
+        ASSERT_EQ(probed.valueAt(id), upserted.valueAt(id));
+        ASSERT_EQ(probed.lookup(upserted.decodeKey(id)), id);
+    }
+    ASSERT_EQ(static_cast<int>(d), static_cast<int>(gl::DirtyState::Restructured));
+}

@@ -17,6 +17,239 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 
 ---
 
+<a id="d-413"></a>
+## D-413 — an induction chain demands, and prepares for integration, an operator's missing output and a non-relation compound's one missing argument (2026-09-27/28,, maintainer-designed experiment)
+
+**The problem.** Reverse F3 (fold up to m and up to s(m) imply p · R(s(m)) = q) stalls in its induction step block. The hypothesis quantifies over the sequence (its domain [0, s(rec)] depends on the induction variable), so it needs a sequence on [0,m]: the restriction of R, known as a parked `existence15` source. Trap run `fta_f3_reverse_trapconfirm_01`: the successor witness admitted against the hypothesis template re-keys the chain to `(sequence[1,4,2,<m>,11])` with 11 the only unbound argument, and `updateAdmissionMap` takes the [D-257](#d-257) skip; no `sequence` / `interval` / `limitSequence` / `fold` integration is ever prepared in the block. Separately, `drainAdmissionKeysAlgebra` overwrote the hypothesis template's recursion status with 0 when an ordinary rule demanded the same template (burst 1), after which `updateAdmissionMapRecursion` ignored the template.
+
+**The choice (maintainer: "do not change configs at all and just say one free variable: prepare integration and use as admissionKey", then "exclude relations from the rule... for operators demand that its output. sequence will fall into 'the rest' category for now and pass"; configs are untouched).** Relation = two configured inputs and no output (`preorder`, `strictOrder`; `=` is atomic).
+1. `updateAdmissionMap`: in a recursion-owned chain, every positive compound premise with exactly one unbound argument takes the marker route (`prepareIntegration` of the marker form + recursion-owned admission entry), as operator premises always did. Relations, negated compound premises and all non-recursion chains keep the D-257 skip; a negated marker form would take the contradiction route and seed a statement carrying the marker.
+2. `updateAdmissionMapRecursion` (the deposit door's propagation of recursion-owned chains). An operator (either polarity) binds only its output; a positive config-backed compound that is not a relation (`sequence`, `interval`, `split`, `limitSequence`,...) binds any argument; relations, atomic cores such as `in` and config-less compounds are non-participants. The door marks an arriving operator's output, or each distinct argument of an arriving compound; a chain element re-keys on its bindable free argument whose marker form matches. In the re-keyed chain an operator with only its output free and a compound with exactly one free argument gain the derived admission entry with the source status, and a positive one also has the marker form's integration prepared, after the entry and its status exist. An operator's unmatched output probe keeps the historical default-false status entry (D-172); a compound probe is a pure lookup.
+3. `findDigitArgs`: a non-`=` input counts as an induction variable only when its definition slot is `(1)`. Inert with the current configs, where every configured input is `(1)`-typed.
+4. `drainAdmissionKeysAlgebra`: the status merges as the record's recursion flag OR the existing status, like `updateAdmissionMap`'s write.
+
+**Earlier steps on the branch.** Run `fta_f3_reverse_sequence_full_01` (FTA `sequence` input `seq`, a property-input exception to D-257): the restriction Q materialized, but its sequence fact never re-keyed the hypothesis, because recursion propagation was operator-only and prepared no integration. Run `fta_f3_reverse_sequence_full_02` (property statements re-keyed on their input; integration for an operator with only its output free and a property with only its input free): the hypothesis re-keyed with two restrictions and demanded their value at 9 and folds, then the FTA batch crashed — the step block's `canonicalEquivalenceClassesMap` blob pool passed 2 GiB (its `int32` size wrapped) under a cascade of fold-integration subproof scopes (scope ids near 224K). The configuration changes of those steps are withdrawn. Run `fta_f3_reverse_sequence_full_03` (one free argument for every participant, relations and operator inputs included): the static-memory pool was exhausted by the induction steps of two multiplication-order theorems (`strictOrder` / `preorder` chains), whose phase-2 work grew each iteration; in the reverse-F3 step block both folds of both restrictions reached the integration core and opened 30 bounded subproofs.
+
+**Status.** Experiment; unit tests in `test_admission_reshuffle.cpp` (`property_input_demand` and `recursion_propagation` suites and three drain-status tests). Evidence and verdict in the branch ledger.
+
+<a id="d-427"></a>
+## D-427 — every mimalloc arena is 2 GiB, exactly one bitmap field (2026-09-28,, maintainer memory-reduction task)
+
+
+**The choice.** `main` first calls `gl::configureHeapAllocator` (`memory_infra/heap_allocator.hpp`), which sets `mi_option_arena_reserve` to `kHeapArenaReserveKiB`: every arena mimalloc reserves from then on is 2 GiB, 64 blocks of 32 MiB, exactly one 64-bit bitmap field. Arena reservations are address space only; commits stay on demand. The post-Phase-2 collect ([D-426](#d-426)) is unchanged. Nothing reads allocator state (Rule 16); proof flow is unchanged.
+
+**Amended (2026-10-02, release 14, maintainer decision).** The regression test asserts reuse, not return: a second allocate, free and collect round of the six column sizes commits no more than the first. Measured on macOS (Homebrew mimalloc 3.5.1, arm64, CI): after the free and a forced collect the blocks of up to 112 MiB stay committed and resident, about 360 MiB, unchanged after 1.5 s and another collect, and the next round reuses them (commit 1,262 MB against 1,271 MB); the 320 and 456 MiB blocks return. Windows (mimalloc 2.2.3) and Linux (3.2.8) return all six. The earlier assertion, that the commit charge drops by their total after the collect, failed every macOS gate since this decision landed.
+
+**Why.** With mimalloc 2.2.3's default 1 GiB arenas, every block above 64 MiB became a direct operating-system allocation that is never released ([G-78](50_gotchas.md#g-78)). Those blocks are the host projection's large columns (IncubatorPeano1's second Phase 2: six columns of 72-456 MiB, 1,144 MiB). Each batch leaked them until mimalloc reserved its ninth arena, the first 2 GiB one. This leak is the 1.1-1.3 GiB that IncubatorPeano1, IncubatorGauss1 and Gauss kept committed above their live heap, which the collect could not return (census `fta_f3_memory3_idea1_diag_03`). A full-field arena has no permanently marked bits, so a fresh arena accepts any request up to its size and the fallback is never taken.
+
+**Measured.** Isolated test with mimalloc 2.2.3 alone: allocate, free and `mi_collect(true)` six blocks of those sizes, four rounds. With the default arenas 1,170-1,246 MiB stays committed after every round; with 2 GiB arenas it falls to 1.9 MiB. Full run `fta_f3_memory3_idea1_full_01` against `fta_f3_memory3_baseline_full_01`: 3,772 proof files byte-identical, verifier 186,343 checks with 0 failures, Lean kernel check passed. Heap committed peak IncubatorPeano1 2,942 -> 1,794 MiB, IncubatorGauss1 2,656 -> 1,830, Gauss 1,461 -> 502, Peano 741 -> 422, IncubatorGauss2 855 -> 514, IncubatorPeano2 621 -> 421, FTA 617 -> 477; phase-1 heap committed IncubatorPeano1 1,378 -> 230, IncubatorGauss1 1,315 -> 156, Gauss 1,112 -> 126. Peak working set IncubatorPeano1 7,051 -> 6,072, IncubatorGauss1 6,236 -> 5,517, IncubatorGauss2 2,438 -> 2,067, IncubatorPeano2 1,851 -> 1,572, Gauss 2,036 -> 1,865, FTA 3,278 -> 3,208. Native prover total 246.7 -> 226.5 s, no batch slower.
+
+---
+
+<a id="d-422"></a>
+## D-422 — a block grant below the emergency floor first evicts one idle logic block (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `GlobalMemoryManager::setPressureValve` installs a grant-time valve on the main pool: before `acquireBlock` / `acquireBlocks` would leave fewer free blocks than the steward's emergency floor (`MemorySteward::emergencyFloorBlocks`, reserve / 2 = 1024 blocks), the granting thread runs `MemorySteward::relieveGrantPressure` outside the pool mutex, which evicts one idle logic block behind the open window's cursor with the same two-tier Belady choice as the claim-time valve (`evictOneForReload`) and counts it as an emergency eviction. The grant then proceeds; with no window or no eligible victim the valve is a no-op and a genuinely full pool still asserts at the wall (Rule 19). A per-thread guard keeps a valve from re-entering itself. `ExpressionAnalyzer::prove` installs the valve next to the exhaustion reporter when SSD deload is allowed and clears it with the reporter, before the steward is destroyed. The check is one relaxed atomic read per grant (`blocksInUseHint_`).
+
+**Why.** In the production configuration (`MEM_MEASUREMENT` 0) IncubatorGauss1 at the 6 GiB pool hit the main-pool wall in phase 1 of its first main-phase burst (`fta_f3_memory_landing_full_01`; reproduced under traps at 5 GiB, `fta_f3_memory_exhaust_stress_01`): right after 1,192 proved and 47 external theorems were broadcast into all 264 logic blocks, 32 workers grew their claimed blocks (rule-index staging flush, `BlobCsrValueStore::rebuildRunsInPlace`) faster than the planner's background evictions could free blocks, while 204 idle logic blocks holding 14,379 blocks were evictable. The claim-time valve evicts at most one block per claim and never during a claim, so growth inside a claim had no backpressure ([G-80](50_gotchas.md#g-80)).
+
+**Measured.** Stress at a 5 GiB main pool (`fta_f3_memory_valve_stress_01`): the tree that died on the main-pool exhaustion assert without the valve passes end to end; the valve fired 362 times in IncubatorGauss1 and 329 times in IncubatorPeano1, never elsewhere; theorems byte-identical, verifier 0 failures, Lean kernel check passed. Production 6 GiB pool (`fta_f3_memory_landing_full_02`, `MEM_MEASUREMENT` 0): identical output; the valve fired 93 times, all in IncubatorGauss1; IncubatorGauss1 28.6 s (earlier 6 GiB runs 25.6-34.9 s), prover total 238.7 s.
+
+---
+
+<a id="d-426"></a>
+## D-426 — the prover returns Phase 2's freed heap after every iteration's Phase 2 (2026-09-27,, maintainer-approved experiment)
+
+
+**The choice.** `ExpressionAnalyzer::proveKernel` calls `mi_collect(true)` (mimalloc builds) after the Phase 2 accounting and before phase 3 opens. The prover thread allocated and freed the host projection and its scratch, so its heap holds the freed pages; the forced collect frees them and purges the allocator's delayed decommits. Nothing reads allocator state (Rule 16); proof flow is unchanged.
+
+**Why.** mimalloc schedules the decommit of freed memory and executes it only on later allocator activity; phases 3 and 1 allocate almost nothing on the heap (live C++ heap 18-82 MiB per batch), so the freed projection stayed committed and resident until the next Phase 2 (census iteration 2; after [D-425](#d-425) still 4.1 GiB in IncubatorGauss1, 4.8 GiB in IncubatorPeano1).
+
+**Measured** (experiment sub-branch, `fta_f3_memory_heapcollect_full_01` vs `fta_f3_memory_p1_full_01`): theorems byte-identical, verifier 186 343 / 0, Lean passes. Between Phase 2 windows (phase 1 / phase 3 / barrier samples) the working set fell IncubatorGauss1 9 987 -> 7 431 MiB, IncubatorPeano1 10 128 -> 7 998, IncubatorGauss2 4 069 -> 3 384, FTA 3 965 -> 3 619, Peano 3 241 -> 3 002, Gauss 2 111 -> 1 923, IncubatorPeano2 2 442 -> 2 126; heap committed IncubatorGauss1 4 138 -> 1 406, IncubatorPeano1 4 834 -> 2 574. Peak working set IncubatorPeano1 10 277 -> 9 548, FTA 4 019 -> 3 759. The collects took 5.4 s summed over all batches (IncubatorPeano1 2.8 s over 50 calls); prover totals outside the paging-variance batch IncubatorGauss1 changed by +0.5 s of 212 s. Part of the retention remains (IncubatorPeano1 2.5 GiB, IncubatorGauss2 1.4 GiB). **Correction (2026-09-28):** this remainder was not held by worker threads' heaps. It was mimalloc's leak of projection columns above 64 MiB ([G-78](50_gotchas.md#g-78)), which no collect can return; [D-427](#d-427) removes it.
+
+---
+
+<a id="d-425"></a>
+## D-425 — CUDA construction shards write straight into the host projection (2026-09-27,, maintainer-approved)
+
+
+**The choice.** Each chunk's host projection is built once. `hostProjection` is a backing `Phase2ProjectionArena` whose 25 columns reserve the twelve construction shards' measured capacities laid end to end (`addProjectionCapacity`); each shard is a slice arena whose columns view its part of that storage (`ProjectionColumn::attachSlice`), so `appendLogicalBlock` writes straight into the final buffer. `adoptShards` then moves each shard's used prefix to the end of the backing column inside the same storage (`ProjectionColumn::appendMoved`, a `memmove`; the first shard is already in place) and rebases the moved references exactly as the former copy merge did, column-parallel. The projection columns are `ProjectionColumn<T>` (fixed capacity, owning or slice) instead of `std::vector<T>`; `appendShard`, `appendShards` and `releaseShardColumn` are gone. The backing arena keeps `capacity` = the chunk ceiling the device buffer is sized to, so the adopted totals are asserted against it as before.
+
+**Why.** Census iteration 2 (`fta_f3_memory_heapcensus_full_02`) showed the heap peak of every batch is the projection held twice — the shards and the merged copy, both reserved in full (IncubatorGauss1 3.1 + 3.1 GiB, IncubatorPeano1 2.6 + 2.6) — and the allocator keeps that peak committed and resident after Phase 2 (1.3-5.9 GiB). Building once halves the peak and therefore what the allocator retains.
+
+**Determinism.** The adopted arena is byte-identical to building every block in one arena (unit test against a serial build, including an empty middle shard); move order is slice order, so a move never overwrites an unmoved slice.
+
+**Measured** (`fta_f3_memory_p1_full_01` vs `fta_f3_memory_heapcensus_full_02` / `_lazycommit_full_02`): theorems byte-identical, verifier 186 343 / 0, Lean passes. Live heap at the projection peak (MiB): IncubatorGauss1 6 360 -> 3 155, IncubatorPeano1 5 239 -> 2 590, IncubatorGauss2 2 048 -> 1 021, IncubatorPeano2 1 056 -> 531, FTA 737 -> 376, Peano 692 -> 350, Gauss 632 -> 320. Peak commit charge: IncubatorGauss1 18 905 -> 15 022, IncubatorPeano1 17 857 -> 15 474, Peano 8 455 -> 8 102, FTA 8 953 -> 8 736. Heap retained between Phase 2 windows: IncubatorGauss1 5.9 -> 4.1 GiB (IncubatorPeano1 unchanged at 4.8 GiB: its retention is not only the projection peak). Merge time over all batches 6.5 -> 4.6 s; prover total 246.5 s (248.1 s before; IncubatorGauss1 alone 34.9 s, a paging-variance outlier of the kind recorded under [D-418](#d-418)).
+
+---
+
+<a id="d-418"></a>
+## D-418 — the static pools reserve address space and commit each block when first carved (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `GlobalMemoryManager::init` reserves the pool with `reserveAddressSpace` (Windows `VirtualAlloc(MEM_RESERVE)`, elsewhere an anonymous `PROT_NONE` mapping) instead of a fully committed `operator new`; `grantLocked` commits a block with `commitAddressSpace` when it is first carved; recycled blocks stay committed; the destructor returns the reservation with `releaseAddressSpace` ([`memory_infra/address_space.hpp`](../GL_Quick_VS/GL_Quick/src/memory_infra/address_space.hpp)). Capacity, carving order, recycling and the exhaustion asserts are unchanged ([I-95](30_invariants.md#i-95)).
+
+**Why.** The four pools (6 + 1 + 2 + 2 GiB) were committed in full at program start, so every batch process charged 11 GiB against the system commit limit (RAM plus page file) whatever it used; the census showed most of that never touched (the persistent, mail and LB-body pools use a small part of their ceilings, and the main pool only its peak). With commit-on-carve a pool's commit charge equals its carve high-water, which the census already reports as the pool bytes committed. Physical memory is unaffected (untouched committed pages were never resident); the gain is commit charge.
+
+**Measured** (`fta_f3_memory_lazycommit_full_01` vs `fta_f3_memory_budget4g_full_01`, same code otherwise): theorems byte-identical, verifier 186 343 checks / 0 failures, Lean passes. Peak commit charge (private bytes) per batch process: IncubatorPeano1 23 248 -> 18 214 MiB, IncubatorPeano2 17 569 -> 7 524, Peano 17 243 -> 8 442, IncubatorGauss1 24 092 -> 18 840, IncubatorGauss2 18 551 -> 9 163, IncubatorGauss3 15 911 -> 4 751, Gauss 17 793 -> 7 921, FTA 17 373 -> 9 394. Prover totals 255.9 s and 248.1 s in two runs of the same executable (`_01`, `_02`) against 242.3 s (earlier runs of the previous tree: 237.8-243.7 s). The first run's excess was IncubatorGauss1 alone (34.4 s): its raw evictions wrote at 0.023 GiB/s against the usual ~0.07 while its discharge dumps kept their rate; in the rerun its evictions ran at 0.073 GiB/s and the batch took 28.2 s (its time follows its paging volume). The per-carve commit is at most one system call per block (about 25 000 per batch).
+
+---
+
+<a id="d-412"></a>
+## D-412 — the automatic CUDA working budget stops at 4 GiB (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `makePhase2GpuBudget` caps the working budget at `kPhase2DefaultGpuBudgetBytes` (4 GiB) when no `GL_GPU_BUDGET_MIB` limit is given; the runtime reserve (the larger of 256 MiB or 5 % of VRAM) is unchanged, and an explicit limit replaces the cap (still never consuming the reserve).
+
+**Why.** Every chunk's plan reserves the whole budget and sizes its scratch to fill it, so the former budget (all free VRAM after the reserve: 6.5 GiB on the 8 GiB card) took nearly all VRAM and the matching host commit regardless of demand; the largest chunk input is ~3 GiB (IncubatorGauss1). Measured with `GL_GPU_BUDGET_MIB` on the landed 2 KiB / 6 GiB tree (`fta_f3_memory_budget4g_full_01`, `fta_f3_memory_budget3g_full_01` vs `fta_f3_memory_page2k_6g_full_01`): theorems identical, verifier 0 failures, Lean passes; chunk counts identical in every batch; prover totals 242.3 s (4 GiB) and 237.8 s (3 GiB) vs 243.7 s; private commit -2.5 / -3.4 GiB per batch. At 3 GiB the evaluation download windows multiply (FTA 839 -> 2 229), at 4 GiB barely (1 220) — hence 4 GiB.
+
+---
+
+<a id="d-411"></a>
+## D-411 — the page is 2 KiB instead of 8 KiB (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `ProverParameters::static_page_bytes` = 2048 for every pool (a 256 KiB block carves into 128 pages). Landed from the experiment sub-branch (maintainer: "Approved").
+
+**Why.** Each small container and hash index of a logic block holds at least one page, so page padding plus derived structures were 31-83 % of the logic blocks' live pages at 8 KiB (memory census, `fta_f3_memory_census_full_01`). Measured at 12 GiB (`fta_f3_memory_page2k_full_01` vs `fta_f3_memory_verify_full_05`, same code): theorems byte-identical, verifier 0 failures, Lean passes; main-pool peak IncubatorPeano1 7 751 -> 5 570 MiB, Peano 4 552 -> 2 106, Gauss 2 994 -> 1 373, FTA 4 183 -> 3 042, IncubatorGauss1 6 910 -> 6 197; padding share IncubatorPeano1 56 -> 36 %, FTA 81 -> 65 %. With the 6 GiB pool ([D-410](#d-410), `fta_f3_memory_page2k_6g_full_01`) IncubatorPeano1 fits and stops paging (prover 52.2 s vs 97.3 s at 8 KiB; SSD reads 60.3 -> 0 GiB), IncubatorGauss1 pages half as much (25.6 s vs 29.9 s); full-run prover total 243.7 s vs 283.2 s.
+
+**Trade-off.** FTA prover time rises 9-12 % (114.3 s vs 102.2 s at 6 GiB): four times the pages and page-table entries, more two-level directory promotions (thousands per batch; FTA 4 202), and directory spill past fix 4's direct entries for logic blocks above 24 MiB. A runtime pass on FTA is the follow-up.
+
+---
+
+<a id="d-410"></a>
+## D-410 — the main pool shrinks from 12 GiB to 6 GiB once SSD deload runs under CUDA (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `ProverParameters::static_pool_bytes` = 6 GiB (24 576 blocks of 256 KiB); the program-start reservation falls from 17 GiB to 11 GiB. Landed from the experiment sub-branch (maintainer: "6 gib approved").
+
+**Why.** With SSD deload active on both Phase 2 backends ([D-409](#d-409)) a batch whose live set exceeds the pool pages instead of asserting, so the pool no longer has to cover the heaviest batch resident. Measured (`fta_f3_memory_deload_6g_full_02` vs the 12 GiB `fta_f3_memory_verify_full_05`, same code): theorems byte-identical, verifier 0 failures, Lean passes; only IncubatorPeano1 (prover 97.3 s vs 54.2 s; SSD out 43 / in 60 GiB) and IncubatorGauss1 (29.9 s vs 22.0 s) page, every other batch keeps its runtime (FTA 102.2 s vs 105.0 s); peak working set IncubatorPeano1 12 782 -> 11 181 MiB, FTA 5 582 -> 4 975 MiB; private commit falls by 6 GiB in every batch.
+
+**Trade-off.** About 50 s more prover time per full run (the two incubators' paging) for 6 GiB less reservation and commit in every batch process.
+
+---
+
+<a id="d-409"></a>
+## D-409 — the CUDA route pages through the working-set steward; SSD deload is no longer tied to the backend (2026-09-27,, maintainer-directed)
+
+
+**The choice.** The `ExpressionAnalyzer` constructor no longer derives `allow_ssd_deload` from the Phase 2 backend: both backends keep the configured permission (default true). The CUDA route never reads a logic block outside a claim: each active block records its Phase 2 measurement (stump-free task usage, hash-memory selection, selected projection usage) in its shell at the end of its phase 1 (`ExpressionAnalyzer::recordPhase2Measurement`, stamped with `phase2MeasurementEpoch`), the chunk packing reads only those shell fields (asserting the burst stamp) instead of the former serial unclaimed measurement, the projection and schedule windows claim as before, and a device window (cursor at the head of the active order) stays open while the device runs and the sealed output and growth backing grow the main pool, so the planner can keep its reserve by evicting idle logic blocks. Projection sharing of identical name / rule-string columns compares against the shard's own projected records and bytes instead of the earlier block, which may be deloaded after its release. Counterexample-filter clones run under a resident-only steward (`allow_ssd_deload && !ceFilteringActive`); the barrier asks the steward (`MemorySteward::allowsSsdDeload`) whether a discharged block joins the pending dump.
+
+**Why the measurement is recorded in phase 1.** The first form measured in a parallel steward window over the packing order. The measurement per block is tiny, so its 32 workers outran the planner (no prefetch issued) and reached the phase-1 evictees together; 32 concurrent self-loads exhausted a 6 GiB main pool in IncubatorGauss1 (`fta_f3_memory_deload_6g_full_01`, [G-81](50_gotchas.md#g-81)). A block is read-only from the end of its phase 1 until its phase-2 finalize (phase 2 writes only sealed pages), so the value recorded while phase 1 still holds the claim is exact for every packing pass of the burst.
+
+**Why.** Maintainer: SSD deload must be active on every run. The first CUDA implementation executed all logic blocks at once and could not deload ([D-329](#d-329), [D-330](#d-330)); the chunked route executes parts of the grid, so each block is needed only inside a window. Four places still assumed a fully resident grid: the unclaimed packing measurement, the sharing comparison against released blocks, the pool growth of the device step with no window open, and counterexample clones entering the pending-discharge list before being destroyed.
+
+**Determinism.** Deload and reload are content-invisible (I-107); every measurement is a pure function of the block's state; the sharing decision is unchanged because no block is mutated between its projection and the comparison.
+
+**Supersedes** the CUDA clause of [D-330](#d-330) (a CUDA batch derived `allow_ssd_deload` false).
+
+---
+
+<a id="d-429"></a>
+## D-429 — the projection merge releases each shard column as soon as it is copied (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `Phase2ProjectionArena::appendShards` takes its sources non-const and releases every shard column right after it is copied (`releaseShardColumn`: the column's vector is swapped with an empty one). The column-parallel structure of [D-316](#d-316) is unchanged: the column workers hand each copied (shard, column) pair to the calling thread through a small mutex-guarded queue, and the calling thread — the one that allocated the shards — performs the release while the workers keep copying. The sources end empty and keep their timing; `appendShard` (single shard) stays non-consuming. `proveKernel` reads the shards' `hostBytes` for the memory census before the merge.
+
+**Why the calling thread releases.** The first form released on the column workers. mimalloc returns a block freed by a non-owning thread only when the owning thread later allocates in that size class or collects, so the shard storage stayed committed: in `fta_f3_memory_verify_full_01` IP1 kept about 2 GiB more heap outside the pools through every step and its peak working set rose from 13 491 to 14 320 MiB.
+
+**Why.** The twelve shards and the merged upload arena held the same content side by side at the end of the merge (IP1 2.46 + 2.46 GiB, IG1 3.04 + 3.04 GiB per chunk in `fta_f3_memory_census_full_01`). Released column by column, the two together stay within the merged content plus the columns being copied.
+
+**Determinism.** The merged arena is byte-identical (the release happens after the copy of the same column); the unit test compares it with the non-consuming single-shard merge.
+
+**Superseded** by [D-425](#d-425): the shards no longer own column storage (they are slices of the host projection), so there is nothing to release during the merge.
+
+---
+
+<a id="d-428"></a>
+## D-428 — the CUDA sealing staging holds the chunk's output, not the evaluator's capacity (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `Phase2SealingArena`'s constructor only records `Phase2EvaluationCapacity`. `downloadAndSeal` grows each download column (firing records, generated bytes, level values, origin dependencies, marker keys / remaining arguments / arguments, canonical order) and the per-record string / dependency scratch to the used counts of its window; a growing column is emptied and released before it is allocated at exactly the new count, and the largest window's size stays allocated for later windows of the same chunk. The per-record scratch is bounded by the window's counts, because one record's dependencies and strings are a slice of the window's columns.
+
+**Why.** The arena value-initialized every column to the evaluator's full capacity at construction, once per chunk: 375 MiB of touched heap per chunk in the incubators and 1.13 GiB in Peano (memory census `fta_f3_memory_census_full_01`), whatever the chunk produced.
+
+**Determinism.** Content-invisible: every column is overwritten by the download before it is read, and the downloads and per-record asserts are unchanged; only the allocation size differs.
+
+---
+
+<a id="d-421"></a>
+## D-421 — a logic block's page table lives in the unused room of its `LbStore` slot (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `PtrDirectory` gains caller-attached direct storage (`PtrDirectory::attachStorage`, `capacity`): the first `capacity` entries live in a caller-owned array instead of the inline buffer, entries past it spill to pool blocks as before. `LbMemory` owns `pageTableDirect_[kPageTableDirectEntries]` (12 288 entries) and `pageBlockDirect_[kPageBlockDirectEntries]` (512 entries), declared before `manager`, and attaches them from its constructor through `LbArena::attachDirectoryStorage`. Every other arena (scratch, mail, persistent) keeps the inline buffers.
+
+**Why.** `sizeof(Memory)` was 147 432 bytes, so one `LbStore` slot filled 56 % of its 256 KiB LB-pool block and the rest was unused, while every logic block with more than 128 pages (1 MiB) or more than 16 page blocks spilled its page table and carved-block list into 256 KiB main-pool blocks of their own — 0.13-0.50 GiB per batch in the memory census (`fta_f3_memory_census_full_01`). The arrays add 102 400 bytes (shell 249 832 bytes, still one slot per block, about 12 KiB spare), so a logic block with up to 12 288 pages and 512 page blocks holds no directory block. The arrays are not initialized: a directory never reads past its size, and untouched entries cost no resident memory.
+
+**Rejected.** A larger LB-pool block (more shells per block) competes for the same slack and saves nothing once the slack holds the tables.
+
+**Determinism.** Byte-transparent: the directory is never serialized ([I-107](30_invariants.md#i-107)); vids, offsets and the deload bytes are unchanged.
+
+---
+
+<a id="d-420"></a>
+## D-420 — the compaction gate reads the page tier, and each worker compacts its claimed logic block at the end of phase 1 (2026-09-27,, maintainer-approved)
+
+
+**The choice.** `steward::arenaNeedsCompaction` gates `LbMemory::reshuffle` on the page tier: the reclaimable room is the free pages parked on the arena's page free-list inside blocks it still holds (`freePageCount * pageBytes`), the span is its held blocks (`blocksHeld * blockBytes`), and [D-162](#d-162)'s dual test (at least one block, at least an eighth of the span) is unchanged. Both steward sites (the planner's prefetch-region reshuffle and the executor's re-validation) use it. In addition every worker runs `steward::compactIfFragmented` on the logic block it holds at the end of `performElemPhase1`, after the per-burst resets and the mail absorb, with a per-worker permutation scratch on the never-deloaded LB-body pool (`compactionScratchArenas`); counterexample clones are skipped.
+
+**Why.** The former gate used the byte-bump cursor (`LbArena::usedBytes - LbMemory::liveBytes`), which is zero for every paged logic-block arena, so the reclaimable figure was negative and the background compaction never fired; freed pages stayed inside held blocks until discharge. The memory census measured 0.04-0.23 GiB of such parked pages per batch at the end of phase 3 (`fta_f3_memory_census_full_01`). Compacting at the end of phase 1 returns them before phase 2, the step at which the main pool peaks in the incubator batches, and works in resident-only mode, where the steward runs no planner.
+
+**Determinism.** The page pack is content-invisible (I-107): only vid-to-page bindings move, logical content and the dirty state are untouched, and the gate is a pure function of deterministic page counts.
+
+---
+
+<a id="d-385"></a>
+## D-385 — share OR processing for a compiled two-digit swap (2026-09-14)
+
+**Choice.** Numbered OR templates with exactly two digit-valued slots are marked when exchanging those slots preserves the signed flattened disjunct multiset, including multiplicity and equality symmetry. Other predicate arguments remain ordered; free slots never normalize away. Metadata is derived in `compilation_state.cpp::compileOrSymmetry`, refreshed before proof work after loading, and omitted from the binary format.
+
+**Runtime.** `prover.cpp::canonicalOrProcessingForm` adds the validated orientation to the existing equality-based processing identity. The existing ledger and nested real consumption suppress duplicate OR work while retaining passive facts. Source reconciliation covers residual continuation; the existing cohort retirement keeps the larger case computation. Original carriers, leaf order, levels, locality, scope identities and proof history remain with their own surviving source. No proof bridge is invented from the processing key.
+
+**Reason.** The saved D2 block opened the same quotient-order case twice under reversed trichotomy carriers; each copy held 3,507 statements, equal after renaming fresh witnesses. Sharing processing addresses that observed duplication without removing ordinary facts or selecting cases from final-proof hindsight.
+
+**Boundaries.** No general permutation engine, cross-parent merging, runtime definition expansion for symmetry, new proof tag or binary-format change. Existing source storage, scratch sorting, source retirement and deferred branch wipe are reused. The current task evidence belongs in the private ledger.
+
+
+<a id="d-343"></a>
+## D-343 — consume OR deposits in existing list order (2026-09-06, maintainer-approved)
+
+- **Choice.** Remove the four additional statement sorts before OR convergence: the post-registration admission/OR loop, the committed equivalence-product drain, canonical-list replacements, and the negated-equality product drain. Each consumes its existing buffer in order and preserves its scratch-lifetime boundary.
+- **Reason.** The ordering-sensitive capped-origin test establishes preservation of the former proof bytes, not a requirement for sorting to achieve repeatability. The user permits different proof histories while requiring identical theorem results and deterministic repeated runs.
+- **Boundary.** Hash-engine deposit ordering, class enumeration, scope rules, origin caps, and all assertions remain unchanged. No container is traversed by unordered membership index in place of the existing sequence.
+- **Acceptance.** A native rebuild and direct production-path order tests, followed by two full and two shortcut CUDA runs. The theorem contents/counts must equal the saved current baseline; each repeated pair must produce identical theorem and processed-proof files. Evidence lives in `ordis_merge_sorting_plan.md`.
+
+---
+
+<a id="d-342"></a>
+## D-342 — record exact scope inheritance instead of copying parent derivations (2026-09-05, maintainer-approved)
+
+- **Choice.** Every ancestor-park release records one `zoom in` row for the product and each sibling: unchanged result at the child scope, one dependency naming that expression at the exact ancestor scope. Parent history remains intact. The recording function reads no parent origins and returns no decision to the reasoning algorithm.
+- **Reason.** A scope transfer is independent of the rule that derived the parent expression. An explicit edge replaces the generic parent-row copy while retaining the intended parent-to-child release.
+- **Audit contract.** Preserve both endpoint scopes through the chapter walker and processor. The dedicated verifier checker requires the exact parent pair, since the general expression-only origin check cannot distinguish it from the child. The tag remains subject to type and cycle checks.
+- **Certificate and Lean.** Add one exact local `scope_inherit` dependency action. Replay the cited parent proof under the descendant context, applying its own binders, premises, and witness guards; carry existential bundles unchanged. No proof search or new axiom.
+- **Compatibility.** Append the OriginTag value, preserving all prior numeric values. Keep ordinary writer duplicate/capacity rules and all release budgets/known-skip behavior. Exported rows change intentionally; theorem-search semantics do not.
+- **Approval.** The maintainer approved the full analyzed design including its new checker and Lean support, then required both full and shortcut GPU verification. This supersedes the earlier no-verifier-change boundary only for this new tag; existing checker rules stay unchanged.
+- **Validation.** Recorded in [`rejected_scopes_merge_plan.md`](rejected_scopes_merge_plan.md).
+- **Contracts.** [I-223](30_invariants.md#i-223) and [tag reference](20_core_concepts/08_proof_tags.md#zoom-in).
+
+---
+
+<a id="d-341"></a>
+## D-341 — release an ancestor park into the demanding child scope and preserve its stored history without tag filtering (2026-08-26; amended 2026-09-05, maintainer-directed)
+
+- **Original choice.** A demand key at scope S also probes parks at strict ancestors A. Release the product and siblings into S, keep the park at A, and retain the existing exact-scope erase-and-revive route. The reverse arrival (park after a descendant demand) and the two or-head park maps remain outside this change.
+- **Earlier history amendment (superseded by D-342).** The maintainer directed a mechanical copy of every stored parent history row. `copyOriginsToInternalMail` retains tags, dependency expressions, dependency scopes, and insertion order, using the normal deduplicating and capacity-limited history writer. It does not filter tags or special-case self-source records. An absent source is an empty copy; no copied-row result or history-content assertion controls release. The ordinary recording switch remains; history is not disabled to make execution pass.
+- **Reason for amendment.** The full GPU run after the main merge hit a direct-disintegration-only assertion in IncubatorGauss3 burst 6. Traps proved that the source row existed as `equality1`, citing the earlier product's `disintegration` row and the equality that rewrote it. Both captured logic blocks had complete 32-key closures. The copier's tag restriction was the defect, not the child expression's expected absence.
+- **Verifier boundary.** The branch's earlier approved `disintegration` ancestor-scope support remains. On 2026-09-05 the maintainer explicitly prohibited further verifier edits for this repair and will inspect any failures individually. No verifier check or verifier test is changed.
+- **Algorithm boundary.** Release still uses demands, parked records, scopes, budgets, and known statements. Origin-map reads occur only in optional history maintenance, never in release decisions. Parent parks and dependency scopes are preserved.
+- **Prior validation.** The pre-merge branch recorded an undiagnosed IncubatorGauss3 runtime explosion. The later merge rebuilt and passed 1,631 C++ and 406 Python unit tests before the separate origin assertion. The repair's tests and full-run outcome are tracked in [`rejected_scopes_merge_plan.md`](rejected_scopes_merge_plan.md); neither older failure is relabeled a successful gate.
+- **Where.** `prover.cpp` / `releaseParkedProductIntoScope`, `copyOriginsToInternalMail`, and the two ancestor-release callers; `prover.hpp` / declarations and `copyStrictAncestorSpans`; `tests/test_memory.cpp` / generic-copy and ancestor-release tests.
+- **Contract.** [I-224](30_invariants.md#i-224); [G-74](50_gotchas.md#g-74).
+
+---
+
 <a id="d-340"></a>
 ## D-340 — one build flag, `GL_CUDA`, gates the CUDA route on every host; the Makefile builds it with `USE_CUDA=1` (2026-09-04,, maintainer-approved item 8)
 
@@ -25,7 +258,7 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 
 **Why.** The maintainer's release-13 item 8: Ubuntu must be able to use the GPU, and the processor binary must build without a CUDA toolkit. One flag, defined by the build system, keeps the routes byte-identical by contract on both hosts and makes the missing-toolkit case a build-time choice instead of a silent platform difference.
 
-**Gate.** Windows full rebuild + 1626/1626; WSL `make USE_CUDA=1` (2 min 7 s) + 1626/1626 and `make` (processor) + 1626/1626; the item-7 run matrix in `docs/release13/release13_ledger.md`.
+**Gate.** Windows full rebuild + 1626/1626; WSL `make USE_CUDA=1` (2 min 7 s) + 1626/1626 and `make` (processor) + 1626/1626.
 
 <a id="d-339"></a>
 ## D-339 — the Lean export runs inside every pipeline run, from a selection derived from the run, into the mode's own proof-graph folder (2026-09-04,, maintainer directive)
@@ -45,6 +278,8 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 
 **The tracked package is retired (maintainer decision, 2026-09-04).** The index-pinned selections (`peano_full_64`, `gauss_main_29`, `fta_shortlist_79`, and their historical siblings), the generated certificates under `proof_export/generated/`, and the generated modules and manifests under `lean_export/` are no longer tracked. The release ships the two run exports as they are: `release_public.py::check_live_lean_exports` requires both with a green `kernel_check.log`, re-runs `lake build` in each, runs the renderer contract tests, and the copy is byte-checked; the private snapshot overlays the same two folders. The tracked `lean_export/` keeps only the Lake skeleton the live export copies. Two historical certificates survive as renderer-test fixtures under `tests/fixtures/lean_certificates/`; the FTA contract tests read the live shortcut export and skip when none is on disk.
 
+**Amended by [D-456](#d-456).** The release no longer copies the run's export into the repository part: it publishes the connected export inside the proof archive and checks that the archive carries every result file byte for byte.
+
 <a id="d-338"></a>
 ## D-338 — the processor route is the product default of every run; `main.py --GPU` selects CUDA for the whole run (2026-09-04,, maintainer directive)
 
@@ -58,6 +293,8 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 **Supersedes** the default clause of [D-329](#d-329) (CUDA as the batch default) and the shortcut CUDA default of 2026-09-01; batch ownership of the route and the CUDA/SSD exclusion are unchanged.
 
 **Gate.** `test_phase2_projection.cpp` (`backend_defaults_to_processor_and_accepts_explicit_cuda`); shortcut and full runs on both routes byte-identical (release-13 ledger, item 7).
+
+**Amended by [D-457](#d-457).** The claim above held for the prover, but `main.py`'s native unit-test gate still ran the CUDA device tests on every run, so a device-less PC stopped at the gate; the processor-route gate now leaves those tests out.
 
 <a id="d-336"></a>
 ## D-336 — the remaining-args edge key is built in a caller-owned stack buffer, never at an arena cursor mark: the G-72 root cause and its fix (2026-09-03)
@@ -111,7 +348,7 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 
 **Why.** The rules have the shape `anchor → head`; the anchor LB fires them and mails the heads down through its own per-step delta, so an LB below the anchor gains nothing from installing the rule itself — it receives the head one cycle later either way. Installing them everywhere was the incubator runtime: `DOOR_INSTALL_IMPLICATION` under the phase-1 mail absorb took 76 % of phase-1 worker time in IncubatorPeano1 (1.34 M installs), 83 % in IncubatorPeano2, 95 % in IncubatorGauss1, 96 % in IncubatorGauss2 (reference ). The externals are different: multi-premise lemmas (fold, sequence, the ES2 / ES3 rules) that fire in the premise LBs below the anchor with those LBs' own premises — without them an ES2 / ES3 LB has nothing but the axioms.
 
-**Mechanism.** Nothing changes on the send side; the change is who reads the root's log. (1) `collectMailAncestors` (the `buildGrid` mail-edge registration) stops the ancestor walk at the anchor LB in incubator mode, so an LB strictly below the anchor never lists the root sentinel as a mail ancestor; the anchor LB keeps its root edge. Everything the root's log carries — the compacts of the deferred-compaction drain, the `updateGlobalDirect` / `updateGlobal` theorem-origin rows, the load-time prior-theorems batch — therefore reaches only the anchor LB, at the unchanged two-cycle (in-run) / burst-1 (load) timing. (2) `broadcastTheorems` takes the storing LB as a parameter: the prior-theorems batch stays in the root's log; in incubator mode the externals batch is stored in the anchor LB's log and self-injected into the anchor LB (`incubatorAnchorLb`, asserting exactly one anchor child), so the anchor LB and every LB below it receive it exactly as before. (3) `isAnchorLb` is the one shared anchor-LB predicate (the D-29 gate, `prehandleAnchor`, the edge pruning). (4) **The anchor LB relays the root's history.** The first full run asserted in the chapter export (`buildStack: no origin found`): a contradiction twin's chapter walks theorem → `expansion` → compact → `compilation`, and the compact's `compilation` row rides only the root's log, which the twin no longer reads. Maintainer-chosen fix: at its status-3 (routing-mail) absorb the anchor LB copies every absorbed origin row into its own `mailOut.exprOriginMap` (`relaysAbsorbedHistory`, the routing-mail origin merge in `standardProcessing`), so its descendants receive one cycle later exactly the rows the root's log used to deliver — history only (Rule 16 / I-44), never the statements; receivers dedup. (5) **Shape routing (maintainer-directed after the second gate).** IncubatorGauss3 (`ban_disintegration: false`) lost `anchor → (EnumerationSet3[2,6,7,10] → interval[1,4,2,7,10])`: its premise LB below the anchor needs a rule from a nested prior-incubator theorem. `anchorOnlyRule` now decides per theorem: anchor-only are the single-premise theorems and the two-premise theorems whose second premise is an operator application and whose head is an equality connecting that operator's bound output to an anchor digit — an anchor slot value, read off the premise so that a loaded theorem of an earlier batch (its first premise is that batch's anchor, bridged in-run by the cross-anchor conjecture `current anchor → previous anchor`) is classified without that anchor being a core expression of the current batch (`anchor → (in2[10,x,3] → (=[x,11]))`, the operator premise is derivable at the anchor); every other nested shape is stored in the anchor LB's log — at load (`broadcastTheorems`'s `nestedStore`, the anchor LB self-injected) and in-run (the compaction drain merges the compact into the anchor LB's `mailOut` as well as the root's, under the anchor's claim). [I-220](30_invariants.md#i-220).
+**Mechanism.** Nothing changes on the send side; the change is who reads the root's log. (1) `collectMailAncestors` (the `buildGrid` mail-edge registration) stops the ancestor walk at the anchor LB in incubator mode, so an LB strictly below the anchor never lists the root sentinel as a mail ancestor; the anchor LB keeps its root edge. Everything the root's log carries — the compacts of the deferred-compaction drain, the `updateGlobalSingleChapter` / `updateGlobal` theorem-origin rows, the load-time prior-theorems batch — therefore reaches only the anchor LB, at the unchanged two-cycle (in-run) / burst-1 (load) timing. (2) `broadcastTheorems` takes the storing LB as a parameter: the prior-theorems batch stays in the root's log; in incubator mode the externals batch is stored in the anchor LB's log and self-injected into the anchor LB (`incubatorAnchorLb`, asserting exactly one anchor child), so the anchor LB and every LB below it receive it exactly as before. (3) `isAnchorLb` is the one shared anchor-LB predicate (the D-29 gate, `prehandleAnchor`, the edge pruning). (4) **The anchor LB relays the root's history.** The first full run asserted in the chapter export (`buildStack: no origin found`): a contradiction twin's chapter walks theorem → `expansion` → compact → `compilation`, and the compact's `compilation` row rides only the root's log, which the twin no longer reads. Maintainer-chosen fix: at its status-3 (routing-mail) absorb the anchor LB copies every absorbed origin row into its own `mailOut.exprOriginMap` (`relaysAbsorbedHistory`, the routing-mail origin merge in `standardProcessing`), so its descendants receive one cycle later exactly the rows the root's log used to deliver — history only (Rule 16 / I-44), never the statements; receivers dedup. (5) **Shape routing (maintainer-directed after the second gate).** IncubatorGauss3 (`ban_disintegration: false`) lost `anchor → (EnumerationSet3[2,6,7,10] → interval[1,4,2,7,10])`: its premise LB below the anchor needs a rule from a nested prior-incubator theorem. `anchorOnlyRule` now decides per theorem: anchor-only are the single-premise theorems and the two-premise theorems whose second premise is an operator application and whose head is an equality connecting that operator's bound output to an anchor digit — an anchor slot value, read off the premise so that a loaded theorem of an earlier batch (its first premise is that batch's anchor, bridged in-run by the cross-anchor conjecture `current anchor → previous anchor`) is classified without that anchor being a core expression of the current batch (`anchor → (in2[10,x,3] → (=[x,11]))`, the operator premise is derivable at the anchor); every other nested shape is stored in the anchor LB's log — at load (`broadcastTheorems`'s `nestedStore`, the anchor LB self-injected) and in-run (the compaction drain merges the compact into the anchor LB's `mailOut` as well as the root's, under the anchor's claim). [I-220](30_invariants.md#i-220).
 
 **Rejected.** (0) For the history gap: shipping the carrier's own rows wherever a status-3 `expansion` row is written (every batch's mail content, origin-row order at main-batch receivers may change) and letting `buildStack` look up a compact's `compilation` row at an ancestor (a chapter-export contract change) — both refused for the incubator-confined relay. (a) Injecting the compacts straight into the anchor LB's `mailIn` at the post-join seam — one cycle earlier than today (a timing change), a new inbox writer, and a collision with the rolling-window retirement's every-inbox-empty assert (I-162). (b) A per-batch recipient filter inside `MailLog` — a blob-reference format change in the statified mail pool for a routing decision the edge list already expresses. (c) Narrowing the externals as well — refused by the maintainer: the ES2 / ES3 LBs compute their results from the pool lemmas.
 
@@ -160,6 +397,8 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 <a id="d-330"></a>
 ## D-330 — SSD deload derives from the batch's backend: processor batches page by default, CUDA batches are resident-only (2026-09-01,, maintainer-directed)
 
+> **CUDA clause superseded by [D-409](#d-409):** a CUDA batch keeps the configured permission and pages; only counterexample-filter clones run resident-only.
+
 **The choice.** `ProverParameters::allow_ssd_deload` defaults true and is derived at the single backend-ownership boundary in the `ExpressionAnalyzer` constructor: the effective permission is `allow_ssd_deload && phase2Backend == cpu`. A processor-routed batch therefore runs the established working-set pager and extent path exactly as before the GPU campaign, a CUDA-routed batch always runs the resident-only steward, and a config may still set the key false to pin a processor batch resident. This supersedes [D-329](#d-329)'s `allow_ssd_deload` clause (global default false); the CUDA/SSD mutual exclusion itself is unchanged.
 
 **Why.** Resident-only was a safe global default while the full-run CUDA route was landing, but it silently removed SSD paging from processor batches whose working sets are entitled to exceed RAM; the backend, not a global default, is the natural owner of the decision (maintainer: deload allowed when the batch uses the processor — a batchwise decision).
@@ -202,7 +441,7 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 <a id="d-324"></a>
 ## D-324 — the three settled/reformulated-head deposits in the registration drains are deleted; the compact broadcast alone re-derives the head (2026-08-31,, maintainer-approved)
 
-**What.** The three `nextIterationInternalMail` head deposits in the post-join registration drains are removed: `updateGlobalDirect`'s reformulation-branch deposit at the reformulated chain LB, `updateGlobal`'s induction-promotion deposit of the settled head at the theorem's chain LB, and `updateGlobal`'s reformulation-branch deposit. Each drain already compacts and broadcasts the same theorem (`recordPendingCompaction` → D-76 compact via root mail), so the head re-derives at the chain LB from its own seed premises when the broadcast rule fires — with residence-honest levels `{0..chain-1}` and a standard firing origin the chapter walker resolves through the compact chain (expansion → `compilation` → theorem). `updateGlobal`'s settled-goal ERASE stays, now followed by a bare `hasWork` latch (the flag is never-deloaded logical state, I-153; the broadcast itself wakes every LB via `mailPeek`). The D-240 / D-279 disproof/settlement machinery is untouched.
+**What.** The three `nextIterationInternalMail` head deposits in the post-join registration drains are removed: `updateGlobalSingleChapter`'s reformulation-branch deposit at the reformulated chain LB, `updateGlobal`'s induction-promotion deposit of the settled head at the theorem's chain LB, and `updateGlobal`'s reformulation-branch deposit. Each drain already compacts and broadcasts the same theorem (`recordPendingCompaction` → D-76 compact via root mail), so the head re-derives at the chain LB from its own seed premises when the broadcast rule fires — with residence-honest levels `{0..chain-1}` and a standard firing origin the chapter walker resolves through the compact chain (expansion → `compilation` → theorem). `updateGlobal`'s settled-goal ERASE stays, now followed by a bare `hasWork` latch (the flag is never-deloaded logical state, I-153; the broadcast itself wakes every LB via `mailPeek`). The D-240 / D-279 disproof/settlement machinery is untouched.
 
 **Why.** Trap-proven root cause of the branch's missing Peano row `(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[6,7,8,4])(in3[7,6,8,4])))` ("1+n=m ⟹ n+1=m", level-refused at registration): each deposit fabricated its level run as `{0..ky.size}` — one PAST the receiving chain LB's level universe (the LB at `accessMemory(ky)` has level `ky.size-1`). The induction-promoted composite "1+n=m ⟹ m=s(n)" deposited its head `(in2[7,8,3])` at the shared premise LB stamped `{0,1,2}`; the poison propagated through the successor-injectivity firing, the `(8 ↔ it_0_lev_1_12)` class pair, and every 8-spelled equi-product to the target's head, whose sealed `allLevelsInvolved` verdict then read lvN=3 ≠ level+1=2 and refused. `main` carries the identical three stamps but is masked by arrival order: without the canonical door the chain LB derives the head locally first with `{0,1}`, and the poisoned re-deposit is dropped by the registry's first-arrival-wins. The canonical door folds the head's spelling into the witness form early, so the poison becomes the first arrival.
 
@@ -323,7 +562,7 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 ## D-316 — independent logical blocks build fixed host projection shards in parallel and merge by exact offset rebasing (2026-08-29,, maintainer-directed)
 
 - **Context.** After adaptive growth, host construction of the 24-column pointer-free projection consumed 3.9306738 of 12.4757739 Phase 2 seconds. Transfers consumed only 0.376 seconds, and the shortcut has no in-process projection-reuse hits, so residency or dirty upload could not close the measured seam.
-- **Decision.** Twelve process-owned `Phase2ProjectionArena` shards claim logical blocks through the existing steward window and build each block independently. `Phase2ProjectionArena::appendShard` bulk-copies every used column prefix into the upload arena and rebases descriptor offsets, name/rule bytes, all byte/reverse/plain-data view and entry offsets, open-addressed slot indices, blob records, reverse owners, runs, mandatory keys, and metadata. The caller then restores descriptor order by original projection index. Physical slices may follow worker ownership, but the descriptor order consumed by tasks and sealing is canonical. Every arena reserves the established global ceilings at process startup; an overrun asserts and no hot append reallocates.
+- **Decision.** Twelve process-owned `Phase2ProjectionArena` shards claim logical blocks through the existing steward window and build each block independently. `Phase2ProjectionArena::appendShards` (column-parallel; byte-identical to shard-by-shard `appendShard`) bulk-copies every used column prefix into the upload arena and rebases descriptor offsets, name/rule bytes, all byte/reverse/plain-data view and entry offsets, open-addressed slot indices, blob records, reverse owners, runs, mandatory keys, and metadata. The caller then restores descriptor order by original projection index. Physical slices may follow worker ownership, but the descriptor order consumed by tasks and sealing is canonical. Every arena reserves the established global ceilings at process startup; an overrun asserts and no hot append reallocates.
 - **Why.** Logical-block projection reads frozen block/analyzer state and writes disjoint arenas. Keeping the established serial builder inside each shard minimizes semantic change, while one directly twinned merge door proves every pointer-free reference instead of duplicating the 700-line builder as indexed writes.
 - **Measured.** The four-shard route reduced projection to 1.6821862 seconds and complete Phase 2 to 10.6506 seconds. Eight shards then reached 1.3315546 seconds projection and 9.9825 seconds complete Phase 2, a 2.023-times acceleration over the fresh 20.1945325-second control but 0.0649 seconds above the stricter historical 9.917614-second gate. Twelve shards lowered projection only to 1.3033454 seconds, raised merge to 0.4433709, and measured 10.1734 seconds complete Phase 2; host shard scaling is therefore saturated. The direct all-column merge twin passes inside 1,558/1,558 unit tests; every full verifier reports 9,994 checks with zero failures, and all 311 paths, lengths, and SHA-256 hashes are byte-identical at all three milestones. The next measured seam is route traffic rather than more host arenas.
 - **Contract.** [D-313](#d-313); [I-211](30_invariants.md#i-211); [`09d_gpu_cookbook.md`](20_core_concepts/09d_gpu_cookbook.md); [`docs/GPU/gpu_rt1_plan.md`](../GPU/gpu_rt1_plan.md).
@@ -362,13 +601,13 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 ## D-310 — an existence's two negation rules (`left → !right`, `right → !left`) are compiled once as `(implication<N>[u_…])` compacts on the existence's registry entry, and negated-existence disintegration emits those compacts as product statements that expand into the rules (2026-08-27, authored, maintainer-directed)
 
 - - **Context.** `disintegrateExprCore2`'s negated-existence block built the two rules `left → !right` and `right → !left` as expanded full-bind text on the spot (the bound variable replaced by a fresh `startInt` integer) and inserted them straight into hash memory. The rules had no compact identity, so nothing could rewrite them the way equivalence classes rewrite statements. The maintainer's design: mirror [D-309](#d-309) literally — the rules live as compacts on the existence's binary entry and the disintegrator instantiates them.
-- **The choice.** `LogicalEntity::implications` now serves existence entities too. `compileExistenceImplications` — called at the `!(>` mint in `compileCoreExpressionMapCore` (registry-reuse and fresh-mint branch alike; the `preMintReducedOrs` seam completes an existence loaded from a binary written before the field and asserts every other two-element existence complete) — builds each rule with `reconstructImplicationFullBind` over the registry elements (head negated with double-negation cancellation, I-175), renames the bound variable through `renameLastRemoved` — the registry stores it as `1`, the very token `compileImplicationToCompact`'s `u_` strip produces from `u_1`; without the rename the bound variable and the first token merge and the compact loses an argument — and compiles it through `compileImplicationToCompact` + `prefixArgumentsWithU`; `expectedExistenceImplicationCount` (2 for the `[left, right]` shape, 0 otherwise) is the shared completeness formula. The disintegrator resolves the inner existence through the registry (`compiledEntity` on the inner core, category `existence`, two elements) — never through the prepared instruction, which `prepareIntegrationCore`'s polarity guard leaves empty for a negated compound — and substitutes `u_p → instance argument p` positionally into each compact, inserts it as a child statement of the negated existence, stamps it with the `expansion` origin the rule used to carry (citing the negated existence; paired `mailOut` write per D-274) and hands it to `prepareIntegrationCore` + `disintegrateExprCore2`, whose implication branch expands it into the rule and records rule ← `expansion` ← compact. No `startInt` is consumed there any more: the rule's bound variable is the registry placeholder, exactly as for every mailed theorem compact (`renamingChain` remaps a changeable that overlaps a `u_` name).
+- **The choice.** `LogicalEntity::implications` now serves existence entities too. `compileExistenceImplications` — called at the `!(>` mint in `compileCoreExpressionMapCore` (registry-reuse and fresh-mint branch alike; the `preMintReducedOrs` seam completes an existence loaded from a binary written before the field and asserts every other two-element existence complete) — builds each rule with `reconstructImplicationFullBind` over the registry elements (head negated with double-negation cancellation, I-175), renames the bound variable through `renameLastRemoved` — the registry stores it as `1`, the very token `compileImplicationToCompact`'s `u_` strip produces from `u_1`; without the rename the bound variable and the first token merge and the compact loses an argument — and compiles it through `compileImplicationToCompact` + `prefixArgumentsWithU`; `existenceImplicationCount` (named-only since D-381) (2 for the `[left, right]` shape, 0 otherwise) is the shared completeness formula. The disintegrator resolves the inner existence through the registry (`compiledEntity` on the inner core, category `existence`, two elements) — never through the prepared instruction, which `prepareIntegrationCore`'s polarity guard leaves empty for a negated compound — and substitutes `u_p → instance argument p` positionally into each compact, inserts it as a child statement of the negated existence, stamps it with the `expansion` origin the rule used to carry (citing the negated existence; paired `mailOut` write per D-274) and hands it to `prepareIntegrationCore` + `disintegrateExprCore2`, whose implication branch expands it into the rule and records rule ← `expansion` ← compact. No `startInt` is consumed there any more: the rule's bound variable is the registry placeholder, exactly as for every mailed theorem compact (`renamingChain` remaps a changeable that overlaps a `u_` name).
 - **Finding on the way.** The former block's recognizer probed the prepared instruction for the positive existence; since (2026-08-04, the polarity guard) that instruction is empty for every negated compound, so the block was unreachable: a trapped full run showed 19 negated existences admitted to disintegration (all Peano, all `!(existence3[…])`), every one with an empty instruction, the block firing 0 times, and no `A → !B` rule anywhere in hash memory — unnoticed because the only artifact consumer (the chapter of `¬∃m(m+1=n) → n=0`) closes by direct contradiction against the derived positive existence. See [G-68](50_gotchas.md#G-68).
 - **Rejected.** Carrying the bound variable as a compact argument filled with a fresh integer at instantiation — the compact would be a statement about one specific value while its expansion binds it universally, an unsound expansion step. Extending `prepareIntegrationCore`'s `pi_lev_` minting to implication entities — changes every mailed compact's expansion, out of scope.
 - **Behavioural differences accepted.** Chapters gain one `expansion` row per rule (compact ← negated existence, rule ← compact); the rule's bound variable is the registry placeholder instead of a fresh integer and the `startInt` sequence shifts; `implication<N>` numbering shifts (two entities per existence, minted at the existence's mint); verifier check counts rise; the compacts are registered statements — mailed at main, installed at descendants, rewritten by `applyEquiClasses`. Gate = `theorems.txt` against the `main` baseline, verifier 0 failures.
 - **Verifier (I-16, maintainer consent via the approved plan).** `check_expansion`'s negated-existence branch expands a compact row through `_expand_implication_compact` before the two shape comparisons; the rule row (rule ← compact) already passes the general implication case.
 - **Measured.** Recorded in the landing commits.
-- **Contract.** [I-209](30_invariants.md#i-209).
+- **Contract.** [I-209](30_invariants.md#i-209); the named-only gate is [D-381](#d-381).
 
 <a id="d-309"></a>
 ## D-309 — an or's K mutual-exclusion and subset-exclusion rules are compiled once as `(implication<N>[u_…])` compacts on the or's registry entry, and or disintegration emits those compacts as product statements that expand into the rules (2026-08-27, authored, maintainer-directed)
@@ -408,6 +647,10 @@ Entries sorted reverse-chronological (newest first). Unknown precise dates are f
 
 <a id="d-306"></a>
 ## D-306 — a resolved `_ordis_` branch FREEZES (its subtree leaves the request universe, nothing is erased); a goal-less LB opens, parks and releases no or branch (2026-08-25,, maintainer-directed)
+
+**Goal-less exception:** [D-368](#d-368) permits OR work in active primed contradiction blocks; its case-resolution predicate prevents vacuous exclusion.
+
+**Partially superseded by [D-347](#d-347).** Resolved branches now undergo runtime subtree wipeout while their case records, proof history and current-goal derivation levels remain. The goal-less opening, parking and release gates are unchanged.
 
 - - **Context.** Under the sequenced release ([D-250](#d-250), [I-174](30_invariants.md#i-174)) a branch that deposited a `toBeProved` goal releases its successor but keeps working forever: its statements — and those of every scope minted below it — feed request generation in every later burst of the LB, although the branch has already contributed everything its cohort can use. The wipe ([D-242](#d-242)) is reserved for refuted branches and cannot serve here: a resolved branch's rows are cited by `orBookkeeping`, the convergence history and the chapter export. Separately, LBs whose goal registry is empty for life (the `try_contradiction` / `try_contradiction_negated_head` reductio blocks seed status 0 only) opened cohorts whose branches could never resolve by goal — the B3 "frozen by construction" pattern.
 - **Decision.** Two rules, both LB-local. **(1) Freeze.** A live branch is RESOLVED when every `intToBeProved` key whose scope is the cohort parent or one of its ancestors up to `main` (the branch's chain) is `known` at the branch scope or a strict ancestor (`ancestorKnown`, self included — the ancestor clause covers goal deposits Site F refused as ancestor-known, [I-187](30_invariants.md#i-187)); zero chain goals resolve vacuously. The end-of-burst sweep `freezeResolvedOrBranches` (`performElemPhase3`, after `drainDeadOrBranches`, before `drainPendingOrReleases`) evaluates every live branch (`Memory::orLiveBranches`, registered by `ordisMerge` on the branch's first deposit) and moves the resolved ones into `Memory::frozenOrBranches` — a one-way latch until discharge. The single consumer is `filterIntEncodedStatements`: a statement whose scope is a frozen branch or any descendant of one leaves the request universe from the next `generateEncodedRequestsStatic` call on (generator and stump producer share the filter, so the split partition, [I-156](30_invariants.md#i-156), is preserved). Nothing else changes: no registry row, `orBookkeeping` entry, `known` row or history line is erased; deposits into a frozen scope are still accepted (they may complete a convergence already booked); the reached goal is NOT erased — it closes on the normal path when the converged expression lands at the parent scope. The release trigger (first goal match) is unchanged; freezing is the stricter "all chain goals" condition, evaluated per burst so a goal closed elsewhere later completes it. **(2) No goals, no or branches.** In `consumeOrLeavesCohort` an LB with an empty goal registry (any scope; evaluated at every open attempt) neither opens nor parks a cohort — the flat K / subset-exclusion rules still land; `drainPendingOrReleases` releases nothing for such an LB (the staging drops). A goal-less registry never regains a goal (goals register only from the LB's own head at status 2), so the drop is final.
@@ -552,8 +795,78 @@ Step 4's own win is memory and deload volume rather than time: two `TypedColdBlo
 
 **Alternatives rejected.** Reordering the grow search's join order to put the selective premise first: the maintainer refused it during the C_RT investigation — the canonical name-sorted subkey order IS the hash engine's shared index ([I-155](30_invariants.md#i-155) / [I-156](30_invariants.md#i-156) / [I-77](30_invariants.md#i-77)). Widening the grow universe to include unregistered arrivals: it would newly reach requests that cannot fire, buying nothing and changing the emission set.
 
+<a id="d-348"></a>
+## D-348 — size one common full-run GPU profile from measured demand
+
+All full-run batches, including FTA and counterexample filtering, retain one
+common GPU profile. Fixed buffers reserve their full ceilings at initialization,
+so a larger setting affects every batch even if only FTA needs more live entries.
+The common event and ordering ceiling is 6,291,456. Frontier and prefix pools
+are also reduced from measured overprovisioning, with at least twenty percent
+headroom above complete-corpus peaks for every resized field. Raw requests,
+candidate windows, other device owners and the shortcut profile are unchanged.
+
+This changes reserved memory only: no request-order rule, launch scheduling,
+backend policy, assertion or proof semantics changes. The actual array counts
+continue to bound kernel work. The common profile was retained at the user's
+request; an FTA-specific full-run profile is unnecessary for this sizing.
+
+Acceptance requires the complete native test gate, byte-identical artifact sets,
+unchanged verifier results, the connected Nat kernel build, and restoration of
+existing-stage runtime. Deterministic proof output alone cannot detect a stable
+performance regression. GPU memory pressure motivated the measured experiment;
+driver paging must not be claimed without direct evidence. The controlled full
+run reduced allocation to 7,169,784,452 bytes and overall runtime from 618.401
+to 347.184 seconds; an independent rebuilt repeat takes 353.398 seconds. Both
+retain identical work counters and all 5,552 artifacts. The owning ledger is
+[`rt_restoration_plan.md`](../GPU/rt_restoration_plan.md).
+
+<a id="d-346"></a>
+## D-346 — one connected full export with concrete Nat witnesses
+
+The full run proves Peano, Gauss, then the supplied FTA conjectures; the
+independent shortcut remains a development tool. Existing batches retain
+conjecture generation and empty external conjecture inputs. FTA disables
+conjecture generation, consumes its nonempty durable shortlist, and uses the
+normal preceding theorem pool. Supplied conjectures are never premises.
+
+Lean imports the actual preceding theorem modules. Public theorem induction is
+fixed to its domain, zero, and successor. The translation of a fully quantified
+anchor implication includes that structure's induction premise inside the
+binder; compiled forms and their expansions use the same translation. This
+makes the previously missing algorithmic induction requirement explicit without
+claiming that the bare anchor definition entails it. Compaction applies the
+cited theorem with the introduced induction proof. The proof rows remain explicit.
+
+The shared Nat model proves all three anchors with the ordinary arithmetic
+relations, supplies induction using Nat.rec, and instantiates every public
+result. A single Lake root imports these instances. Release validation requires
+this connected export and excludes old shortcut Lean artifacts. No additional
+mathematical axiom or universal induction assumption is introduced.
+
+The full FTA workload also requires the full GPU profile, selected by the
+actual run mode rather than anchor identity. The maintainer authorized suitable
+resource-bound adjustments after the full profile exceeded its accepted-event
+ledger. That integration reserved 8,388,608 events together; the later
+`D-348` tightens the common reservation from measured
+demand. The shortcut profile remains separate. The task ledger records failures, sizing evidence,
+and final measured acceptance. Assertions continue to enforce each allocation.
+
+Implementation: `run_modes.py` / `_prepare_batch_conjectures`, `full_run`, and
+`shortcut_run`; `proof_export/lean.py` / `render_expression`, `_definition_body`,
+and `_context_signature`; `proof_export/live.py` / `export_main_graph`;
+`proof_export/nat.py` / `write_nat_model`.
+
+---
+
 <a id="d-294"></a>
 ## D-294 — FTA exports complete external theorem schemas and replays global compactions in an arbitrary explicit anchor context (2026-08-20,, maintainer-approved)
+
+**Superseded by D-346.** The universal
+induction premise in this historical decision is contradictory in the presence
+of an anchor. Kernel acceptance did not establish the intended arithmetic
+statements. The corrected export scopes induction to each quantified structure
+and discharges its full dependency chain on Nat.
 
 - **Context.** Removing `grind` exposed four zero-argument definition-compaction rows in the generated FTA module. Each compiled target was globally quantified over an arbitrary carrier and `AnchorFTA`, but its cited earlier FTA theorem and external Peano/Gauss facts were available only at the surrounding theorem's current anchor. That interface mismatch cannot be closed by a small explicit tactic step: a current-context fact does not prove an arbitrary-context proposition.
 - **Decision.** FTA theorem interfaces carry the complete universally quantified propositions of every hash-validated external Peano/Gauss theorem. Rows specialize those propositions at their current derived Peano/Gauss anchor. FTA's explicit `relationalInduction` premise is likewise a complete `AnchorFTA`-indexed schema. A zero-argument FTA compaction introduces the target proposition's arbitrary carrier, operations, constants, identity relation, and anchor, then applies the cited earlier FTA theorem at exactly that context while forwarding the same global induction and external-theorem parameters.
@@ -581,10 +894,10 @@ Step 4's own win is memory and deload volume rather than time: two `TypedColdBlo
 <a id="d-291"></a>
 ## D-291 — verdict-first drain order, producer-chain tiebreak, method-aware tier upgrade (2026-08-19,, maintainer-approved)
 
-- **Context.** The tier branch's full-gate pair diverged (main-batch verifier totals 138390 vs 138412 on same input, same code) — the first genuine nondeterminism since the doom line landed. Log-only proof across three runs: the commutation-at-1 conjecture closes TWICE in the same iteration, deterministically — a level-complete record from the conjecture's chain LB and a level-poor record from its primed `__contradiction__` twin, both sealed as `UpdateGlobalDirectRec`s. The nondeterminism was the DRAIN: `updateGlobalDirectLess` ordered same-theorem records by `coreId` (the phase-dispatch worker slot — a scheduling race outcome) before the level verdict, and `appendGlobalTheorem`'s method-blind string dedup makes the first-drained record's method the registration. False record first → the theorem registered `proved not broadcast` and the first-class append was silently refused; true record first → the reverse. The comparator's own comment claimed the outcome was "order-insensitive (string dedup)" — true before the tier existed (a false verdict registered nothing), false the moment the tier made the refused path register. The losing true record still ran the full broadcast path, so the in-run proof state stayed byte-identical — only the ledger method flipped, then compressor probe 127 vs 128 → `theorems.txt` basis → next batch's externals → verifier totals, all deterministic consequences of the coin flip.
-- **Decision.** Three coupled changes. (1) `updateGlobalDirectLess` orders same-theorem records by the sealed level verdict, TRUE FIRST — a level-complete closure always beats a level-poor one at the sink, matching the tier's intent (the tier is for theorems that never close level-complete). (2) `coreId` leaves the order entirely; the residual tiebreak is `compareProducerChains` — byte-lexicographic over the leaf-to-root `exprKey` chain, a pure function of proof state — because for a level-poor pair the first record's producer chain becomes the tier chapter's derivation, so a coreId residue would have made chapter content a race outcome. (3) `appendGlobalTheorem` becomes method-aware: an incoming first-class row UPGRADES an existing `proved not broadcast` row in place (method, aux columns, recorded producer; the tier's `fullTheoremList` mirror row leaves), and an incoming tier row never lands on an existing row of any method — order-insensitivity by construction, covering any residual path that registers first-class after a tier row exists.
+- **Context.** The tier branch's full-gate pair diverged (main-batch verifier totals 138390 vs 138412 on same input, same code) — the first genuine nondeterminism since the doom line landed. Log-only proof across three runs: the commutation-at-1 conjecture closes TWICE in the same iteration, deterministically — a level-complete record from the conjecture's chain LB and a level-poor record from its primed `__contradiction__` twin, both sealed as `UpdateGlobalSingleChapterRec`s. The nondeterminism was the DRAIN: `updateGlobalSingleChapterLess` ordered same-theorem records by `coreId` (the phase-dispatch worker slot — a scheduling race outcome) before the level verdict, and `appendGlobalTheorem`'s method-blind string dedup makes the first-drained record's method the registration. False record first → the theorem registered `proved not broadcast` and the first-class append was silently refused; true record first → the reverse. The comparator's own comment claimed the outcome was "order-insensitive (string dedup)" — true before the tier existed (a false verdict registered nothing), false the moment the tier made the refused path register. The losing true record still ran the full broadcast path, so the in-run proof state stayed byte-identical — only the ledger method flipped, then compressor probe 127 vs 128 → `theorems.txt` basis → next batch's externals → verifier totals, all deterministic consequences of the coin flip.
+- **Decision.** Three coupled changes. (1) `updateGlobalSingleChapterLess` orders same-theorem records by the sealed level verdict, TRUE FIRST — a level-complete closure always beats a level-poor one at the sink, matching the tier's intent (the tier is for theorems that never close level-complete). (2) `coreId` leaves the order entirely; the residual tiebreak is `compareProducerChains` — byte-lexicographic over the leaf-to-root `exprKey` chain, a pure function of proof state — because for a level-poor pair the first record's producer chain becomes the tier chapter's derivation, so a coreId residue would have made chapter content a race outcome. (3) `appendGlobalTheorem` becomes method-aware: an incoming first-class row UPGRADES an existing `proved not broadcast` row in place (method, aux columns, recorded producer; the tier's `fullTheoremList` mirror row leaves), and an incoming tier row never lands on an existing row of any method — order-insensitivity by construction, covering any residual path that registers first-class after a tier row exists.
 - **Rejected.** Keeping the comparator's false-first verdict order (it deterministically hands a same-iteration pair to the tier — semantically backwards); fixing only the comparator without the method-aware sink (leaves the sink order-sensitive for any future multi-record source).
-- **Where.** `prover.cpp::updateGlobalDirectLess` / `compareProducerChains` / `appendGlobalTheorem`; tests `test_memory.cpp::compare_producer_chains_is_deterministic_lb_identity` / `update_global_direct_order_verdict_beats_core_id`, `test_theorem_sink_dedup.cpp::tier_row_upgrades_to_first_class` / `tier_arrival_never_lands_on_existing_row`.
+- **Where.** `prover.cpp::updateGlobalSingleChapterLess` / `compareProducerChains` / `appendGlobalTheorem`; tests `test_memory.cpp::compare_producer_chains_is_deterministic_lb_identity` / `update_global_direct_order_verdict_beats_core_id`, `test_theorem_sink_dedup.cpp::tier_row_upgrades_to_first_class` / `tier_arrival_never_lands_on_existing_row`.
 
 <a id="d-292"></a>
 ## D-292 — a doomed LB's tally leaves the straggler statistic (2026-08-19,, maintainer-approved)
@@ -599,7 +912,7 @@ Step 4's own win is memory and deload volume rather than time: two `TypedColdBlo
 - **Context.** The D-278 level gate refuses registration when a closure's derivation did not consume every premise level — previously a SILENT drop. The pre-split campaign surfaced that this is structural for guard variants: a degenerate branch (13b's `b=0`) collapses so hard that shared premises become redundant, so its proof legitimately skips a level and the variant vanishes — starving the merge. The same signature explains C14-forward's "stall" (its `1≤c` is redundant in the forward direction alone; its LB closed, `active_bodies=0`, nothing registered).
 - **Decision (maintainer: "scope: everywhere").** In EVERY batch and mode, a level-refused closure registers as a `globalTheoremList` row with method `proved not broadcast` (producer recorded) and gets a real chapter (the ordinary direct-proof walk, chapter kind `proved_not_broadcast`). It NEVER circulates: no reformulation, no broadcast/compaction, no or-construction seeding (both seams skip the method), no compressor participation (excluded from the redundancy probe on both sides — an unbroadcast row must not subsume a first-class theorem — and protected from the survivor erase), and no `theorems.txt` row (the proved-theorems artifact stays first-class-only). Its one consumer is the pre-split merge, which may cite a tier row as a guard variant; the verifier resolves such citations through the global list like any theorem.
 - **Why record at all.** The closure is a sound proof; the gate is registration hygiene (the stronger form should circulate), not a truth verdict. Recording makes a previously invisible failure class auditable and feeds the merge. Consequence accepted: chapters and check counts grow in every batch wherever refusals occurred silently before; the "category-identical" full-gate criterion retires for the landing run.
-- **Where.** `prover.cpp::updateGlobalDirect` (the `registerGlobally == false` branch), the two or-seam skips, `run_modes.cpp` (compressor input + survivor erase + `theorems.txt` loop), `visualizer.cpp::generateRawProofGraph` (chapter branch), the Python pipeline's method dispatches, `verifier.py::check_theorem_goal_reached` (direct-family chapter type), `proof_export` (suffix map + direct-renderer acceptance).
+- **Where.** `prover.cpp::updateGlobalSingleChapter` (the `registerGlobally == false` branch), the two or-seam skips, `run_modes.cpp` (compressor input + survivor erase + `theorems.txt` loop), `visualizer.cpp::generateRawProofGraph` (chapter branch), the Python pipeline's method dispatches, `verifier.py::check_theorem_goal_reached` (direct-family chapter type), `proof_export` (suffix map + direct-renderer acceptance).
 
 <a id="d-289"></a>
 ## D-289 — pre-split merge: derived theorems via or elimination at the drain seam (2026-08-19,, maintainer-directed)
@@ -803,7 +1116,7 @@ The winner is provably the first part in (trigger position, invocation order) wh
 **The decision (maintainer-directed, both halves in one change).**
 
 1. **Closure is level-free.** `dischargeToBeProved`'s non-recursion MAIN branch drops `allLevelsInvolved` from its gate: theorem-bytes construction, record seal, goal-row erase, scope-wipe mint, and twin retirement run on `isProved && MAIN` alone — mirroring the recursion branch, which always had this shape (closure unconditional, the level bit riding `updateGlobalTuples` to `updateGlobal`'s promotion gate).
-2. **Registration is level-gated on every route.** `UpdateGlobalDirectRec` carries a sealed `bool allLevelsInvolved`; `drainUpdateGlobalDirect` forwards it into `updateGlobalDirect(…, registerGlobally)`, which runs the two `deactivateUnnecessary` lifecycle walks and then returns BEFORE every registration surface (reformulation, `appendGlobalTheorem`, broadcast, compaction staging, mail merge) when the verdict is false. The D-240 settled-goal seed deposit stays unconditional for non-vacuous primed records. `dischargeContradiction`'s primed branch now seals its own verdict: union of the colliding pair's level rows, EXCLUDING the twin's own level (the assumed seed's tier), against the same count-based full-run test — the theorem's premise chain occupies levels `0..twin.level-1` in all three twin geometries, so one formula covers them. Seal-time computation from the twin's resident rows was maintainer-picked over a drain-time parent-side head-row probe, which misses whenever the head was never derived at the parent (every ordinary disproof) and can dangle across end-of-burst sanitize.
+2. **Registration is level-gated on every route.** `UpdateGlobalSingleChapterRec` carries a sealed `bool allLevelsInvolved`; `drainUpdateGlobalSingleChapter` forwards it into `updateGlobalSingleChapter(…, registerGlobally)`, which runs the two `deactivateUnnecessary` lifecycle walks and then returns BEFORE every registration surface (reformulation, `appendGlobalTheorem`, broadcast, compaction staging, mail merge) when the verdict is false. The D-240 settled-goal seed deposit stays unconditional for non-vacuous primed records. `dischargeContradiction`'s primed branch now seals its own verdict: union of the colliding pair's level rows, EXCLUDING the twin's own level (the assumed seed's tier), against the same count-based full-run test — the theorem's premise chain occupies levels `0..twin.level-1` in all three twin geometries, so one formula covers them. Seal-time computation from the twin's resident rows was maintainer-picked over a drain-time parent-side head-row probe, which misses whenever the head was never derived at the parent (every ordinary disproof) and can dangle across end-of-burst sanitize.
 
 **Accepted consequences (maintainer-stated).** (i) A later level-complete re-derivation no longer triggers registration through the erased goal row — the narrower theorem is the conjecturer's to restate. (ii) An over-premised conjecture proves-but-does-not-register on EVERY route: shortcut pool row 29 (the `in[9,1]` over-premise) becomes the standing close-without-register reproduction case, the corrected one-premise-level row is appended (row 46) so the theorem itself stays provable, and B11's row 45 returns — a 46-row pool registers 45 BY DESIGN. (iii) Twin refutations (disproofs) are level-gated identically; a full-run theorem-set delta from a premise-subset reductio is a stop-and-report to the maintainer, never a silent acceptance.
 
@@ -819,7 +1132,7 @@ The winner is provably the first part in (trigger position, invocation order) wh
 
 **The problem.** [D-240](#d-240)'s drain settled only the DISPROOF direction (seed == parent MAIN goal); a complement twin's seed — `negate(goal)` — was the documented "defined no-op", on the assumption that normal closure (broadcast re-fire → `dischargeToBeProved`) retires a proved goal. The B10 RT investigation (`docs/fta_ladder/B10_RT_investigation.md` §7) proved the uncovered quadrant twin-PROVES × head-LEVEL-POOR: a contradiction-scope proof can deposit the goal's head with a legitimately narrow level run (row 29's `!(strictOrder[1,4,9,10])` arrives at `(=[9,10])@main` with `levels={2}` — the reductio never consumes the level-1 typing premise), the `allLevelsInvolved` gate then never fires, the theorem emits level-free through the primed twin, and nothing retires the local goal row — the goal's LB chain stays active to batch end (4 undead blocks on the 44-row pool, every I-48 sweep refusing forever).
 
-**The fix.** In `ExpressionAnalyzer::drainDisprovedGoals`, per seed, alongside the existing disproof probe: probe `negate(seed)` (the emitted theorem's head, I-165) against the parent's MAIN goals, non-minting. On a hit the goal SUCCEEDED — erase the goal row and stage the goal-embedding MAIN scope roots (the same three shapes as the disproof branch, single-sourced in the shared `forEachGoalScopeRoot` lambda) on `pendingWipeScopes` + `intValidityNamesToFilter`, and nothing else: no origin erase (Rule 16 / I-44 — a proved goal's history stays like any proved statement's), no gate/cohort erase, no closed-subproof exception (those are disproof-only scrubbing of a dead goal's machinery). Emission and twin retirement already happened at the deposit seam (`drainUpdateGlobalDirect` → `deactivateUnnecessary`). With the row gone, the same iteration's `deactivateRecursively` retires the now-goal-less LB chain bottom-up (I-48).
+**The fix.** In `ExpressionAnalyzer::drainDisprovedGoals`, per seed, alongside the existing disproof probe: probe `negate(seed)` (the emitted theorem's head, I-165) against the parent's MAIN goals, non-minting. On a hit the goal SUCCEEDED — erase the goal row and stage the goal-embedding MAIN scope roots (the same three shapes as the disproof branch, single-sourced in the shared `forEachGoalScopeRoot` lambda) on `pendingWipeScopes` + `intValidityNamesToFilter`, and nothing else: no origin erase (Rule 16 / I-44 — a proved goal's history stays like any proved statement's), no gate/cohort erase, no closed-subproof exception (those are disproof-only scrubbing of a dead goal's machinery). Emission and twin retirement already happened at the deposit seam (`drainUpdateGlobalSingleChapter` → `deactivateUnnecessary`). With the row gone, the same iteration's `deactivateRecursively` retires the now-goal-less LB chain bottom-up (I-48).
 
 **Deliberate non-actions.** No change to `dischargeToBeProved`'s level gate (Problem 2 of the §7b resolution, a separate fix), no walker changes, no emission from the drain (the theorem is already global), and the disproof branch is untouched.
 
@@ -999,11 +1312,11 @@ object-theory encoding or weakening the cycle boundary.
 
 **The problem.** Part 2 of the B8 design needs a rule's hunger ("matched everything except one ground compound premise") to OPEN the parked or cohort whose disjunct supplies that premise. The attempt built the demand map (`compoundDemandMap`) but wired its wake as a key lookup into `rejectedMapOrdis` — whose keys are disjunct PRODUCT TEMPLATES (for existence-bodied operators like `preorder`/`strictOrder`: the witness-marker body fact), never disjunct text. Key-language mismatch: the wake could never fire for the order family B8 needs. The 3X post-mortem also left the or8/or10 never-park anomaly open (suspected: algebra key-gain wakes consuming parks through the shared witness-template key).
 
-**The decision (maintainer, this branch).** Complete the pair: rename the recovered demand map to `admissionMapOrdis2` and create the missing rejected counterpart `rejectedMapOrdis2` — a SECOND park index filed at the same park site, keyed by each eligible disjunct's clean GROUND text (polarity verbatim, [I-175](30_invariants.md#i-175); eligible = operator with a compiled non-atomic entity, arity ≥ `kOrdis2DemandMinArity`) at the cohort parent's validity. The two maps speak ONE key language, so the wake is a plain key rendezvous, and they complete each other exactly as algebra's `admissionMap`/`rejectedMap` do: whichever side arrives second wakes the other. Or-first: the head parks in BOTH ordis maps (the old filing is untouched, [I-178](30_invariants.md#i-178)); the demand drain (`drainAdmissionKeysOrdis2`) mints the key, RMW-inserts, and calls `revisitRejectedOrdis2` — snapshot, erase key, un-know (`resetParkedOrStatementRegistries`), re-mail on `sameIterationInternalMail`; the re-consumption's route (c) reads the fresh demand and opens. Demand-first: the deposit-time route-(c) probe of `admissionMapOrdis2` precedes the park in `consumeOrLeavesCohort`'s probe/park chain, so the cohort opens without parking. Opening consumes the matched demand keys (`eraseBlobIf`); the pair self-liquidates.
+**The decision (maintainer, this branch).** Complete the pair: rename the recovered demand map to `admissionMapOrdis2` and create the missing rejected counterpart `rejectedMapOrdis2` — a SECOND park index filed at the same park site, keyed by each eligible disjunct's clean GROUND text (polarity verbatim, [I-175](30_invariants.md#i-175); eligible = operator with a compiled non-atomic entity, arity ≥ `kOrdis2DemandMinArity`) at the cohort parent's validity. The two maps speak ONE key language, so the wake is a plain key rendezvous, and they complete each other exactly as algebra's `admissionMap`/`rejectedMap` do: whichever side arrives second wakes the other. Or-first: the head parks in BOTH ordis maps (the old filing is untouched, [I-178](30_invariants.md#i-178)); the demand drain (`drainAdmissionKeysOrdis2`) mints the key, RMW-inserts, and calls `revisitRejectedOrdis2` — snapshot, erase key, un-know (`resetParkedOrStatementRegistries`), re-mail on `sameIterationInternalMail`; the re-consumption's route (c) reads the fresh demand and opens. Demand-first: the deposit-time route-(c) probe of `admissionMapOrdis2` precedes the park in `consumeOrLeavesCohort`'s probe/park chain, so the cohort opens without parking. The original opening-time demand consumption is superseded by [D-393](#d-393): an opening retains a demand whose fact is still missing.
 
 **Full machinery parity (maintainer directive).** Every subsystem surrounding the older admission/rejected pairs is reproduced: equi-class hooks at BOTH `applyEquiClasses` seams (`applyEquivalenceClassToAdmissionMapOrdis2` drop-and-rekey; `applyEquivalenceClassToRejectedMapOrdis2` I-37 drop-and-mail), I-68 staging + post-fixpoint drain, `wipeHashMem` lines, deload band (`admissionMapOrdis2` base+63..66, `rejectedMapOrdis2` base+67..70, `ordis2RevisitInProgress` guard base+71), CE-clone/discharge survival via the band, and TWO appended EXTENDED-block dump sections (Rule 14 consent granted 2026-08-10; the 3X demand map had none — gap closed).
 
-**Deliberate non-parity (each with its reason).** No `varsIn*Keys` caches (keys fully ground; both maps stay far smaller than the algebra map — the sibling ordis hook already walks uncached). No consumed-key twin (route (c) is the single consumer; the cohort bootstrap guard makes double-opens structurally impossible; erase-on-open suffices and post-open re-demands are legitimate fresh hunger). The algebra key-gain seams (`drainAdmissionKeysAlgebra`, `updateAdmissionMapRecursion`) do NOT touch the new pair — different key language, and a cross-probe would double-wake operator-application disjuncts whose old-map product template IS the disjunct text; only `drainAdmissionKeysOrdis2` wakes `rejectedMapOrdis2`, which also makes the new park immune to the suspected or8/or10 consumption path.
+**Deliberate non-parity (each with its reason).** No `varsIn*Keys` caches (keys fully ground; both maps stay far smaller than the algebra map — the sibling ordis hook already walks uncached). No consumed-key twin (route (c) is the single consumer; the cohort bootstrap guard makes double-opens structurally impossible; missing demands remain reusable across source openings, while satisfied-demand probes and scope cleanup remove obsolete entries). The algebra key-gain seams (`drainAdmissionKeysAlgebra`, `updateAdmissionMapRecursion`) do NOT touch the new pair — different key language, and a cross-probe would double-wake operator-application disjuncts whose old-map product template IS the disjunct text; only `drainAdmissionKeysOrdis2` wakes `rejectedMapOrdis2`, which also makes the new park immune to the suspected or8/or10 consumption path.
 
 **Amended by [D-287](#d-287) (2026-08-18):** the subset test below treats an anchor-slot argument as ground (it can never be bound by a substantive premise), so a slot naming a constant — B9's `1 ≤ d` — qualifies; a slot the anchor alone binds still mints nothing.
 
@@ -1182,7 +1495,7 @@ object-theory encoding or weakening the cycle boundary.
 
 **The problem.** The induction-promotion path kept the as-scheduled conjecturer shape — outer binder omitting anchor slots unused beyond the anchor premise, those slots left as bare free variables (an I-4 violation in flight) — for compaction and the `theorem` origin row, FullBind-rebuilding only the registry copy. Compacting the partial-bind form lifted the unbound anchor slots into template parameters, minting `(implicationN[4,5,6])` whose elements carry the forbidden `(AnchorPeano[…,u_1,u_2,u_3])` shape (an anchor expression never holds `u_` arguments — maintainer directive) and whose verifier-mandated `compilation` citation (I-52) is a canonical body no origin row anywhere covers. Latent on `main` (no chapter walked a theorem-compact chain); exposed when the A15 negated-compound contradiction integration proved the or0-companion reverse direction by reductio instead of induction — the first walk to descend that chain died on the `buildStack` no-origin assert.
 
-**The choice.** Compute `exprFullBind` first; compaction, the `theorem` origin row, and the registry all take it. The as-scheduled `expr` survives only where the pre-FullBind shape is required verbatim: `checkOrCompletion` (or_pairs.txt matching) and `reformulateTheorem` input (its outputs rebind themselves). `updateGlobalDirect` already promoted FullBind. A walker-side patch (treating `compilation` rows as terminal) was tried first and REVERTED by maintainer verdict — it treated the symptom.
+**The choice.** Compute `exprFullBind` first; compaction, the `theorem` origin row, and the registry all take it. The as-scheduled `expr` survives only where the pre-FullBind shape is required verbatim: `checkOrCompletion` (or_pairs.txt matching) and `reformulateTheorem` input (its outputs rebind themselves). `updateGlobalSingleChapter` already promoted FullBind. A walker-side patch (treating `compilation` rows as terminal) was tried first and REVERTED by maintainer verdict — it treated the symptom.
 
 **Measured effect.** The theorem's compact is `(implicationN[])`, its citation the FullBind body carrying the broadcast `theorem` row; the Peano chapter export runs clean.
 
@@ -1197,6 +1510,8 @@ object-theory encoding or weakening the cycle boundary.
 
 <a id="d-257"></a>
 ## D-257 — compound relations never install marker demand templates; fully-bound both-polarities integration retained (2026-08-04,, maintainer-designed)
+
+> **Amended (experiment, 2026-09-28):** [D-413](#d-413) lets every positive premise with exactly one unbound argument of a recursion-owned chain take the marker route; negated premises and non-recursion chains keep the skip, and everything else below stands.
 
 **The problem.** The negated-compound integration commit is a bisected 4× shortcut regression (11.1 s at its parent → 44.9 s at it, identical inputs): it widened `updateAdmissionMap`'s demand qualification to compound relations through TWO routes — fully-bound `prepareIntegration` (both polarities, recursion-owned) and the `wrN == 1` positive marker template. The traced culprit (`(in2[rec1,12,3])` in the addition-cancellation grid, 13,224 statements, 90% `existence1` operation-totality facts) rode the marker route: its `(preorder[1,4,11,marker])` template is re-instantiated inside the integration engine for every arriving witness, and the per-witness subproof cascade admits the totality-existence witness pump in every recursion LB. Prep-attribution traps (six `prepareIntegration` callers, preorder-filtered) showed: 254/341 preorder preps come from the OLD `checkNecessityForEquality` (also on `main`, harmless); the branch-new producers are the fully-bound route (39 positive / 2 negated — the negated pair is A15's IH) and the marker route (10, all positive). A negated-only qualification gate was tried first and REJECTED: it kills the pump (12.1 s) but regresses A15, whose reductio chain also consumes positive fully-bound preps (its LB preps the dual pair `!(preorder[1,4,9,rec])` AND `(preorder[1,4,9,rec])`).
 
@@ -1338,7 +1653,7 @@ object-theory encoding or weakening the cycle boundary.
 ## D-236 — a normal LB's main contradiction deactivates its subtree and suppresses every emission below it (2026-07-28,, maintainer-approved)
 
 
-**The choice (maintainer-specified).** `dischargeContradiction`'s formerly inert normal-LB fall-through becomes the fourth discharge role: when an LB with no special role (not primed, not CE, not recursion) holds a full E / !E pair at exact `main`, its premise set is inconsistent — the LB sets the new `Memory::mainContradiction` flag, deactivates, and stages its subtree on `pendingSubtreeDeactivations`; the post-join `drainSubtreeDeactivations` (next to the twin drain) deactivates every descendant. Emission is gated at the single-threaded seams: `UpdateGlobalDirectRec` now carries its producer LB, `drainUpdateGlobalDirect` and the induction promotion in `updateGlobal` suppress any theorem whose producer has a flagged self-or-ancestor (`hasContradictedAncestor`). At the batch root or an anchor premise LB the state asserts — the axioms are consistent, so it can only mean a broken definition set.
+**The choice (maintainer-specified).** `dischargeContradiction`'s formerly inert normal-LB fall-through becomes the fourth discharge role: when an LB with no special role (not primed, not CE, not recursion) holds a full E / !E pair at exact `main`, its premise set is inconsistent — the LB sets the new `Memory::mainContradiction` flag, deactivates, and stages its subtree on `pendingSubtreeDeactivations`; the post-join `drainSubtreeDeactivations` (next to the twin drain) deactivates every descendant. Emission is gated at the single-threaded seams: `UpdateGlobalSingleChapterRec` now carries its producer LB, `drainUpdateGlobalSingleChapter` and the induction promotion in `updateGlobal` suppress any theorem whose producer has a flagged self-or-ancestor (`hasContradictedAncestor`). At the batch root or an anchor premise LB the state asserts — the axioms are consistent, so it can only mean a broken definition set.
 
 **Why.** The antisymmetry unlock produced conjectures with jointly inconsistent premises (the chapter-167 limitSet × interval cross-pair): their negated-head reductio LBs discharged on premises-only contradiction pairs, exporting vacuous theorems whose records cite a seed the proof never used — exactly what the verifier's `contradiction trace` check flags. The suppression is the GL-native form of the ATP world's `ContradictoryAxioms` verdict: a refutation that never consumed the negated goal must not be reported as a theorem. The discrimination is exact and Rule-16-clean: a genuine reductio's parent holds NO contradiction (the seed lives only in the child), while a premises-only pair is derivable at the parent from the same mail commits and broadcast rules — and with no burst caps the parent completes its chain no later than any child. Decision inputs are live statement state (`intKnownStatements`), never the origin map.
 
@@ -1377,7 +1692,7 @@ object-theory encoding or weakening the cycle boundary.
 **The problem.** A primed `__contradiction__` LB that proves `negate(seed)` emits the disproof as an ordinary negated theorem — but nothing removed the parent's now-dead goal from `intToBeProved`, so every piece of integration machinery the goal spawned (subproof scopes, orint branches, hypo scopes, admission/rejection rows, hash rules, internal-mail revival traffic, origin history) kept running every burst forever. Measured on the Gauss-incubator-3 disproof of `(interval[1,4,2,7,10])`: the dead tree was ~57% of the `(EnumerationSet2[2,6,10])` LB's final statement population.
 
 **The mechanism.** Two seams, both single-threaded:
-1. **Deposit** — `drainUpdateGlobalDirect` (the post-join theorem drain): for every emitting producer with `primedForContradiction`, the contradiction seed (the `__contradiction__` exprKey suffix, I-165) is minted into the parent's new `Memory::pendingDisprovedGoals` (a byte-key set on the never-deloaded persistent arena, the I-108 pattern — writable while the parent is cold, no claim) and the parent's `hasWork` is raised (I-153). The deposit is unconditional for primed producers: a complement-twin seed or an already-closed goal misses the probe below — a defined no-op, and exactly one twin ever fires (D-224 retirement). *(The complement-twin no-op is superseded: the drain now settles the PROOF direction too — [D-279](#d-279).)*
+1. **Deposit** — `drainUpdateGlobalSingleChapter` (the post-join theorem drain): for every emitting producer with `primedForContradiction`, the contradiction seed (the `__contradiction__` exprKey suffix, I-165) is minted into the parent's new `Memory::pendingDisprovedGoals` (a byte-key set on the never-deloaded persistent arena, the I-108 pattern — writable while the parent is cold, no claim) and the parent's `hasWork` is raised (I-153). The deposit is unconditional for primed producers: a complement-twin seed or an already-closed goal misses the probe below — a defined no-op, and exactly one twin ever fires (D-224 retirement). *(The complement-twin no-op is superseded: the drain now settles the PROOF direction too — [D-279](#d-279).)*
 2. **Drain** — the new `ExpressionAnalyzer::drainDisprovedGoals`, running in `performElemPhase3` immediately BEFORE the `pendingWipeScopes` drain (so the wipes land the same burst). Per seed that hits a MAIN goal: erase the goal row; enumerate every MAIN-level scope whose payload embeds the goal (the `<goal>_subproof_` shapes plus the two hypo shapes) onto `pendingWipeScopes` + `intValidityNamesToFilter` — EXCEPT a subproof root whose product (bare compact / OR signature) is already a REGISTERED statement at main: that subproof CLOSED before the disproof, its scope was wiped by the success path, and its product + preserved history are load-bearing for other proofs (skipping it fixed a `buildStack: no origin found` chapter-export abort in verification); erase the goal-template gates (`integrationPrepared` / `integrationPreparedMarker` MAIN rows matching the goal / its marker forms / a goal-prefixed template — `templateMatchesGoalWithMarkers` — and `integrationStartIntMap`); erase `exprOriginMap` rows keyed in the wiped subtrees plus MAIN rows whose key CONTAINS the goal text (excepting the products: `negate(goal)` and anchor-rooted theorem rows — a first-draft "cites a dead compact" rule was unsound because per-goal duplication lets a dead subproof share its bare compact text with a CLOSED subproof of another goal); erase internal-mail ORIGIN runs at wiped scopes (`ColdMail::filterOrigins` — `wipeSubtree` filters only statements, and orphaned origins would sit in the discharge-surviving container forever); erase `orDisjunctCount` / `orBookkeeping` cohorts whose parent validity lies in a wiped subtree. Subtree membership for the origin / cohort sweeps is the decoded-validity TEXT gate against the wiped root names — origin keys pack originInterner ids in BOTH halves (I-91), never NameMap ids.
 
 **Two deliberate deviations, disproof-path-only.** (a) The origin-map erase deviates from `wipeSubtree`'s I-44 preserve rule — maintainer-approved at session planning: a dead goal's integration history documents a process that produced nothing, and the disproof's own record lives in the `__contradiction__` LB (D-51). (b) The cohort erase deviates from I-167's cohort-key retention. Both run ONLY in `drainDisprovedGoals`; `Memory::wipeSubtree` and the success path are untouched.
@@ -1428,11 +1743,11 @@ object-theory encoding or weakening the cycle boundary.
 ## D-244 — an unintentionally contradictory LB retracts its already-submitted global-theorem rows (2026-07-30,, maintainer-directed)
 
 
-**The problem (maintainer-raised during the dead-branch acceptance).** The vacuous-premise machinery suppresses a contradicted LB's theorems **at emission** (`hasContradictedAncestor` gates at `drainUpdateGlobalDirect` and the induction promotion) — but an LB can submit theorems in earlier iterations and only later derive its main-scope statement/negation pair. Those rows were already in `globalTheoremList` (and `fullTheoremList`), would ship in `theorems.txt` / the chapters, and nothing retracted them.
+**The problem (maintainer-raised during the dead-branch acceptance).** The vacuous-premise machinery suppresses a contradicted LB's theorems **at emission** (`hasContradictedAncestor` gates at `drainUpdateGlobalSingleChapter` and the induction promotion) — but an LB can submit theorems in earlier iterations and only later derive its main-scope statement/negation pair. Those rows were already in `globalTheoremList` (and `fullTheoremList`), would ship in `theorems.txt` / the chapters, and nothing retracted them.
 
 **The mechanism (maintainer-directed: "revert the entry in the global theorem list").** Producer attribution + a post-join sweep:
-1. `appendGlobalTheorem` gains a `producer` parameter recorded in the parallel `globalTheoremProducers` vector (same mutex, same door, cleared with the export rebuild). Threaded at the direct path (`drainUpdateGlobalDirect` → `updateGlobalDirect` → the direct / reformulated / back-reformulated appends), the induction promotion, and the already-derived-head registration; producer-less paths (or-theorem construction, debug export) record `nullptr` and are never retracted.
-2. `revertVacuousGlobalTheorems`, called once per iteration in the post-join seam right after `drainUpdateGlobalDirect`: every row whose producer has a contradicted self-or-ancestor leaves `globalTheoremList` + `globalTheoremProducers`, its string leaves the `globalTheoremStrings` dedup set (a later legitimate prover of the same statement may re-append), and matching `fullTheoremList` rows leave. Prints `[VACUOUS-REVERT] <theorem>` for observability. Grid LB pointers are address-stable for the whole batch (I-109; discharged LBs persist for the chapter export), and a normally-discharged LB can never flip afterwards (no new facts), so the attribution stays readable exactly as long as it is needed.
+1. `appendGlobalTheorem` gains a `producer` parameter recorded in the parallel `globalTheoremProducers` vector (same mutex, same door, cleared with the export rebuild). Threaded at the direct path (`drainUpdateGlobalSingleChapter` → `updateGlobalSingleChapter` → the direct / reformulated / back-reformulated appends), the induction promotion, and the already-derived-head registration; producer-less paths (or-theorem construction, debug export) record `nullptr` and are never retracted.
+2. `revertVacuousGlobalTheorems`, called once per iteration in the post-join seam right after `drainUpdateGlobalSingleChapter`: every row whose producer has a contradicted self-or-ancestor leaves `globalTheoremList` + `globalTheoremProducers`, its string leaves the `globalTheoremStrings` dedup set (a later legitimate prover of the same statement may re-append), and matching `fullTheoremList` rows leave. Prints `[VACUOUS-REVERT] <theorem>` for observability. Grid LB pointers are address-stable for the whole batch (I-109; discharged LBs persist for the chapter export), and a normally-discharged LB can never flip afterwards (no new facts), so the attribution stays readable exactly as long as it is needed.
 
 **Primed LBs are exempt by construction.** A `__contradiction__` LB's contradiction is the intended reductio; it never carries `mainContradiction`, so disproof theorems are never retracted.
 
@@ -1501,7 +1816,7 @@ object-theory encoding or weakening the cycle boundary.
 ## D-230 — twin retirement at emission + per-iteration deactivation sweep (2026-07-26,, maintainer-approved)
 
 
-**The choice (maintainer-approved: "try a and b").** Two timeliness fixes to the LB-deactivation machinery, found by an instrumented investigation of Peano main's slowness. (a) `deactivateUnnecessary` retires both `__contradiction__` twins of the settled head at the theorem's final chain node, right after its path walk resolves — every emission drain (`updateGlobalDirect` both polarities, the auxy path) now retires twins at emission instead of waiting for [D-224](#d-224)'s goal-closure staging, which for a theorem proved by induction or in another LB fires only on the broadcast re-fire one or more bursts later. The staged path remains as the second trigger; the flip is idempotent, same single-threaded post-join seam. (b) `prove` runs `deactivateRecursively` once per iteration after the drains — formerly the global sweep ran only from `deactivateUnnecessary`'s tail (emission-only), so LBs whose last main-scope goal closed after the batch's final emission stayed active to batch end. Same I-48 predicate, evaluated every iteration.
+**The choice (maintainer-approved: "try a and b").** Two timeliness fixes to the LB-deactivation machinery, found by an instrumented investigation of Peano main's slowness. (a) `deactivateUnnecessary` retires both `__contradiction__` twins of the settled head at the theorem's final chain node, right after its path walk resolves — every emission drain (`updateGlobalSingleChapter` both polarities, the auxy path) now retires twins at emission instead of waiting for [D-224](#d-224)'s goal-closure staging, which for a theorem proved by induction or in another LB fires only on the broadcast re-fire one or more bursts later. The staged path remains as the second trigger; the flip is idempotent, same single-threaded post-join seam. (b) `prove` runs `deactivateRecursively` once per iteration after the drains — formerly the global sweep ran only from `deactivateUnnecessary`'s tail (emission-only), so LBs whose last main-scope goal closed after the batch's final emission stayed active to batch end. Same I-48 predicate, evaluated every iteration.
 
 **Evidence (per-iteration audit, pre-fix).** Induction auxiliaries of proved theorems: never late (the emission-time `deactivateUnnecessary` walk already covers them, [D-223](#d-223)). Contradiction twins: 2–44 live twins of already-proved theorems on nearly every Peano main burst, 280 twin-burst units total, each twin carrying tens of thousands of submatches per lingering burst. Sweep orphans: 12 goal-free, child-free, unprimed chain LBs (deep `in3[..,*]` nodes) active from ~burst 15 to batch end. Not touched by this decision: the dominant heavy-burst cost (burst 13's 296 s) is genuine in-progress induction proof work (`(=[13,2])_induction_rec2_` at 2.7M work), proved in that same burst — intrinsic, not a leak.
 
@@ -1559,7 +1874,7 @@ object-theory encoding or weakening the cycle boundary.
 ## D-223 — every emitted theorem retires the recursion auxiliaries of both head polarities (2026-07-25,, maintainer-approved)
 
 
-**The choice (maintainer-approved).** `updateGlobalDirect` adds one call beside its existing `deactivateUnnecessary(theorem, root)`: the same walk on the head-negated twin form `reconstructImplication(chain, negate(head))`. Uniform for every emitted theorem — no contradiction-specific gating; a twin form matching no `originalAuxyMap` entry is a defined no-op walk on a single-threaded seam.
+**The choice (maintainer-approved).** `updateGlobalSingleChapter` adds one call beside its existing `deactivateUnnecessary(theorem, root)`: the same walk on the head-negated twin form `reconstructImplication(chain, negate(head))`. Uniform for every emitted theorem — no contradiction-specific gating; a twin form matching no `originalAuxyMap` entry is a defined no-op walk on a single-threaded seam.
 
 **Why.** A verbatim contradiction LB's fire emits the *negation* of its registered conjecture; that string matches no `originalAuxyMap` entry, so the disproved conjecture's induction triads idled to batch end. Prepared for the main-path contradiction activation (Peano main is where induction auxiliaries are heavyweight). The complement direction needed nothing: its emission IS the registered conjecture, which the existing call already matches. Bonus coverage: a proved head also settles the opposite-head conjecture wherever both were registered.
 
@@ -1577,9 +1892,9 @@ object-theory encoding or weakening the cycle boundary.
 ## D-216 — globalTheoremList insertion is insert-if-absent on the theorem string (2026-07-25,, maintainer-approved)
 
 
-**The choice (maintainer-approved).** All nine `globalTheoremList` writers (the four `updateGlobalDirect` rows, the two `updateGlobal` rows, `addTheoremToMemory`'s pre-registered-head row, the OR construction in `run_modes.cpp`, and the export rebuild's debug rows) route through one guarded door, `ExpressionAnalyzer::appendGlobalTheorem`: under `theoremListMutex`, probe the companion `globalTheoremStrings` set and append only on first sight of the theorem string. First emission wins — the retained tuple keeps the first-drained method label. The export rebuild's `clear` clears both containers. Side effects at the emission sites (console print, `checkOrCompletion`, pending compaction) are unchanged — the dedup governs the list, which is what the theorems files and the chapter export iterate.
+**The choice (maintainer-approved).** All nine `globalTheoremList` writers (the four `updateGlobalSingleChapter` rows, the two `updateGlobal` rows, `addTheoremToMemory`'s pre-registered-head row, the OR construction in `run_modes.cpp`, and the export rebuild's debug rows) route through one guarded door, `ExpressionAnalyzer::appendGlobalTheorem`: under `theoremListMutex`, probe the companion `globalTheoremStrings` set and append only on first sight of the theorem string. First emission wins — the retained tuple keeps the first-drained method label. The export rebuild's `clear` clears both containers. Side effects at the emission sites (console print, `checkOrCompletion`, pending compaction) are unchanged — the dedup governs the list, which is what the theorems files and the chapter export iterate.
 
-**Why.** The [complementary reductio LB](#d-214) made double emission systematic: a theorem proved by a contradiction LB is broadcast, re-fires on its own conjecture's premises, and closes the goal a second time — 56 of IncubatorPeano2's theorems landed twice in `theorems.txt` and produced duplicate proof chapters. The incubator save path and the chapter export iterate `globalTheoremList` with no dedup of their own, and `drainUpdateGlobalDirect`'s index-sorted replay makes first-wins deterministic. Opposite-polarity conjecture pairs could already double-emit before the reductio work; the sink closes that class too.
+**Why.** The [complementary reductio LB](#d-214) made double emission systematic: a theorem proved by a contradiction LB is broadcast, re-fires on its own conjecture's premises, and closes the goal a second time — 56 of IncubatorPeano2's theorems landed twice in `theorems.txt` and produced duplicate proof chapters. The incubator save path and the chapter export iterate `globalTheoremList` with no dedup of their own, and `drainUpdateGlobalSingleChapter`'s index-sorted replay makes first-wins deterministic. Opposite-polarity conjecture pairs could already double-emit before the reductio work; the sink closes that class too.
 
 **Accepted consequence.** A cross-method string collision (the same theorem string reachable as `direct` and as `reformulated statement`) keeps only the first-drained row and its chapter — deliberate under first-wins.
 
@@ -1743,13 +2058,13 @@ It also applies independently to both bridge dependencies of `mergeTwoEquivalenc
 
 **Semantics and verification.** This changes capacity only: block size, page size, container layout, deload format, proof semantics, and provenance are unchanged. The gate is a Windows Release x64 full rebuild, the direct unit-test suite, and one complete Windows `main.py` run with zero verifier failures and no pool-exhaustion assert. The historical 8 GiB measurements remain comparison evidence rather than current defaults.
 
-**Superseded (sizing).** The 4 GiB cap was raised to 6 GiB to reach the rung-2 `IncubatorGauss3` batch, then to 12 GiB alongside the NameId int16→int32 migration ([D-212](#d-212)). The pool-as-normal-pressure rationale above still holds; only the number moved.
+**Superseded (sizing).** The 4 GiB cap was raised to 6 GiB to reach the rung-2 `IncubatorGauss3` batch, then to 12 GiB alongside the NameId int16→int32 migration ([D-212](#d-212)), then back to 6 GiB once SSD deload ran on both Phase 2 backends ([D-410](#d-410)). The pool-as-normal-pressure rationale above still holds; only the number moved.
 
 <a id="d-207"></a>
 ## D-207 — cache each byte key's full digest in its static location record (2026-07-11)
 
 
-**The choice (user-approved).** Extend `ColdStringLocation`, the page-backed positional record owned by `BytesKeyStore`, with the key's full 64-bit FNV-1a digest. `HashMap::lookup` computes the probe digest once and passes it into `equalStored`; candidate records reject a digest mismatch before resolving the byte pool, while a digest match still performs the full length and byte comparison. The digest is copied across `copyFrom` and recomputed from canonical bytes during reload.
+**The choice (user-approved).** Extend `ColdStringLocation`, the page-backed positional record owned by `BytesKeyStore`, with the key's full 64-bit FNV-1a digest *(amended by [D-423](#d-423): the cached digest is now `coldKeyHash`)*. `HashMap::lookup` computes the probe digest once and passes it into `equalStored`; candidate records reject a digest mismatch before resolving the byte pool, while a digest match still performs the full length and byte comparison. The digest is copied across `copyFrom` and recomputed from canonical bytes during reload.
 
 **Why.** The committed GaussIncubator1 profile attributed 16.47% of samples to byte-key `HashMap::lookup`, including repeated stored-key hashing and collision-candidate byte resolution. The throw-away index already needs each stored digest when it rebuilds, and hot probes revisit the same stored keys many times. Keeping that derived value beside the existing static location removes repeated page walks without introducing a heap cache or a second lookup structure.
 
@@ -2052,7 +2367,7 @@ Load dispatches on a recorded per-LB `Memory::deloadKind` (`Raw` / `Canonical`),
 - **Two-tier victim selection** (`MemorySteward::pickVictimTwoTier`): tier 1 is the floor-preferred Belady scan (`pickVictimBehindCursor` with `kMinEvictBlocks`); when the reserve is breached and NO above-floor victim exists, tier 2 re-runs the SAME backward Belady scan with the floor dropped to one block. Survival trumps per-operation efficiency; both tiers are DEFINED results (Rule 19), and a `nullptr` from both is still the defined working-set-fits pause. Cures (a).
 - **Widened worker pressure valve**: `claimAndLoadForWork` checks EVERY claim — resident or cold — against the emergency floor `steward::kEmergencyFloorBlocks` (= `kReserveBlocks / kEmergencyFloorDivisor` = 512 blocks = 128 MiB; scales with the test-overridable reserve) and, on breach, evicts ONE behind-cursor victim through `evictOneForReload` — which now selects via the two-tier Belady scan; the biggest-first selector `pickBiggestDeloadable` is RETIRED (no other consumer). The reload-fit trigger (free blocks cannot cover THIS reload, estimated from `lastRawImageBytes`) stays on the cold-miss path; the old 3/4-hard-bound gate is dropped. A per-claim guard keeps it at most ONE eviction per claim, no loop — a still-short reload surfaces genuine exhaustion at `acquireBlock` (Rule 19). Counted (`emergencyEvictCount`; nonzero = the planner cannot keep up). Cures (c).
 - **Planner/executor I/O split**: the steward becomes a PLANNER thread (the existing 200 µs window poll, now enqueue-only) plus `steward::ioThreadCountFor(workers, kIoThreadsOverride)` I/O EXECUTOR threads (= `clamp(workers/8, 2, 8)`, 4 at 32 workers; the override constant forces a count — set 1 to serialize the pool when isolating a concurrency bug). Two fixed-capacity task RINGS under the steward mutex (`kIoRingCapacity` = 256 each): HIGH = prefetch loads, LOW = evictions + reshuffles. Executors drain HIGH first EXCEPT below the emergency floor — then LOW first (evictions must not starve behind reloads with no blocks to land in). Task execution is claim-first drop-on-lose (CAS `Dumped → Busy` for loads, `Idle → Busy` for evictions/reshuffles; a lost CAS discards); every eviction/reshuffle task re-validates its window under the CURRENT cursor via a monotone `windowGeneration_` (bumped at every `beginPhaseWindow` / `endPhaseWindow`) plus a kept-range check on the task's index — a stale task drops, a defined hand-over. Enqueues dedup by (kind, LB) ring containment (hygiene; the CAS arbitrates correctness); a FULL ring drops the enqueue — the designed load-shedding (the LOW lane can want ~1024 victims in the floorless early-batch regime against 256 slots; the planner regenerates its whole plan every pass, far faster than executors consume 256 evictions), counted per lane (`prefetchDroppedFullRing` / `evictDroppedFullRing`). The planner's reserve drain becomes a PROJECTION: live free + in-flight dump blocks (`inFlightBlocks`, freed-but-unavailable) + blocks of already-queued eviction tasks, so one shortfall is covered exactly once. The ASYNC DUMP CONTRACT rides the LOW lane (this IS the design's DeloadWriter — built once here): an eviction task holds the LB `Busy` and its blocks until the raw image write completes, releases the blocks, and only THEN stores `Dumped` — `Dumped` is never observable before image-complete + blocks-returned; in-flight bytes/blocks are exposed (`inFlightBytes` / `inFlightBlocks`). `quiesce` extends to rings-empty AND executors-idle AND planner-parked — LOAD-BEARING for the barrier, whose `deloadRegistry` reference read (`rewriteRegistry`) races executor dump registrations without it; `stop` joins the pool. The planner's ONE remaining I/O is the discharge drain, verbatim on the planner thread (I-106 execution unchanged). Each executor owns a private compaction scratch `LbArena` from `lbMemory`. Cures (b).
-- **Barrier seam windows + claim-correct seam doors** (the SECOND 4 GiB wall, diagnosed by the forensic exhaustion census): the full-architecture 4 GiB run still exhausted at `IncubatorPeano1` — and the census at the wall showed NOT a pinned set (`UNATTRIBUTED` = 1, scratch = 123, `WorkerOwned` = 0, in-flight = 0) but **1467 Idle LBs holding 14106 / 16384 blocks (13384 of them eligible-victim blocks)** plus the anomaly that named the mechanism: **290 LBs claim-`Dumped` yet resident with 2146 blocks**. Everything idle, no workers → the wall was hit BETWEEN iterations, at the single-threaded post-join seams: the commit-barrier mail sweep and the `updateGlobal` / `updateGlobalDirect` / deferred-ancestor drains reloaded recipients (a) with NO pager window open — the planner only drains while a window is registered, so nothing evicted during the seams and residency grew monotonically — and (b) through bare `ensureLoaded`, bypassing the claim word, leaving `Dumped`-but-resident LBs invisible to `pickVictimTwoTier` (eligibility requires claim `Idle`). The fix: (1) the commit sweep — a clean linear walk over `bodies` — gets a dispatch-cursor pager window like a phase; (2) the deposit drains — random-access per-theorem `accessMemory` tree lookups, NO sweep order to register — run under a window over `active` with the cursor PINNED AT 0, the honest Belady origin between iterations (the next use of `active[i]` IS position `i`): the planner keeps the next iteration's head resident and evicts everything else farthest-first while the drains churn; (3) every seam reload goes through the CLAIM-CORRECT DOOR — `claimAndLoadForWork` (new phase id 4, the barrier telemetry bucket; the `DeloadStats` claim-wait arrays widened) → write under `WorkerOwned` → release `Idle` — so `Dumped`-but-resident is impossible by construction, asserted at the door (a successful `Dumped → Busy` claim over a resident arena = a bypassed reload); (4) the planner's prefetch branch skips `!isActive` entries (a window over `bodies` contains long-discharged LBs whose stale `Dumped` claims a load task would otherwise chase into the discharged-assert); (5) the barrier discharge reload uses the same door post-quiesce (its valve a defined no-op with no window). Recipient churn under the pinned window is CORRECT behavior, not a defect — a door-reloaded recipient releases `Idle` and is immediately evictable again; its deposit lives in the arena and rides the raw image. The seam windows close strictly BEFORE the discharge barrier block (disarm → quiesce → …), so they never interleave with the discharge drain's ordering. The only reloads still outside a door are the post-prove reads (visualizer equality nodes, chapter export) — the steward is destroyed there, no pager exists, claim words are meaningless.
+- **Barrier seam windows + claim-correct seam doors** (the SECOND 4 GiB wall, diagnosed by the forensic exhaustion census): the full-architecture 4 GiB run still exhausted at `IncubatorPeano1` — and the census at the wall showed NOT a pinned set (`UNATTRIBUTED` = 1, scratch = 123, `WorkerOwned` = 0, in-flight = 0) but **1467 Idle LBs holding 14106 / 16384 blocks (13384 of them eligible-victim blocks)** plus the anomaly that named the mechanism: **290 LBs claim-`Dumped` yet resident with 2146 blocks**. Everything idle, no workers → the wall was hit BETWEEN iterations, at the single-threaded post-join seams: the commit-barrier mail sweep and the `updateGlobal` / `updateGlobalSingleChapter` / deferred-ancestor drains reloaded recipients (a) with NO pager window open — the planner only drains while a window is registered, so nothing evicted during the seams and residency grew monotonically — and (b) through bare `ensureLoaded`, bypassing the claim word, leaving `Dumped`-but-resident LBs invisible to `pickVictimTwoTier` (eligibility requires claim `Idle`). The fix: (1) the commit sweep — a clean linear walk over `bodies` — gets a dispatch-cursor pager window like a phase; (2) the deposit drains — random-access per-theorem `accessMemory` tree lookups, NO sweep order to register — run under a window over `active` with the cursor PINNED AT 0, the honest Belady origin between iterations (the next use of `active[i]` IS position `i`): the planner keeps the next iteration's head resident and evicts everything else farthest-first while the drains churn; (3) every seam reload goes through the CLAIM-CORRECT DOOR — `claimAndLoadForWork` (new phase id 4, the barrier telemetry bucket; the `DeloadStats` claim-wait arrays widened) → write under `WorkerOwned` → release `Idle` — so `Dumped`-but-resident is impossible by construction, asserted at the door (a successful `Dumped → Busy` claim over a resident arena = a bypassed reload); (4) the planner's prefetch branch skips `!isActive` entries (a window over `bodies` contains long-discharged LBs whose stale `Dumped` claims a load task would otherwise chase into the discharged-assert); (5) the barrier discharge reload uses the same door post-quiesce (its valve a defined no-op with no window). Recipient churn under the pinned window is CORRECT behavior, not a defect — a door-reloaded recipient releases `Idle` and is immediately evictable again; its deposit lives in the arena and rides the raw image. The seam windows close strictly BEFORE the discharge barrier block (disarm → quiesce → …), so they never interleave with the discharge drain's ordering. The only reloads still outside a door are the post-prove reads (visualizer equality nodes, chapter export) — the steward is destroyed there, no pager exists, claim words are meaningless.
 - **Phase-2 windows + barrier head prefetch**: phase 2 opens TWO pager windows PER PASS instead of one frozen one — an EXECUTOR window registering the executor pool's real dispatch atomic (`next` over the flat `execOrder` vector built in task order; duplicates for split parts collapse via the enqueue dedup + claim CAS, and split LBs are ineligible victims anyway), closed at the executor join; then a FINALIZE window over `nextLi` / `toRun`, closed at the finalize join. Redo passes open their own windows over their own vectors, so indices always live in the right space. The frozen `phase2Cursor` (a completion cursor stored only by the finalize — it sat at 0 through the whole hashburst, blinding the steward in the heaviest phase and pushing thousands of reloads inline onto workers) is RETIRED. `DeloadStats`' single-window pairing holds unchanged: the two phase-2 sub-windows are strictly sequential (each closes before the next opens), both reporting under phase id 2. And the barrier gains `MemorySteward::prefetchHead(order, count, directory)` — a one-shot HIGH-lane enqueue of loads for the `Dumped`, still-active LBs among the next iteration's head `[0, min(count, n))`, called at barrier END after the discharge decision with `kAnyWindowGeneration` tasks (deliberately crossing the window boundary — kills the phase-1 cold start every iteration; safe against `dischargedForever` because the barrier's quiesce empties the rings before the discharge loop sets the flag, and inactive heads are skipped at enqueue). Cures (d).
 - **Prefetch budget + teardown discard** (the THIRD 4 GiB wall — the teardown burst): with the seams windowed, the 4 GiB run completed ALL 48 `IncubatorPeano1` bursts — and then exhausted in prove's TEARDOWN: the `[EXHAUSTION]` pool line (16384/16384) printed immediately after the final burst's `dt` line with NO census (the prove-scope guard had already cleared the reporter — its old first act), and none of the epilogue prints (`Prover finished.`, the theorem save, the proof-graph export) had run. The only pool-granting activity in that window is the executor pool draining the FINAL barrier's `prefetchHead` loads: `kAnyWindowGeneration` tasks that execute regardless of window state, warming up to a window-width of head LBs for a next iteration that never comes — with NO window open (the planner cannot plan a single relieving eviction) and NO valve on the executor load path. Two mechanisms close it, both survival-structural: (1) the **prefetch budget** `kPrefetchBudgetBlocks` = `kReserveBlocks / kPrefetchBudgetDivisor` (the design doc's unified-window clause, previously unimplemented) — pending prefetch loads, estimated from `lastRawImageBytes`, are capped below the reserve at BOTH issue sites (`prefetchHead` and the planner's per-pass HIGH-lane enqueues, whose pending load blocks are summed under the mutex symmetrically to the eviction projection), so an executor load is structurally unable to hit the wall — this also bounds the latent MID-RUN burst case (a window-width load burst racing the reserve with no executor-side valve); (2) **teardown discard** — the prove-scope guard's first act is now `discardQueuedIoTasks` (drop every queued-but-unstarted ring task; defined load-shedding, the ring-drop doctrine; in-flight tasks finish under the guard's quiesce). The guard's exhaustion-reporter clear moved to its END (after quiesce + stop), so any future teardown exhaustion prints a full census — `bodies` and the steward both outlive every possible invocation.
 
@@ -2317,14 +2632,14 @@ This tightens — does not replace — the standing kernel rule (in `performElem
 ---
 
 <a id="d-145"></a>
-## D-145 — contradiction discharge defers `updateGlobalDirect` to the post-join drain, closing a parallel-phase cross-LB race (2026-06-26)
+## D-145 — contradiction discharge defers `updateGlobalSingleChapter` to the post-join drain, closing a parallel-phase cross-LB race (2026-06-26)
 
 
-**The bug (user-flagged).** `dischargeContradiction`'s incubator (`primedForContradiction`) branch called `updateGlobalDirect(theorem, coreId)` INLINE. `dischargeContradiction` runs inside `standardProcessing`, which `proveKernel` drives in phase 1 and phase 3 — both parallel work-stealing sweeps over the active LBs. So `updateGlobalDirect`, and the cross-LB writes inside it — `mergeBatchInto(mailOut, this->body.mailOut)` into the ROOT's `mailOut`, and tree-wide `deactivateUnnecessary` — executed on a worker thread while other workers ran: a data race on `root.mailOut` (multiple contradiction workers plus the worker running the root's own `fillMailOut`) and on `isActive` across the tree, a direct [I-28](30_invariants.md#i-28) violation. Every other theorem-emission path (`dischargeToBeProved` non-recursion; the induction auxy promotion via `updateGlobal`) already deferred to the post-join drain — the contradiction path was the lone inline exception (the `updateGlobalDirect` "runs in the serial standardProcessing phase" docstring assumption is false; phases 1/3 are parallel across LBs). A catcher on the inline call over an IncubatorPeano run logged 1026 worker-thread calls (hundreds of distinct thread ids) vs the normal-goal (92) and induction (276) emissions, which all ran on the single drain thread.
+**The bug (user-flagged).** `dischargeContradiction`'s incubator (`primedForContradiction`) branch called `updateGlobalSingleChapter(theorem, coreId)` INLINE. `dischargeContradiction` runs inside `standardProcessing`, which `proveKernel` drives in phase 1 and phase 3 — both parallel work-stealing sweeps over the active LBs. So `updateGlobalSingleChapter`, and the cross-LB writes inside it — `mergeBatchInto(mailOut, this->body.mailOut)` into the ROOT's `mailOut`, and tree-wide `deactivateUnnecessary` — executed on a worker thread while other workers ran: a data race on `root.mailOut` (multiple contradiction workers plus the worker running the root's own `fillMailOut`) and on `isActive` across the tree, a direct [I-28](30_invariants.md#i-28) violation. Every other theorem-emission path (`dischargeToBeProved` non-recursion; the induction auxy promotion via `updateGlobal`) already deferred to the post-join drain — the contradiction path was the lone inline exception (the `updateGlobalSingleChapter` "runs in the serial standardProcessing phase" docstring assumption is false; phases 1/3 are parallel across LBs). A catcher on the inline call over an IncubatorPeano run logged 1026 worker-thread calls (hundreds of distinct thread ids) vs the normal-goal (92) and induction (276) emissions, which all ran on the single drain thread.
 
-**The fix.** Replace the inline call with the same mutex-guarded enqueue `dischargeToBeProved` uses — `updateGlobalDirectTuples.push_back({theorem, coreId})` under `updateGlobalDirectMutex`. The existing post-`pool.join` drain in `proveKernel` then runs `updateGlobalDirect` single-threaded. No new machinery; the contradiction path becomes consistent with the normal-goal and induction paths.
+**The fix.** Replace the inline call with the same mutex-guarded enqueue `dischargeToBeProved` uses — `updateGlobalSingleChapterTuples.push_back({theorem, coreId})` under `updateGlobalSingleChapterMutex`. The existing post-`pool.join` drain in `proveKernel` then runs `updateGlobalSingleChapter` single-threaded. No new machinery; the contradiction path becomes consistent with the normal-goal and induction paths.
 
-**Why timing + semantics hold.** The post-join drain order is the `updateGlobalDirectTuples` drain THEN the [D-76](#d-76) compaction drain, so a deferred contradiction's `recordPendingCompaction` (called inside the now-deferred `updateGlobalDirect`) still queues before the same iteration's compaction drain — the compact-rule broadcast keeps its existing two-iteration latency, and the contradiction-LB latency sensitivity ([D-79](#d-79) / [G-49](50_gotchas.md#g-49)) is not tripped. Emission order becomes deterministic (the drain sorts `updateGlobalDirectTuples`), removing the non-determinism the race introduced. `deactivateUnnecessary` moves from mid-phase to post-join — identical to the normal-goal path's existing behavior. The contradiction LB's own `isActive = false` stays inline (its own state, never the race).
+**Why timing + semantics hold.** The post-join drain order is the `updateGlobalSingleChapterTuples` drain THEN the [D-76](#d-76) compaction drain, so a deferred contradiction's `recordPendingCompaction` (called inside the now-deferred `updateGlobalSingleChapter`) still queues before the same iteration's compaction drain — the compact-rule broadcast keeps its existing two-iteration latency, and the contradiction-LB latency sensitivity ([D-79](#d-79) / [G-49](50_gotchas.md#g-49)) is not tripped. Emission order becomes deterministic (the drain sorts `updateGlobalSingleChapterTuples`), removing the non-determinism the race introduced. `deactivateUnnecessary` moves from mid-phase to post-join — identical to the normal-goal path's existing behavior. The contradiction LB's own `isActive = false` stays inline (its own state, never the race).
 
 **Gate.** `main.py` + `verifier.py` (race fix — the pre-fix output was non-deterministic, so the criterion is the proved-theorem SET in `theorems.txt` unchanged + verifier 0, not byte-identical ordering): **PASSED** — the cold-mail race-blocker that reliably aborted IncubatorPeano1's first burst on the pre-fix code (per the branch handoff) no longer reproduces; full `main.py` completes (1625 s); `verifier.py` reports 131881 checks / 0 failures (all proof graphs airtight); 46 main-path theorems incl. the Gauss summation; `--unit-tests` green. (`theorems.txt` is gitignored — no committed byte-baseline; the change is a semantic no-op on the proved-theorem set, deferring emission without skipping it. A two-run determinism A/B is the recommended gold-standard follow-up.) See [I-78](30_invariants.md#i-78), [I-28](30_invariants.md#i-28).
 
@@ -2382,7 +2697,7 @@ This tightens — does not replace — the standing kernel rule (in `performElem
 
 **Three behaviour-preservation rules (output stays byte-identical to the push model).**
 1. **Load-time broadcast → store once.** `broadcastTheorems` (previous-batch externals + proved-theorem rules) and the buildGrid startup dispatch reached ALL LBs, not just descendants. They now store the seed batch once in the root's log (descendants pull it on the normal walk) and self-inject the root's `mailIn` (the root has no ancestor to pull from). The user chose to extend "saved once" to this load-time content too.
-2. **D-76 two-cycle latency preserved.** The compact-implication drain and the `updateGlobalDirect` / `updateGlobal` `"theorem"`-origin sends run AFTER the commit barrier, so they append to the root's `mailOut` and ride the NEXT barrier's commit — the same one-iteration-later (net two-cycle) delivery the old post-`smashMail` `sendMail` had ([G-49](50_gotchas.md#g-49) contradiction-LB latency sensitivity unchanged). The per-step delta stays one cycle.
+2. **D-76 two-cycle latency preserved.** The compact-implication drain and the `updateGlobalSingleChapter` / `updateGlobal` `"theorem"`-origin sends run AFTER the commit barrier, so they append to the root's `mailOut` and ride the NEXT barrier's commit — the same one-iteration-later (net two-cycle) delivery the old post-`smashMail` `sendMail` had ([G-49](50_gotchas.md#g-49) contradiction-LB latency sensitivity unchanged). The per-step delta stays one cycle.
 3. **Field coverage.** Only `statements` + `exprOriginMap` ever reached `mailIn` (the old `smashMail` dropped `expandedImplications`); the pull merges exactly those two via `mergeBatchInto`. `disintegrationSignals` is never written to `mailOut` (internal-channel only), so it is naturally untouched. Copying the whole `Mail` would newly deliver `expandedImplications` — a forbidden semantics change (Rule 8).
 
 **Race-safety (heap prototype, [I-94](30_invariants.md#i-94)).** The commit barrier runs single-threaded at the `proveKernel` post-join seam (where `smashMail` was), so the logs are frozen during the parallel phase-1 sweep; the pull does concurrent reads of the frozen `batches` map plus disjoint per-recipient `cursor` writes, with no insert/rehash (every key is pre-created at grid build), so it is race-free by the C++ standard. The reverted statified mail trial's data race (the working note `mutex.md`) lived in the cold-blob / `PagedVector` read path, which the heap prototype does not have — a statification-phase concern, not the prototype's (user-confirmed: proceed parallel, no mutex).
@@ -2757,7 +3072,7 @@ Because `ColdHashMap` / `ColdMultiMap` embed a `ColdHashSet`, this one swap take
 ## D-153 — one `ColdStringTable` per interner space: append-only bytes on the LB's arena, stable ids, derived probe-only find-index, canonical lengths+bytes deload image (2026-06-12)
 
 
-**The choice.** [`memory_infra/cold_string_table.hpp`](../GL_Quick_VS/GL_Quick/src/memory_infra/cold_string_table.hpp) / `.cpp` replaces each interner's heap pair (`std::vector<std::string> idTo*` + `std::unordered_map<std::string,id> *ToId`) with three parts: append-only string bytes bump-allocated on the LB's arena (a string never straddles a block — `LbArena::alloc` pads to the next boundary, deterministically reproduced at reload, and asserts an oversize string against the block size); an `ArenaVector<ColdStringLocation>` id → (offset, len) index (id 0 reserved, mirroring the interners' slot 0); and a derived open-addressing find-index (FNV-1a 64 `hashSpan`, linear probing, ids only) that is never dumped, never an input to the deload dirty flag, and rebuilt deterministically at reload. PER-INTERNER tables, not one shared heap — `destroyGrid` resets every space except `lbStateInterner`, and selective reset needs separate tables. Deload = two GLDL tags per table (lengths int32 in id order + concatenated bytes — pure content, padding invisible); `bulkLoad` re-bumps in id order with the same padding rules, so every location and id reproduces exactly. `copyFrom` re-interns in id order (the CE clone path); `resetToFresh` empties the table — the byte storage becomes arena holes the copying compaction reclaims — and invalidates all ids wholesale.
+**The choice.** [`memory_infra/cold_string_table.hpp`](../GL_Quick_VS/GL_Quick/src/memory_infra/cold_string_table.hpp) / `.cpp` replaces each interner's heap pair (`std::vector<std::string> idTo*` + `std::unordered_map<std::string,id> *ToId`) with three parts: append-only string bytes bump-allocated on the LB's arena (a string never straddles a block — `LbArena::alloc` pads to the next boundary, deterministically reproduced at reload, and asserts an oversize string against the block size); an `ArenaVector<ColdStringLocation>` id → (offset, len) index (id 0 reserved, mirroring the interners' slot 0); and a derived open-addressing find-index (FNV-1a 64 `hashSpan`, linear probing, ids only; byte keys probe with `coldKeyHash` since [D-423](#d-423)) that is never dumped, never an input to the deload dirty flag, and rebuilt deterministically at reload. PER-INTERNER tables, not one shared heap — `destroyGrid` resets every space except `lbStateInterner`, and selective reset needs separate tables. Deload = two GLDL tags per table (lengths int32 in id order + concatenated bytes — pure content, padding invisible); `bulkLoad` re-bumps in id order with the same padding rules, so every location and id reproduces exactly. `copyFrom` re-interns in id order (the CE clone path); `resetToFresh` empties the table — the byte storage becomes arena holes the copying compaction reclaims — and invalidates all ids wholesale.
 
 **Heap carve-out (tier-1 bookkeeping rule).** The find-index is `std::vector` bookkeeping — the statification invariant binds element PAYLOADS; `ArenaVector` is const-access by design and open addressing needs in-place slot writes, so the probe index stays on the heap. The container-batch tier owns its migration. (The location index and the string bytes themselves are already on the arena.)
 
@@ -2843,7 +3158,7 @@ The old branch instead probed `intKnownStatements`' registered bit — a SUPERSE
 
 **The choice (user-designed: "when nothing to load/evict, reshuffle blocks still in RAM into logical order"; scope confirmed per-LB).** The bump arena frees only its tail (`popTo`), so holes left by `erase` / `clear` / discharge accumulate. `LbMemory::reshuffle` is the copying (semi-space / Cheney-style) collector that reclaims them — an in-RAM round trip through the same canonical element stream the deload uses: (1) capture each container's logical content (`appendSpanBytes`) and element count into heap buffers, in tag order; (2) `release` every container and `manager.releaseAll` (return all blocks); (3) rebuild each container from its buffer (`bulkAppendBytes`), re-bumping elements and the spine densely onto a fresh consecutive arena. The emptied blocks return to the global pool — relief tail-pop alone could never produce. `LbMemory::reshuffle` is the ONLY legal entry point; the transient heap spike is the live content size (the semi-space cost).
 
-**The gate (user-specified: "number of deleted chunks AND the percentage of those chunks relative to memory — real, not virtual").** `steward::needsReshuffle(reclaimableBytes, spanBytes, blockBytes)`: BOTH must hold — `reclaimableBytes >= blockBytes` (absolute floor: at least one whole block reclaimable) AND `reclaimableBytes * 8 >= spanBytes` (the holes are ≥ 1/8 of the arena's used span). `reclaimableBytes` is `LbArena::usedBytes` minus the containers' live content (`LbMemory::liveBytes`); `spanBytes` is `usedBytes`. The dual AND is the Redis active-defrag pattern (absolute bytes floor AND percentage threshold); below the gate "no reshuffle needed" is the defined result. Pure function of deterministic byte counts, evaluated at deterministic points only.
+**The gate (user-specified: "number of deleted chunks AND the percentage of those chunks relative to memory — real, not virtual").** *(Amended by [D-420](#d-420): on the paged arena the reclaimable bytes are the parked free pages and the span the held blocks; the cursor-based figures below were zero for paged arenas, so the gate never fired.)* `steward::needsReshuffle(reclaimableBytes, spanBytes, blockBytes)`: BOTH must hold — `reclaimableBytes >= blockBytes` (absolute floor: at least one whole block reclaimable) AND `reclaimableBytes * 8 >= spanBytes` (the holes are ≥ 1/8 of the arena's used span). `reclaimableBytes` is `LbArena::usedBytes` minus the containers' live content (`LbMemory::liveBytes`); `spanBytes` is `usedBytes`. The dual AND is the Redis active-defrag pattern (absolute bytes floor AND percentage threshold); below the gate "no reshuffle needed" is the defined result. Pure function of deterministic byte counts, evaluated at deterministic points only.
 
 **Determinism.** Reshuffle is the one operation I-107 permits to reassign offsets. It runs under exclusive LB access (steward claim or single-threaded barrier), reassigns every offset densely, and leaves logical content, element order, string ids, and the dirty state untouched (the saved dirty state is restored — a compaction must never force a deload rewrite). Physical layout and offset values stay unobservable, so reshuffle timing may vary run-to-run without any observable deviation.
 
@@ -2919,7 +3234,7 @@ The old branch instead probed `intKnownStatements`' registered bit — a SUPERSE
 ## D-155 — deload is the LAST act of `proveKernel`, after every post-join drain; reload at three enumerated touch points (2026-06-11)
 
 
-**The choice.** The unconditional per-iteration deload sweep runs at the very END of `proveKernel` — after the phase-3 join AND after every post-join drain (`activateZeroCondition`, `updateGlobal` / `updateGlobalDirect`, the deferred-compaction flush) — serially over the iteration's `active` snapshot, followed by the accumulated-manifest rewrite. Reload happens at exactly three touch points: `performElemPhase1` entry (before the Rule-14 dump trap, which reads the containers), the post-prove visualizer equality-node read, and implicitly nowhere else — any other touch asserts (I-111).
+**The choice.** The unconditional per-iteration deload sweep runs at the very END of `proveKernel` — after the phase-3 join AND after every post-join drain (`activateZeroCondition`, `updateGlobal` / `updateGlobalSingleChapter`, the deferred-compaction flush) — serially over the iteration's `active` snapshot, followed by the accumulated-manifest rewrite. Reload happens at exactly three touch points: `performElemPhase1` entry (before the Rule-14 dump trap, which reads the containers), the post-prove visualizer equality-node read, and implicitly nowhere else — any other touch asserts (I-111).
 
 **Why not inside `performElemPhase3` / the phase-3 sweep.** Two reasons found on contact with the code: (a) the CE filter drives the phase functions directly on thousands of single-use clone LBs that must never be dumped (the CE path never enters `proveKernel`, so kernel placement excludes them by construction); (b) the phase-3 sweep is parallel and is followed by post-join drains that may write to LBs (`activateZeroCondition` on induction blocks) — a deload inside the sweep would let a later drain touch a cold LB. End-of-kernel placement makes every same-iteration consumer resident by construction and shrinks the reload list to the genuine between-iteration/post-prove readers.
 
@@ -3205,7 +3520,7 @@ See [D-72](#d-72) / [D-73](#d-73) (the validity-filter insert sites, now id-only
 
 **CE detection moves off the insertion gate.** The former `addExprToMemoryBlock` gate (`contradictionIndex >= 0`, which discarded CE fired heads) is removed; CE fired heads now enter `encodedStatements` like any derived statement. Detection is the same two-stage mechanism the incubator / induction LBs use: `burstDeactivates` (a CE arm, read-only) stops the single burst the instant a refuting head fires, and `dischargeContradiction` (a CE branch) records the refutation into the conjecture's `contradictionTable` slot and deactivates the clone. This reverses the CE carve-out of [D-122](#d-122) — now safe because each CE LB is **single-owner** (the I-66 phase-2 read-only rule binds only LBs split across threads, which a CE LB never is).
 
-**Why it is race-free.** Each conjecture is processed by exactly one worker on a private clone (own `nameMap` / `keyArena` / mailboxes); `cloneFactsTemplate` only reads the shared template; the sole cross-thread write is `contradictionTable[i].successful` to a disjoint per-conjecture index (the vector is sized before the pool, never resized). CE clones are never `primedForContradiction` / `isPartOfRecursion`, so `dischargeContradiction`'s shared-write branches (`updateGlobalDirect`, `inductionMemoryBlocks`) never fire for them.
+**Why it is race-free.** Each conjecture is processed by exactly one worker on a private clone (own `nameMap` / `keyArena` / mailboxes); `cloneFactsTemplate` only reads the shared template; the sole cross-thread write is `contradictionTable[i].successful` to a disjoint per-conjecture index (the vector is sized before the pool, never resized). CE clones are never `primedForContradiction` / `isPartOfRecursion`, so `dischargeContradiction`'s shared-write branches (`updateGlobalSingleChapter`, `inductionMemoryBlocks`) never fire for them.
 
 **Why the clone is cheap.** `loadFactsForCEFiltering` adds every fact through the status-4 statement path, which never calls `addToHashMemory` and never touches `keyArena`, so the template carries no arena-backed hash keys. `cloneFactsTemplate` is therefore a plain deep value-copy of the fact containers + `nameMap` (all pure value types) with everything else reset — no `KeyArena` interior-pointer surgery, the hazard a whole-`Memory` copy would hit.
 
@@ -3375,7 +3690,7 @@ See [D-72](#d-72) / [D-73](#d-73) (the validity-filter insert sites, now id-only
 
 **Why.** The split dedicates N executor cores to a heavy LB *inside phase 2*. That is only expressible if phase 2 is its own sweep: in the old per-LB loop every core is already busy running a different LB's full step, so there is no spare core to lend a heavy LB. Barriering the phases frees phase 2 to be the place where one LB's hashburst fans out across cores while the rest of the grid waits at the join. Phases 1 and 3 stay plain across-LB work-stealing.
 
-**Why byte-identical (the I-28 mechanism).** The reorder from `A.p1 A.p2 A.p3 B.p1 B.p2 B.p3 …` (interleaved across cores) to `all .p1 | all .p2 | all .p3` changes nothing because no phase observes another LB's intra-cycle state: [I-28](30_invariants.md#i-28) forbids cross-LB writes during the parallel phase, and every cross-LB effect is deferred — cross-LB mail rides `sendMail → boxes → smashMail` to the *next* cycle, and the class-level collectors (`inductionMemoryBlocks`, `updateGlobalTuples`, `updateGlobalDirectTuples`, `pendingCompactionQueue`) are drained single-threaded **in content-sorted order** after the final join. Same active set + same firing set + sorted drains ⇒ identical output regardless of phase interleaving. The once-at-cycle-start active snapshot matches the old `if(!b->isActive) continue` admission: intra-cycle deactivation only flips active→inactive (a closing LB's discharge), and a parked child's first activation (`activateZeroCondition` on the born-parked induction zero-condition block) lands in the post-join drain (I-28), so an LB active when the cycle starts is exactly an LB the old loop would have run.
+**Why byte-identical (the I-28 mechanism).** The reorder from `A.p1 A.p2 A.p3 B.p1 B.p2 B.p3 …` (interleaved across cores) to `all .p1 | all .p2 | all .p3` changes nothing because no phase observes another LB's intra-cycle state: [I-28](30_invariants.md#i-28) forbids cross-LB writes during the parallel phase, and every cross-LB effect is deferred — cross-LB mail rides `sendMail → boxes → smashMail` to the *next* cycle, and the class-level collectors (`inductionMemoryBlocks`, `updateGlobalTuples`, `updateGlobalSingleChapterTuples`, `pendingCompactionQueue`) are drained single-threaded **in content-sorted order** after the final join. Same active set + same firing set + sorted drains ⇒ identical output regardless of phase interleaving. The once-at-cycle-start active snapshot matches the old `if(!b->isActive) continue` admission: intra-cycle deactivation only flips active→inactive (a closing LB's discharge), and a parked child's first activation (`activateZeroCondition` on the born-parked induction zero-condition block) lands in the post-join drain (I-28), so an LB active when the cycle starts is exactly an LB the old loop would have run.
 
 **EARLY-EXIT removal.** The [D-123](#d-123) deferral keeps `body.isActive` true through phase 2, so the `splitCount == 1 && !body.isActive` EARLY-EXIT trap could never fire — it was dead. Removed in full (the `dumpEarlyExit` function, its `earlyExitMtx` / `earlyExitCount` state, the declaration, and the call site) rather than left as a dead branch (Rule 14 change, user-approved). The dump's two surviving traps bracket the live path: ENTRY at the top of phase 1, EXIT at the bottom of phase 3.
 
@@ -3483,7 +3798,7 @@ See [D-72](#d-72) / [D-73](#d-73) (the validity-filter insert sites, now id-only
 
 **Drop in both, but the fill differs (provenance).** Admission values are metadata, so admission re-keys directly (drop K, insert K'). Rejected values are real disintegration products with `disintegration` origins, so rejection kept drop+mail here: it dropped K and mailed the rewritten compound; the kernel regenerated `rejectedMap[K']` with proper provenance. Neither hook writes the other side's map directly ([I-37](30_invariants.md#i-37)). *Superseded for the undemanded case by [D-308](#d-308): the rejected hooks now re-key in place through the kernel writers with an `equality1` row per rewritten product, and keep drop + mail only for a park whose rewritten product is demanded right now.*
 
-**Repetitions allowed.** The arg-equalization filter ([I-36](30_invariants.md#i-36)) on the admission key path is removed: a single representative can collapse two slots, and both sides collapse identically, so positional-collision preservation is no longer load-bearing. (The integration-side mirror still has its filter; integration is a later task.)
+**Repetitions allowed during canonical rewriting.** The arg-equalization filter ([I-36](30_invariants.md#i-36)) on the admission key rewrite path is removed: a single representative can collapse two slots, and both sides collapse identically, so positional-collision preservation is no longer load-bearing. The integration-side rewrite filter is also removed by the mirror described below. This decision concerned rewriting existing keys. Current creation-time eligibility is documented under [parked existences and normal replay](10_pipeline/04_prover.md#parked-existences-and-normal-replay).
 
 **Supersedes — algebra path.** [D-57](#d-57) (enumerate + additive admission insert), [D-62](#d-62) / [I-40](30_invariants.md#i-40) (post-class admission sweep), and the `int_`/`it_`-only canon of [D-63](#d-63) (rejected).
 
@@ -3760,7 +4075,7 @@ The two changes are paired: deferring the class-driven cleanup gives the rewrite
 
 - `addExprToMemoryBlockKernel` deleted; its body inlined into flat `addExprToMemoryBlock`'s stmts loop. `addStatement` survives as the container-insert + equality-routing helper, called from the inlined kernel.
 - New `applyEquiClasses(Memory&)` — one pass per step, iterates the per-step delta-class set (`Memory::changedClassesThisStep`, populated by `updateEquivalenceClasses` on every merge, stored as `(validityName, EquivalenceClass)` value copies to survive subsequent same-scope merges) against every comparable `encodedStatement` (same-NS / strict-ancestor / strict-descendant via one comparability check). Calls the four admission/rejected helpers per delta class. Per-class start-index tracker iterates the fixpoint until `encodedStatements` stabilises.
-- New `dischargeToBeProved(Memory&, int coreId, Mail& internalMailOut)` — one pass per step over `localEncodedStatementsDelta`. Three branches: induction-recursion proven, non-recursion proven (`updateGlobalDirectTuples`), OR-integration / NotOrScope (parent-scope emission via the caller-supplied `internalMailOut` parameter — see [D-90](#d-90) for phase routing).
+- New `dischargeToBeProved(Memory&, int coreId, Mail& internalMailOut)` — one pass per step over `localEncodedStatementsDelta`. Three branches: induction-recursion proven, non-recursion proven (`updateGlobalSingleChapterTuples`), OR-integration / NotOrScope (parent-scope emission via the caller-supplied `internalMailOut` parameter — see [D-90](#d-90) for phase routing).
 - New `fillMailOut(Memory&)` — one pass per step over `localEncodedStatementsDelta`. For each main-validity, `allowedForMail`-passing entry, copies levels from `statementLevelsMap` into `mailOut.statements` and origin lines from `exprOriginMap` into `mailOut.exprOriginMap`. Subsumes the seven scattered pre-refactor mailOut writes (addStatement, applyEquivalenceClass, addEquality original + mirror, addNegatedEquality original + mirror, anchor handling). Single-writer policy enforced by [I-64](30_invariants.md#i-64).
 - Hashburst rule-firing output at `memory.cpp` `checkLocalEncodedMemoryStatic` deposits into `body.sameIterationInternalMail`. The fixpoint loop's `changed` detection reads `sameIterationInternalMail.statements.size`. The historical parallel direct-`mailOut` deposit was retired in the consolidation follow-up — see [D-90](#d-90).
 
@@ -3798,7 +4113,7 @@ The single-writer-to-`mailOut` policy and the pre-fixpoint single-delta-clear po
  - `standardProcessing` signature widened from `(Memory&, Mail&, int status, int coreId)` to `(Memory&, Mail*, Mail&, Mail&, int)`. Body restructured around a per-mail `absorb` lambda; mail clears moved to between drain and apply (so discharge writes to `internalMailOut` survive even when it aliases `internalMailIn`).
  - `dischargeToBeProved` signature widened from `(Memory&, int)` to `(Memory&, int, Mail&)`. The two OR-integration / NotOrScope sites write to the `internalMailOut` parameter instead of `memoryBlock.sameIterationInternalMail` directly.
 - `prover.cpp`:
- - 4 cross-iter direct writers retargeted from `sameIter` to `nextIter`: `addExprToMemoryBlock` vacuous-truth path (×1), `updateGlobalDirect` siblings (×3).
+ - 4 cross-iter direct writers retargeted from `sameIter` to `nextIter`: `addExprToMemoryBlock` vacuous-truth path (×1), `updateGlobalSingleChapter` siblings (×3).
  - Pre-hashburst inline mailIn-only absorb block (~100 lines) replaced by a single pre-burst `standardProcessing` call.
  - Post-hashburst inline drain + apply + discharge + fillMailOut block replaced by a single post-burst `standardProcessing` call (commit 4 alias variant, commit 5 channel-split variant).
  - Three delta clears relocated from post-fixpoint (with gate) to pre-fixpoint (no gate).
@@ -3941,7 +4256,7 @@ The bug surfaced precisely at `__contradiction__(=[10,11])` (ref's chapter 0 of 
  - After `checkLocalEncodedMemoryStatic(req, body, coreId)` in the per-request `for (r...)` loop, add `if (!body.isActive) break;` so the burst exits mid-iteration when the predicate fires (instead of finishing the remaining requests in this fixpoint round).
  - Convert the existing EARLY-EXIT `return body;` at the top of the outer `while (changed)` loop into `break;`. The dump call site is unchanged (Rule 14: dump format / sections / target predicate are sacred); only the post-dump control flow changes from "skip rest of step" to "continue to post-burst standardProcessing absorb". This is what makes the RT-opt correct: the mid-burst predicate is **deferred-broadcast** — it only flips `isActive` and does no broadcasts itself, so the post-burst absorb must still run to do the actual `updateGlobalTuples` push / `addOrigin` / `toBeProved` erase / `contradictionTable` mark via `addExprToMemoryBlock`'s own four matching conditions (which see the deposited mail entry and re-fire idempotently).
 
-**Why predicate-only (no inline broadcast).** Replicating ref's full deactivation bookkeeping inside the predicate would require porting four distinct branches (induction-recursion goal closure, isProved + allLevelsInvolved theorem emission, vacuous-truth `addExprToMemoryBlock` re-entry, contradiction-theorem `updateGlobalDirect`) along with their mutex usage and `inductionMemoryBlocks` queueing. The predicate-only design keeps the new code minimal — the absorb already does the same work via the same conditions, so the only marginal cost of the deferred bookkeeping is the absorb iteration over the sameIter deposits (which would happen anyway).
+**Why predicate-only (no inline broadcast).** Replicating ref's full deactivation bookkeeping inside the predicate would require porting four distinct branches (induction-recursion goal closure, isProved + allLevelsInvolved theorem emission, vacuous-truth `addExprToMemoryBlock` re-entry, contradiction-theorem `updateGlobalSingleChapter`) along with their mutex usage and `inductionMemoryBlocks` queueing. The predicate-only design keeps the new code minimal — the absorb already does the same work via the same conditions, so the only marginal cost of the deferred bookkeeping is the absorb iteration over the sameIter deposits (which would happen anyway).
 
 **Why the EARLY-EXIT semantics change (return -> break).** First-cut implementation kept the existing `return body;` and saw a regression: 1035 theorems collapsed to 416 with a 533 s runtime. Root cause: with `return body;`, the post-burst `standardProcessing` call is skipped entirely, the mail deposits in `sameIterationInternalMail` are orphaned, `addExprToMemoryBlock` never fires on them, and the deferred broadcasts never happen — so downstream LBs never observe the proved theorems. Converting to `break;` lets the post-burst absorb still run on the (smaller-than-full-burst) mail set; broadcasts fire, theorem coverage restored, RT savings retained.
 
@@ -4318,7 +4633,7 @@ The compact-form `(implication<N>[…])` deposited into `mailOut.statements` now
 ## D-78 — Delete the `Mail::implications` tuple channel (2026-05-18,, commit )
 
 
-**What.** Remove the `Mail::implications` struct member entirely (`set<tuple<chain, head, args, levels, theorem>>` on `Memory::mailIn` / `Memory::mailOut` / `Memory::sameIterationInternalMail`); remove every producer site (the eight `updateGlobalDirect`/`updateGlobal` `mailOut.implications.insert` sites; the `addExprToMemoryBlock` recovered-implication re-broadcast; the load-time `broadcastTheorems` push; the `smashMail` merge; the `sendMail` dst.implications insert + the empty-channel early-out term; the `destroyMailboxes` clear; the per-burst clears in `performElementaryLogicalStep`); update the hashburst dump (Rule 14 explicit user approval) to drop the three `.implications` sub-sections in mailIn/mailOut/sameIterationInternalMail dumps.
+**What.** Remove the `Mail::implications` struct member entirely (`set<tuple<chain, head, args, levels, theorem>>` on `Memory::mailIn` / `Memory::mailOut` / `Memory::sameIterationInternalMail`); remove every producer site (the eight `updateGlobalSingleChapter`/`updateGlobal` `mailOut.implications.insert` sites; the `addExprToMemoryBlock` recovered-implication re-broadcast; the load-time `broadcastTheorems` push; the `smashMail` merge; the `sendMail` dst.implications insert + the empty-channel early-out term; the `destroyMailboxes` clear; the per-burst clears in `performElementaryLogicalStep`); update the hashburst dump (Rule 14 explicit user approval) to drop the three `.implications` sub-sections in mailIn/mailOut/sameIterationInternalMail dumps.
 
 **Why.** Implications now travel exclusively as the compact `(implication<N>[…])` form via `Mail::statements`, deposited by the D-76 deferred-compaction drain (single-threaded after `pool.join`) and recovered receiver-side via `status=3` disintegration. The tuple channel was redundant with the compact-form channel, and removing it eliminates one of two parallel routing systems for the same logical content. The user's design view (2026-05-20): the implications channel was carrying the head of an implication whose antecedent is the receiver's own scope predicate — that is logically a *statement* arriving at the receiver, not an implication-still-needing-resolution, and the right channel for it is `Mail::statements`.
 
@@ -4332,14 +4647,14 @@ The compact-form `(implication<N>[…])` deposited into `mailOut.statements` now
 ## D-83 — Compact-form deposits at the two formerly-backup-less producer sites (2026-05-18,, commit )
 
 
-**What.** Two producer sites on main HEAD pushed onto `mailOut.implications` directly, without the paired `recordPendingCompaction` that D-76 added at the eight `updateGlobalDirect`/`updateGlobal` broadcast sites:
+**What.** Two producer sites on main HEAD pushed onto `mailOut.implications` directly, without the paired `recordPendingCompaction` that D-76 added at the eight `updateGlobalSingleChapter`/`updateGlobal` broadcast sites:
 
 1. The load-time `broadcastTheorems` push that ships externally-provided theorems into the grid before iteration begins.
 2. The `addExprToMemoryBlock` recovered-implication re-broadcast — when a disintegration produces a new implication, the receiver-side path re-broadcasts the recovered implication to its descendants.
 
 This entry adds a paired `recordPendingCompaction` (or, for the load-time path, an inline compact-form deposit if outside the deferred-drain context) at each site. Without these, deleting `Mail::implications` ([D-78](#d-78)) would silently drop implications produced at these two sites.
 
-**Why.** Required for [D-78](#d-78) to be safe — the deletion presupposes every producer of `Mail::implications` has an equivalent compact-form deposit on `Mail::statements`. The pre-D-76 audit identified the eight broadcast sites; these two were missed because they were not in `updateGlobalDirect`/`updateGlobal`. The entry restores parity.
+**Why.** Required for [D-78](#d-78) to be safe — the deletion presupposes every producer of `Mail::implications` has an equivalent compact-form deposit on `Mail::statements`. The pre-D-76 audit identified the eight broadcast sites; these two were missed because they were not in `updateGlobalSingleChapter`/`updateGlobal`. The entry restores parity.
 
 **Code.** `prover.cpp::broadcastTheorems` (load-time deposit). `prover.cpp::addExprToMemoryBlock` (re-broadcast deposit, in the `imps` loop). Both flagged with `// ASIC 0.1 reshuffle: compact-form deposit backup for the deleted Mail::implications channel`.
 
@@ -4390,7 +4705,7 @@ All three are emptied at the start of the absorb block (`workingMemory = HashMem
 <a id="d-76"></a>
 ## D-76 — Compile every mail-bound implication to compact form and deposit it as a mail expression (2026-05-17)
 
-> **🔴 CONFIRMED ROOT CAUSE (2026-05-17, follow-up session) — UNSYNCHRONIZED PARALLEL-PHASE INVOCATION (data race). Supersedes the sub-key-conflation and negation-drop theories below (kept un-deleted per the annotate-don't-erase convention).** Two fresh full `main.py` runs with a per-call compaction trace localized it. `updateGlobalDirect` (which now calls `compileImplicationToCompact`) is reached by **two** paths: the serial post-`pool.join` broadcast drain in `runIterationForOneLB`, **and** `addExprToMemoryBlock` (the `coreId`-parameterized per-worker function — parallel proof phase, its own doxygen cites [I-28](30_invariants.md#i-28)) which calls `updateGlobalDirect(theorem, coreId)` (`prover.cpp`). The wrapper doxygen's premise *"runs only on the single-threaded post-join broadcast drain... deterministic"* is **false**. On the parallel path, worker threads call `compileImplicationToCompact` → `compileCoreExpressionMapCore` / `excludeRepetitions`, mutating shared `implCounter` (plain `int`, `++`/`--`), `compiledExpressions` and `repetitionExclusionMap` (`std::map`) with **no lock** — `updateGlobalDirect`'s `theoremListMutex` scopes only the theorem-list block; the compile functions have zero synchronization. Direct (non-inferred) evidence: the saved trace contains torn/fused lines (multiple records interleaved on one physical line — impossible without simultaneous `ofstream` writes; 15–19 of 1337 lines per run) and impossible shared-field values (`keyNeg` 811/1830 for two-element keys, from a concurrently-clobbered member). Effect: order-dependent dedup collapse — 16 distinct-implication→one-name collisions per run, distinct `implication<N>` 1359 vs 1361, verifier 10120 vs 10122 — while `theorems.txt` is byte-identical (42) because the proof machinery itself is properly synchronized and only the additively-deposited compaction is not. This **violates [I-28](30_invariants.md#i-28)**. The "negation overlooked" hypothesis is disproved (0 pure-negation-drop collisions; `makeNormalizedEncodedKey` correctly emits a per-constituent negation bit). The "`excludeRepetitions` partial-sub-key conflation" framing is a *symptom* of the race, not a single-threaded key-design flaw. **FIX APPLIED (Option A, user-approved, same session).** The eight broadcast sites now call `recordPendingCompaction` (cheap mutex-guarded enqueue into `pendingCompactionQueue`, no global compile state touched); a single-threaded pass after `pool.join` sorts the queue and performs `compileImplicationToCompact` + the compact / `compilation`-origin deposit, flushed per originating core via `sendMail`. Single-threaded sorted allocation is deterministic and injective and satisfies [I-28](30_invariants.md#i-28). Diagnostic trap removed; unit guards added (`compileimpltocompact_negation_is_injective`, `recordpendingcompaction_appends_under_mutex`; 507/507 pass). The separate ~22 GB incubator memory-expansion concern is unchanged in volume (work deferred, not added) and did not reproduce in the verification runs. **VERIFIED (2026-05-17): determinism PASSED.** Two fresh full `main.py` runs on the fixed build are byte-identical: `theorems.txt` (42 — identical to pre-fix, no proof loss), `GL_binary_shared.json`, `hashburst_trace.txt`, and every verifier count (`operator registry consistency` 1397, 10125 / 109704 total, 0 failures both runs); distinct `implication<N>` is stable at **1364** both runs (vs the pre-fix non-deterministic 1359 / 1361 — 1364 is the correct *injective* count, higher because the race no longer collapses distinct implications). Every original smoking-gun symptom now reproduces byte-for-byte.
+> **🔴 CONFIRMED ROOT CAUSE (2026-05-17, follow-up session) — UNSYNCHRONIZED PARALLEL-PHASE INVOCATION (data race). Supersedes the sub-key-conflation and negation-drop theories below (kept un-deleted per the annotate-don't-erase convention).** Two fresh full `main.py` runs with a per-call compaction trace localized it. `updateGlobalSingleChapter` (which now calls `compileImplicationToCompact`) is reached by **two** paths: the serial post-`pool.join` broadcast drain in `runIterationForOneLB`, **and** `addExprToMemoryBlock` (the `coreId`-parameterized per-worker function — parallel proof phase, its own doxygen cites [I-28](30_invariants.md#i-28)) which calls `updateGlobalSingleChapter(theorem, coreId)` (`prover.cpp`). The wrapper doxygen's premise *"runs only on the single-threaded post-join broadcast drain... deterministic"* is **false**. On the parallel path, worker threads call `compileImplicationToCompact` → `compileCoreExpressionMapCore` / `excludeRepetitions`, mutating shared `implCounter` (plain `int`, `++`/`--`), `compiledExpressions` and `repetitionExclusionMap` (`std::map`) with **no lock** — `updateGlobalSingleChapter`'s `theoremListMutex` scopes only the theorem-list block; the compile functions have zero synchronization. Direct (non-inferred) evidence: the saved trace contains torn/fused lines (multiple records interleaved on one physical line — impossible without simultaneous `ofstream` writes; 15–19 of 1337 lines per run) and impossible shared-field values (`keyNeg` 811/1830 for two-element keys, from a concurrently-clobbered member). Effect: order-dependent dedup collapse — 16 distinct-implication→one-name collisions per run, distinct `implication<N>` 1359 vs 1361, verifier 10120 vs 10122 — while `theorems.txt` is byte-identical (42) because the proof machinery itself is properly synchronized and only the additively-deposited compaction is not. This **violates [I-28](30_invariants.md#i-28)**. The "negation overlooked" hypothesis is disproved (0 pure-negation-drop collisions; `makeNormalizedEncodedKey` correctly emits a per-constituent negation bit). The "`excludeRepetitions` partial-sub-key conflation" framing is a *symptom* of the race, not a single-threaded key-design flaw. **FIX APPLIED (Option A, user-approved, same session).** The eight broadcast sites now call `recordPendingCompaction` (cheap mutex-guarded enqueue into `pendingCompactionQueue`, no global compile state touched); a single-threaded pass after `pool.join` sorts the queue and performs `compileImplicationToCompact` + the compact / `compilation`-origin deposit, flushed per originating core via `sendMail`. Single-threaded sorted allocation is deterministic and injective and satisfies [I-28](30_invariants.md#i-28). Diagnostic trap removed; unit guards added (`compileimpltocompact_negation_is_injective`, `recordpendingcompaction_appends_under_mutex`; 507/507 pass). The separate ~22 GB incubator memory-expansion concern is unchanged in volume (work deferred, not added) and did not reproduce in the verification runs. **VERIFIED (2026-05-17): determinism PASSED.** Two fresh full `main.py` runs on the fixed build are byte-identical: `theorems.txt` (42 — identical to pre-fix, no proof loss), `GL_binary_shared.json`, `hashburst_trace.txt`, and every verifier count (`operator registry consistency` 1397, 10125 / 109704 total, 0 failures both runs); distinct `implication<N>` is stable at **1364** both runs (vs the pre-fix non-deterministic 1359 / 1361 — 1364 is the correct *injective* count, higher because the race no longer collapses distinct implications). Every original smoking-gun symptom now reproduces byte-for-byte.
 
 > **🔴 STATUS — REFUTED BY DoD VERIFICATION (2026-05-17). BRANCH BLOCKED.** Two full two-pass `main.py` runs disproved the "non-functional" and "determinism holds" claims in the *Why it is non-functional* paragraph below (kept un-deleted per the decisions-log annotate-don't-erase convention; that paragraph is the **original, now-refuted** reasoning):
 > - **Not non-functional — incubator OOM.** Compiling+registering *every* mail implication drives combinatorial growth in `excludeRepetitions` / `repetitionExclusionMap` / the cross-batch `GL_binary_shared.json` (~1365+ entries). In the ~1035-theorem incubator batch `gl_quick.exe` reached **~22 GB RSS and froze** (OS thrash, ~54 min no progress). This is a memory *expansion* — the opposite of the ASIC-0.1 memory-reduction intent.
@@ -4399,7 +4714,7 @@ All three are emptied at the start of the absorb block (`workingMemory = HashMem
 > - **No fix applied.** Per the the project conventions banner / Rule 8 the branch is **held for user architectural direction**. Commits 1–6 + the artifact snapshot remain intact and pushed; the investigation trap was reverted (`git reset --hard` to the artifact-snapshot commit). A determinism-only fix (content-addressing the name) would be **wrong** — it would make the unsound collapse reproducible, not correct it. `compilation` emitting 0 chapter rows is accepted by the user as fine; it is **not** part of this blocker.
 
 
-**What.** At every site that pushes a tuple onto `mailOut.implications` (the eight `updateGlobalDirect` / `updateGlobal` broadcast sites), the prover now *additionally*: (1) compiles the implication to its compact `(implication<N>[…])` form via the new `ExpressionAnalyzer::compileImplicationToCompact` wrapper; (2) deposits that compact form as a `mailOut.statements` element at `validityName == "main"`; (3) emits a paired `compilation` history tag into `mailOut.exprOriginMap` keyed by the compact form, with the original expanded implication as the single antecedent (both `"main"`). The pre-existing implication tuple is untouched — the deposit is purely additive. A new verifier checker `check_compilation` validates the tag structurally (the compact name's GL-binary `elements`/`signature` reconstruct the cited original). Two enabling fixes ship alongside: `excludeRepetitions` no longer unconditionally strips a trailing comma (a zero-free-arg compile now yields the well-formed `(implication<N>[])` instead of malformed `(implication<N>])`); the wrapper reuses the existing `compileCoreExpressionMapCore` `(>` branch and `stripUPrefixAST` rather than adding a parallel compile path.
+**What.** At every site that pushes a tuple onto `mailOut.implications` (the eight `updateGlobalSingleChapter` / `updateGlobal` broadcast sites), the prover now *additionally*: (1) compiles the implication to its compact `(implication<N>[…])` form via the new `ExpressionAnalyzer::compileImplicationToCompact` wrapper; (2) deposits that compact form as a `mailOut.statements` element at `validityName == "main"`; (3) emits a paired `compilation` history tag into `mailOut.exprOriginMap` keyed by the compact form, with the original expanded implication as the single antecedent (both `"main"`). The pre-existing implication tuple is untouched — the deposit is purely additive. A new verifier checker `check_compilation` validates the tag structurally (the compact name's GL-binary `elements`/`signature` reconstruct the cited original). Two enabling fixes ship alongside: `excludeRepetitions` no longer unconditionally strips a trailing comma (a zero-free-arg compile now yields the well-formed `(implication<N>[])` instead of malformed `(implication<N>])`); the wrapper reuses the existing `compileCoreExpressionMapCore` `(>` branch and `stripUPrefixAST` rather than adding a parallel compile path.
 
 **Why.** Preparatory groundwork for the ASIC 0.1 memory rework, where the mail channel must carry compact named forms rather than raw implication tuples. Landing the compaction + provenance now — additive and non-functional — de-risks the ASIC 0.1 cut by exercising the compaction on every broadcast implication (including fully-bound theorems, the shape that exposed the latent `excludeRepetitions` zero-arg bug) a full release ahead of the consumer-side change.
 
@@ -5874,7 +6189,7 @@ The user's stated three-step shape: *find applied/foreign theorem in a chapter �
 
 **Why.** Coverage gap surfaced by the user: the verifier did not check whether a chapter row's variable connections respected definition-set typing. A theorem could in principle have variables wired through ports with conflicting type labels and every existing verifier check would still pass — formal completeness gap. The compiler enforces this on the producer side (its `ArgumentAnalyzer` runs at `compileCoreExpressionMap` time), but the verifier's purpose is to be the independent oracle on shipped artefacts. Mirroring the compiler's algorithm in the verifier closes the gap.
 
-The drift fix in ConfigVisu was discovered as a Stage-1-style finding when the new check first ran: 46 main + 357 incubator = 403 failures fired, all rooted in `interval` pos-2 type contention. Sync'd ConfigVisu, re-ran: 1 + 266 = 267 failures (down 137). Remaining failures decomposed into a verifier-algorithm scoping bug (Class A — initial regex-based pooling did not respect bound-variable rebinding at `>[v1,v2]` quantifiers, treating same-name variables across alpha-distinct scopes as the same variable) and a per-batch compact-name collision case (Class B — `implication26` is allocated arity 2 in Gauss main but arity 5 in IncubatorGauss; my initial single-flat-resolved-defsets dict picked one binary's allocation arbitrarily). Class A fixed by translating the C++ recursive parser faithfully (Python `_parse_subtree` + `_merge_maps` + `_process_leaf`). Class B fixed by per-tag resolution (the analog of the compiler's per-batch analyzer construction).
+The drift fix in ConfigVisu was discovered as a Stage-1-style finding when the new check first ran: 46 main + 357 incubator = 403 failures fired, all rooted in `interval` pos-2 type contention. Sync'd ConfigVisu, re-ran: 1 + 266 = 267 failures (down 137). Remaining failures decomposed into a verifier-algorithm scoping bug (Class A — initial regex-based pooling did not respect bound-variable rebinding at `>[v1,v2]` quantifiers, treating same-name variables across alpha-distinct scopes as the same variable) and a per-batch compact-name collision case (Class B — `implication26` is allocated arity 2 in Gauss main but arity 5 in IncubatorGauss; my initial single-flat-resolved-defsets dict picked one binary's allocation arbitrarily). Class A fixed by translating the C++ recursive parser faithfully (Python `_parse_subtree` + `_merge_maps` + `_process_leaf`; `_merge_maps` was later replaced by the `_DefsetGroups` union-find so `=` can join its arguments, [D-407](#d-407)). Class B fixed by per-tag resolution (the analog of the compiler's per-batch analyzer construction).
 
 **Verified.**
 
@@ -6844,6 +7159,1198 @@ Total: −6.7 s wall (−22 %) across two commits.
 - **Numbering is append-only.** D-1 is the oldest. Numbers are assigned in increasing order and are immutable once assigned; gaps and retirements exist (e.g. D-38 is reserved — it was used by the abandoned branch's superseded canonical-min fix; see D-39). New entries authored on a sandbox branch use slug placeholders (`D-pending-<slug>`) per the project conventions and receive their final number at merge to `main` — so this section deliberately does not pin a "newest" integer (it would drift on every addition).
 - **Revision pattern.** If a decision is revised, add a new D-N+1 entry and annotate the old D-K with "superseded by D-N+1 on YYYY-MM-DD".
 - **Scope.** This log captures *architectural* and *tactical-but-persistent* decisions. Routine bugfixes and refactors do not warrant entries — they live in commit messages. A decision that shapes how multiple chapters of this SwDD are written belongs here.
+
+
+<a id="d-345"></a>
+## D-345 — Isolate independent output finalization
+
+**Decision.** After both processed registries are complete, run incubator HTML
+and verification in a separate Python process while the parent performs main
+Lean export, HTML, and verification (`run_modes.py`, `_finish_full_graphs` and
+`_finalize_incubator_worker`). The user authorized acceleration of the previously
+identified external stages on the named branch from main.
+
+**Reason.** Renderer configuration and link maps are mutable module state; process
+isolation permits overlap without sharing that state. The graph directories are
+complete inputs and output trees are disjoint. The parent joins on every exit path,
+retains the child log, rejects failed execution, and combines both verifier totals.
+Main HTML continues to read only a completed Lean result. Individual stage times
+overlap; the finalization parent records elapsed wall time. Exact artifact comparison
+covers theorem files, raw and processed chapters, HTML, and Lean source/certificates.
+
+
+<a id="d-344"></a>
+## D-344 — Batch rule-index writes within each initial deposit
+
+**Decision.** `prover.cpp` and `addTheoremToMemory` use the existing
+`ruleStagingArmDepth`/`closeRuleIndexStaging` mechanism around each initial
+expression deposit, including premise, goal, and contradiction seeds. The user
+explicitly approved this prepared change and its full validation after a separate
+approval request.
+
+**Reason.** Measured IncubatorGauss1 and IncubatorGauss2 preparation is dominated
+by expression deposits that install many rules. Flushing each individual install
+repeatedly rebuilds growing indexes. A deposit-wide window batches those writes
+using the same implementation already used by compressor seeding, with a flush
+before the caller proceeds. Registration order, scope, provenance, capacities,
+and proof work are unchanged. The differential compound-deposit test compares
+all seven rule-index maps and origins against per-install flushes; complete
+pipeline artifact equality is the acceptance gate.
+
+
+<a id="d-347"></a>
+## D-347 — Wipe resolved OR branch runtime subtrees
+
+**Decision.** The maintainer approved replacing resolved OR branch freezing with end-of-burst subtree wipeout, using the existing all-current-chain-goals predicate. Qualifying roots enter the existing `pendingWipeScopes` queue; the `frozenOrBranches` marker remains. Successful closure retains cohort counts, booked contributions and history and is separate from refutation.
+
+**Reason.** The branch has reached every goal relevant to its parent chain, so its runtime subtree can be retired while retaining its case contribution for later convergence. Full GPU theorem preservation and two-run verifier-count determinism are the acceptance gates. The [task ledger](ordis_wipeout_closure_plan.md) records the experiment and the reduced-count convergence-level experiment. The maintainer approved retaining only booked current-goal derivation levels in a separate statified map, consumed only while the expression remains a current goal. Retaining other statement levels is not approved.
+
+
+<a id="d-349"></a>
+## D-349 — Public names replace numbered equivalents
+
+**Decision.** The maintainer approved public-over-numbered precedence, first
+registered public name winning body-based reuse, and complete removal of the
+numbered definition with argument-correct reference migration. Equivalent public
+names remain defined. Current registration order determines the winner;
+alphabetical loading needs no stored historical order.
+
+**Reason.** A named predicate loaded without a reuse entry can be recreated
+under a numbered name. The strictOrder/preorder case leaves a branch's expected
+negation under a different predicate spelling. Merely changing the reuse entry
+would leave existing compiled and proof references inconsistent with removal.
+The approved implementation therefore coordinates compiler retirement, inherited
+input translation, and cross-batch artifact migration. A separate state sidecar
+preserves issued-number counters without changing the compiled-definition schema.
+
+**Boundary.** Generated-only naming behavior remains intact. Proof rules,
+verifier algorithms, capacity ceilings and equivalence processing are unchanged.
+The input-only control diagnosed the original failure; it was not a compiler
+repair. The existing OR/existence round-trip expectations and the full GPU,
+verifier, connected-Lean and determinism gates govern the replacement.
+
+<a id="d-350"></a>
+## D-350 — retain empty short subkeys
+
+One- and two-premise normalized subkeys store no owners or signatures, and live until hash-memory reset. This narrows D-312 to owner-bearing whole keys, longer subkeys, edges and chains. The per-window staging contribution is also deduplicated, so many rules sharing a short key do not grow its record. The existing codec, memory pools, CUDA capacities and firing gates are unchanged. See [I-228](30_invariants.md#i-228).
+
+<a id="d-351"></a>
+## D-351 — exclude typing from integration demand
+
+The exact predicate `in` cannot create an integration admission key: a typing fact is shared by many terms and would repeatedly wake the entire instruction. `prepareIntegrationCore2` filters it at Case C before key and cache writes. Typing remains in instruction contents and facts. Negative equality has its own exclusion in [D-390](#d-390); other predicates keep their existing eligibility. See [I-227](30_invariants.md#i-227).
+
+<a id="d-390"></a>
+## D-390 — exclude inequality from integration instruction demand
+
+Negated equality `!(=[...])` cannot key `admissionMapIntegration`: inequality with one fixed term matches too many possible witnesses to be a useful construction demand. `prover.hpp` / `prepareIntegrationCore2` excludes that signed shape alongside typing at Case C, before key/cache creation and revival. `isAdmittedIntegration` rejects it for both pure probes and committed applications. Positive equality stays eligible, as do non-equality negated predicates under their existing gates.
+
+`prepareIntegrationCore` still preserves atomic polarity before signature deduplication. Negative equality remains an instruction entity and an ordinary fact; excluding its demand key does not turn it positive or remove it from an instruction stored under another eligible key. Algebra admission, the separate `admissionSetIntegration` path and force-deep construction are unchanged. See [I-227](30_invariants.md#i-227).
+
+<a id="d-356"></a>
+## D-356 — force disintegration of the induction hypothesis
+
+The installed induction implication's `ruleInterner` identity is recorded on the recursion-step LB. Processor and CUDA firing compare the exact producer identity and carry `recursionHead` through the ordinary firing record and internal disintegration signal. `addExprToMemoryBlock` folds it into `forceDeep`: newly created algebra-side witnesses are dropped, integration-side witnesses and their defining products are admitted without demand, and no witness is enrolled in `productsOfRecursionIds`. Other rules keep ordinary admission. The extra mail flag occupies bit 2; the iteration stamp starts at bit 3. See `memory.cpp` and `checkLocalEncodedMemoryStatic`, `prover.cpp` and `addTheoremToMemory` / `addExprToMemoryBlock`, and the CUDA projection, firing and sealing boundaries.
+
+<a id="d-352"></a>
+## D-352 — additional root integration rules
+
+`prover.hpp` and `emitFlatIntegrationVariants` augment `prepareIntegrationCore2` Case B only when the clean entity signature equals the instruction's marked root goal. Generated conjunction/existence wrappers always dissolve; configured conjunction/existence compounds independently remain intact or expand one level; implication, OR, atomic and negated expressions remain leaves. Nested choices are visited only under expanded parents, intact before expanded. Sorted premise-multiset identity suppresses duplicates and the existing one-level rule. Each added rule preserves witness typing and first-premise binding, uses integration justification, and records `reformulation for integration flattened` with the root integration-goal template as its dependency. Existing instruction and key bounds assert before overflow. Existing preparation and marker replay continue unchanged.
+
+The verifier reconstructs the same definition family and requires an exact premise multiset modulo injective witness renaming. Certificate export records the selected premise positions and witness construction; Lean constructs the conjunctions/existentials explicitly from those premises. The template is a construction obligation, never a theorem assumption. See `verifier.py` and `check_reformulation_for_integration_flattened`, `proof_export/flat_integration.py` and `build_flat_integration_plan` / `render_flat_integration_term`.
+
+<a id="d-354"></a>
+## D-354 — integration qualification floor six
+
+The existing ground-demand route serves integration rules. `parameters.hpp` and `kOrdis2DemandMinPremisesIntegration` require six non-anchor premises; general rules retain four. `memory.cpp` and `makeNormalizedKeysForAdmission` carry integration justification into `installAdmissionMarkerVariants`. All remaining eligibility, grounding, subset, iteration and demand/park rendezvous gates remain. No separate integration-map cohort-opening route exists.
+
+<a id="d-357"></a>
+## D-357 — preserve integration justification at firing
+
+An integration-justified demand is permitted to use algebra-iteration witnesses that are not products of recursion. Processor and CUDA firing exempt that demand from the ordinary purity gate, while general demands and marker rules retain their existing gates. This allows a goal's flat rule to request its one missing ground compound after the other premises have been derived. No witness-class enrollment is added.
+
+<a id="d-358"></a>
+## D-358 — demand only absent facts
+
+Processor and CUDA demand producers suppress an expression known at the firing scope or a strict ancestor. At route-(c) opening, `prover.cpp` and `consumeOrLeavesCohort` consume a stale demand whose leaf is already known at the parent scope or an ancestor and do not open a cohort from that demand. Sibling facts are not visible. Probes are non-minting and use the existing statement membership contract.
+
+<a id="d-355"></a>
+## D-355 — size the shared evaluator from measured demand
+
+The D1 full run and its exact captured replay require 2,880,228 reverse-owner work entries for 60,799 requests at FTA burst 12. The former shared profile allows 2,097,152. Under the maintainer's authorization to expand capacity where needed, `phase2_cuda.hpp` and `kFullRunPhase2EvaluationCapacity` reserve 4,194,304 entries. `DeviceEvaluationOwnerWork` is eight bytes, so this adds exactly 16 MiB through one device allocation; request and downstream work limits and CUB scratch remain unchanged. Full and shortcut replay keep the same capacity profile. The measured bound explains this increase and does not promise headroom for every later burst. Existing assertions remain the capacity contract.
+
+<a id="d-353"></a>
+## D-353 — convergence survives the input-mail drain
+
+The D1 full-chain trap proves that the second OR branch reaches the goal during post-burst input absorption. `ordisMerge` queues the parent statement and its convergence history in `sameIterationInternalMail`, outside the drain's fixed snapshot; the following input clear erases both before registration. Bookkeeping remains complete, which hides the missing parent delivery.
+
+`standardProcessing` passes its existing output channel through `addExprToMemoryBlock` to `ordisMerge` for absorption-time deposits. Only the convergence statement and its convergence origin use this explicit output. Calls outside absorption keep the ordinary same-iteration destination; both existing channels, snapshot order, clear position, scope rules, levels, refutation routing and branch cleanup remain. The optional pointer is a defined caller-context selection, never a failed-operation fallback. Direct tests run both drain directions, with and without a wiped first branch, check statement/history delivery, then drain the output and require parent registration.
+
+
+<a id="d-359"></a>
+## D-359 — Exclude finished OR-scope inference at phase entry
+
+**Date:** 2026-09-08. **Decision:** approved by the maintainer for.
+
+Phase 3 takes a read-only snapshot of OR roots whose current branch-and-ancestor goals are empty or all known. A temporary per-block context filters inference consumers before they perform work, including direct equivalence-class writes and rewrites into descendants. Queued seeds are included even before their first live-branch registration. Ordinary history and lifecycle operations remain at their existing seams.
+
+This avoids both repeated goal checks inside hot loops and premature state destruction. An early actual wipe would invalidate statement positions and class-processing state still used by the phase. The snapshot is therefore removed before the unchanged lifecycle drains, and an assertion pins eventual cleanup of every excluded live root. See [I-232](30_invariants.md#i-232) and [the task ledger](ordis_ignore_plan.md) for validation and separate cleanup measurements.
+
+
+<a id="d-360"></a>
+## D-360 — scan each collection once for all queued roots
+
+**Date:** 2026-09-08. **Decision:** approved by the maintainer for.
+
+The shared standard-processing cleanup passes its ordered root run to `Memory::wipeSubtrees`. One union bitmap replaces repeated membership builds and collection scans. Assigning each closed identifier to its first covering root preserves the original scope-filter mint order; globally sorting the union identifiers would not. The separate expanded-implication text domain retains its own membership test. The single-root interface delegates to the same core, and canonical-state differential tests compare the batch with consecutive single-root calls.
+
+The union operation preserves the ordered single-root state transformation. Its safe boundary is now standard-processing completion in both phases, independently of the existing phase-3 exclusion context; see D-387. See [I-233](30_invariants.md#i-233) and [the task ledger](ordis_ignore_plan.md).
+
+<a id="d-361"></a>
+## D-361 — Retain unused statements without canonical maintenance
+
+**Decision.** Canonical admission remains. Once admitted, unused encoded rows
+receive neither class rewrites nor downprioritized-member cleanup. Preserve
+their known entries, levels and history until ordinary scope/block teardown.
+Remove the collapsed-identity set and both canonicalization/restoration sweeps.
+
+**Usage.** Current signed premise membership remains separate from retained
+unsigned usage. Assigned goals, admitted negative statements and contradiction
+seeds retain both polarities as used until block discharge. Extend the existing
+goal-core set and its tag rather than allocate a second persistent registry.
+Ordinary newly-eligible equivalence processing wakes older rows before cleanup;
+existing contradiction checks supply the scope contract. Device upload remains
+premise-only. Fact clones retain the usage carried by their copied statements.
+
+**Motivation.** The earlier D1 measurement attributed 14.83 worker seconds to
+dormant canonicalization and 2.53 to restoration, which scanned 8,669,400
+registry rows to restore three identities. Retaining the source removes the
+need to reconstruct its membership. This is historical attribution; matched
+baseline and changed-run evidence belongs to `rt_canonical_plan.md`.
+
+**Tradeoff.** A negated fact activates every row of its unsigned core throughout
+the owning block, including unrelated argument patterns. Retained usage avoids
+scope-wipe deactivation bookkeeping. This can increase ordinary variant work;
+full theorem sets, proof validity, repeatability and measured runtime determine
+acceptance. No separate pairwise contradiction canonicalizer is introduced.
+
+**Contract.** See [I-225](30_invariants.md#i-225), `memory.hpp` and
+`usedAsPremise`, and `prover.hpp` and `applyEquiClasses`.
+
+<a id="d-362"></a>
+## D-362 — complete request streams before canonical deposit
+
+**Date:** 2026-09-09. **Status:** historical streaming foundation; complete-stream selection is superseded by D-363. Its bounded storage and shared paged sorting remain.
+
+The processor is the debugging/parity oracle. It evaluates every request immediately but no longer stops when an intermediate head predicts Phase 3 discharge. The GPU likewise retains all evaluated results instead of compacting to a processor early-exit prefix. This eliminates traversal-position reconstruction as a requirement for early-exit parity while preserving exact duplicate identity, full provenance and canonical deposit order. Phase 3 retains its existing termination and scope rules. More work may execute before discharge; this is an explicit trade-off, not a new proof rule.
+
+The shared firing sorter uses paged ordinal runs and a paged run directory with two-way merge passes. One bounded initial-sort buffer replaces neither the complete record set nor its canonical comparator. Memory use grows through the existing host static pool instead of hitting a fixed 64-run cursor array.
+
+The separate budget primitives compute a runtime reserve, whole 2 MiB working blocks and weighted minimum-respecting assignments without allocating memory. They are infrastructure for the pending production streaming owner, not evidence that automatic GPU allocation is already wired.
+
+See [I-234](30_invariants.md#i-234) and [`batched_gpu_plan.md`](../GPU/batched_gpu_plan.md).
+
+The bounded duplicate-history component uses an active GPU hash page and uploads
+completed host-backed hash pages through one comparison page. This retains exact
+processor duplicate scope without retaining all identities in VRAM. The trade-off
+is repeated page-transfer work as history grows; runtime evidence must report it.
+Physical task and batch slots can be reused because original part and relative
+generator-batch ordinals identify each call. Under complete-stream processing,
+equal request identities produce equal complete evaluations, so their traversal
+occurrence does not select a different result. This is request suppression already
+performed by the processor, not additional deduplication of firing content.
+
+The bounded generation component processes host-backed frontier pages with existing
+CUDA growth kernels. It measures prefix sizes on CUDA and reserves worst-case
+child/event/request space before candidate windows, making full processing storage
+a continuation boundary. Prefix preparation may execute twice (measure, then fill).
+Frontier pages no longer transfer each wave: levels stay in a pass-local device
+store and only overflowing rows spill ([D-441](#d-441)). All semantic work
+stays on CUDA; complete-stream processing makes physical page order non-semantic.
+
+Automatic capacity planning uses exact device/alignment/library costs and recent
+processing demand within one whole-block budget. Minimum output scratch covers
+the existing CPU-supported single-fragment representation; larger collections use
+value/key windows. This avoids treating ordinary column fullness as an error.
+The host history cache stores segment offsets so GPU pages need not fit one host
+arena block. Production now connects the automatic pool and streaming controller;
+full pipeline acceptance remains pending in the batching ledger.
+
+<a id="d-363"></a>
+## D-363 — restore early exit and prioritize GPU runtime
+
+**Historical mechanism.** Request-identity selection is superseded by D-364; duplicate suppression is superseded by D-365. Measurements below belong to that earlier implementation.
+
+**Date:** 2026-09-09. **Status:** maintainer-approved; verification recorded in the living runtime ledger.
+
+The maintainer requires original early exit back and makes counterexample-filter performance a critical gate. The sole runtime reference is original main at 286.491 seconds, with Peano filtering 8.480 seconds and Gauss filtering 7.692 seconds; the original full GPU threshold was 320 seconds and the maintainer now asks to push below 280 seconds if achievable. The 294.719-second first branch commit is diagnostic evidence, not a replacement reference.
+
+The processor keeps the original deterministic stop for the future ASIC implementation. GPU runtime has priority over cross-backend proof-history parity throughout the task: GPU must produce valid deterministic proofs; cross-backend proof-history matching is waived. The final campaign compares per-batch Number proven theorems counts in current CPU/GPU run logs before landing. Different verifier check counts and pruned proof-index sizes are permitted. A logged theorem-count mismatch requires a report and frozen branch. Preserve automatic VRAM continuation.
+
+The first restoration incorrectly retained CPU growth-order reconstruction despite the parity waiver and failed runtime: Gauss CE reached 125.364 seconds. Production now uses the GPU request-identity order described in I-235. Only actual requests enter host metadata; accepted-subkey history and CPU growth positions are excluded. CUDA retains exact duplicate history and produces all inference, eligibility and provenance content. The inclusive GPU prefix retains every output of its winning request, followed by shared paged RAM sorting. Preferred retained capacities are 8,388,608 events and 262,144 requests when minimum progress storage and these floors fit the budget. Frontier storage is capped by the larger of the preparation window and request-capacity probe; candidate attempts have separate storage.
+
+The runtime investigation also separates host transfer pages from execution windows and cheap candidate rejection from bounded survivor probes. Probe windows consume available output space, draining only a small tail rather than after sparse output. The failed eager-drain experiment and all measurements remain recorded in `docs/GPU/batched_gpu_plan.md`.
+
+Logical growth-level drains make valid deactivation results available before all deeper requests are generated. A frontier node is pruned only if its fixed part/call or strictly increasing premise count places every descendant beyond the already-known GPU cutoff. This preserves the selected GPU result set; later starting stumps remain eligible. Cutoff drains are recorded separately from capacity pressure.
+
+Frontier transfer scratch uses three dedicated blocks from the existing host static pool, registered with CUDA for the duration of one growth sweep. Copy pages prefer 4,096 rows but are clamped by the larger node/prefix row size and the actual host block size. The blocks are unregistered before return to the pool; at the default 256 KiB block size the temporary reservation is 768 KiB. Request-identity metadata retains its separate 1,024-row pages.
+
+
+<a id="d-365"></a>
+## D-365 — evaluate requests without retained keys
+
+**Date:** 2026-09-10. **Status:** explicitly approved; full rebuild and all 1,723 unit tests passed. Full pipeline acceptance remains pending.
+
+The completed D2 run logged 4,839,026 raw and unique requests with zero removals.
+The maintainer authorized removing request deduplication, then confirmed that
+multiple firings of an expression must remain. The per-drain exact-key table and
+cross-drain history are removed, including their allocation reservations.
+`CudaPhase2OrderingBuffer::orderRequests` retains every recordable event in
+deterministic order. Existing evaluation, proof origins and result merging remain.
+Repeated requests may add evaluation work; full GPU candidate runs remain the runtime and theorem-count gate. Reruns are authorized. No runtime improvement is claimed
+from source removal alone. See `docs/GPU/no_requests_plan.md`.
+
+<a id="d-364"></a>
+## D-364 — keep broad batching and remove request history
+
+**Date:** 2026-09-10. **Status:** explicitly approved; component and full-pipeline
+evidence is recorded in `docs/GPU/no_requests_plan.md`.
+
+The maintainer approved retaining the original bulk unfinished frontier in RAM
+while removing duplicate history and retrospective early-exit identity buffers.
+The existing seed, prefix, cheap-gate and survivor-probe kernels remain unchanged.
+One aggregate word per block records a CUDA discharge until the whole logical
+level finishes. The controller commits that stop at the seed-group or frontier-wave
+boundary and retains all of that level's results. Bounded physical drains continue
+to pause, evaluate, reclaim and resume without selecting an output prefix.
+The request-identity gather and its workspace minimum, the host identity pages,
+and the pending-firing selection list are removed. Complete result pages remain
+the existing proof-output storage. See I-237.
+
+This can retain more valid results from the discharge level than the former
+winning-request prefix, while suppressing later levels of all parts of a stopped
+block. Theorem coverage and full runtime therefore remain measured acceptance
+criteria. This change alone does not establish removal of the separate D2 host
+worker-scratch exhaustion. No new per-part scheduler or device frontier is added.
+
+<a id="d-366"></a>
+## D-366 — gate the complete ordinary processing body
+
+**Date:** 2026-09-10. **Status:** maintainer-directed; verification is recorded in
+`docs/GPU/no_requests_plan.md`.
+
+The whole-level GPU candidate retained more completed firings in the same Peano
+counterexample request groups. Their Phase 3 barriers grew from 0.284775 to
+13.029981 seconds. The maintainer requires a dedicated counterexample mode in
+`standardProcessing` that skips everything except contradiction checks, with no
+reordering of the ordinary pipeline.
+
+The existing `ceFilteringActive` flag selects the entry gate. Registered
+contradictions use the existing sweep; completed main-scope internal-mail heads
+are checked directly against loaded main-scope facts because no absorb runs.
+The gate then returns, leaving every ordinary processing step in place below it.
+Both execution backends use this mode; the predicate requires actual opposition,
+not a request-history or provenance-presence decision. Non-refuted clones receive
+no equivalence inference in this dedicated mode. See I-236.
+
+The dedicated gate's full GPU run completed in 286.86907 seconds, explicitly
+accepted by the maintainer. All eight logged theorem counts match the reference;
+1,724 native tests, 423 verifier unit tests, 150,663 proof checks and connected
+Lean pass. Peano/Gauss CE times are 6.81949/5.95147 seconds. All theorem and proof
+artifact bytes match the preceding whole-level candidate; only its Lean execution
+log differs. This acceptance authorizes no additional optimization or rerun.
+
+<a id="d-372"></a>
+## D-372 — D2 quotient uniqueness on the one-output `quotient` twin of `remainder`; a two-output Euclidean-division predicate rejected (2026-09-11,, maintainer-directed)
+
+
+**The problem.** Row 67 proves the remainder half of D2 on `remainder`, whose quotient is an internal existence witness, so no `remainder`-only row can equate two quotients; the original expanded rows (five induction-eligible variables each) exhausted the 12 GiB main pool (`docs/fta_ladder/D2/current_proof_state.md`, 2026-09-10).
+
+**First attempt, rejected.** A seven-argument public `euclideanDivision[N,+,*,a,d,q,r]` (the standard relation `a = q·d + r ∧ r < d`) with `output_args ["q","r"]`. Two effects, both measured (`ledger/d2_quotient_uniqueness_ledger.md`, runs `d2_quotient_full_01`, `d2_quotient_shortcut_02`, reference `d2_ref_d1neghead_full_01`): (1) the body is byte for byte the inner ∃t of `remainder`, so [D-349](#d-349) retired the spontaneous `existence16` and every `remainder` unfolding in every block became a config predicate with input and output slots; (2) the output slot `q` drives marker demands and integration preparations from the first burst (`integrationPreparedMarker (euclideanDivision[…,marker,r])`, admission keys with the marker at slot 6), which inflated the D1 negated-head contradiction block (statements 108,525 → 165,513 and rules 62,312 → 72,020 at frame 15 against main) and made it run an existence-integration preparation (`prepareIntegrationCore2`, signature `(preorder[1,4,k,d])`) at 72,022 rule originals — past the one-block limit of that preparation's scratch index (see [G-75](50_gotchas.md#g-75)). The second output slot (`r`) received no marker preparation at all: the machinery has one output slot per operator. Maintainer: "two output slots is nonsense, never meant to happen; remainder needs one".
+
+**The decision (maintainer-directed).** An operator has at most one output slot. Quotient uniqueness is stated on the one-output twin of `remainder`: `quotient[N,+,*,a,d,q]` = ∃r∈N ∃t∈N: (q·d=t ∧ t+r=a) ∧ r<d (`quotient.mpl`; inputs `a, d`, output `q`), so `findDigitArgs` leaves `{a, d}` as the induction candidates exactly as for row 67, and its inner ∃t body compiles to a spontaneous existence of its own (`existence16`, parameter order differs from `remainder`'s inner `existence17`) — no D-349 replacement of any existing entity. Result (run `d2_quotient_full_02`): row 68 proved, `direct` method, verifier 151,863 checks / 0 failures, Lean kernel check passed, no theorem lost (the D1 head renumbered `existence17 → existence18`, same elements), FTA prover 220.8 → 256.8 s. Row 68 `quotient(a,d,q) ∧ quotient(a,d,q') → q = q'` is the only supplied row; the remainder half stays on row 67. Registered in `ConfigFTA.json` and `ConfigVisu.json`; the cookbook carries the one-output rule and the D-349 pitfall.
+
+**Proof route.** Unchanged prover: trichotomy on `q, q'`, both strict cases refuted through the [D-370](#d-370) theorem-relation demand (row 20's difference witness), the `q = q'` case is the goal itself. Ledger: `ledger/d2_quotient_uniqueness_ledger.md`.
+
+<a id="d-371"></a>
+## D-371 — D2 owner-storage experiment and restoration
+
+**Date:** 2026-09-09. **Status:** experiment completed; original reservation explicitly restored by the maintainer.
+
+A synchronized recount confirmed 4,224,638 owner-work items from 60,782 requests in six D2 induction blocks, exceeding the common 4,194,304-entry reservation. The approved experiment doubled `kFullRunPhase2EvaluationCapacity.reverseOwners` in `gpu/phase2_cuda.hpp` to 8,388,608 eight-byte entries (+32 MiB), with every other capacity and production assertion unchanged. The clean rebuild and all 1,703 unit tests passed; the shortcut measured 7,220,118,148 total device bytes and completed an evaluation with 5,511,208 owner items.
+
+The next burst exceeded the separate 6,291,456 accepted-event ledger in `appendPooledGrowthEvent`. Both D2 goals remained open. Increasing this one pool therefore removed the first resource obstacle but did not complete the proof attempt or establish a logical stall.
+
+The maintainer then requested restoring the original **4,194,304 entries (32 MiB)** and assigned bounded GPU generation/evaluation with result deloading, plus native joint AND-head induction with separate contradiction blocks, to other sessions starting from main. The experimental sizing requirement in the unit gate is removed with the restoration. All production assertions, the completed diagnostic cleanup, the sacred D2 target and the experiment evidence remain. No build or run follows the restoration; the last executable still has the enlarged reservation until rebuilt. The restored profile corresponds to the prior measured 7,186,563,716-byte allocation.
+
+See [`current_proof_state.md`](../fta_ladder/D2/current_proof_state.md), the main-based implementation handoff, for the two proposed designs, correctness constraints, measured failures and later integration into D2. The historical experiment remains documented; neither streaming nor joint AND heads is implemented by this entry.
+
+<a id="d-370"></a>
+## D-370 — input-slot demand for received theorem rules whose other premises are compound relations (2026-09-11,, maintainer-directed)
+
+
+**The problem.** D2 (`remainder(a,d,r) ∧ remainder(a,d,r') → r = r'`, pool row 67) reaches the quotient trichotomy in the negated-head contradiction block under [D-367](#d-367) / [D-368](#d-368), releases the `q<q'` case and freezes there (`ledger/d2_stall_ledger.md`, run `d2_neghead_01`). The human proof's next step is `k≠0` for the difference witness `q+k=q'`; the witness parks in `rejectedMap` at the branch scope under `(in3[q,marker,q',4])` and nothing demands it. Its only flat consumer, pool row 20 `a<b ∧ a+k=b → k≠0` (compact `implication1758`, rule `(AnchorFTA[…]) (strictOrder[1,4,9,10]) (in3[9,11,10,4])!(=[2,11])`, installed in the block since EXIT #5), fails the [D-288](#d-288) route twice: its head is a negated equality (no head input slot) and it has two non-anchor premises (`kInputSlotDemandMinPremises = 4`). The install-time writer `updateAdmissionMap` files nothing for a received theorem either — every variable is universal at receive; it filed the REVERSE orientation `(in3[q',marker,q,4])` only because the `¬(q'≤q)` disintegration rule carries the witness as a binder variable with concrete neighbours.
+
+**The decision (maintainer-directed).** A fifth, independent qualification pass in `makeNormalizedKeysForAdmission` — the theorem-relation route — describes the qualifying rule STRUCTURALLY instead of by head shape and premise count. `theoremRelationDemandSlotQualifies` admits a (premise, input slot) pair iff: (1) the rule is a received theorem — anchored key, no `u_`-prefixed premise argument (the D-32 `productOfDisintegration` is false), not integration-justified; (2) the marked premise is a positive config-operator application and the slot is one of its config input slots; (3) every other non-anchor premise is a positive config-backed compound relation (`compiledEntity` non-atomic and `coreConfig` present — `strictOrder`, `preorder`, `remainder`; atoms, equalities and runtime compacts refuse); (4) confinement; (5) concreteness; (6) at least `ExecutionParameters::kTheoremRelationDemandMinBoundArgs = 2` other arguments of the marked premise are bound by a relation premise (anchor slot names do not count). The head is unconstrained. A qualifying pair installs the same untagged marker variant as the fourth pass (`installAdmissionMarkerVariants`, subkey = every other premise, anchor included); a pair the fourth pass already installs is skipped. Downstream is unchanged: the hashburst marker branch instantiates the key when the relation premises match live facts ([I-68](30_invariants.md#i-68)), `drainAdmissionKeysAlgebra` files it into the algebra `admissionMap`, `isAdmittedIncludingAncestors` / `revisitRejected2` release the parked `it_` witness. Output slots are the regular pass's business.
+
+**Fan-out (measured on the pool and the externals before coding).** With the bound-argument floor at 2 the route qualifies pool rows 20 (`(in3[a,marker,b,4])` per live `a<b`), 54 (`(in3[b,marker,c,4])` per `d|b ∧ d|c`) and 60 (`(in3[a,marker,c,5])` per `2≤a ∧ 1≤c`); at floor 1 it would add the successor-witness rows 13, 14, 18 and Gauss external 9 (a predecessor demand for every term in an order fact). The maintainer chose 2 ("it can always be relaxed later").
+
+**Why not the alternatives.** A pool lemma with four or more premises (the D-288 shape) would carry the same witness at its own premise block and needs a proof of its own; lowering `kInputSlotDemandMinPremises` or dropping the head-input condition for every rule re-opens the D-267 fan-out; widening the I-6 gate reproduced the RT explosion.
+
+**Code.** `memory.cpp::theoremRelationDemandSlotQualifies` + the fifth pass in `makeNormalizedKeysForAdmission`; `ExecutionParameters::kTheoremRelationDemandMinBoundArgs`. Tests: `test_disintegration_allowed.cpp::theorem_relation_demand_slot_qualification_matrix` / `theorem_relation_demand_pass_installs_untagged_marker`. Invariant: [I-196](30_invariants.md#i-196) amended (two gated input-slot routes). Proof-content and runtime gate: recorded in `ledger/d2_stall_ledger.md`.
+
+<a id="d-369"></a>
+## D-369 — install-time admission demand filed at the installing rule's scope
+
+**Date:** 2026-09-11. **Status:** landed, gates green; D2 itself still open.
+
+**Decision.** `ExpressionAnalyzer::addToHashMemory` (`memory.cpp`) registers a rule's premise-completion demand through `updateAdmissionMap` at the rule's own validity scope (`validityNameSpan`) instead of the literal `main`. The deferred-ancestor seed (`updateAdmissionMap3` → `drainDeferredAncestorAdmissions`) keeps filing at `main`, because it writes a strict-ancestor LB where only `main` is guaranteed to exist.
+
+**Reason.** Measured by trap in the D2 dividend induction block `(in2[rec1,9,3])`: a hypothetical OR case branch derived `!(preorder[1,4,A,B])`, its disintegration installed the rule `(in3[u_A,1,u_B,u_4]) →!(in[1,u_1])` at the branch scope, and the install filed the demand `(in3[A,marker,B,4])` at `main`. The totality head `or11[1,4,A,B]` at `main` then found its disjunct's product template demanded and opened a case cohort by route (a) on evidence valid only inside that branch; 148 of 149 admitted `or11` cohorts opened that way, 87 branches stayed alive, the block grew to 336,221 rows and main hashburst 17 spent 509 s in phase 3 (ancestor-known sweep, `checkNecessityForEquality`, compact-hook flushes all superlinear in block size). The route-(a) probe already reads the exact scope plus strict ancestors, so a demand filed at the rule's scope stays visible in that branch and below and disappears from `main`.
+
+**Validation.** Shortcut with the 20-burst cap: FTA prover 736.7 s → 92.2 s, burst 17 phase 3 509 s → 3.8 s, admitted `or11` cohorts 149 → 55 (each released case refuted at `main` and retired in the same burst; at most one `or11` branch alive at any burst). Uncapped full GPU run: FTA 122.3 s over 45 bursts, largest phase-3 burst 6.3 s, all eight batch counts equal to main's reference (518, 79, 76, 105, 25, 4, 19, 40), 127-row theorem set identical, verifier 150,678 checks with 0 failures, Lean kernel check passed; trap-free shortcut gate identical FTA theorem set (65 rows). D2 `(=[11,12])` remains unproved (the dividend block quiesces at burst 24 with 55,986 rows); the proof-route blockers recorded in the D2 proof-state document stand. 
+
+<a id="d-368"></a>
+## D-368 — enable ordinary OR lifecycle in primed contradiction blocks
+
+The maintainer requested case analysis in contradiction blocks. A status-0 contradiction seed does not create an explicit goal, so the prior goal-presence gates prevented opening, parking and release. Merely bypassing opening would leave new cases immediately excluded and frozen by vacuous goal resolution.
+
+Use one proof-work predicate and make empty relevant goal sets unresolved only for active primed blocks. Preserve explicit-goal resolution and every ordinary admission, depth, sequencing and contradiction rule. Do not manufacture a goal or introduce a configuration flag. Reuse the existing arbitrary branch-contradiction machinery, routing its refutation and history through the caller-selected output channel so input clearing cannot erase the result.
+
+This removes the contradiction-case lifecycle restriction. It does not change direct witness admission or promise closure of a particular arithmetic conjecture. The owning execution and evidence ledger is [conta_or_plan.md](conta_or_plan.md).
+
+
+<a id="d-367"></a>
+## D-367 — Recipient eligibility for inherited ORs
+
+**Date:** 2026-09-10.
+
+**Decision.** Positive compiled ORs delivered by ordinary ancestor mail may disintegrate in a recipient with explicit goals or active primed contradiction work. Preserve external status, existing demand and scope rules, and the full compact-carrier history.
+
+**Reason.** D2 quotient demands existed before their OR facts arrived, but the status-3 entry gate registered the facts without reaching either admission or parking. Known-statement deduplication then blocked repeat deposits. Extending the entry shape closes this barrier without forcing case opening or changing the mail representation. The recovered-rule history writer must cite its supplied compact carrier because an OR produces several compact implications, including reduced-OR rules.
+
+**Validation.** Direct tests exercise external absorption, both arrival orders, history, external rule storage, negative gates and sequenced contradiction discharge. 
+
+<a id="d-373"></a>
+## D-373 — `checkNecessityForEquality` walks a derived head-operator index instead of every rule chain (2026-09-11,, maintainer-directed)
+
+
+**The problem.** On the main tip the FTA batch's `CNFE` section costs 61 worker-seconds (151 K calls, 1.10 G chain iterations): every goal deposit sorted and decoded the head of EVERY chain in `overallHashMemory.originals` (20–120 K chains in the D2 blocks) although the first filter is the head's operator name and the two config filters (`coreConfig(head)` present, the head's single constant at a `(1)`-typed slot) depend on that name alone. Byte-identical repair, proposal 1 of the FTA RT diagnosis (`ledger/d2_rt_explosion_ledger.md`, phase 2).
+
+**The decision.** (1) Head prefilter: the check returns before touching a chain when the deposit's operator has no `coreConfig` or no `(1)` slot — the walk would have `continue`d on every chain. (2) `OriginalsHeadIndex`, a derived per-`HashMemory` side-index (operator name → ascending chain-id list, tail-linked chains over a `ColdHashSet` interner and `PagedVector` columns on the LB arena, private dirty flag), built and extended lazily by the consumer; the candidate list is snapshotted on the gen-scratch page tier before the walk, which also retires the walk's latent one-block `chainIdx` cap (the `G-75` shape, 65,536 chains). The walk's per-chain code is unchanged apart from the name compare becoming an assert. Lifecycle mirrors `ReverseArgsIndex` ([I-154](30_invariants.md#i-154)); contract in [I-242](30_invariants.md#i-242).
+
+**Why exact.** Between owner-less sweeps chain ids never shift (append-only keys, in-place owner removal); the sweep that erases owner-less chains (`eraseOwnerlessEntries`, renumbering) marks the index stale and the next consumer rebuilds it; the index lists every key including owner-less ones, and the per-operator list preserves id order — so the set AND the order of `prepareIntegration` calls is the retired walk's. The first gate run (`fta_rt_m1_03`) caught the sweep case through the consumer's head-name assert at main hashburst 1; the stale-marking at the sweep is the repair.
+
+**Validation.** `gl_quick.exe --unit-tests` 1,744/1,744 (four new `originals_head_index` tests: brute-force membership and order, append-only extension, mark-unbuilt rebuild, clear). Shortcut GPU gate `fta_rt_m1_04` against the pre-change run `fta_d2_rt_01` (same inputs, same sacred-dump target): run-log theorem and verifier lines identical (67 theorems, 27,751 checks, 0 failures), `theorems.txt` and `global_theorem_list.txt` identical, the two 9,627,084,702-byte sacred dumps byte-identical (md5 ); FTA `CNFE` 58.8 → 24.4 worker-s (of which the index 2.6 s; the rest is the per-candidate work on same-operator chains), phase-3 attributed 366 → 341 worker-s, phase-3 wall 170.5 → 159.6 s, dumped FTA prover 324.7 → 314.4 s.
+
+<a id="d-377"></a>
+## D-377 — the compact re-key defers its expanded-pair erases to one pass per apply, and the ancestor-known sweep compacts each statement vector once (2026-09-11,, maintainer-directed)
+
+
+**The problem (measured, run `fta_rt_probe_01`).** Of the compact-implication hook's 31 worker-s on the FTA batch, 21.7 s were the 29,068 single-key `expandedImplications.erase` calls of `removeCompactExpansion` — each a full key-column slide plus a hash-index rebuild (`ColdHashSet::eraseIf` → `rebuildIndex`). Of the ancestor-known sweep's 12 worker-s, 10.9 s were the 12,605 per-hit `removeExpressionFromMemoryBlock(state 0)` calls — each a full scan of the three statement vectors with an O(tail) `PagedVector::erase` per matching row and a waterline repair. Proposals 2 and 3 of the FTA RT diagnosis (`ledger/d2_rt_explosion_ledger.md`, phase 2).
+
+**The decision.** (1) `expandedImplications` has no reader besides its mint, its erasers, the wipe and the deload/dump walks, so `applyEquiClasses` arms a `DeferredExpandedErase` context (`Memory::deferredExpandedErase`, two scratch sets of packed pair keys, scope-guarded): `removeCompactExpansion` parks each retired pair in `pending`; the install door's pair mint, on a pending pair, erases the stale entry for real and marks it `revived` before minting (so the key lands at the column's end exactly as the immediate erase + mint would); a second retirement of a revived pair erases for real; `finishCompactRemovals` runs ONE `eraseIf` keeping revived pairs. Final membership and key order equal the immediate sequence's for every erase/mint interleaving. (2) `PagedVector::eraseIf(pred, onErased)` — one stable forward compaction reporting the erased original indices — and `sweepAncestorKnownRows` compacts the local, delta and full statement vectors once each over the hit-key set and repairs the class waterlines once with all erased positions: the per-hit repairs compose (a waterline drops by the number of erased positions below it), the survivors keep their order, and the retired text-lexicographic hit order had no observable effect. The `RESET_RESENT_REGISTRIES` part of proposal 3 is NOT taken: deferring the un-know past other hooks of the same apply would let their known-registry probes see a statement the immediate version had already un-known (not byte-safe); measured at 8.1 worker-s (levels erase 4.2, known erase 1.9, vector scans 2.0), it stays as is.
+
+**Validation.** Unit tests: `paged_vector.erase_if_matches_sequential_erase_across_pages`; the full gate `gl_quick.exe --unit-tests`. Shortcut GPU gate `fta_rt_m23_01` against `fta_d2_rt_01` (same inputs, same sacred-dump target): run-log theorem and verifier lines, `theorems.txt`, `global_theorem_list.txt` identical; the 9,627,084,702-byte sacred dumps byte-identical (md5 ); dumped FTA prover 324.7 → 282.7 s, phase-3 wall 170.5 → 135.0 s, attributed 442.3 → 366.1 worker-s (milestones 1–3 together).
+
+
+<a id="d-374"></a>
+## D-374 — the two parked-or equi-class hooks read the class's candidates from a per-apply substitution-token posting index refreshed on the map's insert epoch, instead of decoding and sorting the whole map per class call (2026-09-11,, maintainer-directed "non-functional, common sense")
+
+
+**The problem (measured, run `fta_rt_full_01`, FTA aggregate).** `AEC_HOOK_REJECTED_ORDIS` self time 35.6 worker-s over 45,053 class calls (20.7 post-fixpoint Pass 1, 11.5 pre-fixpoint Pass 1, 3.4 Pass 2) — the largest open phase-3 lever after the three milestones. `applyEquivalenceClassToRejectedMapOrdis` and its `rejectedMapOrdis2` twin had no key gate: per class per round each decoded EVERY key of its map (`decodeTemplateKeyView`), interned template and validity into a scratch table, sorted all rows by (template, validity) and only then skipped every key at another validity or whose template the substitution leaves unchanged — O(classes × M log M) per fixpoint round, the shape D-307 removed from the rejected-map hooks. The ledger's caveat that the hook "erases and re-inserts every visited key" was wrong: `eraseSet.mint` runs only for a same-scope key whose template changes, and the hook never inserts (I-37 drop + mail).
+
+**The decision.** (1) One `RejectedValidityBuckets` per ordis map per `applyEquiClasses` call (`rmoBuckets` / `rmo2Buckets`); the hook reads the postings of every non-canonical member at the class validity, sorts and deduplicates the candidates, re-checks each with the substitution test, sorts the hits by template — the former (template, validity) order restricted to the one validity — and runs the unchanged drop + mail tail. Both hooks share one body, `applyEquivalenceClassToRejectedOrdisCore` (`prover.hpp`), with the map as a parameter. (2) The postings follow the substitution's own boundary rule: `forEachSubstitutionToken` (`memory_infra/str_ops.hpp`) yields the maximal runs `replaceKeysScratch` can replace as a whole key — for every position after `[` or `,`, the run up to the next `]` or `,` — and every run that is a NameMap name posts. `RejectedValidityBuckets::rebuildFrom` uses this walk for all its consumers; on a flat template the runs are exactly the `getArgsSpans` arguments it used before, on a nested text every innermost argument is a run as well, so "the template changes under the class" is equivalent to "a posting names a non-canonical member" for every key shape (a member name carries neither `]` nor `,` — asserted in the core). (3) Freshness: the ordis maps may gain keys inside an apply (the park site of `consumeOrLeavesCohort` runs under the drain's deposits), and the whole-map walk saw those keys; the hook therefore calls `RejectedValidityBuckets::ensureCurrent`, which rebuilds the index whenever the map's `insertEpoch` (bumped by key-adding operations only) moved since the last build and otherwise returns the cached index; a key dropped since the build is a `lookup` miss. The rejected-map hooks keep their per-apply snapshot (D-308). (4) No round skip for the ordis hooks: with the postings a class call costs O(members + candidates), and the skip's exactness argument would need the epoch as well.
+
+**Why byte-identical.** The hit set of a class call is unchanged (candidates ⊇ hits by the token rule, each re-checked by the same substitution test; the current key set by the epoch rule; same-validity by the posting key); the hits are processed in the same order (template lex within one validity); the drop set is order-free; the mail records, level runs and `equality1` tails are computed by the unchanged tail from the same inputs.
+
+**Validation.** Unit tests: `str_ops.substitution_tokens_mirror_replace_boundaries` (the walk against `replaceKeysScratch` key by key), `memory.rejected_validity_buckets_post_nested_tokens_and_refresh` (nested postings, repeated token, epoch refresh), `prover.apply_equi_rejected_ordis_uses_token_postings_and_refreshes` (scope, member, prefix and nested cases; a key parked after the build is visited), the two existing drop-and-mail tests through the new signature; the full `gl_quick.exe --unit-tests` gate. Pipeline gate `fta_rt_ordis_01` (shortcut GPU, same inputs and sacred-dump target as the reference `fta_rt_m23_01`): run-log theorem and verifier lines, `theorems.txt`, `global_theorem_list.txt` identical; the 9,627,084,702-byte sacred dumps byte-identical (md5 ); `AEC_HOOK_REJECTED_ORDIS` self 32.1 → 1.9 worker-s at identical call counts (20,364 / 16,045 / 8,644 / 1,176), FTA attributed 366.1 → 347.3 worker-s. The undumped full-run measurement is recorded in the ledger.
+
+**Contract.** [I-243](30_invariants.md#i-243); I-207 unchanged for the rejected-map hooks.
+
+<a id="d-376"></a>
+## D-376 — `checkNecessityForEquality` probes the derived index with the deposit's masked head key per argument slot, so the candidate set is exactly the matching chains (2026-09-11,, maintainer-directed "non-functional, common sense")
+
+
+**The problem (measured, `fta_rt_full_01` / `fta_rt_ordis_01`).** After D-373 the `CNFE` section still cost 22–24 worker-s on the FTA batch: the head-operator index narrows the walk to same-operator chains (about 1,900 per call, 170 M candidate visits over 91 K calls), and every candidate is still decoded (`keyAt`, the id-vector view, the head's `decodeView`, `getArgsSpans`) before the arity / single-constant / definition-set / argument checks reject it. The accepting verdict depends on the chain's head alone plus one equality: the head has exactly one non-`u_` argument at a `(1)`-definition slot, and every other argument equals the `u_`-prefixed deposit's argument at the same position.
+
+**The decision.** `OriginalsHeadIndex` gains a second family, the MASKED HEAD KEY (`maskedHeadKey` in `originals_head_index.hpp`: operator name, then the `,`-separated arguments with the constant slot replaced by the mask byte `\x01`): the builder callback of `ensureBuilt` (now three arguments) returns the key for every chain the verdict can accept — exactly one non-`u_` argument, an operator config, definition set `(1)` at the constant's slot — and an empty span otherwise, and `chainsWithMaskedKey` answers a key with the ascending chain-id list. The consumer probes one key per slot of the input (the input masked at that slot), collects the disjoint per-slot answers (a chain has one constant slot) and sorts them into ascending id order — the visiting order of the former walk. The per-candidate checks of the loop stay in place (they now pass for every candidate); the head-name family and `chainsWithHead` remain (tests). Byte-identical: the accepted chain set and its order are unchanged; only rejected candidates are no longer visited. Derived-index lifecycle unchanged (I-242).
+
+**Validation.** Unit tests `originals_head_index.masked_head_key_masks_exactly_one_slot` and `originals_head_index.masked_family_matches_brute_force_and_extends`; the full `gl_quick.exe --unit-tests` gate (1,751). Pipeline gate `fta_rt_m5_02` (shortcut GPU, dump on the D2 dividend block, reference `fta_rt_m23_01`; landed together with D-375): run-log theorem and verifier lines, `theorems.txt`, `global_theorem_list.txt` identical; the 9,627,084,702-byte sacred dumps byte-identical (md5 ). `CNFE` self 23.8 → 0.27 worker-s at identical call counts (90,769 + 60,960), candidate visits 215 M → 7.1 K; FTA attributed 347.3 → 303.7 worker-s against the milestone-4 gate. The undumped full-run measurement is recorded in the ledger.
+
+**Contract.** [I-242](30_invariants.md#i-242) (rule 1 extended).
+
+<a id="d-375"></a>
+## D-375 — `drainPendingOrReleases` rewrites the pending-branch queues with one compaction per drain instead of one per released cohort (2026-09-11,, maintainer-directed "non-functional, common sense")
+
+
+**The problem (measured, `fta_rt_full_01`).** `DRAIN_PENDING_OR_RELEASES` 18 worker-s over 2,852 calls with no sub-scope of note. Per released cohort the drain rebuilt the cohort's pending run by `orPendingBranches.eraseSetIf(k == cid)` — a whole-map survivor slide plus an index rebuild (I-119) over a map that holds up to 24 K keys in the D1 negated-head block — followed by `insertSorted` of the survivors (O(1): the re-minted key sits at the end of the key column) and, for an emptied queue, the same whole-map erase of `orPendingLevels`.
+
+**The decision.** The loop records each released cohort (id, survivors, emptied flag) in page-tier `PagedVector`s — a drain can stage thousands of cohorts, so nothing is sized by the staged count on the byte-bump tier (the first gate attempt did and tripped the arena's single-allocation block bound) — and applies the queue rewrite after the loop under `DRAIN_OR_QUEUE_REWRITE`, the two membership predicates reading `ColdHashSet`s of the released and emptied ids: one `eraseSetIf` over the released set, the survivors re-inserted per cohort in release order through the same `insertSorted` door, one `eraseSetIf` of `orPendingLevels` over the emptied set. Byte-identical: sequentially each released key was erased and re-minted at the column's end in release order, and no cohort of one drain reads another cohort's row between its erase and its re-insert — the batched form ends in the same key order, the same runs and the same level rows, so the deload bytes and the dump are unchanged. The ranking, the seed deposit, the history line and the starter override are untouched (I-174).
+
+**Validation.** Unit test `prover.drain_pending_or_releases_many_cohorts_one_compaction` (3,000 staged cohorts through one drain) plus the existing drain tests; the full `gl_quick.exe --unit-tests` gate (1,751). Pipeline gate `fta_rt_m5_02` as recorded at D-376 (outputs and sacred dump byte-identical): `DRAIN_PENDING_OR_RELEASES` self 18.2 → 0.18 worker-s over the same 2,852 calls (431 drains had a release to rewrite). The first gate attempt `fta_rt_m5_01` aborted on the arena's single-allocation block bound (a survivor run sized by the staged count) — fixed by the page-tier records before this gate.
+
+**Contract.** [I-174](30_invariants.md#i-174) unchanged; the rewrite is an implementation detail of the release.
+
+<a id="d-378"></a>
+## D-378 — case analysis is reserved for or-category signatures; a negated conjunction gets its K rules and never opens or parks a cohort (2026-09-12,, maintainer-directed)
+
+**Superseded boundary.** The on-demand OR implementation removes the retained negated-AND exclusion rules as well. Current behavior is ordinary negative-fact registration only; see I-179 and I-245. The account below records the earlier decision.
+
+
+
+**The problem (trapped, `ledger/d2_rt_explosion_ledger.md` phase 3).** The D1 negated-head contradiction block `__contradiction__!(existence18[1,4,5,9,10])` was the largest single FTA block (42.7 s of the 183 s prover, 40.3 s phase 3). Its seed ¬∃r,q,t (q·d = t ∧ t + r = a ∧ r < d) is consumed level by level as ∀ ¬P; every fully instantiated negated body `!(and2[q,d,t,×,r,a,+,N])` — a negated CONJUNCTION — entered the negated-AND De-Morgan door ([D-258](#d-258)), whose leaves ran the whole or downstream. Since [D-368](#d-368) an active primed contradiction block has or proof work without a goal, and the deposit carries the product-of-disintegration signal (route (b), unconditional), so every instance opened a case-split cohort: 24,006 fresh cohorts, 23,971 of them `!(and2[…])` by route (b) alone (probe 0, demand 0), 24,299 live branch scopes holding 96,633 rows at the end, 23,710 cohorts with one released branch that never resolved or retired, 4,118 opened while a disjunct was already known. The released branches derived only equivalence-class rewrites of their asserted negation; the 2026-09-10 main proved D1 in the same block with one scope in 11.5 s. The maintainer's rule: GL branches on `or<N>` facts / entities whose category is `or`, never on a De Morgan expansion of some `and<N>`.
+
+**The decision.** `consumeOrLeavesCohort` takes `signatureIsOr` from its caller — the or arm of `disintegrateExprCore2` passes true (its own `entCategory == "or"` classification, which also covers ors that live only in the prepared instruction graph), the negated-AND door passes false — and the whole depth-gated case-analysis block (route probes, opening, parking, dual filing) runs only when it holds. The De-Morgan door still feeds the consumer, so a negated AND-bodied application keeps its expansion history and its K mutual-exclusion rules (the flat disjunctive-syllogism consumption that closed A16) and nothing else. No flag, no configuration; compiled or facts are untouched on every route.
+
+**Validation.** Unit test `negated_and_demorgan.never_opens_or_parks_a_cohort` (primed active block, route-(b) deposit: K rules present, `orDisjunctCount` / `pendingOrReleases` / both parked-or maps empty); 1,753/1,753. Shortcut gate `d1_fix_gate_04` (dump on the D1 block, reference the trapped run `d1_neghead_route_01`, same inputs): theorem set, verifier lines and theorem list identical; the block's validity scopes 1 → 16 over its bursts instead of 1 → 24,300, cohorts 41 instead of 24,006. Undumped full run `fix_full_01` versus `fta_rt_full_03`: `theorems.txt` identical for every batch, every verifier category `failure 0`, Lean kernel check passed; FTA prover 183.3 → 161.7 s (D1 block 42.7 → 20.9 s, phase-3 wall 79.6 → 60.2 s), overall 452.7 → 432.1 s; one Peano route moved from `induction` to `direct` (verifier check counts shift 1–3 %, accepted by the maintainer). Records in `ledger/d2_rt_explosion_ledger.md`, phase 3.
+
+**Contract.** [I-245](30_invariants.md#i-245); [I-179](30_invariants.md#i-179) amended (the door's consumption is the K rules).
+
+<a id="d-379"></a>
+## D-379 — the install-time premise-completion demand is derived from the rule's premises only, never its head (2026-09-12,, maintainer-directed)
+
+
+**The problem (trapped).** `addToHashMemory` passed `updateAdmissionMap` the run `implRun` = premises PLUS head. The marker loop treats every element alike: an element with exactly one argument outside the remaining-argument set (the premises' `u_` variables) is marker-ized and filed as a demand. A head whose only non-premise argument is a head-only variable therefore filed a demand for that variable: in the D1 block 163,485 of 163,543 admission writes came from the head element, 2,035 distinct head-marker keys against 20 premise keys — `!(in3[t,r,marker,4])` (the constant `9` of the ¬∃t level's head) and `!(in3[q,d,t,marker])` (the `×` anchor variable in the operator slot), templates no producer can satisfy meaningfully. The stored admission value's key list carried the head too, so the `isAdmitted` re-key replayed it. The maintainer's rule: a head cannot be marked; it contradicts the purpose of the demand (a rule waiting for one missing premise instance).
+
+**The decision.** `addToHashMemory` passes `curKeyRun` / `curKeyN` (the premises) — the one caller that ever included the head. `updateAdmissionMap`'s contract now names the key as the premise chain; the other callers (`updateAdmissionMap3` inline and deferred-ancestor replays with `[expr]`, the `isAdmitted` re-key of a stored key list) already were premise-only or become so through the stored list. `renamingChainScratch` therefore renames the premise chain alone; the head's constants no longer take part in the overlap remap, and `remainingArgs` remains a subset of the chain's `u_` set by construction.
+
+**Validation.** Unit test `admission_reshuffle.install_demands_premises_only_never_the_head` (a rule with a head-only `×` slot, installed through `addToHashMemory` with the premises' remaining-args run: the bound premise's demand exists, no key is negated, `!(in3[9,10,9,marker])` absent). Gate as for D-378: the D1 block's admission map holds 48 keys with no negated template (was 2,084 with 2,035 negated).
+
+**Contract.** [I-244](30_invariants.md#i-244); [I-241](30_invariants.md#i-241) unchanged (scope of the demand).
+
+<a id="d-380"></a>
+## D-380 — multiply only rows used as a premise; watch goals and negated statements through canonical ledgers and materialize the exact pair on demand (2026-09-12,, maintainer-directed)
+
+**Decision.** The signed premise-core membership — renamed `usedAsPremise` throughout (`usedAsPremiseCorePairs`, `usedAsPremise`, `refreshUsedAsPremise`, `forEachPremiseCore`, `appliedPremiseCorePairs`, the GPU projection's predicate) — is the ONLY reason a stored row is rewritten by the equivalence classes and the only reason a row is uploaded to the device. The unsigned retained-usage set of [D-361](#d-361) (goals, admitted negated statements, contradiction seeds; deload tag 823) is deleted together with its ten mint sites. Goals and negated statements get separate bookkeeping: two per-scope canonical ledgers on the persistent arena — `Memory::negationLedger` (mirrors `intKnownStatements` for the known negated non-equality, non-anchor rows) and `Memory::goalLedger` (derived from `intToBeProved`, rebuilt when the registry's key-set epoch or row count moved or a merge / wipe / discharge marked it stale) — keyed `(scope, unsigned core)` with sorted `(canonical id, original id)` runs. The canonical id of an entry is its original text under every class bucket visible at its scope (own bucket and one per ancestor scope, applied root → scope to a fixpoint: `canonicalWatchFormAt`), re-keyed at the class-merge seam (`recanonicalizeWatchLedgers`). Every gate is a per-step drain (`materializeWatchHits`, after `applyEquiClasses` and its cleanup, before `dischargeContradiction` / `dischargeToBeProved`): a positive arrival probes the negation runs at its scope and every ancestor; a negated arrival, a re-checked entry and every goal probe `intKnownStatements` for their canonical peer when the peer's signed core is used as a premise (its rows are multiplied), else file a batch request served by ONE sweep of `intEncodedStatements` per step; a live `_ordis_` branch whose assumption's negation is canonically present gets its exact negation at the branch. A hit materializes the canonical twin of each side at the probing scope through the registry commit shared with `drainStagedEquiProducts` (`commitDerivedLocalRow`) with one `equality1` bridge; a goal hit adds the goal's LITERAL spelling from its canonical twin (`writeLiteralTwin`, mirror-orientation justifiers), so the theorem head keeps the conjecture's text. The exact discharge sweeps, the or-refutation probes and `verifier.py` are unchanged.
+
+**Why.** The D1 negated-head contradiction block held 53 K `!(and2[…])` rows at `main`, 82 % of its rows, of which 51 K origin lines were `equality1` products (`9 ~ 9_copy`, class-equal witnesses): a 2.8× duplication bought by nothing — no rule has `!(and2…)` as a premise, the block has no goals. The multiplication existed only because contradiction and goal detection are exact-text probes, so a negation or goal had to be kept in every spelling a canonical arrival can take. Watching the canonical form instead and writing the one exact twin the verifier needs when a canonical pair appears removes the blanket multiplication while keeping every detection exact (multiplication on demand).
+
+**Alternatives rejected.** (a) Exempting compound negatives (`and` / `existence`) from retained usage — rejected by the maintainer before this campaign (`ledger/d2_rt_explosion_ledger.md`, phase 3). (b) A third persistent index `(scope, core)` → positive row ids for the negated-arrival traversal — rejected by the maintainer (memory is already exhausted); the per-step batched sweep replaces it. (c) Own-bucket-only canonical ids for ledger entries — rejected by the maintainer in favour of every bucket visible at the scope. (d) Mirroring the goal registry at its insert and erase doors — tripped its own assert at once because test scaffolding seeds the registry directly; the derived rebuild makes desync impossible by construction and costs a handful of canonicalizations (goals are few).
+
+**Cross-scope exactness.** A class formed at a scope is visible there and below but not at its ancestors, so an ancestor's negated row that names a class member has, at the descendant, a canonical spelling its own run does not carry: at every merge the ancestor rows naming a member are imported into the merged scope's run (`importAncestorNegationsForClass`, int scan on argument ids) and a newly registered negated row imports itself into the descendant class scopes that can rewrite it (`importNegationIntoDescendantClassScopes`) — the mirror of `applyEquiClasses`' "descendant classes rewrite ancestor facts" pass, as ledger entries instead of statement rows. Twins are deposited at the probing (deeper) scope so their bridge dependencies stay visible.
+
+**Validation.** Unit tests `watch_ledger.*` (ledger record / probe / re-key / wipe / clone / discharge; positive arrival vs negated entry; negated arrival vs unused positive through the batch sweep; merge-created contradiction through the re-key seam; goal reached with its literal twin; ancestor negation imported under a branch class; live branch assumption refuted through the ledger), `phase2_projection.upload_is_used_as_premise_only`, the rewritten `canonical_unused` / `dormant_usage` suites (goals and negated arrivals never activate a core). Pipeline gates: `ledger/d2_rt_explosion_ledger.md`, phase 4.
+
+**Contract.** [I-246](30_invariants.md#i-246); [I-225](30_invariants.md#i-225) keeps only its stored-row clauses; [G-77](50_gotchas.md#g-77).
+
+<a id="d-381"></a>
+## D-381 — existence implications only for existences over named operators; a negated existence with a numbered element is a stored statement only (2026-09-12,, maintainer-directed)
+
+**Decision.** An existence entity gets its two existence implications (`left → !right`, `right → !left`, [I-209](30_invariants.md#i-209) / [D-310](#d-310)) only when both of its elements are NAMED operators. `ExpressionAnalyzer::existenceImplicationCount` (`prover.cpp`) is the one formula: 2 for a two-element existence whose element cores are not numbered compilation names (`isNumberedCompilationName` — a generated `and<N>`, a nested `existence<N>`, an `implication<N>`, an `or<N>`), 0 otherwise. `compileExistenceImplications` returns without compiling for a 0, the `preMintReducedOrs` seam asserts the list length equals the formula, and the negated-existence door in `disintegrateExprCore2` instantiates a non-empty list as before and lets an empty one fall through the De-Morgan check (category `and` only) to the plain registration path: such a negated existence is a stored statement only. `loadGlBinary` records every two-element existence loaded without a list for the seam (the registry the rule needs is still being filled) and lets a loaded list settle the wait either way.
+
+**Why.** After the watch-ledger campaign removed the class multiplication, the D1 negated-head contradiction block still held 12,318 `!(and2[…])` rows (58 % of its rows) and 1,031 `!(existence…)` rows, all fired by 676 rules of the one shape `(>[1](in[1,u_1])!(and2[q,d,1,×,r,a,+,N]))`: the ¬∃t level of the seed's expansion, one rule per already-instantiated (q, r) pair, whose only premise is the typing of the bound variable, so each fires once per typed term. The seed ¬∃r,q,t: (q·d=t ∧ t+r=a ∧ r<d) was instantiated over every triple of typed terms on typing evidence alone, then every triple got its K rules (65 K rules, 96 % of the registry). The maintainer judged the runtime cost of that consumption too high and ordered it disabled — deleted, not a config switch. Two full runs of the tree without any expansion then lost theorems against `main` (Peano essential 36 → 35; IncubatorGauss 210 / 50 / 8 → 204 / 49 / 2; Gauss 62 → 61; FTA 67 → 62, the remainder-uniqueness pair and the totality / trichotomy or-theorems among them): the Peano predecessor existence `∃m: n = s(m)` is proved by reductio on its negation, which needs `left → !right` over `in` / `in2` — named predicates. The maintainer's rule: keep the implications when both elements are named expressions, drop them for numbered ones. The D1 seed's element is the nested `existence<N>` over `and2`, so it gets none; the predecessor existence keeps its two.
+
+**Consequence.** A negated existence over a numbered element (every nested existence, every existence over a generated conjunction) is registered and never expanded; one over named predicates behaves as D-310 describes. The full-run gate's theorem counts against `main` and the determinism rerun are the measurement (`ledger/d2_rt_explosion_ledger.md`, phase 4). The quantifier-level alternative (consume a negated existence as universally quantified K rules with the bound variables as rule variables) is recorded there as an open option.
+
+**Validation.** `existence_implications.count_formula_named_elements_only` (named pair → 2; a numbered `and2` or `existence17` element, one element, three elements → 0), `existence_implications.nested_negated_existence_is_a_stored_statement_only` (the D1 shape: the inner named existence keeps its two compacts, the outer over the nested one has none at the mint and after the seam, its negation registers as one statement and hash memory gains no rule), `existence_implications.negated_existence_disintegrates_into_compacts` (the named case expands as before).
+
+<a id="d-382"></a>
+## D-382 — the negated-existence door instantiates only the body direction of a typed existence (2026-09-12,, maintainer-directed)
+
+
+**Decision.** Of the two existence implications of `!(>[k](in[k,S])!(body(k)))` ([D-310](#d-310), [I-209](30_invariants.md#i-209)) the door in `disintegrateExprCore2` instantiates only the body direction `body(k) →!(in[k,S])`; the compact whose premise is the bound variable's bare typing predicate (`ExpressionAnalyzer::isTypingDirectionCompact`) is skipped. The compiled list, the GL binaries, `existenceImplicationCount` and the seam are unchanged — the gate sits at the consumer, so no persisted state changes meaning (the maintainer rejected a first form that changed the compiled list and reduced lists loaded from older binaries).
+
+**Why.** In the D2 remainder dividend induction block (`ledger/d2_rt_explosion_ledger.md`, phase 5) the typing direction of the 391 negated `preorder` rows produced 14,182 `!in3` rows — 15 % of the block — of which none was ever a rule premise and none met a positive sum; they cost the deposit door and the negation ledger's re-key at every class merge and kept the block busy for twice the bursts. On `main`'s processed proof graph 21 chapters cite a typing-direction rule: 18 cite the Peano axiom `s(n) ≠ 0` (`implication6`, an anchor implication, not an existence expansion) and 3 cite a negated-`preorder` expansion, each only as one half of a clash whose other half — the positive body — is present in the same scope, where the body direction fires. The predecessor theorem's induction step, the one chapter citing an existence's body direction, refutes `in[rec,N]` from `in2[rec,v1,s]` and keeps its rule.
+
+**Consequence.** One product statement and one rule per negated typed existence instead of two; no per-term negated-body rows. Proof histories change where a proof used the typing direction (the clash becomes `!in[k]` against `in[k]`); the theorem set is the gate. `verifier.py::check_expansion` accepts either direction and is unchanged.
+
+**Validation.** Unit: `existence_implications.negated_typed_existence_expands_body_direction_only`. Pipeline: the shortcut gate recorded in the ledger (theorem counts, every verifier category `failure 0`, the D2 dividend block census).
+
+
+
+<a id="d-383"></a>
+## D-383 - exclusion implications for named negated conjunctions
+
+**Decision.** A negated category-and predicate generates ordinary flat exclusion implications only when its operator has a public name. The existing category-plus-nonempty-decimal-suffix classifier distinguishes generated names. Each implication concludes the negation of one conjunct from all other conjuncts, preserves the original validity, and has expansion/disintegration history mirrored to outgoing mail. Neither named nor numbered conjunctions enter the on-demand OR source store or case consumer. Ordinary suppression, locality, status-3 restrictions and case-demand thresholds remain unchanged.
+
+**Reason.** Named `strictOrder` is a conjunction of preorder and inequality. Suppressing every negated conjunction removed the inference from not-strict-order and inequality to not-preorder, breaking an existing trichotomy proof and its dependent remainder-uniqueness proof. The maintainer explicitly authorized the named-predicate exception. Generated conjunctions retain the exclusion ban, and positive ORs retain their on-demand evaluator.
+
+**Code and coverage.** `prover.cpp` / `ExpressionAnalyzer::disintegrateExprCore2`; `compilation_state.cpp` / `isNumberedCompilationName`; `tests/test_negated_and_demorgan.cpp` and `tests/test_compilation_state.cpp`. The direct matrix covers both strict-order exclusion directions, exact source-scoped history, disintegration suppression, generated names, public names with a generated-looking prefix, and absence of OR sources, cases and parks. Pipeline evidence belongs to the private task ledger.
+
+
+<a id="d-384"></a>
+## D-384 - Select next predicates from exact normalized prefixes
+
+**Decision.** Build an immutable prefix-to-signed-predicate index from each selected hash memory's actual subkey and whole-key tables when preparing a GPU projection. Reuse the existing byte-map and blob columns, and locate permitted names in the already retained rank-sorted statement span. The GPU prepares the transition entry and reduced candidate count once per prefix, then existing bounded windows enumerate only those name ranges. Polarity is checked before the ordinary cheap gates; all exact matching and firing contracts remain.
+
+**Reason.** Candidate construction dominates the measured CUDA route. The existing normalized prefix is preserved when another expression is appended, so a source key proves which next predicate can possibly match before suffix normalization and full table probing. Retaining both source tables and all short-key entries makes this a derived index of the current search, with no goal-directed pruning or provenance-based decisions.
+
+**Trade-off.** Projection construction and storage grow, and each prepared GPU prefix becomes 40 bytes. The original 24 transfer columns and fixed-budget planner remain authoritative. Candidate reduction alone is insufficient: acceptance requires a measured reduction in complete Phase 2 time including index preparation and byte-identical proof artifacts. A test-only explicit original projection provides the low-level oracle; production never falls back on an index miss.
+
+**Code.** `phase2_projection.cpp` / `Phase2ProjectionArena::appendNextPredicateMaps`; `phase2_cuda.cu` / `findProjectedGrowthPrefix`, `forEachPooledCandidateRange` and `phase2GrowthCandidateCountsKernel`; `prover.cpp` / `ExpressionAnalyzer::proveKernel`.
+
+
+<a id="d-386"></a>
+## D-386 - Retired first-release exclusion-source retirement
+
+**Superseded.** The former design removed the source when the first case began, preventing late residual deductions from duplicating parts of the original D2 cohort. The measured F3 uniqueness frontier requires late whole-conjunction refutations to reduce inherited ORs within the existing case. The approved replacement keeps exclusion available after release; see [D-399](#d-399). The earlier evidence remains in the task ledgers, but source suppression is no longer the runtime contract.
+
+
+<a id="d-387"></a>
+## D-387 — Complete hypothesis reaction and scope cleanup in both CPU phases
+
+**Decision.** The maintainer approved the shared sequence on 2026-09-15. Ordinary `standardProcessing` runs hypothesis reaction after mail absorption and input clearing, before class application. After existing discharge, outgoing publication and class-delta clearing, it sanitizes goals, unbinds the phase-3 exclusion, drains disproved goals and dead branches, retires duplicate cohorts, freezes resolved branches, releases pending cases, wipes the sorted union and sweeps ancestor-known rows.
+
+**Reason.** A refutation consumed in phase 1 could stage a dead OR case whose runtime state survived into GPU request construction and phase-3 absorption. Completing retirement at the end of either common call removes this delay while keeping destruction beyond all live inference loops. Hypothesis copy equalities naturally reach the existing class and history consumers in the same call.
+
+**Trade-off.** Earlier reactions and case progression may change proof selection and theorem coverage. Additional theorems are accepted; no compatibility gate, phase parameter, persistent ledger or extra processing pass recreates the old schedule. Mail routing, proof evidence, split ownership and broad GPU batching retain their existing contracts. See I-50, I-63, I-215, I-232 and I-233.
+
+
+<a id="d-388"></a>
+## D-388 — index source retirement and existing demand
+
+**Decision.** Preserve mint-on-admission, source-only rejection, ordinary internal-mail replay and all admission order. Replace repeated source/demand scans with derived pool-backed lookups. Normalize demand keys in the lookup's private label table; retain packed source keys and original retirement positions. Maintain source edges at the two insertion doors and equality/retirement mutations. Reconstruct key projections on erasure/reset, and rebuild all caches at canonical lifecycle seams.
+
+**Motivation.** The measured FTA profile spends 2.58 worker-seconds retiring sources and 1.92 checking existing demand. Whole-map deletion is only 0.30 seconds, so deleting fewer records alone does not address the measured cost. Indexes target candidate selection while preserving the existing removals and replay predicates.
+
+**Trade-off.** Additional derived arena bytes and mutation maintenance replace repeated whole-map reads. Raw eviction retains these caches; canonical images exclude them. Candidate ordering and exact proof artifacts are acceptance gates. This step does not change the instruction-discovery or publication representation.
+
+**See also.** I-251 and `ledger/mint_on_demand_ledger.md`.
+
+
+<a id="d-389"></a>
+## D-389 — defer instruction copies to concrete consumers
+
+**Decision.** Witness recursion uses one parent instruction plus an ordered token substitution per path. It instantiates fields at read time. Instruction extension and concrete OR flattening materialize a child view only when those consumers require concrete storage; root consumers retain the original mutable instruction.
+
+**Motivation.** The indexed baseline still performs 495,589 instruction copies in FTA, costing 3.45–3.71 worker-seconds in the saved full/shortcut measurements. The view removes table copying from ordinary witness recursion without changing structural traversal, admission, naming or history.
+
+**Trade-off.** Repeated field reads perform substitutions; concrete-only consumers still allocate their instruction. Runtime and exact artifact comparisons decide acceptance. No persistent expansion cache is introduced.
+
+**See also.** I-250 and `ledger/mint_on_demand_ledger.md`.
+
+
+<a id="d-391"></a>
+## D-391 — separate complete identity classes from application classes
+
+**Decision.** Maintain complete scope-visible equivalence components in a separate cold store. Preserve ordinary equality multiplication on the existing application classes. Capture representative and evidence changes separately so canonical consumers can update only dependent identities, including an old child representative changed indirectly by an ancestor bridge.
+
+**Trade-off.** Additional class/representative/change storage replaces inconsistent local-bucket identity decisions. Small scope-class merges remain straightforward; identical class runs are preserved, and inherited copies produce no ordinary application events. Canonical consumers use logical-key dependency postings and exact pending-carrier indexes; unrelated components keep their caches. Scope comparisons preserve original ownership and literal goal prefixes. Correctness, deterministic artifacts and current-main runtime comparisons gate acceptance.
+
+**See also.** I-254 and the complete target-scope class-view subsection of the equivalence-class chapter.
+
+<a id="d-392"></a>
+## D-392 — admit one integration counterexample witness
+
+**Decision.** Disintegration of a negative implication with exactly one bound variable prepares a scratch-only counterexample instruction: all premises and the negated head, sharing that variable. One `int_` witness is admitted without demand once any enclosing witness is admitted; ordinary nested existences are not forced. Source/scope receipts, purity, publication/history, integration's polarity guard and zero/multiple-witness negative inputs remain unchanged.
+
+**Motivation.** A failed universal divisor clause was stored without any counterexample instruction; its witness never reached admission. Changing purity could not resolve this earlier gap. The maintainer approved the expansion and separately its verifier extension, explicitly retaining one witness per construction.
+
+An assumption's force-deep mode does not cross a generated exclusion implication: the later head re-enters through status-1 internal mail. The maintainer therefore restored the narrow counterexample exception rather than changing the treatment of all derived heads. An algebraic `it_` witness would make its bound premises impure and prevent the already-installed cofactor marker from firing; one `int_` is used instead.
+
+**Proof contract.** Existing expansion/disintegration tags reconstruct and cite the whole negated implication with one binder. The verifier fixes free parameters and checks literal children sharing that binder. Lean derives one classical witness from the cited negative universal and reuses it across all projections. No shared registry mint or new tag is introduced.
+
+**Validation.** Native preparation, rejection, demanded replay, nested construction and history tests; malformed proof-row tests; Lean structure/rendering tests; full pipeline and theorem-preservation evidence in `ledger/fta_e6_ledger.md`.
+
+**Complement expansion.** Negative category-`or` compacts unfold structurally into conjunctions of negated disjuncts, with double-negation cancellation. This step has no OR admission or case processing; its nested constructions retain ordinary gates. The maintainer separately approved the narrow verifier extension for these expansion/disintegration rows. See I-255.
+
+<a id="d-394"></a>
+## D-394 — restrict marker demand and preserve reentrant additions
+
+**Decision.** Integration instruction marker keys exclude predicates with exactly two configured inputs and no output, except positive equality. Preserve the existing exclusions for typing and negative equality. Apply one eligibility predicate at instruction generation, admission lookup and known-statement replay. Other input counts and predicates with outputs retain existing eligibility. Keep excluded predicates in instruction contents and in all required construction premises.
+
+**Motivation and trade-off.** Independent order-bound matches can bind each factor without a multiplication match and install a large cross product of conditional constructions. The maintainer explicitly chose this narrower marker policy; an order bound alone no longer advances a factor binding. Positive equality can still provide a binding. This changes demand eligibility, not mathematical truth or the premises needed to derive a head.
+
+**Storage contract.** Reentrant preparation can append an instruction under the currently iterated key. Both replay callers retain the original sorted iteration set but reload the live map before recording each consumed value. Content lookup must find the original instruction; an assertion enforces this. Persisting the updated current map preserves sibling additions without replaying them in the same loop. All transient storage remains arena-backed.
+
+**Validation.** Direct tests cover the exact input/output criterion, both polarities, preserved unary eligibility, retained instruction constituents, rejection of legacy relation keys, and two same-key partials surviving both replay paths at main and descendant admission scopes. Full pipeline evidence belongs to `ledger/fta_e6_ledger.md`.
+
+
+<a id="d-393"></a>
+## D-393 — retain missing ground demand across OR source openings (2026-09-20)
+
+**Problem.** Several OR sources can supply the same missing ground premise. `revisitRejectedOrdis2` queues every source parked under that key, but `consumeOrLeavesCohort` formerly erased the shared demand as soon as the first source opened. Later queued sources then found no demand although neither the fact nor the parent goal had been proved. This occurs when `2<=a or 2<=b` opens before the queued cofactor alternatives for `2<=b`.
+
+**Authorized correction.** Opening retains `admissionMapOrdis2` entries. The existing same-scope/ancestor-known check removes satisfied demands at the route-(c) probe; sibling facts do not satisfy them. Canonical rekeying and scope teardown remain unchanged. Parent/source cohort bookkeeping prevents reopening a source, so no per-source demand token, new container or extra scheduling pass is needed. Demand eligibility, premise floors, proof-work gates, branch ordering and proof provenance are unchanged.
+
+**Coverage.** Direct tests exercise demand-first and park-first arrival, both queued-source orders with a fresh source opening first, repeated deposits without duplicate cohorts, and later fact arrival at the same scope, an ancestor or a sibling. The existing satisfied-demand, scope-wipe and canonical-rekey regressions remain.
+
+**Code.** `prover.cpp` / `ExpressionAnalyzer::consumeOrLeavesCohort`; `tests/test_rejected_ordis.cpp` / `ordis2_shared_demand_opens_all_sources_in_both_arrival_orders` and `ordis2_retained_demand_cleanup_respects_fact_scope`. See [I-183](30_invariants.md#i-183). 
+
+<a id="d-395"></a>
+## D-395 — separate the machine chapter kind from the HTML proof depiction (2026-09-21,, maintainer-directed)
+
+**Decision.** The live proof-graph contract names the former `direct` method `single chapter proof` and its raw, processed, verifier and Lean role `single_chapter_proof`. The change is a hard contract migration without legacy aliases. In the final HTML only, a single-chapter proof whose first processed row is tagged `contradiction` is titled **Contradiction Proof**; every other single-chapter proof is titled **Direct Proof**.
+
+**Reason.** “Direct proof” describes a human proof depiction, not the machine topology. Contradiction derivations also occupy one chapter, so the old machine name caused the HTML to call them direct proofs. The first row is the chapter goal; a contradiction row later in the chapter may be only a dependency and therefore cannot classify the chapter.
+
+**Contract.** `global_theorem_list.txt` uses `single chapter proof`; chapter filenames use `<N>_single_chapter_proof.txt`; verifier and Lean manifests use `single_chapter_proof`. Induction, OR, reformulation and proved-not-broadcast chapter kinds are unchanged. HTML chapter URLs remain `chapter<N>.html`.
+
+**Validation.** Direct heading tests cover a contradiction goal, an ordinary goal, a later contradiction dependency, and an empty-file assertion. Acceptance additionally requires native unit tests and two complete `main.py --GPU` runs with verifier and Lean success plus deterministic generated artifacts.
+
+<a id="d-396"></a>
+## D-396 — Separate the Fold operations (2026-09-22)
+
+**Problem.** The seven-argument Fold used one binary operation both for the interval preorder and for accumulation. Substituting multiplication changed the index interval to divisibility as well as changing the recurrence.
+
+**Decision.** Add an independent fourth argument `op` to `fold[N,s,+,op,f,n,m,p]`. Preserve the existing seed, successor and witness structure. Migrate existing summation expressions by duplicating their old binary-operation argument. Keep ordinary Gauss generation summation-only through existing configuration filters, while supporting explicit products and matching product notation in HTML. No new prover policy or configuration field is introduced. Acceptance compares translated and normalized conjecture sets, mirror relationships, preserved theorem coverage, proof verification and connected Lean.
+
+**Argument repetition (maintainer directive).** `countArgumentsFilter` counts only arguments whose definition set is `(1)`. This is the general type-based rule, with no Fold-specific exemption. The existing incubator allowance for repeated numeric values and the identical-equality rejection remain. Anchor connection already enumerates repeated targets; the downstream argument check now respects repeated operation parameters.
+
+<a id="d-397"></a>
+## D-397 — Record and close impossible ordinary implication subproofs (2026-09-22)
+
+**Problem.** Singleton Fold transition premises force a successor inside the singleton interval [0,0]. Those ordinary integration scopes can derive an opposing pair, but the existing discharge routes handle main-scope contradictions and specially marked reductio scopes only. Their surviving equality classes generate many rows and crowd the bounded hash input.
+
+**Authorized correction.** The maintainer requested the repair after reviewing the scoped-closure proposal and separately approved the verifier extension. After watch materialization and the unchanged main contradiction sweep, a dedicated pass proves each contradictory positive implication's exact scoped goal with `vacuous truth`. Existing goal discharge emits the compact and queues its normal wipe. Actual dependencies, namespace visibility, level union and deterministic ordering remain auditable. Neither the statement-selection capacity nor the equality policy changes.
+
+**Proof contract.** The new scoped form has two opposing dependencies, one at the exact implication scope and its partner there or above. The verifier checks the registered implication expansion, its head, and a dependency path to its own premise; the prior main-scope induction form remains unchanged. Lean enters the scope and applies contradiction elimination. Direct native and verifier tests cover isolation and arrival ordering; focused Lean tests kernel-check both same-scope and ancestor pairs. Full F2 acceptance additionally requires both exact conjectures in the theorem outputs and connected Lean certification.
+
+<a id="d-400"></a>
+## D-400 — Admission-directed unary composition and witness-demand transfer
+
+**Decision.** Materialize composition of an ordered producer premise chain with a unary consumer as an ordinary additional rule, with both source proofs recorded and every producer premise retained. The complete binder sets must match bijectively and remain present in the result; bound-to-fixed specialization and binder collapse are excluded. A consumer-head gate requires an existing integration admission demand under the CNFE matching convention. Later demands wake existing rules. Only qualified consumers enter the premise index; all installed implication heads remain available as producers. Indexed joins, canonical variable names and scoped/level-sensitive deduplication prevent spelling-based cycle growth. Independent source support is stored separately from history and retained through lifecycle changes.
+
+**Motivation.** A parked old-graph value and an integration demand for the appended graph are connected by two installed implications through an OR predicate. Composing those rules exposes the pair-transfer implication. CNFE then transfers the existing target demand into ordinary algebra admission for the old graph. It grants witness permission; forward inference and the existing integration instruction still prove the target.
+
+**Boundaries.** One or more ordered premises on the producer, exactly one on the consumer, and one common complete binder set. Repeated composition does not increase the producer premise count. No arbitrary depth limit, sibling-scope join, fixed-parameter specialization, proof-history gate or new integration instruction. Existing-demand eligibility restricts new compositions, not ordinary rule firing. The separate compound-OR uniqueness problem is outside this change.
+
+**Proof contract.** The new `implication composition` tag cites two scoped source rules. The verifier independently checks the substitutions and exact scope join. The certificate records the two instantiations; Lean introduces each binder group and ordered premise, applies all producer premises, then applies the unary consumer. Existing origin checks remain enabled.
+
+
+
+<a id="d-401"></a>
+## D-401 — final-head demand identifies an existing value to copy
+
+**Decision.** After a complete producer-chain head matches an existing integration admission key, a positive equality connecting its marked witness to a determined fixed argument requests the established variable-copy declaration at the deepest compatible rule/demand scope. Reuse a visible equality before queuing a copy.
+
+**Motivation and boundary.** The appended endpoint needs a second name for the fixed appended value so ordinary equality-premise matching can derive its graph pair. The demand qualifies this request; it is neither a logical premise nor a witness constructor. All other rule premises still must hold, and the original integration instruction collects the same value from graph membership and natural membership. No intermediate OR demand, positive conjunction construction, policy widening, or new proof tag is introduced.
+
+<a id="d-402"></a>
+## D-402 - compiled guarded support and local direct OR support
+
+**Date:** 2026-09-25. **Decision:** retain fixed-parameter direct support for concrete conjunction alternatives of admitted ORs, and replace runtime OR/contrapositive matching with compiler-prepared support attached to implications having a negated conjunction premise. Each helper complements one immediate part and requires all remaining signed parts. The complete guard chain binds every non-fixed head argument, so no OR is needed to specialize a helper. Nested parts remain opaque, and generated helpers cannot generate more support or contraposition families. Ordinary disintegration publishes checked helper history and owns the compact; the previous occurrence store, equality indexes and descendant matching queues are removed. The guarded design deliberately does not enumerate all sign combinations. Unary owners compile direct compositions through the existing checked producer-chain/unary-consumer contract, retaining the owner but keeping the helper only as a proof dependency. This avoids materializing that intermediate negative conjunction and its equality variants. Multi-premise owners retain guarded helpers; there is no unrestricted composition closure. See [I-259](30_invariants.md#i-259).
+
+
+<a id="d-403"></a>
+## D-403 — prepare all binder-covering reversals
+
+**Date:** 2026-09-24. **Decision:** preserve split forward compilation and prepare auxiliary direct/grouped contrapositives. For one complete premise and one disintegration family, enumerate every covering nonempty head subset, including nonminimal supersets. This deliberately favors complete initial coverage over subset minimization; material growth must be measured and discussed rather than silently capped.
+
+Preparation runs at completed definition/source compilation and the existing pre-worker registry-completion seam. Runtime instantiates prepared records only. Grouping and contraposition have separate checked proof rows and explicit Lean replay. Each result publishes its prepared compact, then normal disintegration installs the rule owned by that compact. This follows the existing existence-attached implication pattern and preserves the intermediate compact in mailed expansion history. The auxiliary records are excluded from definition identity and defining elements, so they add no integration obligations. See `contraposition.cpp`, `compileContrapositionFamilies` and `collectContrapositionProducts`, and [I-260](30_invariants.md#i-260).
+
+**D-382 exception.** The maintainer excludes negated-existence body-rule contraposition: a unary source whose head denies membership of its sole bound variable in a fixed set. `contraposition.cpp`, `isContrapositionTypingExclusion`, recognizes this structural class before grouping or direct reversal. The forward body rule remains; its typing-to-negative-body converse remains absent. Positive typing heads, negative relation heads, fixed-element negatives and multiple-bound-variable rules are not this exception.
+
+<a id="d-399"></a>
+## D-399 — retain exclusion after case release
+
+**Date:** 2026-09-24. **Decision:** remove first-release retirement and its dedicated suppression state. Case analysis and exclusion are simultaneous uses of the same admitted OR. Late complete-conjunction refutations must reduce inherited sources within a current case under the existing depth limit. Keep original cohort ordering, identity and resolution; retain ordinary source-scope retirement, descendant visibility, canonical duplicate reconciliation and cleanup.
+
+**Trade-off.** A residual can coexist with the original cohort. No cross-template cohort reuse or admission-policy change is introduced. Native lifecycle tests, complete theorem preservation, connected Lean and the dump-free runtime comparison determine acceptance. See [I-265](30_invariants.md#i-265).
+
+<a id="d-404"></a>
+## D-404 — Keep equality transport inside OR convergence
+
+**Decision.** A case whose canonical fact differs from the fixed parent conclusion contributes through explicit OR bookkeeping support. Its actual source, equality citations and supporting levels survive freeze. Matching, release, publication and proof replay share the support; statement storage, admission and resource policy remain unchanged.
+
+**Reason.** Canonical representatives depend on scope. Exact keys can separate two proofs of the same parent conclusion, such as E(i) and E(n) under local i=n. A cohort-wide rewrite would mix assumptions. Per-case substitution retains scope isolation.
+
+**Trade-off.** Five deload facets retain source/equality records. The existing watch batch adds live-case requests for current ancestor goals. The verifier and certificate contract extend narrowly under maintainer approval, and Lean substitutes inside each case.
+
+<a id="d-398"></a>
+## D-398 — Prove output-body conjunction swaps
+
+**Decision.** Constructive output certification accepts an explicit transport between two positive connective trees when they differ only by binary conjunction child swaps. OR alternatives stay ordered, grouping stays fixed, and all leaves, signs, argument positions and binder expressions remain exact. Negation and implication are opaque. Identical bodies retain their existing certificate shape.
+
+**Reason.** The two compiled membership directions of `appendToSequence` contain the same endpoint equalities in opposite conjunction order. Their predicates are propositionally equivalent but are not definitionally equal. The exporter must prove that equivalence instead of weakening its equality check or changing GL's output definition.
+
+**Replay.** `membership_transport.py`, `membership_transport_plan`, records projections and ordered cases. `lean.py`, `_defined_output_proof_term`, recomputes the plan and requires exact agreement with certificate metadata. `_membership_transport_term` constructs the proof using conjunction projections and constructors inside the original OR cases. Native proof machinery, proof-graph tags and the Lean kernel remain unchanged; no new axiom or proof-search tactic is used.
+
+<a id="d-405"></a>
+## D-405 — one expression-cleanup pass per step
+
+**Date:** 2026-09-25. **Decision:** the Step-4b expression cleanup (`prover.hpp`, `cleanUpExpressions`) takes the step's scheduled scopes as one ordered set and sweeps them in one pass: each registry is walked once to group the rows of the scheduled scopes by scope, each scope then judges only its own rows, and the lists, the local key set and the waterlines are rebuilt or repaired once. Formerly every scheduled scope walked all three registries and rebuilt them, so the work grew with scopes times registry size.
+
+**Reason.** A row is judged only by the classes of its own scope, so the scopes are independent. Judging the scopes in the former order, each scope's rows in registry order, repeats the exact `filterIterations` call sequence and the mail order of dropped delta histories; the kept rows and their order are unchanged, and one waterline repair with the pre-erase positions equals the per-scope repairs. In the FTA fold-integration block of `ledger/fta_f3_rt_ledger.md` one phase-3 call swept 208 scopes over about 71,000 rows and spent 9.3 s of its 16 s in these sweeps.
+
+**Trade-off.** None in results: proof output and prover state are unchanged. Per call, grouping needs three integer columns on the gen-scratch page tier and one scope-set probe per registry row.
+
+**Measured (2026-09-25, full `--GPU` run, dump on the slow block in both runs).** Theorem counts, verifier result, proof artifacts and the slow block's hashburst trace unchanged byte for byte. That block's slow phase-3 call 15.96 → 5.84 s; FTA prover 97.9 → 77.6 s; cleanup worker-seconds FTA 25.8 → 7.7, Gauss 11.5 → 3.2. Blocks that sweep one scope pay slightly more (one scope-set probe per row).
+
+<a id="d-423"></a>
+## D-423 — word-at-a-time hash for byte-string keys
+
+**Date:** 2026-09-25. **Decision:** the byte-key cold maps (`BytesKeyStore` in `cold_hash_map.hpp`: `appendKey`, `bulkLoadKeys`, `hashProbe`) place and probe their ids with `coldKeyHash` (`str_ops.hpp`), a MurmurHash64A over 8-byte words with a byte tail and a final avalanche, instead of the byte-at-a-time FNV-1a `hashSpan`. The digest cached in `ColdStringLocation` is this hash. Fixed-size keys (`PodKeyStore`) keep `hashSpan`, and the GPU projection keeps its own FNV-1a and SplitMix64 table builders.
+
+**Reason.** In the FTA batch byte-key `HashMap::lookup` was 13 % of the process's CPU time, mostly hashing expression and scope names of about 40 bytes (scope names reach 100+) with one dependent multiply per byte. The new hash needs one multiply-chain step per 8-byte word. An offline check on 4,391 FTA name strings gave 1.19 average probes for both hashes; on packed integer keys FNV-1a probes better (1.26 against 1.42), so fixed-size keys keep it.
+
+**Trade-off.** None in results. The digest only places ids in the derived, never-persisted probe index, and ids, iteration order, the deload image and proof output do not depend on it. The hash reads words in host byte order, so every supported host must be little-endian (x86-64 and arm64 are).
+
+<a id="d-407"></a>
+## D-407 — one `=` for every type
+
+**Date:** 2026-09-26 (maintainer design; implementation).
+
+**Decision.** `=` stays the only equality and is typed per occurrence ([I-267](30_invariants.md#i-267)).
+- The config keeps `=` as `(1),(1)` with `input_args [1,2]`, as the starting point of type inference.
+- A slot of any other operator fixes its argument's type; `=` only joins its two arguments.
+- Every LB records the definition sets of its variables. The maintainer asked for this field so integration can type a goal on the spot.
+- Only digits are induction variables.
+- A set- or relation-typed `=` integration goal is proved by extensionality: subset both ways via `in`, `in2` or `in3`.
+- Everything else stays as it is: equivalence classes, rewriting, `(=[A,B])` citations, mirrors, negation, OR handling. A class never mixes types, because a variable has one type.
+
+**Reason.** In the F3 induction-step block, 35 interval witnesses of the same [0, s(m)] set each paired with 30 candidate sequences, giving 1,050 boundary subproofs (FTA prover 117 → 511 s). GL had no equality between sets, so the witnesses never merged. A supplied lemma "two intervals with the same bounds are equal" lets the class machinery merge them.
+
+**Rejected alternative.** A separate `setsEqual` predicate (x in A iff x in B) plus a digit/set relation tag on every equivalence class. It would have touched about 15 origin-line builders, the id-based equality checks and I-227, and needed verifier and Lean mappings. One polymorphic `=` changes far less and is the first step towards higher-order GL.
+
+**Trade-off.** Types are inferred at registration and on the spot at integration. A conjecture that joins a set with a number now asserts at registration instead of passing unnoticed.
+
+**Verifier and Lean (maintainer's consent for the verifier, I-16).** The two integration checks accept a `(=[A,B])` compact whose expansion is `(&(E[A,B])(E[B,A]))` with `E` a subset implication (`_typed_equality_entry`); the D-41 check lets `=` join its two arguments (`_DefsetGroups`). The Lean export types `=` per occurrence and proves the extensionality steps with `funext` + `propext` lemmas, one per type shape.
+
+<a id="d-414"></a>
+## D-414 — a pointless implication subproof is wiped; of class-equal twins the bigger survives (2026-09-26, maintainer-directed)
+
+**What.** Two changes to implication subproofs, both maintainer-directed after the F3 row-84 diagnosis (`ledger/fta_f3_rt3_set_equality_ledger.md`):
+
+1. `prepareIntegrationCore2` Case A treats an implication compact as known when it, or a class variant of it at the preparation scope, is a known statement there (`compactKnownUpToEquality`), and opens no subproof for it.
+2. The end-of-burst `retireSettledImplicationSubproofs` sweep wipes an open bare-payload implication subproof whose implication is known at its parent (exactly or through the parent's classes), and of such subproofs whose implications became class-equal under one parent keeps the one with the most statements in its subtree (ties to the byte-lex smaller payload) and wipes the rest — the implication-subproof twin of the OR-cohort retirement ([D-331](#d-331)).
+
+**Why.** Canonical admission ([I-254](30_invariants.md#i-254)) re-instantiates instructions with class representatives after an equality; an exact-text known check then misses parts known under the old member, and subproofs opened before an equality arrived keep running although their implication is known or proved elsewhere. In the F3 goal block the first cost 90 redundant subproofs (about 420 scopes) in one burst, and every class refresh multiplies by the number of scopes. Maintainer, verbatim: "do it too for future. also another wipe out when two subproofs collpase - bigger survives, smaller gets wiped out."
+
+**Scope limit.** Goal-driven subproofs (`<goal>_subproof_` payloads on main) are not candidates: disproof cleanup (`drainDisprovedGoals`) relies on each goal owning its own copy, and the goal's own closure wipes them.
+
+**Trade-off.** Work done in a retired subproof is lost; anything still needed re-derives under the survivor, whose result every class-equal compact matches through the classes. The prepared key of a retired subproof stays, so admission never reopens it.
+
+<a id="d-417"></a>
+## D-417 — the complete class views refresh only on a membership change, and one refresh writes its runs in one pass (2026-09-26, maintainer-directed)
+
+**What.**
+1. `updateEquivalenceClasses` calls `refreshCanonicalClasses` only when the equality changes the membership of a class at its scope (the maintainer's "watcher triggered by the equi class itself": {a,b} → {a,b,c}, or two classes merging). Before the merges it records the size of the one class at the scope that already holds every side; an unchanged size afterwards is an unchanged member set.
+2. `refreshCanonicalClasses` holds every rebuilt run (`CanonicalRunOverlay`; a descendant reads its parent's new run from there) and writes them with one `assignAllRunsViaScratch` rebuild of the class store (`flushCanonicalRuns`).
+
+**Why.** In the F3 goal block row 84 derives an equality for every pair of 31 equal intervals, 465 in one burst; 435 join members already in one class, yet each rewrote the complete views of all 165 scopes (76,725 rebuilds, about 64 s), and every rewrite moved the store's pool tail (1,474 s of one burst-24 call at about 3,000 scopes). Maintainer, verbatim: "refresh the class copies only when a class's membership changes (your watcher), plus one pool pass per refresh (fix 2)".
+
+**Unchanged by a redundant equality.** Membership, representatives (a function of membership and weak marks), weak marks (`updateWeakVariables` derives them from membership), the equality statement and its history line.
+
+**Trade-off.** A redundant pair's level and origin line stay in the scope's own class; the complete views, the canonical door's pair levels and the evidence-driven follow-up maintenance (OR, watch, completion records) see them only at the next rebuild of that view. A full gate must show every theorem kept. The one-pass write needs scratch for one copy of the store per refresh.
+
+**Rejected.** Dropping the redundant pair from the class entirely (loses its evidence); coalescing consecutive equalities into one refresh before the next canonical reader (every reader would first apply pending refreshes).
+
+
+<a id="d-408"></a>
+## D-408 — Configurable shared statement-filter prefix
+
+**Date.** 2026-09-26. **Approval.** The maintainer requests a reasonable increase of the filtered-expression count and a parameter instead of a hard-coded limit.
+
+**Problem.** The forward F3 accumulator-extension proof derives the old accumulator pair needed by a live unary inclusion rule, but that pair is eligible row 9452 of 13405 in the overall request filter. The fixed first-8192 selection excludes it. The old-index OR case cannot close, so the endpoint sibling remains pending. The dump and read-only Phase 2 probe establish this on matching inputs; this is a search-selection limitation, not a missing mathematical premise.
+
+**Choice.** `ProverParameters::maxNumberFilteredStatements` defaults to 16384 and is read from the batch's `prover_parameters` object. It counts accepted statements after scope/key/generation filtering and before stable name sorting, independently of the submatch limit. CPU request generation, CPU stump production, GPU filtering and GPU buffer planning use the same value. CPU index storage is allocated from the static per-worker scratch arena, with no heap allocation or oversized stack buffer.
+
+**Representation.** The existing unsigned 16-bit filtered-position code reserves zero for absent stump elements. The parameter is a positive integer at most 65535; invalid values assert. Growth-event order uses the entire representable position range, so later positions retain the same ascending leaf and descending prefix ordering. This changes no event payload width. A filter class includes the limit as its sixth equality-checked field; unequal limits never reuse one filtered result.
+
+**Boundary.** This is a configurable bounded prefix, not a continuation mechanism or a completeness guarantee. All other eligibility, iteration, OR-depth, submatch, ordering and provenance rules remain unchanged. The initial default doubles the old limit and covers the observed 13405 eligible rows; later workloads may require a different explicitly configured value.
+
+**Code.** `parameters.hpp::ProverParameters`, `prover.cpp::ExpressionAnalyzer::ExpressionAnalyzer` / `proveKernel`, `memory.cpp::generateEncodedRequestsStatic` / `produceExpressionStumps`, `gpu/phase2_projection.cpp::Phase2FilterScheduleArena::appendCall`, `gpu/phase2_projection.hpp::growthEventPathComponent`, and `gpu/phase2_cuda.cu::phase2FilterCountKernel` / `phase2FilterEmitKernel`.
+
+**Validation.** Direct CPU/GPU filter twins cover a small configured prefix, 8192, and 16384, with 9040 eligible rows after a rejected prefix. Separate tests cover distinct classes for distinct limits and ordering beyond 8192 through the largest representable code. The full GPU pipeline at the default passed 2059 native tests, 456 verifier tests, 185092 proof checks and connected Lean. F3 remained unproved; its later endpoint frontier can exceed this default, so batch-specific tuning uses the configuration parameter. Detailed trial evidence is maintained in the private task ledgers.
+
+<a id="d-406"></a>
+## D-406 — an implication inside an and waits for the and's non-implication elements (2026-09-26, maintainer-directed)
+
+**What.** A new rejected mechanism, `rejectedMapSubproof`. When an integration instruction lists an implication inside an and, the implication's boundary subproof opens only after every non-implication element of that and with fixed arguments (atomic, negated or compound) is known at the preparing scope or an ancestor, up to the scope's classes. Until then the implication is parked under the first unknown element and reopens when that element becomes known. Ands never park. The record reuses the `admissionMapIntegration` value family; revival is the map's own drain of known-row arrivals, not the deferred integration-prep drain. The key is canonical and the value verbatim (maintainer: the and's integration rule expects the instruction's own text); a class change stages its scope, and the same drain moves the parks under it to their canonical keys and rechecks them — a merge can make a gate known without any new row. There is no hook inside the class application, because reopening opens scopes. See [I-270](30_invariants.md#i-270).
+
+**Why.** F3's fold step integrates over every candidate accumulator g. Per candidate the and `implication32[2,11,g] ∧ in2[10,14,g] ∧ implication33[I,3,g,11,5]` opened both implication subproofs at once, although only candidates with g(10)=14 can succeed (F3 step block: 20 `implication33` subproofs plus two mailed candidates). The existing rules already build `in2[10,14,g]` for exactly the right candidates (trap run `rmsp_endpoint_trap_full_01`, `ledger/fta_f3_rt3_rejected_map_subproofs_ledger.md`), so the gate admits exactly their subproofs. Maintainer, verbatim: "ands do not park. imps park from inside an and if there is a non impl inside the and"; target picture "in2 admitted, subproof admitted, wrong subs rejected".
+
+**Rejected alternatives.** Reviving through the deferred integration-prep drain (maintainer: "it is new rejected mech"); parking whole ands (maintainer: ands never park); a copy technique for `in2[10,14,g]` (not needed: the end value is already built on the current input).
+
+**Trade-off.** An implication whose sibling element is proved only through the implication's own subproof would never open; the and's other elements must become known on their own. Every newly known row is staged while a park exists, and each staged row costs one shape lookup at the drain.
+
+<a id="d-415"></a>
+## D-415 — the necessity check matches only rule heads of the goal's sign (2026-09-27, maintainer-approved)
+
+**What.** `maskedHeadKey` carries the expression's sign (a leading `!` for a negated expression). `checkNecessityForEquality` (CNFE) builds the key of every chain head and of its probe with their signs, so a goal is matched only against heads of its own sign; the walk asserts it. See [I-242](30_invariants.md#i-242).
+
+**Why.** A rule concluding the goal's negation cannot help establish the goal, yet CNFE prepared its premises: `extractExpressionSpan` drops the leading `!`, and the operator walk, then the D-373 index and the D-376 masked key kept that byte-identical. In F3's induction-step block (`ledger/fta_f3_rt4_ledger.md`) the positive domain goals `in[x,[0,10]]` of two candidate sequences matched the contrapositive heads `!(in[x,[0,10]])` of the totality rules of 20 witness sequences; the prepared premises `!(existence0[1,x,W'])` opened 64 contradiction scopes (trap run `fta_f3_rt4_cnfe_trap_short_01`: every one of them from an opposite-sign chain). Those scopes can only prove the goal's negation, never discharged, and held 92.5 % of the block's rows; the block was the slowest of FTA (60.0 of 138.9 s, the slowest block of its phase for 53.6 s of the wall).
+
+**Trade-off.** A proof that relied on a side effect of an opposite-sign preparation is lost. In the reference run none of the 501 FTA chapters and none of the 1,463 incubator chapters used such a scope; the four FTA chapters with contradiction scopes prove a negated goal through its own scope or a same-sign rule's premise.
+
+**Validation.** Two full `--GPU` acceptance runs with both CNFE decisions (`fta_f3_rt4_accept_01` / `_02`, dump off): `theorems.txt` and the raw global theorem list byte-identical to the pre-fix full run, the two runs byte-identical to each other (theorem lists, processed theorem list, `GL_binary_FTA.json`); verifier 0 failures (186,343 checks); Lean kernel check passed (64 / 33 / 110 theorems); 2081/2081 unit tests (`originals_head_index` signed-key tests, `necessity_check.goal_prepares_only_heads_of_its_own_sign`). In the block, the goal door matches 0 opposite-sign chains (114 before) and no contradiction scope is opened; the prepared set is the former one minus exactly its 66 opposite-sign entries. FTA `Runtime prover` 100.07 / 108.25 s against 138.88 s; the block sums 23.3 s (60.0 s).
+
+<a id="d-416"></a>
+## D-416 — the goal rescan visits only the chains added since the previous rescan (2026-09-27, maintainer-approved)
+
+**What.** Every implication-installing deposit re-ran CNFE for every goal of the LB over every matching chain. The rescan now visits the chains above a per-LB floor, `HashMemory::goalScanChainMark` (every goal has been visited against the chains below it), and raises the floor when it ends; without a chain above the floor it visits no goal. The goal door still visits a new goal against every chain. The floor drops to zero when `sanitizeToBeProved` inserts a re-keyed goal and at every teardown, and follows the owner-less sweep's renumbering. See [I-272](30_invariants.md#i-272).
+
+**Why.** A repeated (goal, chain) visit changes nothing. Trap run `fta_f3_rt4_cnfe_trap_short_01`: 113,080 rescans of F3's induction-step block made 1,709,876 `prepareIntegration` calls, of which 4 changed a prepared entry — all in the 2 rescans whose goal had gained a chain; the rescan cost 16.8 of the block's 54.6 s in its explosion bursts.
+
+**Order.** The floor stays unchanged while a rescan runs, so a nested rescan inside a preparation visits the same range as the outer one: the first visit of every (goal, chain) pair happens where the full rescan made it, in the same goal-then-chain order; only repeated visits disappear.
+
+**Validation.** The same two acceptance runs (theorems, verifier and Lean as in [D-415](#d-415)); unit tests `necessity_check.first_chain_id_skips_the_earlier_chains`, `door_goal_rescan_prepares_new_chains_and_raises_the_floor` and `owner_less_sweep_remaps_the_floor`. In the block, 424 rescans visit no chain and make no `prepareIntegration` call (113,080 rescans, 1,709,876 calls before); FTA hash-burst walls 27 to 29: 1.8 / 1.6 / 1.0 s (16.3 / 27.7 / 8.9 s) for both decisions together. Without the flood the block no longer stalls after hash burst 29: its legitimate case branches keep deriving until F3 is proved, which moves about 12 s of work into hash bursts 30 to 36 (21.2 s against 9.0 s).
+
+<a id="d-430"></a>
+## D-430 — separate assumption witnesses from demand-created integration witnesses
+
+The maintainer chooses explicit forced names and a default integration minting depth of one. Structural disintegration continues at the limit; this preserves implication extraction while bounding new integration constructions. Ordinary algebraic generation remains independent. A single outer-expansion assignment makes nested expansion one construction step; parked records retain that assignment because their concrete nested source can contain witnesses introduced during the original expansion.
+
+All existing forced routes retain their admission behavior under the separate forced class. Ordinary integration facts and compact rules stay local to their block. Removing the two mail-permission stores also removes their processor/CUDA firing bookkeeping, projection columns and the two explicitly authorized dump sections. History still transports the evidence needed by exported conclusions. Canonical representatives prefer forced and then shallower integration witnesses. Byte identity to the parent is not a requirement; theorem-set preservation, valid exported proofs and deterministic current-version execution remain the verification obligations.
+
+
+<a id="d-431"></a>
+## D-431 — Separate algebra-input veto beside the integration-depth limit
+
+**Date:** 2026-09-29. **Status:** Maintainer-approved bounded experiment; native tests and full GPU proof validation passed.
+
+Depth limits the ancestry of ordinary integration witnesses, not breadth from many algebraic input names. Ordinary integration therefore additionally refuses a concrete source existence containing an existing algebra witness. The existing depth calculation remains unchanged. A source-input test is necessary because a marked admission key can omit the offending argument.
+
+The guard lives in `prover.cpp`, `ExpressionAnalyzer::disintegrateExpr2`, before witness selection, and shares the existing disabled-chain path with depth rejection. It does not discard the existence fact at rule firing. Complete token classification avoids rejecting ordinary names that merely contain a witness-like substring; temporary algebra inputs are recognized by their slot kind. Forced extraction and algebraic calculation remain available. No setting, allocation, persistent record or proof-history field is added. See [I-268](30_invariants.md#i-268).
+
+<a id="d-424"></a>
+## D-424 — Exact projected prefixes and shared immutable key bytes
+
+**Decision.** Count projected source/prefix byte-key unions per logical block before allocation. The projection's temporary key dictionary shares exact bytes across separate map entries. Count distinct prefixes and `(prefix, predicate)` transitions for exact prefix capacities. Reverse lookup keys point into the existing forward blob column. Preserve the 24-column transport numbering with an empty reverse-key byte column.
+
+**Motivation.** Full-run memory profiling identified multi-GiB projection key storage. The prior sizing budgeted complete source-key bytes again for derived prefixes, while each forward/reverse/map copy retained independent bytes.
+
+**Contract.** Sharing changes addresses and capacities only. Native maps, logical-block identifier spaces, map kinds, signed prefix masks, entry/owner order, complete owner blobs and device lookup results remain identical. One block never contributes membership to another. All offsets are rebased at shard adoption; reverse keys use the blob base.
+
+**Tradeoff.** A heap-free exact-count pass and private construction dictionaries add processor work and temporary main-pool pages. Smaller host/device allocation and transfer may repay that cost; the experiment's memory and runtime gates decide. No capacity policy or proof threshold changes.
+
+**Code.** `gpu/phase2_projection.cpp`, `measurePhase2SharedKeyUsage`, `measurePhase2ProjectionUsage`, `Phase2ProjectionArena::appendLogicalBlock`, `appendNextPredicateMaps`, `adoptShardColumn`; `gpu/phase2_cuda.cu`, `findProjectedReverseMapEntry`.
+
+**Validation.** Direct key-union/prefix-capacity, separate-membership, reverse-alias and shard-rebasing tests; invalid-mask and missing-singleton assertion probes; full GPU proof/artifact comparison and memory census. This decision describes an experiment, not an accepted runtime or memory result.
+
+
+<a id="d-432"></a>
+## D-432 — Share native key payload beneath canonical map interfaces
+
+**Decision.** Store byte-identical native hash keys and normalized-key values once per logic block, while keeping every map's local identifiers, membership and owner runs. Preserve the canonical per-map serializer interfaces; rebuild the shared dictionary on canonical reload and preserve it in raw eviction images. Collect unreferenced payload at quiescent worker seams and return empty pages through the existing arena policy.
+
+**Reason.** Native hash-family payload overlaps across overall, local, delta and working maps and their forward/reverse indexes. Physical sharing can reduce main-pool pressure without changing inference or reducing any owner tail. The canonical wire interface makes the representation change directly testable against the independently owned form.
+
+**Trade-off.** An extra shared lookup at insertion, indirection at reads, dictionary metadata and quiescent collection cost runtime. Private reference remapping is allowed only where no borrowed payload views survive. Resident memory reporting must count shared bytes once rather than counting every canonical copy. Existing pool and page capacities remain unchanged.
+
+**Validation.** Direct shared/owning byte twins, missing-key membership, independent map clearing, stable erasure, collection, cloning, canonical reload and invalid-ownership assertions; existing block canonical/raw tests; full GPU proof/verifier/Lean gates and sequential artifact comparisons. Experiment measurements and verdict belong to its ledger.
+
+
+<a id="d-419"></a>
+## D-419 — Extend addressing while retaining small pages
+
+**Decision.** Keep 2 KiB pages and the 6 GiB main pool. Add an adaptive L3 directory to paged vectors and hash indexes after the L2 directory fills. Preserve the existing smaller layouts, stable virtual identifiers and canonical serialization. Extend growth, lookup, reclamation, accounting and integer-bound checks together.
+
+**Reason.** A 24-byte OR posting key uses 64 slots in a 2 KiB page. A live posting index reaches 16,777,216 keys and exhausts the L2 directory while the main pool has substantial room. Retired keys account for only 0.016427% of that observed index. Enlarging every page would increase unrelated small-container and tail waste; cleaning retired keys cannot address the live footprint.
+
+**Trade-off.** An oversized container adds one directory lookup. The first L3 promotion adds three directory pages, or 6 KiB with the current geometry, without moving payload. Smaller containers allocate no additional pages. Three-level coverage is finite and does not supersede signed element/slot limits.
+
+**Validation contract.** Native small-page tests cross promotion/demotion and full L3 boundaries, preserve references and dense serialization, exercise retained-page reset and release every page. Negative subprocess tests check directory and signed-count overflow. A shortcut proof run and subsequent full dump-free theorem/memory comparison establish workload acceptance separately from container tests.
+
+
+<a id="d-433"></a>
+## D-433 — Reserved alias for single-pass expression cleanup
+
+This already-allocated identifier names the same expression-cleanup decision whose canonical entry is [D-405](#d-405). It introduces no additional runtime behavior and remains reserved rather than being reassigned. The retained main-landing allocation map records the alias under single-pass-expression-cleanup.
+
+<a id="d-436"></a>
+## D-436 — Bound host construction while retaining complete GPU work
+
+Keep existing GPU chunks, tasks and full device capacities. Build consecutive whole-block host windows targeting 256 MiB; an individually larger block receives its exact measured allocation. Each window uses existing parallel shared-slice construction. Ordinary shard adoption and streamed upload share one checked offset-rebasing implementation. Upload complete used ranges synchronously at accumulated device offsets, retain only source ordinals and name/rule sealing lookups, then destroy the window and collect its freed owner-thread heap. Device inference starts only after the entire image is sealed.
+
+This addresses the lifetime of 1119.43 / 1537.43 MiB of measured upload-only columns in the large IncubatorPeano1 / IncubatorGauss1 reference chunks. Savings depend on actual retained data, the largest window and allocator behavior; the target alone proves no saving. Additional transfers, thread windows and collections are the runtime tradeoff. A direct CUDA checksum compares a two-window image against the complete-column adoption oracle; lifecycle/offset assertions have negative subprocess coverage. Full proof identity, sequential determinism and runtime measurements decide acceptance.
+
+Source: phase2_projection.hpp, phase2ProjectionHostBytes and Phase2ProjectionArena::SealingOnly; phase2_projection.cpp, rebaseColumn and appendSealingProjection; phase2_cuda.cu, beginStreamedUpload and appendStreamedUpload; prover.cpp, ExpressionAnalyzer::proveKernel.
+
+**Amended** by [D-447](#d-447): windows target 128 MiB, adoption adds the stream bases, an upload thread overlaps each window's upload and sealing copy with the next window's construction (two windows alive, together within the former single 256 MiB window), persistent workers replace per-window threads, and the heap is collected once per chunk.
+
+
+<a id="d-434"></a>
+## D-434 — Return fragmented pages at the phase-3 worker boundary
+
+Phase 3 performs the same existing `steward::compactIfFragmented` check as phase 1, after scope cleanup and shared-key collection and before the memory census and claim release. The worker still owns the logic block exclusively. The existing fragmentation thresholds, page/block sizes, stable virtual page identifiers, logical content, canonical deload streams and proof order remain unchanged. Counterexample work keeps the existing compaction exclusion.
+
+The measured FTA reference held 1491.54 MiB of free pages inside its sampled blocks after phase 3. Earlier reclamation can reduce retained pool storage but does not automatically decommit operating-system pages or lower the allocation high-water reached before cleanup. Additional page copying is the runtime tradeoff. Existing direct compaction tests verify byte preservation, whole-block reclamation and the below-threshold no-op; full GPU artifact comparisons and measured runtime decide experiment acceptance.
+
+Source: `prover.cpp`, `ExpressionAnalyzer::performElemPhase3`; `memory_infra/steward.hpp`, `compactIfFragmented`; `memory_infra/lb_arena.cpp`, `LbArena::compactPages`.
+
+
+<a id="d-435"></a>
+## D-435 — One dependency pair with two ordered traversals
+
+Canonical dependency metadata uses one exact pair-to-node map, two head maps and one recyclable linked node per live edge. This replaces independently stored forward/reverse pair keys and a separate edge-revision map. The concrete payload is 44 bytes per live edge, versus 92 in the separate representation; capacity, page padding and token/head maps are additional and must be measured separately. Stable nodes avoid rewriting the surviving list order during pair-table compaction. A node carries its current pair identifier so token/record endpoints do not need another copy.
+
+Every insertion gets the same caller-owned monotone revision as before. Deleting and reinserting an edge places it at both heads with a fresh revision. Existing equality-version observation and newest-prefix selection are unchanged. Storage is arena-backed and derived; raw eviction and canonical rebuild keep their existing lifecycle. The tradeoff is an extra pair-row read during traversal in exchange for less duplicated data and fewer exact-pair hash indexes. An independent separate-posting test oracle checks ordered selection under churn; complete proof identity and runtime decide acceptance.
+
+Source: `memory_infra/canonical_dependency_edges.hpp`, `CanonicalDependencyEdges`; `memory_infra/canonical_use_index.hpp`, `CanonicalUseIndex`.
+
+
+<a id="d-438"></a>
+## D-438 — An OR with a disjunct that already holds opens no case split, and an open split whose disjunct comes to hold is retired (2026-09-29,, maintainer-approved experiment)
+
+**Decision.** After the route probes, `prover.cpp::consumeOrLeavesCohort` asks `orDisjunctTrueAt` (`prover.hpp`) for every disjunct whether it already holds at the OR's scope: known there or at an ancestor, literally or up to that scope's complete classes (`elementKnownAtOrAbove`), a reflexive equality, or a positive conjunction whose flattened elements all hold. If one holds, the OR opens no cohort by any route and is not parked: a disjunct that holds keeps holding (a scope's facts only accumulate and its classes only merge), so a parked satisfied OR could never open. The probes keep their own consumption behavior (the D-358 stale-demand erase). The retire-later half, `prover.cpp::retireSatisfiedOrCohorts`, runs in the closure sweep after `retireDuplicateOrCohorts` and before `freezeResolvedOrBranches` / `drainPendingOrReleases`: an open cohort whose live disjunct or queued disjunct has come to hold at its parent scope is retired with the duplicate-loser steps (live branch to `pendingWipeScopes`, scheduling rows erased, frozen branches, bookkeeping and history kept).
+
+**Reason.** The branch of a disjunct that already holds equals its parent scope. Convergence needs the goal in every branch, so such a split can only conclude what the parent already proves. Evidence from the RT6 diagnosis dump of the slowest FTA block: 316 of 339 cohorts (524 of 547 case scopes) had a true disjunct at the parent before the burst that created them, mostly `or7` from the append definition, whose value fact `in2[x,y,G]` was itself derived from one of the two disjuncts.
+
+**Trade-off.** The lost channel is the negation a refuted sibling branch would emit at the parent. The D-358 known-leaf case no longer parks; its stale demand is still consumed (unit test updated with the maintainer's approval). Each OR deposit that would open or park pays one known-probe per disjunct, and each closure sweep one probe per still-open disjunct of every open cohort.
+
+**Validation.** Unit tests `or_disjunct_true_at_probe`, `satisfied_or_opens_and_parks_nothing`, `retire_satisfied_or_cohorts_live_and_queued` and the updated `ordis2_route_c_skips_known_leaf_and_consumes_stale_demand`; one full `main.py --GPU` run against the RT6 reference comparing per-batch theorem sets, verifier, Lean check and FTA runtime (ledger `fta_f3_rt6_satisfied_or_ledger.md`).
+
+<a id="d-437"></a>
+## D-437 — A conjunction of equalities ranks as an equality in the case release order (2026-09-29,, maintainer directive)
+
+**Decision.** `prover.hpp::orDisjunctTier` gives a positive `and`-category disjunct whose flattened elements are all positive equalities the highest tier among its elements (1, or 2 when an element carries an anchor-slot argument); one non-equality element, or a negation, keeps tier 0.
+
+**Reason.** The tiers exist to release assumed-equality branches last ([I-174](30_invariants.md#i-174)). `and27` (two equalities) counted as a non-equality and, having more tokens, released before `in2` in all 249 `or7` cohorts of the RT6 slowest block, so the appended index and value were assumed first.
+
+**Trade-off.** One compiled-definition probe per ranked conjunction. The release order changes; proof validity does not.
+
+**Validation.** Unit test `pick_top_or_disjunct_ranks_equality_conjunctions_as_equalities` and the same full run.
+
+<a id="d-439"></a>
+## D-439 — Exclusive sealed slices share backing blocks
+
+Small sealed allocations use exclusive slices leased from ordinary main-pool blocks. Sixteen aligned slices fit in a block, with in-block allocation metadata. A set owns its chain, payload and poisoning range; backing storage returns only after the last live slice. Allocations above the slice capacity keep the existing private byte arena and full-block contiguous limit. The sealed allocator has a separate mutex, always acquired before the ordinary pool mutex. Logical record order, lifecycle and content do not depend on block or slice addresses. Source: `global_memory_manager.cpp`, `GlobalMemoryManager::acquireSealedSlice` / `releaseSealedSlice`; `sealed_pages.cpp`, `SealedPageSet::alloc` / `freePages`.
+
+<a id="d-440"></a>
+## D-440 — Share immutable rule value bytes across independent maps
+
+The four hash memories bind encoded rules, normalized subkey records, whole-key owners and remaining-argument/copy owner records to the block's immutable shared byte dictionary. Each map keeps its own membership, ordered runs, owners and canonical offsets. A four-byte positive handle names page-contained shared bytes; an opted-in record store uses a negative handle for a larger private paged record. Normalized-key value stores retain their original page-contained contract. Large private records are compacted at the same quiescent shared-pool collection seam. A one-owner removal splices the record's handle out of its run (`HashMap::eraseBlobFromRun`) instead of re-assigning the survivors, which would re-intern each one ([D-452](#d-452)). Full canonical streams reconstruct identical bytes; raw images retain the private columns and handles. Source: `cold_hash_map.hpp`, `BlobCsrValueStore::internSharedBlob`, `blobChunk`, `compactOversized`; `hash_memory.hpp`, `HashMemory::bindSharedBytes`. The experiment measures total dictionary/reference overhead as well as removed copies; tiny records need not yield a net saving.
+
+The maintainer approved this independent memory experiment. Process savings and runtime costs require measurement against the common parent; no inference policy or capacity limit changes.
+
+<a id="d-443"></a>
+## D-443 — A finished integration root removes everything derived from it (2026-09-30,, maintainer design)
+
+**Decision.** Every integration derivative belongs to a node of one root task and inherits that root verbatim ([I-284](30_invariants.md#i-284)). A root finishes when its expression, or for a single marker at a declared output slot any value, is known at its scope or an ancestor up to the scope's classes. The finish wipes the derivatives of the root's unshared nodes — integration admission entries, subproof parks, installed rules (exact removal), algebra permissions, admission-set keys, triggers and opened scopes — once, in the scope cleanup just before the settled-subproof retirement. Facts, proof history and prepared gates stay. Maintainer answers during planning: sub-tasks raised by marker firings inherit the root of the rule that fired; installed rules and algebra permissions are wiped too.
+
+**Reason.** Nothing linked integration work to the task that caused it, so work opened for a task outlived the task. In the slowest FTA block the fold task `fold[1,3,4,5,int_0_lev_6_4,2,rec,marker]` is solved at main burst 8, while the subproof of its losing accumulator candidate `int_1_lev_6_10` grows from 3.5 k rows at that burst to 16.9 k at the end (about a third of the block's rows).
+
+**Trade-off.** Admission keys are removed without being used (the finish settles the demand's purpose), a deliberate exception to [I-200](30_invariants.md#i-200) and [I-22](30_invariants.md#i-22). A requester of another root that reaches a gate only after the wipe finds the gate prepared and the work gone; before the wipe the same reach marks the node shared and it survives. Sharing is marked per node: a subproof opening, a case split and a rule installation are nodes of their own, so one incidental reach protects only that opening. Bookkeeping per derivative: one owner record or one 8-byte task field per record; the GPU sealing retains one packed rule copy per projected LMV (host only; device kernels unchanged).
+
+Runtime interacts with the statement window ([D-408](#d-408)): a block made smaller keeps late eligible statements inside the `maxNumberFilteredStatements` prefix longer, so search the window used to cut short can run. In the slowest forward-F3 block this outweighs the saving (below); the maintainer keeps the wipe and treats the window as its own question.
+
+**Validation.** Dry run `fta_f3_rt7_ftw_dry_03` (selection reported, nothing removed): proof output byte-identical to the parent; the fold root finishes at burst 8 and selects the `int_1_lev_6_10` subproof, 4 entries and 3 rules with no shared node. Shortcut `--GPU` run with the wipe (`fta_f3_rt7_ftw_wipe_02`): every parent theorem line kept, FTA 111, verifier 0 failures. The slowest block is smaller by exactly the removed subproof through burst 27 (34,531 against 51,442 statements at burst 27; bursts 11-27 about 14 worker-seconds faster), but without the wipe the block's eligible rows exceed the 16,384-row window from burst 25 on, which drops the late typing facts of three accumulator-candidate subproofs; with the wipe the window binds only from burst 28, those facts fire, and bursts 28-31 add 63 k statements without proving the block's goal. Slowest block 85.6 against 53.6 worker-seconds, FTA prover 140.2 s against 96.6 s. Maintainer decision (2026-09-30): keep the wipe. Unit tests in `tests/test_integration_root.cpp`; the two full `--GPU` runs are recorded in the ledger `fta_f3_rt7_finished_task_wipe_ledger.md`.
+
+<a id="d-444"></a>
+## D-444 — A root finishes only through an integration product (2026-10-01,, maintainer design)
+
+**Decision.** The finished-task wipe ([D-443](#d-443)) counts a root as finished only through a row marked as an integration product (`StatementFlags::integrated`), not through any known value ([I-284](30_invariants.md#i-284)). A row is marked when it arrives as the head of a firing whose rule copy an integration task owns (`FiringRecord::ruleCopyOwner`, now set on head firings too, mapped through `integrationCopyOwners`; the mark rides the internal-mail signal) or by mail carrying the integrated bit the sender set for such a row it shipped. Maintainer: "solution wld be stopping integration if another integration has finished, not just some value was built"; "expr arrives fired by some integration rule... every rule has original integration goal"; mail first excluded for the first trial, then "ok, lets use mailed too to stop integration".
+
+**Reason.** With the restriction-keeps-the-fold lemma broadcast, the reverse-F3 induction step block learns the fold of the restricted sequence from the lemma at burst 9 with the premise value 13. Under the any-value test the root finishes and the wipe removes the integration rule (`fXY` + `and0` -> `existence2`) at the end of burst 9, before it fires. The fold built by that integration has the running product's value g(9), the only fact tying g(9) to 13, so reverse F3 is lost and its block runs 35 bursts instead of 13 (FTA prover 70.4 -> 110.9 s; dumps `fta_f3_rt7_mech_revf3_ref_dump_01` / `fta_f3_rt7_mech_revf3_dump_01`).
+
+**Trade-off.** A root finished by a lemma's value keeps its integration work alive until an integration product arrives, so the wipe fires later or not at all in such blocks. First-trial limits: an already-known row that an integration fires again is not marked (the firing record is `alreadyKnown` and deposits nothing), a row known only at an ancestor scope is not upgraded, a row marked after it shipped is not re-mailed, and rows with integration witnesses never mail (I-277), so they never carry the bit. Each limit can only delay a finish. Layout: the internal signal's iteration moves to bits 5+ and the mail flag's iteration to bits 4+.
+
+**Validation.** Pending: full `--GPU` run with the lemma broadcast; reverse F3 must be proved again, all earlier theorems kept, verifier and Lean clean; runtime against the 70.4 s reference.
+
+<a id="d-445"></a>
+## D-445 — An induction admission serves only a disintegration of a numbers-only original (2026-09-30,, maintainer design)
+
+**Decision.** An admission that comes from an induction chain (a recursion-owned template, [D-413](#d-413)) is used by a disintegration only when the original expression being disintegrated has nonempty decimal or `rec` arguments only ([I-285](30_invariants.md#i-285)). It applies where such a key fires on a disintegration product and moves the chain forward (`updateAdmissionMapRecursion` at the deposit door) and, as the maintainer asked to try every proposal ("TRy ur proposals. all. if it kills a proof, it can be removed"), in the disintegration admission of operator outputs, where a recursion-owned value admits a witness and moves its chain in the commit (`isAdmitted`, including the parked-source revival probe). Maintainer: "an admission key comes from induction hypothesis. then original expression must have only numbers as arguements. no hidden variables"; "it is used for disintegratioon directly and when it fires it moves the chain forward"; the same methodology as the integration depth gate, "restricted additionally in case of induction admission". Numbers include `rec` (maintainer answer).
+
+**Reason.** In the forward-F3 induction step (the slowest FTA block of RT7) the hypothesis key `(sequence[1,4,2,9,marker])` fired for every sequence on [2,9] a disintegration produced: the restriction of the step sequence, which the hypothesis needs, and 18 appends `int_1_lev_6_176…210` of the witness sequence `int_0_lev_6_8`. Each firing filed `in2[9,marker,W]` and `fold[1,3,4,5,W,2,rec,marker]` and prepared a fold integration; the block ended with 38 fold instructions (dump `fta_f3_rt7_fresh_dump_01`).
+
+**Rejected.** Gating integration preparation at the install and the derived demand's own arguments (first trial, ): not this design. Gating the integration route that mints the appended sequences: out of scope by decision.
+
+**Trade-off.** A search restriction, not a refutation: a proof that needs an induction chain moved by a product of a dirty original is lost. The maintainer allows removing the gate if it kills a proof.
+
+**Validation.** Full `--GPU` run `fta_f3_rt7_no_hidden_full_01` with both gates: theorem counts 1036 / 158 / 140 / 210 / 50 / 8 / 41 / 111 and `theorems.txt` unchanged, verifier 188,425 checks with 0 failures, Lean kernel check passed. FTA prover 95.5 s against 140.0 / 141.6 s; the forward-F3 induction step block 43.1 against 85.6 worker-s.
+
+<a id="d-446"></a>
+## D-446 — An induction chain does not accept the hypothesis' own constructions (2026-10-01,, experiment)
+
+**Decision.** The witnesses published by the forced disintegration of a statement that the installed induction implication fired ([D-356](#d-356)) are recorded per logic block (`Memory::recursionHeadWitnesses`), and a recursion-owned admission template ([D-413](#d-413)) never accepts one of them as its bound argument: `updateAdmissionMapRecursion` files no derived entry, enrolls no product of recursion, prepares no integration and revisits nothing for it ([I-286](30_invariants.md#i-286)). Maintainer: "Try it on a RT7 subbranch" (option 1 of the useless-scopes diagnosis).
+
+**Reason.** In the forward-F3 induction step (the slowest FTA block) the hypothesis rule fires `fold[1,3,4,5,int_0_lev_6_4,2,9,it_1_lev_6_67]`; its forced disintegration mints the accumulator `force_lev_6_71`, a sequence on [2,9] that meets the hypothesis premise demand `(sequence[1,4,2,9,marker])` again. The derived task `fold[1,3,4,5,force_lev_6_71,2,rec,marker]` never finishes; its false candidate subproof and three OR branches held 33.9 percent of the block's row-bursts and 5,934 of the 16,384 request-window rows at the frame where the correct candidate's last case opened (`ledger/fta_f3_rt7_useless_scopes_ledger.md`).
+
+**Trade-off.** A search restriction: a proof that needs an induction chain moved by the hypothesis' own construction is lost. Other templates, the block goal's integration demands (they still append to `force_lev_6_71`) and the forced disintegration itself are unchanged.
+
+<a id="d-453"></a>
+## D-453 — Canonical forms and cleanup verdicts read the recorded representatives (2026-10-01,, RT7 open-ideas round)
+
+**Decision.** `canonicalFormAtScope` and `cleanUpExpressions` stop walking every class of a scope's complete view per call and per row. Each member token's class representative comes from `canonicalMemberRepresentatives` (normal half for canonical forms, re-chosen live only when the recorded member turned weak; special half for the cleanup's first-special-member test), and a class is located only where its contents are needed: a pair's levels and locality, the live re-choice, a dropped delta row's class order ([I-287](30_invariants.md#i-287)).
+
+**Reason.** In the slowest FTA block the per-class walk cost 1.6 s of canonical door, 4.1 s of OR cache fills (canonical forms with evidence) and 5.0 s of cleanup filters in its straggler bursts 23-30, which set the FTA wall there; batch-wide 9.45 + 8.9 + 16.1 worker-seconds.
+
+**Rejected.** A persistent member-to-class index (new deloaded state for a lookup only the evidence path needs); taking the recorded representative unconditionally (a weak update in a scope whose refresh was skipped would make it stale).
+
+**Trade-off.** The output depends on the representative map being exact; the weak re-check covers the one known gap. Name-kind cache fills keep the same token set but may change order, so that cache's deload bytes may differ from the parent; proof output does not.
+
+**Validation.** Full `--GPU` oracle run `fta_f3_rt7_ic_oracle_02` (every call compared with the per-class walk): 0 mismatches over 4.8 million forms and 2.8 million cleanup verdicts; counts 1036 / 158 / 140 / 210 / 50 / 8 / 41 / 111, `theorems.txt` and the global theorem list byte-identical to the reference, verifier 188,425 checks with 0 failures, Lean passed.
+
+<a id="d-448"></a>
+## D-448 — Next-predicate words gate bound arguments before candidate preparation (2026-10-01,, RT7 open-ideas round)
+
+**Decision.** The four-byte word of each exact-prefix transition entry (`Phase2ProjectionArena::appendNextPredicateMaps`) carries, beside the polarity mask, up to two argument slots of the appended premise that every whole key and subkey of the transition binds to the same normalized prefix variable (`mergeNextPremiseBindings`, `packNextPredicateWord`). Both cheap-gate kernels resolve the bound variables against the node's normalization-variable pool (`growthArgumentGate`) and reject a statement whose argument identifier differs before `preparePooledGrowthCandidate`. Entries stay eight bytes; candidate positions, ordinals, windows, accepted events and request order are unchanged ([I-248](30_invariants.md#i-248)).
+
+**Reason.** Such a statement normalizes outside every key of the transition, so the exact key probe rejected it after the full candidate preparation. In FTA the gate rejects 40 % of the sign-admitted positions (42.0 % of all 37.7 G enumerated positions pass it, 12.1 % pass all cheap gates).
+
+**Rejected (for now).** Argument-value ranges that would skip enumerating those positions altogether: they need a per-slot ordering of every filter class, a projection-format and sizing change, for at most the 58 % of positions that sign and argument checks reject; enumeration is not the dominant device cost.
+
+**Trade-off.** Two slots per transition; a transition whose keys disagree on a slot leaves it unbound. No storage growth.
+
+**Validation.** Full `--GPU` run `fta_f3_rt7_gag_full_01`: theorem counts 1036 / 158 / 140 / 210 / 50 / 8 / 41 / 111, `theorems.txt` and the global theorem list byte-identical to the reference, verifier 188,425 checks with 0 failures, Lean passed; FTA GPU device time 27.21 -> 24.19 s, Phase 2 wall 36.59 -> 33.74 s.
+
+<a id="d-441"></a>
+## D-441 — Frontier levels stay in a pass-local device store (2026-10-01)
+
+**Decision.** `CudaPhase2GrowthBuffer::runRequestGrowthWindows` keeps each frontier level in two device buffers of `frontierStoreRecords` rows: the level being grown and its children, swapped at every level end. Pages are read where they lie; the host tracks upper bounds of the seed, child, event and request append counters and reads the exact counters only before a window the bounds cannot cover, at prefix windows and at level ends. A buffer that cannot take the next window spills its rows to host static-pool pages; spilled pages later upload into the consumed buffer. Request drains keep the frontier counters. The level-end cutoff prunes host pages and device rows (`pruneDeviceFrontierByCall`). The planner sizes the store from a new `frontierStore` work dimension (unclipped measured level, raised by spill pressure) up to 4,194,304 rows per buffer. Nothing in the store outlives the pass.
+
+**Reason.** Nsight (`fta_f3_rt7_gag_nsys_01`) showed the GPU idle 53 % of FTA Phase 2. The host-driven loop downloaded every probe window's children and re-uploaded every level: 75,095 transfer calls and 14.4 GB per FTA run, with a synchronous counter read after every probe.
+
+**Rejected.** Children kept only in the per-window output buffer with exact accounting: probe windows average about 228 k survivors against a 262-524 k buffer, so the one-child-per-survivor bound would force a download almost every window. Data kept on the GPU across passes (maintainer: the discovery phase processes very many logic blocks; every allocation stays pass-local).
+
+**Trade-off.** Up to 448 MiB of the device budget goes to the store when the measured level demands it, so other processing columns plan from the remainder. Processing order within a level changes (device rows before spilled pages); results are order-independent by the canonical sort. Byte identity with the previous route is not required by the maintainer (functional equivalence, every theorem, determinism).
+
+**Validation.** Shortcut `fta_f3_rt7_gpu_store_short_05`: 2230/2230 unit tests, 111 FTA theorems, shortcut `theorems.txt` byte-identical to the gate branch's shortcut runs; FTA Phase 2 wall 33.74 -> 29.60 s, device route 24.21 -> 20.70 s, frontier transfer calls 75,095 -> 14,717 (24 spills), transferred bytes 14.4 -> 3.4 GB; candidate positions, gate nodes, firings and requests unchanged.
+
+<a id="d-449"></a>
+## D-449 — Seed windows run one thread per (call, stump) pair (2026-10-01)
+
+**Decision.** `CudaPhase2GrowthBuffer::runRequestGrowthWindows` launches `phase2GrowthSeedPairsKernel` for each seed window: thread `p` owns call `callBegin + p / stumpWindow` and run ordinal `stumpBegin + p % stumpWindow`. The per-pair body (`seedGrowthPair`: target length, filtered positions, gates, stump-alone probe, event and request appends, first-frontier node) is shared with the one-thread-per-call `phase2GrowthSeedKernel`, which the whole-frontier reference path keeps. The host window and its capacity bound (one node, event and request per pair) are unchanged.
+
+**Reason.** Straggler bucket tasks have few growth calls and long stump runs. With one thread per call, 234 of the 441 FTA seed launches ran on a single 256-thread block (longest launch 533 ms) and the seed kernel took 4.0 s of GPU time on 1-2 of the 36 streaming multiprocessors (Nsight `fta_f3_rt7_gpu_nvtx_01`).
+
+**Rejected.** One block per call with a block-strided stump loop: still one multiprocessor per call when a straggler has one or two calls.
+
+**Trade-off.** Calls with shorter runs than the window leave their surplus pairs as early-exit threads. Appends already raced across calls, and every downstream order is canonical, so records are unchanged.
+
+**Validation.** Shortcut `fta_f3_rt7_gpu_seed_nvtx_02` (Nsight with NVTX): 2230/2230 unit tests, shortcut `theorems.txt` byte-identical to the step-A runs; seed GPU time 4.31 s in 441 launches -> 0.10 s in 396 pair launches (longest 13 ms). Every other kernel ran 15-25 % slower in that run, the order-independent filter and radix kernels included, and the processor workers 9-17 % slower: a slower clock state of the laptop, so its Phase 2 wall (33.94 s against 33.20 s) does not measure this change. The removed 4.2 s of seed time lies on the synchronous device route.
+
+<a id="d-442"></a>
+## D-442 — The CUDA route runs a straggler's buckets in round 1 (2026-10-01)
+
+**Decision.** On the CUDA route `proveKernel` deals each producer's stumps (`dealProducerStumps`, the classify step's former inline code) right after round 1's producer pool has joined and closed its executor window, and appends the bucket parts to round 1's task list, page store and per-task columns. The CUDA chunk then packs, projects, routes and finalizes the unsplit and the straggler blocks together; the pass loop ends after one round. The processor route keeps round 2, because its parts are threads that start only once the producers' stumps exist.
+
+**Reason.** Round 2 was a second chunk per iteration for one or two straggler blocks: its own single-threaded projection (0.06-0.12 s per block), plan, buffers, device route and finalize sweep. NVTX `fta_f3_rt7_gpu_nvtx_01`: round 2 held 22.3 of the 35.3 s Phase 2 wall with 8.9 s GPU idle (projection 2.1 s, finalize 2.1 s, route-internal 3.3 s). In one chunk the straggler projections run on the shard workers beside the unsplit blocks, and the stragglers' finalize runs in the same parallel sweep.
+
+**Rejected.** Building round 2's projection on a helper thread during round 1's device route: it hides only the projection, keeps the second route and finalize sweep, and needs a second steward claim path concurrent with the device window.
+
+**Trade-off.** Round 1's chunk grows by the straggler blocks and their buckets; the planner and packing size it like any chunk (a chunk that does not fit splits as before). Pass diagnostics report one pass per iteration on the CUDA route.
+
+**Validation.** Shortcut `fta_f3_rt7_gpu_round_nvtx_01` (Nsight with NVTX): 2230/2230 unit tests, shortcut `theorems.txt` byte-identical to the step-A runs; 39 passes instead of 75 (no round 2 on the CUDA route). FTA Phase 2 wall 33.94 -> 28.90 s against the seed-kernel run in the same slower clock state (radix single-tile kernel 34.0 and 33.6 microseconds per launch; 29.7 in the faster reference `fta_f3_rt7_gpu_nvtx_02`, 33.20 s): GPU idle 17.75 -> 14.13 s, kernel time 15.15 -> 13.92 s (fewer, larger windows).
+
+<a id="d-450"></a>
+## D-450 — Probe windows run two deep; small read-backs publish on the compute engine (2026-10-01)
+
+**Decision.** In `CudaPhase2GrowthBuffer::runRequestGrowthWindows` a probe window is at most half the window capacity. After each probe launch `publishDeviceWords` writes the four leading append counters into one of two host-mapped snapshots, followed by an event. Before the next window the host tightens the child, event and request bounds from the older snapshot (its exact counts plus one row per survivor of the newer, still running window) and settles exactly only when even that cannot cover the minimum window; spills and drains still use exact counts. Every exact read (the counters, a candidate window's survivor count, the candidate node windows, a prefix window's attempt total) also publishes on the compute engine instead of a device-to-host copy, and a prefix window reads its node selections and attempt total once instead of twice. The probe kernel strides over survivors and the windowed driver launches at most the resident blocks.
+
+**Reason.** The request capacity equals the probe window, so every full window forced a blocking read: 20,323 of 25,258 exact reads in FTA (`fta_f3_rt7_gpu_nvtx_01`). Each small device-to-host copy also paid a copy-engine switch on both sides under the Windows display driver model (medians: kernel end to copy 35.3 microseconds, copy to next kernel 16.0).
+
+**Rejected.** Lagged snapshots taken by asynchronous device-to-host copies (`fta_f3_rt7_gpu_lag_nvtx_01`): every snapshot copy paid the engine switch on both sides, and Phase 2 grew from 28.90 to 30.71 s. A request capacity of twice the window from the planner: it scales the ordering and evaluation buffers with it and moves every plan.
+
+**Trade-off.** Twice the probe launches; the grid-stride kernel removes their partial last waves. Window boundaries follow only device counts read after explicit event waits, so runs stay deterministic.
+
+**Validation.** Shortcut `fta_f3_rt7_gpu_pub_nvtx_01` (c7ffccfa2): 2231/2231 unit tests, shortcut theorems byte-identical; exact reads 25,258 -> 9,150, probe windows 20,719 -> 37,647; Phase 2 28.90 -> 27.09 s at comparable clock state (radix single-tile 33.6 and 32.2 microseconds per launch), GPU idle 14.13 -> 12.07 s. Events, requests, firings, frontier sizes and the 4.57 G probed survivors are identical; the probe kernel takes 4.38 -> 4.82 s over twice the launches. The grid-stride probe and the whole-key skip (`fta_f3_rt7_gpu_stride_nvtx_01`, 347948fcb) left the probe kernel at 4.84 s (no measurable effect); Phase 2 25.65 s at a faster clock state (30.5 microseconds).
+
+<a id="d-447"></a>
+## D-447 — Construction windows overlap their upload, adopt at stream bases and share persistent workers (2026-10-01)
+
+**Decision.** The CUDA projection in `ExpressionAnalyzer::proveKernel` keeps the [D-436](#d-436) windows and changes how they are built and uploaded:
+- Each window targets 128 MiB instead of 256 MiB, so the two windows alive at once stay within the single-window bound of D-436.
+- One `gpu::Phase2ProjectionWorkers` set (twelve threads) lives for a chunk and runs every window's shard builds and every column-parallel shard adoption; no thread starts per window.
+- `Phase2ProjectionArena::adoptShards` takes the uploaded column ends as stream bases and adds them while it rebases the moved references, so a window needs no separate `rebaseForStream` pass.
+- A `gpu::Phase2WindowUploader` thread uploads window k (`CudaPhase2ProjectionBuffer::appendStreamedUpload`) and appends its retained sealing data (`Phase2ProjectionArena::appendSealingProjection`) while window k + 1 is built. Windows run in submission order and are released on the thread that allocated them, so at most two windows are alive.
+- `mi_collect(true)` runs once per chunk after its last window instead of after every window; the per-iteration collect of [D-426](#d-426) is unchanged.
+- `CudaPhase2ProjectionBuffer` allocates the pinned staging of its deferred columns on the first deferred upload; the streamed production path never stages.
+
+Nothing is kept for any logical block across passes; the workers and the upload thread hold only the windows in flight.
+
+**Reason.** Traced IncubatorPeano1 (`fta_f3_rt7_incube_nvtx_01`): the projection took 25.63 s of a 39.02 s Phase 2 while the GPU was busy 8.05 s. Of the projection, per-window collects took 2.21 s, the second rebase pass 1.84 s, the synchronous pageable upload 5.05 s and the sealing copy 1.25 s on the critical path; the last of twelve projection threads started 4.3 ms into each of 174 windows; 396 per-chunk `cudaHostAlloc`/`cudaFreeHost` calls (0.76 s, up to 135 MiB pinned) staged columns the streamed path never used.
+
+**Rejected.** Two fixed 256 MiB pinned windows per process: the projection is the process working-set peak step (5,272 MiB in the reference) and permanently pinned memory would also raise phases 1 and 3; the upload thread hides the pageable copy instead.
+
+**Trade-off.** Twice the windows (per-window barriers and adoption passes): projection +0.3 to +0.5 s in IncubatorGauss1, Gauss and FTA against a 256 MiB target. With 256 MiB windows the two live windows raised IncubatorPeano1's peak working set 5,272 -> 5,527 MiB (`fta_f3_rt7_incube_windows_nvtx_01`); at 128 MiB it is 5,226 MiB, heap committed peak 945 MiB (reference 1,129), largest host projection 454 MiB (reference 454), pinned staging 0 (reference 135 MiB).
+
+**Validation.** `fta_f3_rt7_incube_windows_nvtx_01` against `fta_f3_rt7_incube_nvtx_01` (both full `--GPU` runs under Nsight Systems): theorems and all 330 processed proof-graph files byte-identical; 2,237 native unit tests and all 7 negative assertion probes (4 new) pass. IncubatorPeano1 projection 25.63 -> 18.02 s (main-thread ranges: workers 14.15, upload wait 1.21, adoption 1.04, collect 1.08, release 0.41; upload 5.95 s and sealing copy 1.84 s now on the upload thread), Phase 2 39.02 -> 29.16 s, prover 71.64 -> 62.53 s; IncubatorGauss1 projection 8.27 -> 6.66 s. FTA keeps one window per chunk and is unchanged (projection 4.21 -> 4.19 s). With the 128 MiB target (`fta_f3_rt7_incube_windows128_nvtx_01`, outputs byte-identical): IncubatorPeano1 projection 17.5 s, prover 62.34 s. The incubator device route also ran faster (5.75 -> 3.76 s) with identical kernels and launches whose durations fell about 25%: GPU clock state, not attributed to this decision.
+
+Source: phase2_projection.hpp, Phase2ProjectionWorkers and Phase2ProjectionArena::adoptShards; phase2_cuda.hpp, Phase2WindowUploader; phase2_cuda.cu, CudaPhase2ProjectionBuffer::beginPhase2Upload; prover.cpp, ExpressionAnalyzer::proveKernel.
+
+
+<a id="d-451"></a>
+## D-451 — One deactivation sweep per theorem drain; order-free activity probes (2026-10-01)
+
+**Decision.** `ExpressionAnalyzer::deactivateUnnecessary` no longer ends with the tree-wide `deactivateRecursively` sweep; it sets `deactivationSweepOwed`. `ExpressionAnalyzer::proveKernel` settles the owed sweep once, right after the two theorem drains (the `updateGlobal` loop and `drainUpdateGlobalSingleChapter`), before the twin and subtree deactivation drains and the barrier discharge read `isActive`. An iteration whose drains ran no complete walk owes no sweep. `proveKernel` asserts at entry that no sweep is owed (every walk runs inside those drains). The per-theorem twin retirement, auxiliary retirement and chain bubble-up stay per walk.
+
+**Reason.** IncubatorPeano1 spent 7.1-7.6 s per run in `drainUpdateGlobalSingleChapter` (`fta_f3_rt7_incube_seams_03`): two walks per theorem (theorem and negated-head twin, [D-230](#d-230)), each closing with a full sweep of the 1,771-block tree (5.18 s for 1,890 sweeps) — the largest part of the time outside the phase walls. The walks' chain bubble-up added 2.32 s: asking whether a chain block has an active child went through `SimpleMapStore::forEachChild`, which collects and sorts all children by decoded routing key, and the anchor block on every chain has 1,756 children.
+
+**Why the result is unchanged.** The sweep flips a block inactive only when it has no active child, no main-scope goal and is not primed; it never reactivates. One post-order sweep therefore reaches the closure of that rule, and the closure after all of a drain's flips is the same whether intermediate closures ran or not. The per-walk steps either flip blocks unconditionally (twins, auxiliaries) or apply the same rule to non-primed chain blocks (bubble-up), and no other reader in the drain loop consults `isActive`. Only one case differs: when a drain's last walk returns early (path missing, names missing) after an earlier complete walk, the old code left that walk's twin flips unswept until `prove`'s post-iteration sweep, while the settled sweep now covers them before the barrier. No walk returned early in the reference run (3,288 of 3,288 complete).
+
+**Activity probes.** The bubble-up's any-active-child test and the sweep's all-children-inactive test use `SimpleMapStore::anyChild`, an unordered walk of the parent's edge chain that stops at the first match. A boolean OR over the children cannot depend on their order; the sweep's recursion keeps the ordered `forEachChild`.
+
+**Validation.** `fta_f3_rt7_incube_seams_drain_01` (full `--GPU`, temporary seam timers in) against `fta_f3_rt7_incube_seams_03`: all 5,827 files under `files/` byte-identical except the Lean kernel-check log (build durations) and the shortcut capture zip (capture timestamps); verifier 188,425 checks, 0 failures; 2,242 unit tests. IncubatorPeano1: theorem drain 7.61 -> 0.11 s, `deactivateRecursively` calls in the kernel 1,890 -> 26, bubble-up 2.32 -> 0.00 s, time outside the phase walls 10.65 -> 2.71 s (9.81 s in `fta_f3_rt7_incube_seams_02`), prover 61.54 -> 48.69 s (59.17 s in run 02); the phase walls, untouched by this change, also fell 3-14% in every batch between these runs.
+
+Source: prover.cpp, ExpressionAnalyzer::deactivateUnnecessary, ExpressionAnalyzer::deactivateRecursively and ExpressionAnalyzer::proveKernel; prover.hpp, ExpressionAnalyzer::deactivationSweepOwed; simple_map_store.hpp, SimpleMapStore::anyChild.
+
+<a id="d-452"></a>
+## D-452 — Remove one rule owner in place; the survivors keep their stored identifiers (2026-10-01)
+
+**Decision.** `ExpressionAnalyzer::removeOwnerFromRun` finds the leaving owner by binary search over the key's owner run and removes that one record through the store door `HashMap::eraseBlobFromRun`: one `replaceRun` with no replacement record moves the identifier (or byte) tail and the blob-start tail once, then every later key's run start drops by one. The survivors are no longer read in full and written back through `assignRunGeneratedAtId`. The search relies on the owner-run order every writer keeps — ascending and unique as signed 64-bit values (`addOwnerToRun`, `flushOwnerSection`, `RuleOwnerRec`); a missing owner still asserts. Maintainer approval 2026-10-01 ("Ok").
+
+**Reason.** Since the shared value bytes ([D-440](#d-440)), every record written into a bound store passes through `internSharedBlob`, a hash and probe of the block dictionary, so the read-all-and-rewrite removal re-interned every survivor of every removal. In FTA (`fta_f3_rt7_m5_removal_trap_01`) 117,598 removals averaged 454 records per run; reading the run cost 2.53 worker-seconds and writing it back 3.76, 96% of the write in re-interning. Before D-440 the same removal path cost about 1.8 worker-seconds.
+
+**Why the result is unchanged.** Between quiescent collections the dictionary is append-only and returns the existing identifier for page-contained bytes, and owner records are eight bytes, never oversized. Re-interning therefore gave every survivor the identifier it already held: the erase leaves the same identifier column, blob starts and run starts as the rewrite, and the dictionary gains nothing either way. Canonical streams and deload images are unchanged by construction. For a general blob store the door keeps a private oversized survivor's handle where a rewrite would copy the record under a fresh one; the logical columns are identical.
+
+**Validation.** Full `--GPU` run `fta_f3_rt7_m5_removal_fix_full_01` against `fta_f3_rt7_m5_removal_trap_01`: all 5,847 files under `files/` byte-identical except the Lean kernel-check log and the shortcut capture zip; verifier 189,775 checks, 0 failures. FTA removal path (temporary counters): binary search 0.07 worker-seconds against 2.53 for the full read, erase 0.15 against 3.76 for the rewrite; in the RT aggregate the removal subtree under `RCE_REMOVE_RULES > HM_COPY > HM_WHOLEKEY_RECORDS` fell from 6.23 to 0.18 worker-seconds, below its cost before D-440. Unit tests: `test_cold_hash_map.cpp` (`blob_map_erase_blob_from_run`, `shared_blob_map_erase_blob_from_run_keeps_identifiers`, `erase_blob_from_run_assertion_probe`), `test_memory.cpp` (`owner_removal_in_place_keeps_shared_identifiers`, `owner_removal_assertion_probe`, and the existing `owner_removal_paged_snapshot_matches_contiguous_oracle`); assertion probes in `.scripts/tests/test_native_run_erase.py`.
+
+Source: prover.hpp, ExpressionAnalyzer::removeOwnerFromRun; cold_hash_map.hpp, HashMap::eraseBlobFromRun.
+
+<a id="d-457"></a>
+## D-457 — the processor-route unit-test gate leaves out the CUDA-route tests (2026-10-01,, release 14 preparation)
+
+
+**The defect.** [D-338](#d-338) made the processor route the product default so that a customer PC needs no GPU, but every `main.py` run still began with `gl_quick --unit-tests`, and the Windows build (`GL_CUDA`) compiles the device tests into that gate. With no CUDA device visible (`CUDA_VISIBLE_DEVICES=-1`) the gate aborted on its first test, `phase2_cuda.device_contract_is_supported` (`cudaErrorNoDevice`, exit 3), so `python main.py` stopped before any proof work on exactly the PC D-338 targets. Release 13's route matrix ran on the GPU host only and never exercised a device-less gate.
+
+**The choice.** A test of code that only the CUDA Phase 2 route runs is registered with `CUDA_TEST(suite, name)`; every test compiled only under `GL_CUDA` is one (the `phase2_cuda` suite and the `GL_CUDA` block of `test_phase2_projection.cpp`). `gl_quick --unit-tests --phase2-backend cpu`, the processor-route gate, leaves them out and names each as not selected in ; `--unit-tests` alone or with `--phase2-backend cuda` runs every test, so an agent's direct gate is unchanged. `main.py` passes the run's route: `cuda` for `--GPU` or `--phase2-backend cuda`, otherwise `cpu`.
+
+**Why not probe for a device.** Choosing the test set by probing for a device would turn a missing device into a quietly smaller gate, the degrade-on-failure pattern Rule 19 bans. The route the user selected decides, as it decides everything else in the run.
+
+**Weakness.** A batch configuration that pins `use_gpu: true` runs on CUDA under a run whose gate was the processor gate. No shipped configuration pins one (D-338), and such a batch still asserts at its own device contract.
+
+**Gate.** `tests/test_main_unit_test_gate.py`; the release-14 ledger records the full gate, the processor gate with no device visible, and the Windows and WSL processor full runs.
+
+Source: main.py, _run_unit_test_gate; main.cpp, the `--unit-tests` dispatch; tests/test_harness.hpp, CUDA_TEST; tests/test_harness.cpp, runAllTests.
+
+<a id="d-456"></a>
+## D-456 — a release publishes its proofs as a GitHub release attachment and its repository part byte for byte (2026-10-01,, maintainer decision)
+
+
+**The choice (maintainer, 2026-10-01).** A release has two parts. The repository part holds the tracked source, the configuration, the documentation and the built binaries. The release run's outputs — the HTML proof graphs, the connected Lean export, the theorem lists and every other file a run writes under `files/` — stay out of it and ship as `GL_proofs_<version>.zip`, attached to the GitHub release. The published proofs come from a full Windows `--GPU` run of the release commit. Why: the proofs are about a gigabyte unpacked, grow with every FTA step and will grow much faster in FTA discovery; GitHub rejects repository files above 100 MB and keeps every committed generation in the history, while a release attachment may reach 2 GiB.
+
+**Hashes.** The archive is deterministic (sorted entries, one fixed timestamp and mode, one compression level) and carries `PROOFS_SHA256SUMS`, one line per proof file, at its root. Its own SHA-256 sits in `<archive>.sha256` beside it and in the repository's `PROOFS.sha256`, which the repository's `SHA256SUMS` covers, so the tagged repository pins exactly one archive.
+
+**Byte for byte.** `SHA256SUMS` hashes the shipped bytes, so they must reach every clone unchanged. The repository part ships a `.gitattributes` with `* -text` (no line-ending conversion on commit or checkout), every text file with the line endings git stores (LF), solution files with CRLF for Visual Studio's version selector, and hash files that end in LF. Release 13's manifest hashed the Windows checkout's CRLF bytes, so a Linux or macOS clone, or GitHub's source archive, failed every text-file line. `SHA256SUMS` lists every shipped file except itself.
+
+**Proofs from the shipped bytes.** The proofs record the hashes of the inputs they were made from: the shortcut capture fingerprints the definitions, configurations and supplied goals, and every Lean certificate its configuration. The release's full run therefore happens in an LF checkout of the release commit (`git -c core.autocrlf=false worktree add --detach <path> main`). `release_public.py` refuses a checkout that holds a committed LF text file with CRLF (`crlf_checkout_issues`) and checks every recorded input hash against the shipped file (`proof_input_issues`). Release-14 measurement: proofs made on a `core.autocrlf=true` checkout broke 44 of 46 capture fingerprints and all three certificate hashes; the same run on LF inputs produced identical theorem lists and proof histories.
+
+**Rejected.** Proofs inside the repository (the size limit, and history growth with every release). A proof zip committed to the repository (a zip does not delta-compress, so every release would add its full size to the history). No published proofs (a reader could not inspect them without a full run).
+
+**Weakness.** The repository pins the archive's hash, not its location: the archive is only as available as the GitHub release page.
+
+**Gate.** `.scripts/tests/test_connected_lean_release.py`; the release-14 ledger records the package builds, the archive's reproducibility (one SHA-256 across builds) and the customer checks from the extracted package.
+
+Source: .scripts/release_public.py, build_proofs_zip; write_proof_hashes; write_sha256sums; lf_text_files; normalize_line_endings; crlf_checkout_issues; proof_input_issues; release_notes_section.
+
+<a id="d-455"></a>
+## D-455 — the verifier rejects non-equality evidence, out-of-scope citations and missing chapters (2026-10-02,, maintainer consent per I-16)
+
+
+**The defects (external review of the release-14 candidate, reproduced on copies of the published proof graph).**
+- *Equality steps.* `check_equality1` took the first argument pair of any cited expression as substitution evidence and compared operators with `_extract_core_name`, which returns `""` for every negation, equality and implication; `check_equality2` and the symmetry checkers never checked operator or polarity. Accepted: `!(=[a,b])` from the proven `(=[a,b])`, an inequality as substitution evidence, `(=[b,a])` from `!(=[a,b])` by "symmetry".
+- *Scope.* The general origin check matched cited expressions by text (`originated = {line.expression...}`) while the checkers trust the scope a row declares, so a row at `main` could cite a fact derived only inside a nested subproof or a sibling branch.
+- *Coverage.* `build_chapter_theorem_map` paired chapters with the manifest positionally and stopped when the chapters ran out: a manifest without any chapter verified as 2,680 checks, 0 failures, "airtight".
+
+**The choice.** Equality evidence and equality-family operands parse exactly (`_simple_atom`, `_equality_args`); `equality1` preserves polarity, operator and arity. The origin check resolves `(expression, scope)`: derived at the cited scope or an enclosing one. Chapters map to theorems by the exact filename the producer writes (`expected_chapter_files`, mirroring `_build_fname_list`), and the new `chapter coverage` counter fails every missing, stray or misnumbered chapter, unknown proof method and a missing primary manifest; the positional mapping and its induction-triple asserts are gone (a misaligned triple is now a recorded coverage failure, not a crash). The command line exits 1 on any failure.
+
+**Why no false positives.** Survey of the GPU and processor main and incubator graphs and the shortcut graph before the change: every `equality1` source and result is an atom, a negated atom, an equality or a negated equality of the same shape, every cited equality is exactly `(=[a,b])`, and no citation violates the scope rule. After the change all five graphs verify with 0 failures; the only new checks are one coverage check per chapter.
+
+**Weakness.** The Lean export remains the stronger independent check: its certificate construction rejects the scope forgery and its renderer the inequality substitution (review). The Python verifier still trusts the producer's namespace grammar (`_boundary_` ancestry) and the producer's chapter numbering.
+
+**Gate.** `tests/test_verifier_equality.py`, `tests/test_verifier_meta.py` (scope), `tests/test_verifier_coverage.py`; ten of the new negative tests fail against the previous verifier. Release-14 ledger rows X1-X3.
+
+Source: verifier.py, _simple_atom; _equality_args; check_equality1; check_equality2; check_symmetry_of_equality; check_symmetry_of_inequality; verify_chapter (origin); expected_chapter_files; check_chapter_coverage; build_chapter_theorem_map; run_verifier; main.
+
+---
+
+<a id="d-454"></a>
+## D-454 — a run's failures reach its exit status, and Python's asserts cannot be switched off (2026-10-02)
+
+
+**The defects (external review of the release-14 candidate).**
+- *Exit status.* `main.py` printed the verifier report and exited 0 when the main or incubator graph (full run) or the shortcut graph had failures, so a script, CI job or release step that checks the status accepted rejected proofs.
+- *Optimized Python.* `proof_export/live.py::kernel_check` enforced the Lake build status with `assert`; under `python -O` a failed build (log `exit 7`) printed "kernel check passed" and exited 0 (reproduced on `main`). The same holds wherever GL's Python rejects input through an assert: the verifier's implication-composition and conjunction-refutation checks catch `AssertionError` from `proof_export` validators, the Lean exporter's certificate construction asserts its contracts, and the release sanitizer's checks are asserts.
+
+**The choice.** `run_modes.full_run` and `run_modes.shortcut_run` return the verifier failure count; `main.py::_exit_on_verifier_failures` exits 1 after every output and timing record is written. Converting asserts into explicit raises is not the fix: they are GL's contract language (Rule 19, [I-19](30_invariants.md#i-19)), about 900 in `proof_export` alone. Instead every Python entry point calls `assertion_guard.require_assertions` first and exits 2 under `python -O`, `-OO` or `PYTHONOPTIMIZE`. `kernel_check` also raises `RuntimeError`, since `proof_export.live` is importable without an entry point.
+
+**Gate.** `tests/test_main_exit_status.py`; `tests/test_proof_export_live.py` (`kernel_check` under `python -O`); `tests/test_assertion_guard.py` (each shipped entry point); `.scripts/tests/test_assertions_required.py`. Release-14 ledger rows X4, X5.
+
+Source: main.py, _exit_on_verifier_failures; run_modes.py, full_run, shortcut_run; assertion_guard.py, require_assertions; proof_export/live.py, kernel_check.
 
 ---
 

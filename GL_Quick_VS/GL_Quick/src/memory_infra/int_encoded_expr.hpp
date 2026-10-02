@@ -34,26 +34,34 @@
 
 namespace gl {
 
-    /// @brief Pre-encoded statement for the static request pipeline. All fields
-    /// 32-bit; no heap allocation; fixed size (352 bytes on x64, zero padding).
+    /// @brief Pre-encoded statement for the static request pipeline. No heap
+    /// allocation; fixed size (240 bytes, zero padding).
     ///
     /// @details
     /// The static request pipeline operates entirely on 32-bit IDs minted from
     /// the per-LB `NameMap` so the hot path in `generateEncodedRequests*` never
     /// touches strings. Each `IntEncodedExpr` carries the canonicalized form of
     /// one expression: its name id, negation flag, arity, two flags for hypo /
-    /// anchor classification, and the four fixed-capacity per-arg arrays
+    /// anchor classification, and the five fixed-capacity per-arg arrays
     /// (`argId`, `argUnchangeable`, `argIteration`, `argLevPlus1`, `argFullId`).
     /// Capacity is `ExecutionParameters::MAX_ARITY` per arg array.
     ///
     /// Field-type discipline: the id fields (`nameId`, `originalId`, `validityId`,
-    /// `argId`, `argFullId`) are `NameId`; the flag / arity / sentinel fields
-    /// (`negation`, `arity`, `maxIteration`, `isHypo`, `isAnchor`,
-    /// `argUnchangeable`, `argIteration`, `argLevPlus1`) are a plain `int32_t` —
-    /// several carry a `-1` sentinel (`maxIteration` / `argIteration`), which must
-    /// never blur into the id role. Both are 32-bit, so the record is uniform:
-    /// zero padding, which is decisive because the POD is byte-hashed and
-    /// pointer-keyed for dedupe — a padding byte would be nondeterministic.
+    /// `argId`, `argFullId`) are `NameId`; the scalar flag / arity / sentinel
+    /// fields (`negation`, `arity`, `maxIteration`, `isHypo`, `isAnchor`) are a
+    /// plain `int32_t`. The three per-arg number arrays hold small values and are
+    /// narrow: `argUnchangeable` is a 0/1 flag (`int8_t`); `argIteration` (an
+    /// `it_<i>_…` iteration or the `-1` sentinel) and `argLevPlus1` (level + 1,
+    /// `0` when none) are `int16_t`, and the encoders assert every value fits.
+    /// The `-1` sentinels must never blur into the id role. Each array's size is
+    /// a multiple of four bytes, so the record has zero padding, which is
+    /// decisive because the POD is byte-hashed and pointer-keyed for dedupe — a
+    /// padding byte would be nondeterministic.
+    ///
+    /// The size matters for storage: a paged statement column holds the largest
+    /// power of two of rows that fits one page, so at 2 KiB pages a 240-byte row
+    /// packs 8 per page (1920 bytes used) where a 352-byte row packed only 4
+    /// (1408 bytes used).
     ///
     /// The struct is purely arithmetic — no constructors, no operator overloads,
     /// no virtual table — so it can be `memcpy`'d directly into the typed arena
@@ -75,20 +83,25 @@ namespace gl {
         int32_t isHypo;          // 1 if validityName contains "_hypo_", else 0
         int32_t isAnchor;        // 1 if name starts with "Anchor", else 0
         NameId  argId[ExecutionParameters::MAX_ARITY];           // NameMap ID of arg name
-        int32_t argUnchangeable[ExecutionParameters::MAX_ARITY]; // 1=unchangeable, 0=changeable
-        int32_t argIteration[ExecutionParameters::MAX_ARITY];    // iteration number per arg (-1 if none)
-        int32_t argLevPlus1[ExecutionParameters::MAX_ARITY];     // level+1 per arg (0 if none)
+        int8_t  argUnchangeable[ExecutionParameters::MAX_ARITY]; // 1=unchangeable, 0=changeable
+        int16_t argIteration[ExecutionParameters::MAX_ARITY];    // iteration number per arg (-1 if none)
+        int16_t argLevPlus1[ExecutionParameters::MAX_ARITY];     // level+1 per arg (0 if none)
         NameId  argFullId[ExecutionParameters::MAX_ARITY];       // NameMap ID of full arg string (e.g. "it_0_lev_0_1")
     };
 
     // The POD is byte-hashed and pointer-keyed for dedupe, so it MUST be a flat
-    // trivially-copyable record with zero interior padding — 88 fields of exactly
-    // 4 bytes each (8 scalars + 5 arrays of MAX_ARITY). A padding byte would be
-    // nondeterministic in the byte hash; these asserts fail loudly if a future
-    // field-type edit reintroduces padding or a non-32-bit field.
+    // trivially-copyable record with zero interior padding: 8 scalar 32-bit
+    // fields, two NameId arrays, two int16_t arrays and one int8_t array of
+    // MAX_ARITY each. A padding byte would be nondeterministic in the byte
+    // hash; these asserts fail loudly if a future field-type edit reintroduces
+    // padding or changes a width.
     static_assert(sizeof(IntEncodedExpr)
-                      == 88 * static_cast<std::size_t>(sizeof(int32_t)),
-                  "IntEncodedExpr must be 88 uniform 32-bit fields, zero padding");
+                      == 8 * sizeof(int32_t)
+                         + static_cast<std::size_t>(ExecutionParameters::MAX_ARITY)
+                           * (2 * sizeof(NameId) + 2 * sizeof(int16_t) + sizeof(int8_t)),
+                  "IntEncodedExpr must be its fields back to back, zero padding");
+    static_assert(std::has_unique_object_representations_v<IntEncodedExpr>,
+                  "IntEncodedExpr must have no padding bits (it is byte-hashed)");
     static_assert(std::is_trivially_copyable_v<IntEncodedExpr>,
                   "IntEncodedExpr must stay trivially copyable (memcpy'd into the arena)");
 
@@ -149,12 +162,21 @@ namespace gl {
     /// The marker that sets it never creates rows — it flags the row admission
     /// created, or does nothing.
     ///
+    /// `integrated` — true when the row arrived as the head of an integration
+    /// rule's firing in this LB (the fired rule copy is owned by an
+    /// integration task), or by mail carrying the sender's integrated bit.
+    /// The finished-task wipe counts a root as finished only through such a
+    /// row (`integrationRootKnownAtOrAbove`, D-444).
+    /// Set through `markStatementIntegrated`, never cleared.
+    ///
     /// @see ExpressionAnalyzer::checkForEquivalence
     /// @see ExpressionAnalyzer::disintegrateExpr2
     /// @see upsertStatementKey — the insert-or-merge write door.
+    /// @see markStatementIntegrated — the integrated-bit write door.
     struct StatementFlags {
         bool local = false;
         bool fullyDisintegrated = false;
+        bool integrated = false;
     };
 
 }

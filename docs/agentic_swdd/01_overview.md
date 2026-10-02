@@ -93,7 +93,7 @@ A single GL run is entered via `python main.py`, which is a thin wrapper around 
               └──────────────────────────────────────┘
 ```
 
-Definition compilation (`compiler.cpp`, producing `files/GL_binaries/<Tag>.json`) is folded into the prover's startup — not a separate orchestrated stage. The earlier per-conjecturer normalisation/reshuffle write (`reshuffled_conjectures.txt` / `reshuffled_mirrored_conjectures.txt`) is a runtime workaround inside the conjecturer's emit logic, not a true stage; both files remain on disk but the conjecturer writes them itself.
+Definition compilation (`compiler.cpp`, producing `files/GL_binaries/GL_binary_<Tag>.json`) is folded into the prover's startup — not a separate orchestrated stage. The earlier per-conjecturer normalisation/reshuffle write (`reshuffled_conjectures.txt` / `reshuffled_mirrored_conjectures.txt`) is a runtime workaround inside the conjecturer's emit logic, not a true stage; both files remain on disk but the conjecturer writes them itself.
 
 Stages 1–5 execute inside the C++ binary `gl_quick.exe`. Stages 6–8 are Python, driven by `run_modes.full_run` directly. `run_modes.full_run` invokes `gl_quick.exe --conjecture <tag>` for stage 1, then `gl_quick.exe <tag>` for stages 2+3+4+5 (inside that second invocation, the C++ `run_modes::fullRun(anchor)` in `run_modes.cpp` is the in-binary sub-orchestrator chaining CE filter → prover → compressor → raw emission), then runs stages 6–8 as Python itself.
 
@@ -103,11 +103,24 @@ Multi-batch runs (IncubatorPeano → Peano → IncubatorGauss → main Gauss) lo
 
 ## Entry points
 
+**Runtime project root.** `project_paths.cpp`, `projectRoot`, resolves the actual
+running executable through the operating system and uses its deployed
+`GL_Quick_VS/GL_Quick/gl_quick(.exe)` location to select one project tree.
+Configuration, definitions, simple facts, theorem pools and proof exports all
+share it; native data paths never use a build-time source filename. Copying a
+matching executable into another complete worktree therefore relocates these
+paths together. `main.py` and `run_modes.py` continue to launch from that same
+worktree. Unit tests set their working directory to this resolved root, even
+when launched from an unrelated directory. Unexpected executable layout or
+failed discovery asserts. `.scripts/tests/test_project_paths.py` checks copied
+execution and the relative-path/layout rejection contracts.
+
+
 | Path | Purpose |
 |---|---|
 | `main.py` | Top-level Python entry. Calls `run_modes.full_run`, or `run_modes.shortcut_run` when invoked as `main.py --shortcut`. |
 | `run_modes.py` → `full_run` | Orchestrates the full multi-batch pipeline (incubator batches included — they run inside its per-tag loop with their own configs, theorem storage, and CE tables). |
-| `run_modes.py` → `shortcut_run` | FTA-shortcut pipeline ([D-248](40_decisions.md#d-248)): proves the hand-maintained conjecture list in `files/shortcut/theorems/` against the corpus snapshot loaded as external theorems; processed graph, HTML, and verifier report all land under `files/shortcut/`. Never touches `files/theorems/`. |
+| `run_modes.py` → `shortcut_run` | Replays the exact full-run FTA boundary saved by `fta_shortcut.capture`: compiler registry, proved/external theorem channels, auxiliary inputs and preceding proof chapters. Outputs remain under `files/shortcut/`. Missing or stale input asserts; refresh with `main.py --GPU`. |
 | `gl_quick.exe <tag>` | Native prover (single batch). Invoked as a subprocess by `run_modes.py`. Optional batch-path flags `--conjectures-file <path>` / `--externals-file <path>` override the conjecture-list file and the external-theorems load file (shortcut mode). |
 | `gl_quick.exe --conjecture <tag>` | Conjecturer only — writes `files/theorems/conjectures.txt`. |
 | `gl_quick.exe --mirror-externals <tag>` | Rebuild `files/theorems/compressed_external_theorems.txt` without running the prover. |
@@ -136,7 +149,7 @@ files/
   simple_facts/        arithmetic tables for CE filtering (ground-level facts)
   raw_proof_graph/     prover output — pre-rename chapters
   processed_proof_graph/
-    <N>_direct_proof.txt
+    <N>_single_chapter_proof.txt
     <N>_check_zero.txt + <N+1>_check_induction_condition.txt + <N+2>_induction_typing.txt   (induction triad)
     <N>_reformulated_statement.txt
     <N>_back_reformulated_statement.txt
@@ -171,6 +184,7 @@ Python (root level, each carries the dual-license header):
 | `visu_helpers.py` | HTML rendering helpers. |
 | `verifier.py` | **Independent** external proof checker. Must not import from prover or `expression_utils`. |
 | `analyze_incubator.py` | Standalone post-run analysis. |
+| `assertion_guard.py` | `require_assertions`: every Python entry point stops with status 2 under `python -O` / `PYTHONOPTIMIZE`, which would remove the assert statements GL's checks are made of ([D-454](40_decisions.md#d-454)). |
 | `parameters.py` | A single debug flag, kept around for historical reasons. |
 
 C++ (under `GL_Quick_VS/GL_Quick/src/`, each carries the dual-license header):
@@ -263,6 +277,12 @@ When you (future agent) hit a specific question, this table points you at the ri
 
 - **Multi-batch runs past two batches.** The `run_modes.full_run` loop is designed for arbitrarily many batches, but in practice only Incubator → Peano → Gauss is routinely exercised. A 4-batch run would be a first-time integration.
 - **Non-`main` namespace handling in the verifier.** The verifier has 27 hardcoded `line.namespace == "main"` checks. Any future proof graph that legitimately uses non-`main` namespaces outside the already-enumerated cases would silently fail all those checkers. (Related: [`10_pipeline/08_verifier.md`](10_pipeline/08_verifier.md) weaknesses subsection.)
+
+
+Compiled registries have a schema-1 `GL_compilation_state_<Tag>.json` companion
+containing next-number counters and numbered-to-public replacement records.
+`compilation_state.py` migrates active references before cross-batch merging;
+shortcut archives preserve this state with the compiled definitions.
 
 ---
 

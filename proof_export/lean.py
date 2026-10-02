@@ -12,6 +12,9 @@ import json
 import re
 from pathlib import Path
 
+from .certificate import _membership_body_key
+from .flat_integration import render_flat_integration_term
+from .membership_transport import membership_transport_plan
 from .mpl import (
     Atom,
     Conjunction,
@@ -24,6 +27,7 @@ from .mpl import (
     parse_mpl,
     to_mpl,
 )
+from .types import ELEMENT, EQUALITY, _TypeUnion
 
 
 LEAN_LICENSE = """/-
@@ -133,6 +137,34 @@ def lean_constant(head: str) -> str:
     return "gl_" + lean_name(head)
 
 
+EXTENSIONALITY_LEMMA = {
+    "set": "GLExport.setEqIffSubsets",
+    "binary_relation": "GLExport.binaryRelationEqIffSubsets",
+    "ternary_relation": "GLExport.ternaryRelationEqIffSubsets",
+}
+
+
+def _extensionality_lemma(equality: Atom, variable_types: dict[str, str]) -> str:
+    """
+    @brief Name the ProofSupport lemma that integrates one typed GL equality.
+    @details
+    A set- or relation-typed `=` is integrated through its two subsets
+    (I-267): the lemma states the equality iff both subset
+    implications. Both sides share one type, and an element-typed equality is
+    never integrated this way.
+    @param equality The `=` atom.
+    @param variable_types Certificate types of the atom's arguments.
+    @return Qualified lemma name for the arguments' type shape.
+    """
+
+    assert equality.head == EQUALITY and len(equality.arguments) == 2
+    kinds = {variable_types[argument] for argument in equality.arguments}
+    assert len(kinds) == 1, f"typed equality joins {sorted(kinds)!r}"
+    kind = kinds.pop()
+    assert kind in EXTENSIONALITY_LEMMA, f"no extensionality for a {kind!r} equality"
+    return EXTENSIONALITY_LEMMA[kind]
+
+
 def _lean_type(kind: str) -> str:
     """
     @brief Translate one finite GL port type to its ordinary Lean type.
@@ -151,18 +183,24 @@ def render_expression(
     expression: Expression,
     variable_types: dict[str, str],
     replacements: dict[str, str] | None = None,
+    carrier: str = "α",
 ) -> str:
     """
     @brief Render one typed MPL expression as a Lean proposition.
     @details
     Membership is predicate application, binary and ternary operations are
     relations, and every MPL binder receives its finite certificate type.
+    A fully quantified anchor implication carries the quantified structure's
+    induction requirement inside its binder, matching the prover's induction
+    rule without asserting induction for unrelated bare anchors.
     @param expression Parsed MPL expression.
     @param variable_types Type of every binder that can occur in the expression.
     @param replacements Optional chapter-local token aliases.
+    @param carrier Abstract carrier name or the concrete Nat interpretation.
     @return Parenthesized Lean proposition.
     """
 
+    assert carrier in {"α", "Nat"}
     base_replacements = dict(replacements or {})
 
     def visit(node: Expression, environment: dict[str, str]) -> str:
@@ -207,7 +245,7 @@ def render_expression(
                     f"{arguments[1]} {arguments[2]})"
                 )
             if not arguments:
-                return f"({lean_constant(node.head)} (α := α))"
+                return f"({lean_constant(node.head)} (α := {carrier}))"
             return "(" + " ".join([lean_constant(node.head), *arguments]) + ")"
         if isinstance(node, Conjunction):
             return "(" + " ∧ ".join(visit(part, environment) for part in node.parts) + ")"
@@ -220,11 +258,15 @@ def render_expression(
             rendered = base_replacements.get(bound, lean_name(bound))
             nested[bound] = rendered
             assert bound in variable_types, f"no Lean type for binder {bound!r}"
-            binders.append(f"({rendered} : {_lean_type(variable_types[bound])})")
-        implication = (
-            f"({visit(node.premise, nested)} → "
-            f"{visit(node.conclusion, nested)})"
-        )
+            kind = _lean_type(variable_types[bound]).replace("α", carrier)
+            binders.append(f"({rendered} : {kind})")
+        premise = visit(node.premise, nested)
+        conclusion = visit(node.conclusion, nested)
+        if (isinstance(node.premise, Atom) and node.premise.head in ANCHOR_MPL
+                and set(node.premise.arguments) <= set(node.bound_variables)):
+            context = [nested[token] for token in node.premise.arguments[:3]]
+            conclusion = f"(RelationalInduction {' '.join(context)} → {conclusion})"
+        implication = f"({premise} → {conclusion})"
         if not binders:
             return implication
         return f"(∀ {' '.join(binders)}, {implication})"
@@ -271,8 +313,10 @@ def _definition_variable_types(
     """
     @brief Infer local definition-variable types from finite relation ports.
     @details
-    Every atom position contributes one concrete certificate type. Joining two
-    different types is rejected, matching the neutral frontend's port check.
+    Every atom position contributes one concrete certificate type; `=` instead
+    joins its two arguments, which are elements unless something else types
+    them (I-267). Joining two different types is rejected,
+    matching the neutral frontend's port check.
     @param entry One compiled GL-binary definition.
     @param signatures Type signatures for atomic and compiled heads.
     @return Type mapping for formal parameters and locally quantified tokens.
@@ -280,24 +324,32 @@ def _definition_variable_types(
 
     signature = entry["signature"]
     assert isinstance(signature, list)
-    result = {
-        f"u_{index + 1}": str(kind)
-        for index, kind in enumerate(signature)
-    }
+    union = _TypeUnion()
+    tokens = [f"u_{index + 1}" for index in range(len(signature))]
+    for token, kind in zip(tokens, signature, strict=True):
+        union.constrain(("token", token), str(kind))
+    equality_nodes: list[tuple[object, ...]] = []
     elements = entry["elements"]
     assert isinstance(elements, list)
     for element in elements:
         for atom in iter_atoms(parse_mpl(str(element))):
+            if atom.head == EQUALITY:
+                assert len(atom.arguments) == 2, "`=` takes two arguments"
+                left, right = (("token", argument) for argument in atom.arguments)
+                union.unite(left, right)
+                equality_nodes.extend((left, right))
+                tokens.extend(argument for argument in atom.arguments if argument not in tokens)
+                continue
             assert atom.head in signatures, f"missing signature for {atom.head!r}"
             atom_signature = signatures[atom.head]
             assert len(atom.arguments) == len(atom_signature)
             for argument, kind in zip(atom.arguments, atom_signature, strict=True):
-                previous = result.get(argument)
-                assert previous is None or previous == kind, (
-                    f"definition variable {argument!r} joins {previous!r} and {kind!r}"
-                )
-                result[argument] = str(kind)
-    return result
+                union.constrain(("token", argument), str(kind))
+                if argument not in tokens:
+                    tokens.append(argument)
+    for node in equality_nodes:
+        union.default(node, ELEMENT)
+    return {token: union.resolved(("token", token)) for token in tokens}
 
 
 def _definition_body(
@@ -310,7 +362,8 @@ def _definition_body(
     @details
     Conjunction and disjunction retain GL's left association. Implication and
     negated-universal existence categories introduce local variables exactly at
-    the first element in which they occur.
+    the first element in which they occur. A fully bound anchor premise carries
+    its own induction requirement, just as its expanded theorem proposition does.
     @param name Compiled definition name, used in assertion messages.
     @param entry Compiled definition record.
     @param signatures Certificate type signatures.
@@ -361,6 +414,11 @@ def _definition_body(
         assert len(rendered) >= 2
         body = quantify(introduced_variables[-1], rendered[-1])
         for index in reversed(range(len(rendered) - 1)):
+            element = elements[index]
+            if (isinstance(element, Atom) and element.head in ANCHOR_MPL
+                    and set(element.arguments) <= set(introduced_variables[index])):
+                context = " ".join(lean_name(token) for token in element.arguments[:3])
+                body = f"(RelationalInduction {context} → {body})"
             body = quantify(
                 introduced_variables[index],
                 f"({rendered[index]} → {body})",
@@ -502,6 +560,115 @@ def _conjunct_path(source: Expression, target: Expression) -> list[int]:
         except AssertionError:
             continue
     raise AssertionError(f"{to_mpl(target)!r} is not present in conjunction")
+
+
+def _negated_conjunction_projection(
+    source: Expression, implication: Expression, source_term: str,
+    binary_definitions: dict[str, dict[str, object]] | None = None,
+) -> list[str]:
+    """
+    @brief Replay an exclusion implication from its cited negated conjunction.
+    @details
+    Introduce the recorded premise chain and the complement of its terminal
+    conclusion, then reconstruct the source's exact binary conjunction tree.
+    Each premise occupies one matching position. A compact residual OR supplies
+    its exact leaf complements by explicit OR introduction under the head's
+    counterexample; every resulting literal must fill one source position.
+    No unrelated proposition or premise can fill a missing position.
+    @param source Negation of the conjunction cited by this certificate row.
+    @param implication Unfolded propositional exclusion implication.
+    @param source_term Lean proof term for the cited source at the current scope.
+    @param binary_definitions Exact registry for a compact residual OR head.
+    @return Indented Lean commands proving precisely the recorded implication.
+    @invariant Missing, extra, wrong-polarity and locally bound premises assert.
+    """
+
+    assert isinstance(source, Negation) and isinstance(source.inner, Conjunction)
+    premises: list[Expression] = []
+    conclusion = implication
+    while isinstance(conclusion, Implication):
+        assert not conclusion.bound_variables, "Exclusion projection binds a local"
+        premises.append(conclusion.premise)
+        conclusion = conclusion.conclusion
+    assert premises, "Exclusion projection requires an implication"
+    negative_conclusion = isinstance(conclusion, Negation)
+    opposing = conclusion.inner if negative_conclusion else Negation(conclusion)
+    names = [
+        "projection_premise" if len(premises) == 1 else f"projection_premise_{index + 1}"
+        for index in range(len(premises))
+    ]
+    components = [opposing, *premises]
+    component_names = ["projection_counterexample", *names]
+    residual_proofs = []
+    if (isinstance(conclusion, Atom) and binary_definitions is not None
+            and binary_definitions.get(conclusion.head, {}).get("category") == "or"):
+        residual_components = []
+        residual_names = []
+        pending_residual = [(conclusion, (), ())]
+        while pending_residual:
+            node, path, ancestry = pending_residual.pop()
+            if (isinstance(node, Atom)
+                    and binary_definitions.get(node.head, {}).get("category") == "or"):
+                assert node.head not in ancestry, "cyclic residual OR definition"
+                entry = binary_definitions[node.head]
+                assert len(node.arguments) == int(entry["arity"])
+                parameters = {f"u_{index + 1}": argument
+                              for index, argument in enumerate(node.arguments)}
+                elements = [parse_mpl(str(element)) for element in entry["elements"]]
+                assert len(elements) >= 2
+                assert all(argument in parameters for element in elements
+                           for atom in iter_atoms(element) for argument in atom.arguments)
+                for index in reversed(range(len(elements))):
+                    branch = ((1,) * (len(elements) - 1) if index == 0
+                              else (1,) * (len(elements) - index - 1) + (2,))
+                    pending_residual.append((map_arguments(elements[index], parameters.__getitem__),
+                                             path + branch, (*ancestry, node.head)))
+            else:
+                term = "projection_survivor"
+                for direction in reversed(path):
+                    term = f"(Or.in{'l' if direction == 1 else 'r'} {term})"
+                literal = node.inner if isinstance(node, Negation) else Negation(node)
+                name = f"projection_residual_{len(residual_components) + 1}"
+                deduction = f"(fun projection_survivor => projection_counterexample {term})"
+                if isinstance(node, Negation):
+                    deduction = "Classical.byContradiction " + deduction
+                residual_proofs.append(f"    have {name} := {deduction}")
+                residual_components.append(literal)
+                residual_names.append(name)
+        components = [*residual_components, *premises]
+        component_names = [*residual_names, *names]
+    used = [False] * len(components)
+    pending = [(source.inner, False)]
+    terms: list[str] = []
+    while pending:
+        node, assemble = pending.pop()
+        if assemble:
+            right = terms.pop()
+            left = terms.pop()
+            terms.append(f"⟨{left}, {right}⟩")
+            continue
+        matches = [index for index, component in enumerate(components)
+                   if not used[index] and node == component]
+        if matches:
+            index = matches[0]
+            used[index] = True
+            terms.append(component_names[index])
+        else:
+            assert isinstance(node, Conjunction), (
+                "Implication does not project the cited negated conjunction"
+            )
+            assert len(node.parts) == 2, "certificate contains non-binary conjunction"
+            pending.extend([(node, True), (node.parts[1], False), (node.parts[0], False)])
+    assert len(terms) == 1 and all(used), (
+        "Implication does not project the cited negated conjunction exactly"
+    )
+    proof = ["    classical", "    intro " + " ".join(names)]
+    if not negative_conclusion:
+        proof.append("    apply Classical.byContradiction")
+    proof.append("    intro projection_counterexample")
+    proof.extend(residual_proofs)
+    proof.append(f"    exact ({source_term}) {terms[0]}")
+    return proof
 
 
 def _row_reference(step_id: str) -> str:
@@ -773,9 +940,9 @@ def _context_signature(anchor_head: str = "AnchorPeano") -> list[str]:
     @details
     The context uses one carrier and ordinary predicate types. Relational
     induction is an explicit proposition-valued premise, never hidden in an axiom.
-    FTA receives the same premise as an AnchorFTA-indexed schema so a certificate
-    row that compacts an already proved theorem can reconstruct its globally
-    quantified proposition rather than only its current-context specialization.
+    Every corpus receives induction for its fixed structure. A globally bound
+    anchor proposition carries its own induction hypothesis inside that binder;
+    no context assumes that every anchor automatically supports induction.
     @param anchor_head AnchorPeano, AnchorGauss, or AnchorFTA context selector.
     @return Lean declaration lines for the selected context.
     """
@@ -802,38 +969,14 @@ def _context_signature(anchor_head: str = "AnchorPeano") -> list[str]:
         else "N zero succ add mul one two identity"
     )
     lines.append(f"    (anchor : {lean_constant(anchor_head)} {anchor_arguments})")
-    if anchor_head == "AnchorFTA":
-        lines.extend(
-            [
-                "    (relationalInduction :",
-                "      ∀ (induction_N : GLSet α)",
-                "        (induction_zero : α)",
-                "        (induction_succ : GLBinaryRelation α)",
-                "        (induction_add induction_mul : GLTernaryRelation α)",
-                "        (induction_one induction_two : α)",
-                "        (induction_identity : GLBinaryRelation α),",
-                "        gl_AnchorFTA induction_N induction_zero induction_succ",
-                "          induction_add induction_mul induction_one induction_two",
-                "          induction_identity →",
-                "        ∀ (P : α → Prop) (k : α),",
-                "          P induction_zero →",
-                "          (∀ n, induction_N n → P n →",
-                "            ∀ m, induction_succ n m → P m) →",
-                "          induction_N k →",
-                "          P k)",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                "    (relationalInduction :",
-                "      ∀ (P : α → Prop) (k : α),",
-                "        P zero →",
-                "        (∀ n, N n → P n → ∀ m, succ n m → P m) →",
-                "        N k →",
-                "        P k)",
-            ]
-        )
+    lines.extend([
+        "    (relationalInduction :",
+        "      ∀ (P : α → Prop) (k : α),",
+        "        P zero →",
+        "        (∀ n, N n → P n → ∀ m, succ n m → P m) →",
+        "        N k →",
+        "        P k)",
+    ])
     return lines
 
 
@@ -1010,6 +1153,40 @@ def _render_scoped_proposition(
     return result
 
 
+def _counterexample_witness_data(
+    source: Expression,
+) -> tuple[str, Conjunction, list[str], bool]:
+    """
+    @brief Describe one shared witness of a negated implication chain.
+    @details
+    Preserve premise order, nested binder placement and head polarity. The
+    conjunction is right-nested so ordinary binary projections keep every
+    fact tied to the same witness. Multiple witnesses are outside the contract.
+    @param source Negated universal expansion cited by projection rows.
+    @return Witness token, fact bundle, ordered introduction tokens, and whether
+    the original head is negative.
+    @invariant Exactly one variable is quantified across the implication chain.
+    """
+    assert isinstance(source, Negation) and isinstance(source.inner, Implication)
+    cursor = source.inner
+    bound: list[str] = []
+    premises: list[Expression] = []
+    introductions: list[str] = []
+    while isinstance(cursor, Implication):
+        bound.extend(cursor.bound_variables)
+        introductions.extend(cursor.bound_variables)
+        introductions.append(f"counterexample_premise_{len(premises)}")
+        premises.append(cursor.premise)
+        cursor = cursor.conclusion
+    assert len(bound) == 1, "counterexample construction requires one witness"
+    negative_head = isinstance(cursor, Negation)
+    bundle: Expression = cursor.inner if negative_head else Negation(cursor)
+    for premise in reversed(premises):
+        bundle = Conjunction((premise, bundle))
+    assert isinstance(bundle, Conjunction)
+    return bound[0], bundle, introductions, negative_head
+
+
 def _existence_projection_sources(
     chapter: dict[str, object],
 ) -> dict[str, list[Expression]]:
@@ -1031,11 +1208,13 @@ def _existence_projection_sources(
         dependencies = step["dependencies"]
         assert isinstance(dependencies, list) and len(dependencies) == 1
         source = parse_mpl(str(dependencies[0]["expression"]["mpl"]))
-        if (
-            isinstance(source, Negation)
-            and isinstance(source.inner, Implication)
-            and bool(source.inner.bound_variables)
-        ):
+        cursor = source.inner if isinstance(source, Negation) else source
+        bound = []
+        while isinstance(cursor, Implication):
+            bound.extend(cursor.bound_variables)
+            cursor = cursor.conclusion
+        if isinstance(source, Negation) and bound:
+            _counterexample_witness_data(source)
             grouped.setdefault(str(dependencies[0]["step"]), []).append(
                 parse_mpl(str(step["conclusion"]["mpl"]))
             )
@@ -1131,6 +1310,23 @@ def _scoped_dependency(
     )
 
 
+def _scope_layers(context: dict[str, object]) -> list[tuple[tuple[str, ...], Expression]]:
+    """@brief Read the ordered binders and assumptions of a validated proof scope.
+
+    @details Ancestor layers precede child layers. This order is shared by fact
+    declarations and their explicit applications, including nested case splits.
+    @param context Certificate scope context containing its implication template.
+    @return Nonempty outer-to-inner binder and premise pairs.
+    """
+    cursor = parse_mpl(str(context["template"]["mpl"]))
+    layers = []
+    while isinstance(cursor, Implication):
+        layers.append((cursor.bound_variables, cursor.premise))
+        cursor = cursor.conclusion
+    assert layers, "Scope template requires an implication"
+    return layers
+
+
 def _scope_entry_and_specializations(
     namespace: str,
     scope_contexts: dict[str, dict[str, object]],
@@ -1151,23 +1347,10 @@ def _scope_entry_and_specializations(
     """
     @brief Enter a row's integration scope and instantiate its cited facts there.
     @details
-    A scoped row is rendered as an ordinary universally quantified implication
-    built from the scope template, so its cited facts in the same scope carry the
-    same quantifier prefix. Lean's first-order search cannot choose a value for a
-    scope binder the cited fact's body never mentions, so a scoped row would fail
-    from its complete citation while succeeding from the surrounding context. The
-    remedy is structural rather than permissive: introduce the scope prefix once,
-    then apply every same-scope cited fact to exactly that prefix, leaving the
-    search a quantifier-free step over the row's own citation. Facts cited from
-    the enclosing main scope need no instantiation and are passed through
-    untouched. A main-scope row has no prefix to introduce and yields no lines.
-
-    A scope-local existence witness is one variable shared by every GL row that
-    speaks about it. The projecting row states it existentially and every other
-    row is guarded by its bundle, so this routine obtains the witness once from
-    the projection and applies each guarded row to exactly that witness. Letting
-    each row quantify its own witness would lose the sharing and leave a step
-    underivable from its complete citation.
+    Enter the complete ancestor-to-child implication chain. Each cited fact
+    consumes only its own scope prefix. Shared witnesses are supplied with
+    their recorded guards; values already bound by the context are not rebound.
+    The resulting named facts expose exactly the cited inputs to the row proof.
     @param namespace Certificate namespace of the row being proved.
     @param scope_contexts Validated schema-3 scope-context records by namespace.
     @param local_variables Free integration parameters closed by the scope.
@@ -1195,7 +1378,7 @@ def _scope_entry_and_specializations(
         f"scope template for {namespace!r} has no implication layer"
     )
 
-    def prefix_arguments(prefix_variables: tuple[str, ...]) -> list[str]:
+    def prefix_arguments(prefix_variables: tuple[str, ...], source_namespace: str = namespace) -> list[str]:
         """
         @brief List one scoped proposition's prefix arguments in binder order.
         @details
@@ -1203,10 +1386,14 @@ def _scope_entry_and_specializations(
         premise, exactly as the scoped rendering builds it, so the returned list
         is the argument sequence that instantiates such a proposition.
         @param prefix_variables Free integration parameters closed by the scope.
+        @param source_namespace The cited scope whose own prefix is applied.
         @return Binder and premise names in application order.
         """
 
-        layers = list(template_layers)
+        source_layers = _scope_layers(scope_contexts[source_namespace])
+        target_layers = _scope_layers(scope_contexts[namespace])
+        assert source_layers == target_layers[:len(source_layers)]
+        layers = [bound for bound, _ in source_layers]
         layers[0] = (*prefix_variables, *layers[0])
         arguments: list[str] = []
         for index, bound_variables in enumerate(layers, start=1):
@@ -1225,27 +1412,33 @@ def _scope_entry_and_specializations(
     for witness_variable in row_witness:
         name = replacements.get(witness_variable, lean_name(witness_variable))
         guard = f"witness_guard_{len(guard_by_witness) + 1}"
-        lines.extend([f"    intro {name}", f"    intro {guard}"])
+        if witness_variable not in set(local_variables) | {v for layer in template_layers for v in layer}:
+            lines.append(f"    intro {name}")
+        lines.append(f"    intro {guard}")
         guard_by_witness[witness_variable] = guard
 
     same_scope = [
         (position, *record)
         for position, record in enumerate(dependencies, start=1)
-        if str(record[0]["namespace"]) == namespace
+        if str(record[0]["namespace"]) != "main" and (
+            str(record[0]["namespace"]) == namespace
+            or namespace.startswith(str(record[0]["namespace"]) + "_boundary_"))
     ]
     # A projection that establishes a witness must be obtained before any row
     # guarded by that witness is applied, whatever the rule's premise order is.
     same_scope.sort(key=lambda record: not record[6])
     for (
         position,
-        _,
+        dependency,
         fact,
         dependency_prefix,
         witnesses,
         existential_guards,
         existential,
     ) in same_scope:
-        application = " ".join(prefix_arguments(dependency_prefix))
+        source_namespace = str(dependency["namespace"])
+        source_bound = set(dependency_prefix) | {v for bound, _ in _scope_layers(scope_contexts[source_namespace]) for v in bound}
+        application = " ".join(prefix_arguments(dependency_prefix, source_namespace))
         if existential:
             # A projection states its witness existentially: it takes the scope
             # prefix and nothing more. It supplies the witness when this row does
@@ -1256,8 +1449,8 @@ def _scope_entry_and_specializations(
                     "row establishes"
                 )
                 application += (
-                    f" {replacements.get(witness_variable, lean_name(witness_variable))}"
-                    f" {guard_by_witness[witness_variable]}"
+                    ("" if witness_variable in source_bound else f" {replacements.get(witness_variable, lean_name(witness_variable))}")
+                    + f" {guard_by_witness[witness_variable]}"
                 )
             if all(witness in guard_by_witness for witness in witnesses):
                 lines.append(
@@ -1281,10 +1474,65 @@ def _scope_entry_and_specializations(
                 f"establishes"
             )
             application += (
-                f" {replacements.get(witness_variable, lean_name(witness_variable))}"
-                f" {guard_by_witness[witness_variable]}"
+                ("" if witness_variable in source_bound else f" {replacements.get(witness_variable, lean_name(witness_variable))}")
+                + f" {guard_by_witness[witness_variable]}"
             )
         lines.append(f"    have scoped_fact_{position} := {fact} {application}")
+    return lines
+
+
+def _scope_inheritance_proof(
+    namespace: str,
+    scope_contexts: dict[str, dict[str, object]],
+    target_prefix: tuple[str, ...],
+    target_witnesses: tuple[str, ...],
+    source: tuple[dict[str, object], str, tuple[str, ...], tuple[str, ...], tuple[str, ...], bool],
+    replacements: dict[str, str],
+) -> list[str]:
+    """@brief Replay one zoom in edge from its explicitly cited ancestor proof.
+
+    @details Enter the target context and apply the source fact to its own
+    binders, premises, and witness guards. Each source premise must be one
+    of the target's validated assumptions. Extra child assumptions are unused;
+    no proof search, new witness, or mathematical axiom is introduced.
+
+    @param namespace Target validity namespace.
+    @param scope_contexts Validated context templates indexed by namespace.
+    @param target_prefix Target row's additional universally bound parameters.
+    @param target_witnesses Target row's ordered witness guards.
+    @param source Dependency record, fact name, parameter prefix, witnesses,
+        existential guards, and whether the cited fact states an existential.
+    @param replacements Exact chapter variable-to-Lean-name mapping.
+    @return Explicit introductions followed by the cited source application.
+    @invariant Every applied premise and witness guard belongs to the target context.
+    """
+    dependency, fact, prefix, witnesses, existential_guards, existential = source
+    source_namespace = str(dependency["namespace"])
+    assert namespace.startswith(source_namespace + "_boundary_")
+    lines = _scope_entry_and_specializations(
+        namespace, scope_contexts, target_prefix, target_witnesses, [], replacements
+    )
+    arguments = [replacements.get(variable, lean_name(variable)) for variable in prefix]
+    if source_namespace != "main":
+        assert source_namespace in scope_contexts
+        target_premises: list[Expression] = []
+        cursor = parse_mpl(str(scope_contexts[namespace]["template"]["mpl"]))
+        while isinstance(cursor, Implication):
+            target_premises.append(cursor.premise)
+            cursor = cursor.conclusion
+        cursor = parse_mpl(str(scope_contexts[source_namespace]["template"]["mpl"]))
+        while isinstance(cursor, Implication):
+            arguments.extend(replacements.get(variable, lean_name(variable)) for variable in cursor.bound_variables)
+            matches = [index for index, premise in enumerate(target_premises, start=1) if premise == cursor.premise]
+            assert matches, f"zoom in source premise is absent from target context: {to_mpl(cursor.premise)}"
+            arguments.append(f"scope_premise_{matches[0]}")
+            cursor = cursor.conclusion
+    needed_guards = existential_guards if existential else witnesses
+    for witness in needed_guards:
+        assert witness in target_witnesses, f"zoom in source witness lacks a target guard: {witness}"
+        arguments.extend((replacements.get(witness, lean_name(witness)),
+                          f"witness_guard_{target_witnesses.index(witness) + 1}"))
+    lines.append("    exact " + " ".join([fact, *arguments]))
     return lines
 
 
@@ -1407,8 +1655,15 @@ def _render_chapter_steps(
     order. Compound disintegration follows named conjunction paths, decodes
     negated-universal witnesses once, or constructs the licensed classical
     implication from a negated pair. Contradiction and integration rows likewise
-    expose their cited pair, scope premise, conjunction, or equivalence. Every
-    supported certificate row is therefore rendered without proof search.
+    expose their cited pair, scope premise, conjunction, or equivalence. A
+    compaction folds either a cited theorem or an expansion proved earlier in
+    the same chapter into its compact, unfolding only that compact's
+    definition. Every supported certificate row is therefore rendered without
+    proof search.
+    OR convergence follows the definition's left-associated disjunction and
+    requires exactly one matching recorded dependency for each case, retaining
+    parent binders and premises. OR introduction discharges the recorded peer
+    negations through classical contradiction, without assuming its target OR.
     @param chapter Neutral certificate chapter in dependency order.
     @param owner Generated theorem or helper name.
     @param assumption_by_mpl Exact chapter assumptions mapped to Lean names.
@@ -1441,6 +1696,9 @@ def _render_chapter_steps(
         )
     )
     steps_by_id = {str(step["id"]): step for step in steps}
+    fact_namespaces = {_row_reference(str(step["id"])): str(step["namespace"]) for step in steps}
+    scoped_here = lambda source: source != "main" and (
+        source == namespace or namespace.startswith(source + "_boundary_"))
     assert len(steps_by_id) == len(steps)
     witness_sources = _existence_projection_sources(chapter)
     emitted_witness_sources: set[str] = set()
@@ -1463,8 +1721,9 @@ def _render_chapter_steps(
         [
             definition_constant(head),
             *(
-                ["GLExport.orIffNotAndNot"]
-                if anchor_head == "AnchorFTA" and head in {"or0", "or2"}
+                ["GLExport.orIffNotAndNot", "Classical.not_not"]
+                if binary_definitions is not None
+                and binary_definitions[head]["category"] == "or"
                 else []
             ),
         ]
@@ -1488,7 +1747,21 @@ def _render_chapter_steps(
     for namespace, context in scope_contexts.items():
         template = parse_mpl(str(context["template"]["mpl"]))
         compact = parse_mpl(str(context["compact"]["mpl"]))
-        context_variables = _free_tokens(template) | _free_tokens(compact)
+        context_bound = {variable for bound, _ in _scope_layers(context) for variable in bound}
+        context_variables = (_free_tokens(template) | _free_tokens(compact)) - context_bound
+        # A child's goal can omit a free parameter of its parent's goal, but
+        # applying parent-scoped facts still requires that parameter's binder.
+        ancestor = context.get("parent_namespace")
+        visited = {namespace}
+        while ancestor is not None and ancestor != "main":
+            assert ancestor not in visited and ancestor in scope_contexts
+            assert namespace.startswith(str(ancestor) + "_boundary_")
+            visited.add(ancestor)
+            ancestor_context = scope_contexts[ancestor]
+            context_variables.update(_free_tokens(parse_mpl(str(ancestor_context["template"]["mpl"]))))
+            context_variables.update(_free_tokens(parse_mpl(str(ancestor_context["compact"]["mpl"]))))
+            ancestor = ancestor_context.get("parent_namespace")
+        context_variables.difference_update(context_bound)
         assert all(variable in variable_types for variable in context_variables)
         scope_context_variables[namespace] = context_variables
     scope_witness_variables = {namespace: set() for namespace in scope_contexts}
@@ -1536,8 +1809,7 @@ def _render_chapter_steps(
                 source = parse_mpl(str(dependencies[0]["expression"]["mpl"]))
                 assert isinstance(source, Negation)
                 assert isinstance(source.inner, Implication)
-                assert source.inner.bound_variables
-                witness_variable = source.inner.bound_variables[0]
+                witness_variable = _counterexample_witness_data(source)[0]
                 projected_witness_variables = (witness_variable,)
                 if namespace == "main":
                     live_variables.add(witness_variable)
@@ -1545,11 +1817,9 @@ def _render_chapter_steps(
                     assert namespace in scope_witness_variables
                     scope_witness_variables[namespace].add(witness_variable)
                     projections = witness_sources[source_step]
-                    projected_witness_bundle = (
-                        projections[0]
-                        if len(projections) == 1
-                        else Conjunction(tuple(projections))
-                    )
+                    projected_witness_bundle = projections[-1]
+                    for projection in reversed(projections[:-1]):
+                        projected_witness_bundle = Conjunction((projection, projected_witness_bundle))
                     recorded = scope_witness_bundle.setdefault(
                         (namespace, witness_variable),
                         projected_witness_bundle,
@@ -1557,6 +1827,37 @@ def _render_chapter_steps(
                     assert to_mpl(recorded) == to_mpl(projected_witness_bundle), (
                         f"witness {witness_variable!r} in {namespace!r} has two bundles"
                     )
+        if namespace != "main":
+            for ancestor in scope_witness_variables:
+                if not namespace.startswith(ancestor + "_boundary_"):
+                    continue
+                for witness in scope_witness_variables[ancestor]:
+                    bundle = scope_witness_bundle[(ancestor, witness)]
+                    previous = scope_witness_bundle.setdefault((namespace, witness), bundle)
+                    assert to_mpl(previous) == to_mpl(bundle)
+                    scope_witness_variables[namespace].add(witness)
+                    if (ancestor, witness) in scope_witness_projector:
+                        scope_witness_projector.setdefault((namespace, witness), scope_witness_projector[(ancestor, witness)])
+        if action == "scope_inherit":
+            assert len(dependencies) == 1
+            dependency = dependencies[0]
+            source_namespace = str(dependency["namespace"])
+            assert namespace.startswith(source_namespace + "_boundary_")
+            assert str(dependency["expression"]["mpl"]) == conclusion_mpl
+            source_fact = _dependency_facts(dependencies)[0]
+            if source_namespace != "main":
+                for witness in (*scoped_witness.get(source_fact, ()),
+                                *scoped_existential_guard.get(source_fact, ())):
+                    bundle = scope_witness_bundle[(source_namespace, witness)]
+                    existing = scope_witness_bundle.setdefault((namespace, witness), bundle)
+                    assert to_mpl(existing) == to_mpl(bundle)
+                    scope_witness_variables[namespace].add(witness)
+                if source_fact in scoped_existential:
+                    projected_witness_variables = scoped_witness[source_fact]
+                    assert projected_witness_variables
+                    projected_witness_bundle = scope_witness_bundle[
+                        (source_namespace, projected_witness_variables[0])
+                    ]
         if action == "theorem_reference":
             proposition = ""
         else:
@@ -1567,7 +1868,7 @@ def _render_chapter_steps(
                 )
                 witness_variables = tuple(
                     sorted(
-                        _free_tokens(conclusion_expression)
+                        (_free_tokens(conclusion_expression) | scope_context_variables[namespace])
                         & scope_witness_variables[namespace]
                     )
                 )
@@ -1598,7 +1899,10 @@ def _render_chapter_steps(
                 # so its consumers can apply it to the witness they obtained. A
                 # row that merely consumes guarded facts needs the guard only for
                 # witnesses no cited projection can supply.
+                if action == "or_introduce" or (action == "ex_falso" and step["source_tag"] == "contradiction"):
+                    inherited.intersection_update(scope_witness_variables[namespace])
                 guard_set = set(witness_variables) | (inherited - establishable)
+                context_bound = set(scoped_prefix[fact]) | {v for bound, _ in _scope_layers(scope_contexts[namespace]) for v in bound}
                 pending = list(guard_set)
                 while pending:
                     witness_variable = pending.pop()
@@ -1654,7 +1958,7 @@ def _render_chapter_steps(
                             f"{witness_variable!r} before it is established"
                         )
                         guarded = Implication(
-                            (witness_variable,),
+                            () if witness_variable in context_bound else (witness_variable,),
                             bundle,
                             guarded,
                         )
@@ -1719,11 +2023,14 @@ def _render_chapter_steps(
                             variable_types,
                             replacements,
                         )
-                        existential_body = (
-                            f"(∀ ({name} : "
-                            f"{_lean_type(variable_types[witness_variable])}), "
-                            f"({rendered_bundle} → {existential_body}))"
-                        )
+                        if witness_variable in context_bound:
+                            existential_body = f"({rendered_bundle} → {existential_body})"
+                        else:
+                            existential_body = (
+                                f"(∀ ({name} : "
+                                f"{_lean_type(variable_types[witness_variable])}), "
+                                f"({rendered_bundle} → {existential_body}))"
+                            )
                     proposition = _render_scoped_proposition(
                         existential_body,
                         scope_contexts[namespace],
@@ -1790,6 +2097,76 @@ def _render_chapter_steps(
                     "    exact scope_premise_1",
                 ]
                 mechanism = "explicit scoped assumption introduction"
+        elif action == "conjunction_refute":
+            from .conjunction_refutation import build_conjunction_refutation_plan
+            from .contraposition import validate_auxiliary_scopes
+            sources = [parse_mpl(str(item["expression"]["mpl"])) for item in dependencies]
+            validate_auxiliary_scopes(namespace, [str(item["namespace"]) for item in dependencies])
+            refutation = build_conjunction_refutation_plan(
+                conclusion_expression, sources, binary_definitions or {})
+            assert step["refutation"] == refutation
+            if namespace == "main":
+                proof = [f"    intro {replacements.get(variable, lean_name(variable))}"
+                         for variable in main_unbound]
+            else:
+                proof = _scope_entry_and_specializations(namespace, scope_contexts,
+                    scoped_prefix.get(fact, ()), scope_row_guard(fact), [
+                        _scoped_dependency(dependency, source, scoped_prefix, scoped_witness,
+                            scoped_existential, scoped_existential_guard)
+                        for dependency, source in zip(dependencies, _dependency_facts(dependencies), strict=True)], replacements)
+            if refutation.get("guarded", False):
+                binders = [f"refutation_bound_{i}" for i in range(len(refutation["bound_variables"]))]
+                guards = [f"refutation_guard_{i}" for i in range(refutation["premise_count"])]
+                introductions = []
+                offset = 0
+                for count, guard in zip(refutation["binder_counts"], guards, strict=True):
+                    introductions.extend(binders[offset:offset + count])
+                    introductions.append(guard)
+                    offset += count
+                assert offset == len(binders)
+                proof.append("    intro " + " ".join([*introductions, "refutation_whole"]))
+                refutation_member = guards[refutation["selected"]]
+            else:
+                proof.append("    intro refutation_member refutation_whole")
+                refutation_member = "refutation_member"
+            names = ", ".join(lean_constant(name) for name in refutation["unfolding"])
+            proof.append(f"    simp only [{names}] at refutation_whole")
+            selected = "refutation_whole" + "".join(f".{position}" for position in refutation["path"])
+            proof.append(f"    exact ({selected}) {refutation_member}" if refutation["negative_member"]
+                         else f"    exact {refutation_member} ({selected})")
+            mechanism = "explicit refutation of an exact conjunction member"
+        elif action == "structural_or_introduce":
+            from .or_introduction import match_or_introduction
+            assert len(dependencies) == 1 and namespace == dependencies[0]["namespace"]
+            introduction = match_or_introduction(conclusion_expression,
+                parse_mpl(str(dependencies[0]["expression"]["mpl"])), binary_definitions or {})
+            assert introduction is not None and step["introduction"] == introduction
+            if namespace == "main":
+                proof = [f"    intro {replacements.get(variable, lean_name(variable))}"
+                         for variable in main_unbound]
+            else:
+                proof = _scope_entry_and_specializations(namespace, scope_contexts,
+                    scoped_prefix.get(fact, ()), scope_row_guard(fact), [], replacements)
+            for index, group in enumerate(introduction["binder_groups"]):
+                proof.extend(f"    intro {replacements.get(variable, lean_name(variable))}" for variable in group)
+                proof.append(f"    intro introduction_premise_{index}")
+
+            def conjunction_term(tree: int | list) -> str:
+                """@brief Render the checked conjunction construction.
+                @details Leaves are exact ordered introduced premise ordinals.
+                @param tree Binary construction or leaf ordinal.
+                @return Explicit Lean proof term.
+                """
+                if isinstance(tree, int):
+                    return f"introduction_premise_{tree}"
+                assert len(tree) == 2
+                return f"⟨{conjunction_term(tree[0])}, {conjunction_term(tree[1])}⟩"
+
+            term = conjunction_term(introduction["tree"])
+            for direction in reversed(introduction["path"]):
+                term = f"(Or.in{'l' if direction == 1 else 'r'} {term})"
+            proof.append(f"    exact {term}")
+            mechanism = "explicit conjunction construction and selected OR introduction"
         elif action == "definition_expand":
             assert len(dependencies) == 1
             source = parse_mpl(str(dependencies[0]["expression"]["mpl"]))
@@ -1930,7 +2307,23 @@ def _render_chapter_steps(
                         proposition = f"(∀ {binders}, {equivalence})"
                     else:
                         proposition = equivalence
-                if binary_definitions is not None:
+                if source.head == EQUALITY:
+                    # A set- or relation-typed `=` expands to its two subsets
+                    # by extensionality, not by definition.
+                    proof = []
+                    if unbound:
+                        proof.append(
+                            "    intro "
+                            + " ".join(
+                                replacements.get(variable, lean_name(variable))
+                                for variable in unbound
+                            )
+                        )
+                    proof.append(
+                        f"    exact {_extensionality_lemma(source, variable_types)} _ _"
+                    )
+                    mechanism = "integration-goal extensionality equivalence"
+                elif binary_definitions is not None:
                     proof = []
                     if unbound:
                         proof.append(
@@ -1941,9 +2334,10 @@ def _render_chapter_steps(
                             )
                         )
                     proof.append("    exact Iff.rfl")
+                    mechanism = "integration-goal definitional equivalence"
                 else:
                     proof = [f"    simp only [{expansion_rules(source.head)}]"]
-                mechanism = "integration-goal definitional equivalence"
+                    mechanism = "integration-goal definitional equivalence"
             else:
                 source_fact = _row_reference(str(dependencies[0]["step"]))
                 existence_direction = _existence_implication_direction(
@@ -1952,10 +2346,23 @@ def _render_chapter_steps(
                     binary_definitions,
                 )
                 if existence_direction is None:
-                    proof = [
-                        f"    simpa only [{expansion_rules(definition_atom.head)}] using {source_fact}"
-                    ]
-                    mechanism = f"unfold {lean_constant(definition_atom.head)}"
+                    negative_or = (
+                        isinstance(source, Negation)
+                        and binary_definitions is not None
+                        and binary_definitions[definition_atom.head]['category'] == 'or'
+                    )
+                    if negative_or:
+                        assert isinstance(conclusion_expression, Conjunction)
+                        proof = [
+                            "    classical",
+                            f"    simpa only [{expansion_rules(definition_atom.head)}, not_or, Classical.not_not] using {source_fact}",
+                        ]
+                        mechanism = "negated disjunction to its conjunction of complements"
+                    else:
+                        proof = [
+                            f"    simpa only [{expansion_rules(definition_atom.head)}] using {source_fact}"
+                        ]
+                        mechanism = f"unfold {lean_constant(definition_atom.head)}"
                 else:
                     placeholders, swapped = existence_direction
                     witnesses = [
@@ -2068,12 +2475,32 @@ def _render_chapter_steps(
                 assert isinstance(source, Negation)
                 inner = source.inner
                 assert isinstance(inner, Implication)
-                assert len(inner.bound_variables) == 1
-                assert isinstance(inner.conclusion, Negation)
-                witness_token = inner.bound_variables[0]
+                witness_token, source_witness_bundle, introductions, negative_head = (
+                    _counterexample_witness_data(source)
+                )
                 witness_name = replacements.get(witness_token, lean_name(witness_token))
-                source_witness_bundle = Conjunction(
-                    (inner.premise, inner.conclusion.inner)
+                # Reconstruct the cited universal under the denial of its
+                # counterexample. This is explicit classical elimination;
+                # every premise is introduced once and used in the one bundle.
+                counterexample_proof = [
+                    "by",
+                    "      classical",
+                    "      apply Classical.byContradiction",
+                    "      intro no_counterexample",
+                    f"      apply {source_term}",
+                    "      intro " + " ".join(
+                        witness_name if token == witness_token else token
+                        for token in introductions
+                    ),
+                ]
+                if not negative_head:
+                    counterexample_proof.append("      apply Classical.byContradiction")
+                counterexample_proof.append("      intro counterexample_head")
+                premise_names = [token for token in introductions if token != witness_token]
+                counterexample_proof.append(
+                    "      exact no_counterexample ⟨"
+                    + ", ".join([witness_name, *premise_names, "counterexample_head"])
+                    + "⟩"
                 )
                 if scoped_action:
                     assert projected_witness_bundle is not None
@@ -2087,19 +2514,20 @@ def _render_chapter_steps(
                                 for direction in path
                             )
                         )
-                    assert len(projection_terms) in (1, 2)
+                    assert projection_terms
                     projected_term = (
                         projection_terms[0]
                         if len(projection_terms) == 1
-                        else f"⟨{projection_terms[0]}, {projection_terms[1]}⟩"
+                        else "⟨" + ", ".join(projection_terms) + "⟩"
                     )
                     proof.extend(
                         [
-                            (
-                                f"    obtain ⟨{witness_name}, "
-                                "scoped_witness_bundle⟩ := "
-                                f"existsAndOfNotForallImpNot {source_term}"
-                            ),
+                            f"    have counterexample_exists : ∃ ({witness_name} : "
+                            f"{_lean_type(variable_types[witness_token])}), "
+                            f"{render_expression(source_witness_bundle, variable_types, replacements)} := "
+                            + counterexample_proof[0],
+                            *counterexample_proof[1:],
+                            f"    obtain ⟨{witness_name}, scoped_witness_bundle⟩ := counterexample_exists",
                             f"    exact ⟨{witness_name}, {projected_term}⟩",
                         ]
                     )
@@ -2118,9 +2546,9 @@ def _render_chapter_steps(
                                     f"  have {existential_fact} : ∃ "
                                     f"({witness_name} : "
                                     f"{_lean_type(variable_types[witness_token])}), "
-                                    f"{bundle} := "
-                                    f"existsAndOfNotForallImpNot {source_term}"
+                                    f"{bundle} := " + counterexample_proof[0]
                                 ),
+                                *counterexample_proof[1:],
                                 (
                                     f"  obtain ⟨{witness_name}, {bundle_fact}⟩ "
                                     f":= {existential_fact}"
@@ -2159,7 +2587,7 @@ def _render_chapter_steps(
                     compact_elements = [
                         parse_mpl(str(element)) for element in compact_entry["elements"]
                     ]
-                    assert len(compact_elements) == 2
+                    assert len(compact_elements) >= 2
                     assert all(
                         argument.startswith("u_")
                         for element in compact_elements
@@ -2170,51 +2598,126 @@ def _render_chapter_steps(
                         f"u_{index + 1}": argument
                         for index, argument in enumerate(conclusion_expression.arguments)
                     }
-                    compact_premise, compact_conclusion = (
+                    instantiated = [
                         map_arguments(element, lambda name: compact_parameters.get(name, name))
                         for element in compact_elements
-                    )
-                    implication_expression = Implication((), compact_premise, compact_conclusion)
+                    ]
+                    implication_expression = instantiated[-1]
+                    for premise in reversed(instantiated[:-1]):
+                        implication_expression = Implication((), premise, implication_expression)
                     unfold_lines = [
-                        f"    simp only [{expansion_rules(conclusion_expression.head)}]"
+                        "    change " + render_expression(implication_expression, variable_types, replacements)
                     ]
                 assert isinstance(implication_expression, Implication)
                 assert not implication_expression.bound_variables
-                left, right = source.inner.parts
-                proof.extend([*unfold_lines, "    classical", "    intro projection_premise"])
-                if (
-                    isinstance(right, Negation)
-                    and to_mpl(implication_expression.premise) == to_mpl(left)
-                    and to_mpl(implication_expression.conclusion)
-                    == to_mpl(right.inner)
-                ):
-                    proof.extend(
-                        [
-                            "    apply Classical.byContradiction",
-                            "    intro projection_counterexample",
-                            (
-                                f"    exact {source_term} "
-                                "⟨projection_premise, projection_counterexample⟩"
-                            ),
-                        ]
-                    )
-                else:
-                    assert isinstance(implication_expression.conclusion, Negation)
-                    assert to_mpl(implication_expression.premise) == to_mpl(right)
-                    assert (
-                        to_mpl(implication_expression.conclusion.inner)
-                        == to_mpl(left)
-                    )
-                    proof.extend(
-                        [
-                            "    intro projection_counterexample",
-                            (
-                                f"    exact {source_term} "
-                                "⟨projection_counterexample, projection_premise⟩"
-                            ),
-                        ]
-                    )
+                proof.extend(unfold_lines)
+                proof.extend(_negated_conjunction_projection(
+                    source, implication_expression, source_term, binary_definitions,
+                ))
                 mechanism = "explicit classical negated-compound projection"
+        elif action == "implication_compose":
+            assert len(dependencies) == 2
+            assert isinstance(conclusion_expression, Implication)
+            from .implication_composition import build_implication_composition_plan, validate_composition_scopes
+            validate_composition_scopes(namespace, *(str(item["namespace"]) for item in dependencies))
+            composition = build_implication_composition_plan(conclusion_expression,
+                *(parse_mpl(str(item["expression"]["mpl"])) for item in dependencies))
+            assert step["composition"] == composition
+            facts = _dependency_facts(dependencies)
+            if namespace == "main":
+                proof = [f"    intro {replacements.get(variable, lean_name(variable))}"
+                         for variable in main_unbound]
+            else:
+                proof = _scope_entry_and_specializations(namespace, scope_contexts,
+                    scoped_prefix.get(fact, ()), scope_row_guard(fact), [
+                        _scoped_dependency(dependency, source, scoped_prefix, scoped_witness,
+                            scoped_existential, scoped_existential_guard)
+                        for dependency, source in zip(dependencies, facts, strict=True)], replacements)
+            for position, (dependency, source) in enumerate(zip(dependencies, facts, strict=True), start=1):
+                if str(dependency["namespace"]) == "main":
+                    source = " ".join([source, *(replacements.get(variable, lean_name(variable))
+                        for variable in main_prefix.get(source, ()))])
+                else:
+                    source = f"scoped_fact_{position}"
+                proof.append(f"    have composition_source_{position} := {source}")
+            bound_names = {variable: f"composition_argument_{index}"
+                           for index, variable in enumerate(
+                               [name for group in composition['result_binder_groups'] for name in group], start=1)}
+            for index, group in enumerate(composition['result_binder_groups']):
+                proof.extend(f"    intro {bound_names[name]}" for name in group)
+                proof.append(f"    intro composition_premise_{index}")
+            applications = []
+            for position, groups in enumerate(composition['source_binder_groups'], start=1):
+                terms = [f"composition_source_{position}"]
+                for index, arguments in enumerate(groups):
+                    terms.extend(bound_names.get(argument, replacements.get(argument, lean_name(argument)))
+                                 for argument in arguments)
+                    if position == 1:
+                        terms.append(f"composition_premise_{index}")
+                applications.append(" ".join(terms))
+            proof.append(f"    exact {applications[1]} ({applications[0]})")
+            mechanism = "explicit application of every producer premise followed by the unary consumer"
+        elif action in ("implication_group", "implication_contrapose"):
+            from .contraposition import (
+                build_contraposition_plan, build_grouping_plan, validate_auxiliary_scopes)
+            assert isinstance(conclusion_expression, Implication)
+            source_expressions = [parse_mpl(str(item["expression"]["mpl"])) for item in dependencies]
+            validate_auxiliary_scopes(namespace, [str(item["namespace"]) for item in dependencies])
+            if action == "implication_contrapose":
+                assert len(dependencies) == 1
+                auxiliary = build_contraposition_plan(conclusion_expression, source_expressions[0])
+            else:
+                auxiliary = build_grouping_plan(conclusion_expression, source_expressions,
+                                                binary_definitions or {})
+            assert step["auxiliary"] == auxiliary
+            facts = _dependency_facts(dependencies)
+            if namespace == "main":
+                proof = [f"    intro {replacements.get(variable, lean_name(variable))}"
+                         for variable in main_unbound]
+            else:
+                proof = _scope_entry_and_specializations(namespace, scope_contexts,
+                    scoped_prefix.get(fact, ()), scope_row_guard(fact), [
+                        _scoped_dependency(dependency, source, scoped_prefix, scoped_witness,
+                            scoped_existential, scoped_existential_guard)
+                        for dependency, source in zip(dependencies, facts, strict=True)], replacements)
+            for position, (dependency, source) in enumerate(zip(dependencies, facts, strict=True), start=1):
+                if str(dependency["namespace"]) == "main":
+                    source = " ".join([source, *(replacements.get(variable, lean_name(variable))
+                        for variable in main_prefix.get(source, ()))])
+                else:
+                    source = f"scoped_fact_{position}"
+                proof.append(f"    have auxiliary_source_{position} := {source}")
+            bound_names = {variable: f"auxiliary_argument_{index}"
+                           for index, variable in enumerate(conclusion_expression.bound_variables, start=1)}
+            proof.extend(f"    intro {name}" for name in bound_names.values())
+            proof.append("    intro auxiliary_premise")
+            applications = [" ".join([f"auxiliary_source_{position}",
+                *(bound_names[argument] for argument in arguments)])
+                for position, arguments in enumerate(auxiliary["source_arguments"], start=1)]
+            if action == "implication_group":
+                def construct(node):
+                    """@brief Render the validated binary conjunction construction.
+                    @details Leaves apply their exact source to the common premise.
+                    @param node Source index or a two-child construction node.
+                    @return Lean term proving this node.
+                    """
+                    if isinstance(node, int):
+                        return f"({applications[node]} auxiliary_premise)"
+                    assert len(node) == 2
+                    return f"⟨{construct(node[0])}, {construct(node[1])}⟩"
+                proof.append("    exact " + construct(auxiliary["construction"]))
+                mechanism = "explicit conjunction of every cited unary conclusion"
+            else:
+                if isinstance(conclusion_expression.conclusion, Negation):
+                    proof.append("    intro auxiliary_original")
+                else:
+                    proof.extend(("    apply Classical.byContradiction", "    intro auxiliary_original"))
+                proof.append(f"    have auxiliary_result := {applications[0]} auxiliary_original")
+                if isinstance(source_expressions[0].conclusion, Negation):
+                    proof.append("    exact auxiliary_result auxiliary_premise")
+                else:
+                    proof.append("    exact auxiliary_premise auxiliary_result")
+                mechanism = "explicit contraposition of the cited unary implication"
         elif action == "implication_apply":
             assert len(dependencies) >= 2
             rule_dependency = dependencies[0]
@@ -2255,6 +2758,12 @@ def _render_chapter_steps(
                 ]
             facts = [rule_fact, *_dependency_facts(ordered)]
             assert facts
+            main_terms = [
+                " ".join([dependency_fact, *(
+                    replacements.get(variable, lean_name(variable))
+                    for variable in main_prefix.get(dependency_fact, ()))])
+                for dependency_fact in facts
+            ]
             if scoped_action:
                 # Both scoped renderings — the plain conclusion and the witness
                 # bundle — build the same quantifier prefix from the same scope
@@ -2302,7 +2811,7 @@ def _render_chapter_steps(
                     ) = (
                         dependency_record
                     )
-                    if str(dependency["namespace"]) != namespace or not existential:
+                    if not scoped_here(str(dependency["namespace"])) or not existential:
                         continue
                     missing_witnesses = [
                         witness
@@ -2345,8 +2854,8 @@ def _render_chapter_steps(
                     projection_terms[position] = matching_projections[0]
                 application_facts = [
                     projection_terms.get(position, f"scoped_fact_{position}")
-                    if str(dependency["namespace"]) == namespace
-                    else dependency_fact
+                    if scoped_here(str(dependency["namespace"]))
+                    else main_terms[position - 1]
                     for position, (dependency, dependency_fact) in enumerate(
                         zip(
                             [rule_dependency, *ordered],
@@ -2373,8 +2882,10 @@ def _render_chapter_steps(
                 ]
             else:
                 proof = [
-                    f"    apply {rule_fact}",
-                    *(f"    exact {dependency}" for dependency in facts[1:]),
+                    *(f"    intro {replacements.get(variable, lean_name(variable))}"
+                      for variable in main_unbound),
+                    f"    apply {main_terms[0]}",
+                    *(f"    exact {dependency}" for dependency in main_terms[1:]),
                 ]
             mechanism = (
                 "scoped ordered implication elimination"
@@ -2387,7 +2898,7 @@ def _render_chapter_steps(
             if scoped_action:
                 transitive_facts = [
                     f"scoped_fact_{position}"
-                    if str(dependency["namespace"]) == namespace
+                    if scoped_here(str(dependency["namespace"]))
                     else dependency_fact
                     for position, (dependency, dependency_fact) in enumerate(
                         zip(dependencies, facts, strict=True),
@@ -2426,121 +2937,131 @@ def _render_chapter_steps(
                 proof = [f"    exact Eq.trans {facts[0]} {facts[1]}"]
             mechanism = "equality transitivity"
         elif action == "ex_falso" and step["source_tag"] == "contradiction":
-            dependency_expressions = [
-                parse_mpl(str(dependency["expression"]["mpl"]))
-                for dependency in dependencies
-            ]
-            contradictory_pairs = [
-                (negative_position, positive_position)
-                for negative_position, negative in enumerate(dependency_expressions)
-                if isinstance(negative, Negation)
-                for positive_position, positive in enumerate(dependency_expressions)
-                if to_mpl(negative.inner) == to_mpl(positive)
-            ]
-            assert len(contradictory_pairs) == 1
-            negative_position, positive_position = contradictory_pairs[0]
-            negative_dependency = dependencies[negative_position]
-            positive_dependency = dependencies[positive_position]
-            negative_fact = _row_reference(str(negative_dependency["step"]))
-            positive_fact = _row_reference(str(positive_dependency["step"]))
-            scoped_positions = [
-                position
-                for position in (negative_position, positive_position)
-                if dependencies[position]["namespace"] != "main"
-            ]
-            if not scoped_positions:
-                proof = [
-                    f"    exact False.elim ({negative_fact} {positive_fact})"
-                ]
+            dependency_expressions = [parse_mpl(str(dependency["expression"]["mpl"])) for dependency in dependencies]
+            pairs = [(i, j) for i, negative in enumerate(dependency_expressions)
+                     if isinstance(negative, Negation)
+                     for j, positive in enumerate(dependency_expressions)
+                     if to_mpl(negative.inner) == to_mpl(positive)]
+            assert len(pairs) == 1
+            negative_position, positive_position = pairs[0]
+            scoped_positions = [position for position in pairs[0]
+                                if dependencies[position]["namespace"] != "main"]
+            proof = []
+            if namespace != "main":
+                proof.extend(_scope_entry_and_specializations(
+                    namespace, scope_contexts, scoped_prefix.get(fact, ()),
+                    scope_row_guard(fact), [], replacements))
             else:
-                # One or both contradictory facts live in the contradiction
-                # scope (a scoped negation against a main-scope fact, or two
-                # scoped facts); the row concludes the negated assumption by
-                # entering the scope once and instantiating every scoped fact
-                # there, sharing the witnesses their guards need.
-                scoped_namespaces = {
-                    str(dependencies[position]["namespace"])
+                proof.extend(f"    intro {replacements.get(variable, lean_name(variable))}" for variable in main_unbound)
+            if not scoped_positions:
+                negative_fact = _row_reference(str(dependencies[negative_position]["step"]))
+                positive_fact = _row_reference(str(dependencies[positive_position]["step"]))
+                proof.append(f"    exact False.elim ({negative_fact} {positive_fact})")
+            else:
+                source_contexts = {
+                    str(dependencies[position]["namespace"]): _scope_layers(
+                        scope_contexts[str(dependencies[position]["namespace"])])
                     for position in scoped_positions
                 }
-                assert len(scoped_namespaces) == 1, "a contradiction spans two scopes"
-                dependency_namespace = next(iter(scoped_namespaces))
-                if len(scoped_positions) == 1:
-                    main_position = (
-                        positive_position
-                        if scoped_positions[0] == negative_position
-                        else negative_position
-                    )
-                    assert dependencies[main_position]["namespace"] == "main"
+                dependency_namespace = max(source_contexts, key=lambda scope: len(source_contexts[scope]))
+                source_layers = source_contexts[dependency_namespace]
+                for source_namespace, layers in source_contexts.items():
+                    assert (source_namespace == dependency_namespace
+                            or dependency_namespace.startswith(source_namespace + "_boundary_")), (
+                        "contradiction evidence belongs to unrelated scopes")
+                    assert layers == source_layers[:len(layers)], (
+                        "contradiction evidence has incompatible scope assumptions")
                 assert isinstance(conclusion_expression, Negation)
-                assert dependency_namespace in scope_contexts
-                context_template = parse_mpl(
-                    str(scope_contexts[dependency_namespace]["template"]["mpl"])
-                )
-                assert (
-                    isinstance(context_template, Implication)
-                    and not context_template.bound_variables
-                    and to_mpl(context_template.premise)
-                    == to_mpl(conclusion_expression.inner)
-                    and to_mpl(context_template.conclusion)
-                    == to_mpl(conclusion_expression.inner)
-                )
-                witness_lines: list[str] = []
-                guard_by_witness: dict[str, str] = {}
-                scoped_terms: dict[int, str] = {}
-                for scoped_position in scoped_positions:
-                    scoped_dependency = dependencies[scoped_position]
-                    scoped_fact = _row_reference(str(scoped_dependency["step"]))
-                    assert not scoped_prefix.get(scoped_fact, ())
-                    witness_arguments: list[str] = []
-                    for witness_variable in scoped_witness.get(scoped_fact, ()):
-                        name = replacements.get(
-                            witness_variable,
-                            lean_name(witness_variable),
-                        )
-                        if witness_variable in guard_by_witness:
-                            witness_arguments.extend([name, guard_by_witness[witness_variable]])
+                assert dependency_namespace.startswith(namespace + "_boundary_")
+                target_layers = _scope_layers(scope_contexts[namespace]) if namespace != "main" else []
+                assert source_layers[:-1] == target_layers
+                assert not source_layers[-1][0]
+                assert to_mpl(source_layers[-1][1]) == to_mpl(conclusion_expression.inner)
+                proof.append("    intro contradiction_assumption")
+                available_layers = source_layers
+                guard_by_witness = {witness: f"witness_guard_{position}"
+                                    for position, witness in enumerate(scope_row_guard(fact), 1)}
+
+                def context_arguments(source_fact: str) -> list[str]:
+                    """@brief Instantiate a cited scope with the entered ancestor and child assumptions.
+                    @details Only a prefix of the current scope may be consumed.
+                    @param source_fact Previously emitted fact whose context is required.
+                    @return Ordered ordinary arguments and matching assumption names.
+                    """
+                    source_namespace = fact_namespaces[source_fact]
+                    if source_namespace == "main":
+                        return [replacements.get(v, lean_name(v)) for v in main_prefix.get(source_fact, ())]
+                    layers = _scope_layers(scope_contexts[source_namespace])
+                    assert layers == available_layers[:len(layers)]
+                    arguments = [replacements.get(v, lean_name(v)) for v in scoped_prefix.get(source_fact, ())]
+                    for index, (bound, _) in enumerate(layers):
+                        arguments.extend(replacements.get(v, lean_name(v)) for v in bound)
+                        arguments.append("contradiction_assumption" if index == len(target_layers)
+                                         else f"scope_premise_{index + 1}")
+                    return arguments
+
+                def witness_arguments(source_fact: str, witnesses: tuple[str, ...]) -> list[str]:
+                    """@brief Supply the exact shared witnesses needed by one scoped fact.
+                    @details A witness already bound in the context takes only its guard here.
+                    @param source_fact Cited fact defining the argument order.
+                    @param witnesses Required witnesses in dependency order.
+                    @return Existing witness values and proof guards without re-choosing them.
+                    """
+                    source_namespace = fact_namespaces[source_fact]
+                    bound = set(scoped_prefix.get(source_fact, ()))
+                    if source_namespace != "main":
+                        bound.update(v for variables, _ in _scope_layers(scope_contexts[source_namespace]) for v in variables)
+                    arguments = []
+                    for witness in witnesses:
+                        assert witness in guard_by_witness
+                        if witness not in bound:
+                            arguments.append(replacements.get(witness, lean_name(witness)))
+                        arguments.append(guard_by_witness[witness])
+                    return arguments
+
+                terms = {}
+                for position in (negative_position, positive_position):
+                    source_fact = _row_reference(str(dependencies[position]["step"]))
+                    if position not in scoped_positions:
+                        terms[position] = " ".join([source_fact, *context_arguments(source_fact)])
+                        continue
+                    for witness in scoped_witness.get(source_fact, ()):
+                        if witness in guard_by_witness:
                             continue
-                        projector_key = (dependency_namespace, witness_variable)
-                        assert projector_key in scope_witness_projector, (
-                            f"scoped contradiction dependency {scoped_fact} needs "
-                            f"witness {witness_variable!r} without a projector"
-                        )
-                        projector = scope_witness_projector[projector_key]
+                        key = (dependency_namespace, witness)
+                        assert key in scope_witness_projector, f"Contradiction witness has no projector: {witness}"
+                        projector = scope_witness_projector[key]
                         assert projector in scoped_existential
-                        assert not scoped_prefix.get(projector, ())
-                        application = f"{projector} contradiction_assumption"
-                        for inherited_witness in scoped_existential_guard.get(
-                            projector,
-                            (),
-                        ):
-                            assert inherited_witness in guard_by_witness
-                            application += (
-                                f" {replacements.get(inherited_witness, lean_name(inherited_witness))}"
-                                f" {guard_by_witness[inherited_witness]}"
-                            )
+                        application = " ".join([projector, *context_arguments(projector),
+                                                *witness_arguments(projector, scoped_existential_guard.get(projector, ()))])
+                        name = replacements.get(witness, lean_name(witness))
                         guard = f"contradiction_witness_guard_{len(guard_by_witness) + 1}"
-                        witness_lines.append(
-                            f"    obtain ⟨{name}, {guard}⟩ := {application}"
-                        )
-                        guard_by_witness[witness_variable] = guard
-                        witness_arguments.extend([name, guard])
-                    term = (
-                        "scoped_contradiction"
-                        if not scoped_terms
-                        else f"scoped_contradiction_{len(scoped_terms) + 1}"
-                    )
-                    witness_lines.append(
-                        f"    have {term} := "
-                        + " ".join([scoped_fact, "contradiction_assumption", *witness_arguments])
-                    )
-                    scoped_terms[scoped_position] = term
-                negative_term = scoped_terms.get(negative_position, negative_fact)
-                positive_term = scoped_terms.get(positive_position, positive_fact)
-                proof = [
-                    "    intro contradiction_assumption",
-                    *witness_lines,
-                    f"    exact {negative_term} {positive_term}",
-                ]
+                        proof.append(f"    obtain ⟨{name}, {guard}⟩ := {application}")
+                        guard_by_witness[witness] = guard
+                    if source_fact in scoped_existential:
+                        # The cited row is the projector of a scope witness
+                        # (its exported statement is the existential), and the
+                        # fact at this position is one conjunct of that
+                        # witness's bundle — the witness typing `N w` or the
+                        # defining relation. The `obtain` above already holds
+                        # the bundle in the witness guard, so the term is the
+                        # guard's conjunct projection; re-applying the
+                        # projector to its own witness would yield the
+                        # existential again.
+                        projected = [witness for witness in scoped_witness[source_fact]
+                                     if witness in guard_by_witness]
+                        assert len(projected) == 1, f"projector {source_fact} without a single obtained witness"
+                        bundle = scope_witness_bundle[(dependency_namespace, projected[0])]
+                        path = _conjunct_path(bundle, dependency_expressions[position])
+                        terms[position] = guard_by_witness[projected[0]] + "".join(
+                            ".1" if direction == 1 else ".2" for direction in path)
+                        continue
+                    term = "scoped_contradiction" if not terms else f"scoped_contradiction_{len(terms) + 1}"
+                    application = " ".join([source_fact, *context_arguments(source_fact),
+                                            *witness_arguments(source_fact, scoped_witness.get(source_fact, ()))])
+                    proof.append(f"    have {term} := {application}")
+                    terms[position] = term
+                proof.append(f"    exact {terms[negative_position]} {terms[positive_position]}")
             mechanism = "explicit contradiction elimination"
         elif action == "ex_falso" and step["source_tag"] == "vacuous truth":
             dependency_expressions = [
@@ -2548,6 +3069,21 @@ def _render_chapter_steps(
                 for dependency in dependencies
             ]
             dependency_facts = _dependency_facts(dependencies)
+            proof = []
+            if scoped_action:
+                proof.extend(_scope_entry_and_specializations(
+                    namespace, scope_contexts, scoped_prefix.get(fact, ()),
+                    scope_row_guard(fact),
+                    [_scoped_dependency(dependency, dependency_fact,
+                        scoped_prefix, scoped_witness, scoped_existential,
+                        scoped_existential_guard)
+                     for dependency, dependency_fact in zip(
+                         dependencies, dependency_facts, strict=True)], replacements))
+                dependency_facts = [
+                    f"scoped_fact_{position}"
+                    if scoped_here(str(dependency["namespace"])) else dependency_fact
+                    for position, (dependency, dependency_fact) in enumerate(
+                        zip(dependencies, dependency_facts, strict=True), start=1)]
             contradictory_fact_pairs: list[tuple[str, str]] = []
             for negative_position, negative in enumerate(dependency_expressions):
                 if not isinstance(negative, Negation):
@@ -2563,9 +3099,7 @@ def _render_chapter_steps(
                         contradictory_fact_pairs.append(pair)
             assert len(contradictory_fact_pairs) == 1
             negative_fact, positive_fact = contradictory_fact_pairs[0]
-            proof = [
-                f"    exact False.elim ({negative_fact} {positive_fact})"
-            ]
+            proof.append(f"    exact False.elim ({negative_fact} {positive_fact})")
             mechanism = "explicit vacuous-truth contradiction elimination"
         elif action == "classical_reformulate_bound":
             assert len(dependencies) == 1
@@ -2720,14 +3254,28 @@ def _render_chapter_steps(
                     )
                 )
             dependency_terms: list[str] = []
+            equality_witness_guards = {
+                witness: f"witness_guard_{position}"
+                for position, witness in enumerate(scope_row_guard(fact), 1)
+            }
             for position, (dependency, dependency_fact) in enumerate(
                 zip(dependencies, facts, strict=True),
                 start=1,
             ):
                 dependency_namespace = str(dependency["namespace"])
-                if dependency_namespace == namespace and namespace != "main":
-                    assert dependency_fact not in scoped_existential
-                    dependency_terms.append(f"scoped_fact_{position}")
+                if scoped_here(dependency_namespace):
+                    if dependency_fact in scoped_existential:
+                        witnesses = scoped_witness[dependency_fact]
+                        assert len(witnesses) == 1
+                        witness = witnesses[0]
+                        if witness not in equality_witness_guards:
+                            equality_witness_guards[witness] = f"witness_guard_{len(equality_witness_guards) + 1}"
+                        bundle = scope_witness_bundle[(namespace, witness)]
+                        path = _conjunct_path(bundle, parse_mpl(str(dependency["expression"]["mpl"])))
+                        dependency_terms.append(equality_witness_guards[witness] + "".join(
+                            ".1" if direction == 1 else ".2" for direction in path))
+                    else:
+                        dependency_terms.append(f"scoped_fact_{position}")
                     continue
                 assert dependency_namespace == "main"
                 prefix = main_prefix.get(dependency_fact, ())
@@ -2816,6 +3364,20 @@ def _render_chapter_steps(
                     f"    exact fun equality => {source_fact} (Eq.symm equality)"
                 ]
             mechanism = "inequality symmetry"
+        elif action == "scope_inherit":
+            source_fact = _dependency_facts(dependencies)[0]
+            dependency = dependencies[0]
+            source_namespace = str(dependency["namespace"])
+            source_prefix = (main_prefix.get(source_fact, ()) if source_namespace == "main"
+                             else scoped_prefix.get(source_fact, ()))
+            proof = _scope_inheritance_proof(
+                namespace, scope_contexts, scoped_prefix.get(fact, ()), scope_row_guard(fact),
+                (dependency, source_fact, source_prefix,
+                 scoped_witness.get(source_fact, ()),
+                 scoped_existential_guard.get(source_fact, ()),
+                 source_fact in scoped_existential), replacements,
+            )
+            mechanism = "explicit ancestor-scope inheritance"
         elif action == "anchor_specialize":
             assert len(dependencies) == 1
             source_fact = _row_reference(str(dependencies[0]["step"]))
@@ -2950,7 +3512,12 @@ def _render_chapter_steps(
         elif action == "or_eliminate_theorem":
             assert namespace == "main" and len(dependencies) == 3
             definition_head = str(step["or_definition_head"])
-            assert anchor_head == "AnchorFTA" and definition_head == "or3"
+            assert anchor_head == "AnchorFTA"
+            assert binary_definitions is not None
+            assert binary_definitions[definition_head]["category"] == "or"
+            case_elements = [parse_mpl(str(element)) for element in binary_definitions[definition_head]["elements"]]
+            assert len(case_elements) == 2 and all(isinstance(element, Atom) for element in case_elements)
+            assert {element.head for element in case_elements} == {"=", "preorder"}
             theorem_body = _theorem_body(conclusion_expression)
             assert isinstance(theorem_body, Implication)
             assert len(theorem_body.bound_variables) == 2
@@ -3104,6 +3671,106 @@ def _render_chapter_steps(
             mechanism = (
                 f"pre-split merge (or elimination) via {lean_constant(definition_head)}"
             )
+        elif action == "or_integration_assume":
+            assert namespace != "main" and len(dependencies) == 1
+            assert step["scope_namespace"] == namespace
+            context = scope_contexts[namespace]
+            assert context["scope_kind"] == "or_integration"
+            parent_namespace = str(context["parent_namespace"])
+            assert dependencies[0]["namespace"] == parent_namespace
+            assert dependencies[0]["expression"]["mpl"] == context["compact"]["mpl"]
+            parent_layers = [] if parent_namespace == "main" else _scope_layers(scope_contexts[parent_namespace])
+            layers = _scope_layers(context)
+            matches = [index for index, (variables, premise) in enumerate(layers, 1)
+                       if index > len(parent_layers) and not variables and to_mpl(premise) == conclusion_mpl]
+            assert len(matches) == 1
+            proof = [
+                *_scope_entry_and_specializations(
+                    namespace, scope_contexts, scoped_prefix.get(fact, ()),
+                    scope_row_guard(fact), [], replacements,
+                ),
+                f"    exact scope_premise_{matches[0]}",
+            ]
+            mechanism = "explicit negated peer assumption for OR integration"
+        elif action == "or_introduce":
+            assert len(dependencies) == 1 and isinstance(conclusion_expression, Atom)
+            assert binary_definitions is not None
+            definition_head = str(step["or_definition_head"])
+            assert conclusion_expression.head == definition_head
+            definition = binary_definitions[definition_head]
+            assert definition["category"] == "or"
+            parameter_map = {f"u_{index + 1}": argument
+                             for index, argument in enumerate(conclusion_expression.arguments)}
+            disjuncts = [map_arguments(parse_mpl(str(element)), lambda name: parameter_map.get(name, name))
+                        for element in definition["elements"]]
+            selected_case = int(step["selected_case"])
+            assert len(disjuncts) >= 2 and 0 <= selected_case < len(disjuncts)
+            assert dependencies[0]["expression"]["mpl"] == to_mpl(disjuncts[selected_case])
+            branch_namespace = str(step["branch_namespace"])
+            assert dependencies[0]["namespace"] == branch_namespace
+            context = scope_contexts[branch_namespace]
+            assert context["scope_kind"] == "or_integration"
+            assert context["parent_namespace"] == namespace
+            assert context["compact"]["mpl"] == conclusion_mpl
+            parent_layers = [] if namespace == "main" else _scope_layers(scope_contexts[namespace])
+            layers = _scope_layers(context)
+            assert layers[:len(parent_layers)] == parent_layers
+            peer_assumptions = [element.inner if isinstance(element, Negation) else Negation(element)
+                                for index, element in enumerate(disjuncts) if index != selected_case]
+            assert layers[len(parent_layers):] == [((), premise) for premise in peer_assumptions]
+            branch_fact = _row_reference(str(dependencies[0]["step"]))
+            context_arguments = []
+            for layer_index, (bound_variables, _) in enumerate(parent_layers, 1):
+                context_arguments.extend(replacements.get(variable, lean_name(variable)) for variable in bound_variables)
+                context_arguments.append(f"scope_premise_{layer_index}")
+            for index, element in enumerate(disjuncts):
+                if index == selected_case:
+                    continue
+                peer = "missing_or" + _left_associated_projection(len(disjuncts), index)
+                context_arguments.append(f"(Classical.not_not.mp {peer})" if isinstance(element, Negation) else peer)
+            inherited_witnesses = scope_row_guard(fact)
+            parent_bound = {variable for variables, _ in parent_layers for variable in variables}
+            branch_arguments = lambda source: [
+                *(replacements.get(variable, lean_name(variable)) for variable in scoped_prefix.get(source, ())),
+                *context_arguments,
+            ]
+            arguments = branch_arguments(branch_fact)
+            witness_guards = {witness: f"witness_guard_{index}" for index, witness in enumerate(inherited_witnesses, 1)}
+            witness_lines = []
+            for witness in scoped_witness.get(branch_fact, ()):
+                if witness not in witness_guards:
+                    projector = scope_witness_projector[(branch_namespace, witness)]
+                    assert projector in scoped_existential and scoped_witness[projector] == (witness,)
+                    assert fact_namespaces[projector] == branch_namespace
+                    projector_arguments = branch_arguments(projector)
+                    for prerequisite in scoped_existential_guard.get(projector, ()):
+                        assert prerequisite in witness_guards
+                        if prerequisite not in parent_bound | set(scoped_prefix.get(projector, ())):
+                            projector_arguments.append(replacements.get(prerequisite, lean_name(prerequisite)))
+                        projector_arguments.append(witness_guards[prerequisite])
+                    name = replacements.get(witness, lean_name(witness))
+                    guard = f"witness_guard_{len(witness_guards) + 1}"
+                    witness_lines.append(f"    obtain ⟨{name}, {guard}⟩ := " + " ".join([projector, *projector_arguments]))
+                    witness_guards[witness] = guard
+                if witness not in parent_bound | set(scoped_prefix.get(branch_fact, ())):
+                    arguments.append(replacements.get(witness, lean_name(witness)))
+                arguments.append(witness_guards[witness])
+            branch_application = " ".join([branch_fact, *arguments])
+            selected_refutation = "missing_or" + _left_associated_projection(len(disjuncts), selected_case)
+            proof = [
+                "    classical",
+                *_scope_entry_and_specializations(
+                    namespace, scope_contexts, scoped_prefix.get(fact, ()),
+                    scope_row_guard(fact), [], replacements,
+                ),
+                f"    simp only [{definition_constant(definition_head)}]",
+                "    apply Classical.byContradiction",
+                "    intro missing_or",
+                "    simp only [not_or] at missing_or",
+                *witness_lines,
+                f"    exact {selected_refutation} ({branch_application})",
+            ]
+            mechanism = "classical OR introduction discharging explicit negated peers"
         elif action == "or_branch":
             assert namespace != "main" and len(dependencies) == 1
             assert step["scope_namespace"] == namespace
@@ -3111,9 +3778,13 @@ def _render_chapter_steps(
                 str(scope_contexts[namespace]["template"]["mpl"])
             )
             assert isinstance(context_template, Implication)
-            assert not context_template.bound_variables
-            assert to_mpl(context_template.premise) == conclusion_mpl
-            assert to_mpl(context_template.conclusion) == conclusion_mpl
+            branch_layers = _scope_layers(scope_contexts[namespace])
+            assert not branch_layers[-1][0]
+            assert to_mpl(branch_layers[-1][1]) == conclusion_mpl
+            cursor = context_template
+            while isinstance(cursor, Implication):
+                cursor = cursor.conclusion
+            assert to_mpl(cursor) == conclusion_mpl
             proof = [
                 *_scope_entry_and_specializations(
                     namespace,
@@ -3123,11 +3794,14 @@ def _render_chapter_steps(
                     [],
                     replacements,
                 ),
-                "    exact scope_premise_1",
+                f"    exact scope_premise_{len(branch_layers)}",
             ]
             mechanism = "explicit OR branch identity"
         elif action == "or_eliminate":
-            assert namespace == "main" and len(dependencies) >= 3
+            assert len(dependencies) >= 3
+            assert namespace == "main" or namespace in scope_contexts
+            assert str(dependencies[0]["namespace"]) == namespace
+            parent_layers = [] if namespace == "main" else _scope_layers(scope_contexts[namespace])
             definition_head = str(step["or_definition_head"])
             assert binary_definitions is not None
             or_expression = parse_mpl(str(dependencies[0]["expression"]["mpl"]))
@@ -3146,16 +3820,31 @@ def _render_chapter_steps(
                 )
                 for element in definition["elements"]
             ]
-            assert len(branch_expressions) == 2
+            equality_plan = step.get("or_equality_plan")
+            if equality_plan is not None:
+                from .or_convergence import convergence_cases, match_equality_convergence
+                cases = convergence_cases(or_expression, namespace, binary_definitions)
+                assert [expression for expression, _ in cases] == branch_expressions
+                checked_plan = match_equality_convergence(conclusion_expression, namespace, cases,
+                    [(parse_mpl(str(dependency["expression"]["mpl"])), str(dependency["namespace"]))
+                     for dependency in dependencies[1:]])
+                assert equality_plan == checked_plan and checked_plan is not None
+            else:
+                assert len(branch_expressions) == len(dependencies) - 1, (
+                    "OR convergence requires exactly one dependency per definition case"
+                )
             branch_dependencies: list[dict[str, object]] = []
-            for branch_expression in branch_expressions:
+            for case_index, branch_expression in enumerate(branch_expressions):
+                if equality_plan is not None:
+                    branch_dependencies.append(dependencies[1 + equality_plan[case_index]["source"]])
+                    continue
                 matches: list[dict[str, object]] = []
                 for dependency in dependencies[1:]:
                     dependency_expression = parse_mpl(
                         str(dependency["expression"]["mpl"])
                     )
                     dependency_namespace = str(dependency["namespace"])
-                    if dependency_namespace == "main":
+                    if dependency_namespace == "main" or scoped_here(dependency_namespace):
                         if (
                             isinstance(dependency_expression, Negation)
                             and to_mpl(dependency_expression.inner)
@@ -3163,23 +3852,42 @@ def _render_chapter_steps(
                         ):
                             matches.append(dependency)
                         continue
-                    context_template = parse_mpl(
-                        str(
-                            scope_contexts[dependency_namespace]["template"]["mpl"]
-                        )
+                    context = scope_contexts[dependency_namespace]
+                    branch_layers = _scope_layers(context)
+                    assert context["parent_namespace"] == namespace, (
+                        "OR convergence branch belongs to a different parent"
                     )
-                    assert isinstance(context_template, Implication)
-                    if to_mpl(context_template.premise) == to_mpl(branch_expression):
+                    assert branch_layers[:-1] == parent_layers
+                    assert not branch_layers[-1][0]
+                    if to_mpl(branch_layers[-1][1]) == to_mpl(branch_expression):
                         matches.append(dependency)
                 assert len(matches) == 1
                 branch_dependencies.append(matches[0])
 
             or_fact = _row_reference(str(dependencies[0]["step"]))
+            entry_lines = _scope_entry_and_specializations(
+                namespace, scope_contexts, scoped_prefix.get(fact, ()),
+                scope_row_guard(fact),
+                [_scoped_dependency(
+                    dependency, _row_reference(str(dependency["step"])),
+                    scoped_prefix, scoped_witness, scoped_existential,
+                    scoped_existential_guard,
+                ) for dependency in dependencies],
+                replacements,
+            )
+            or_term = "scoped_fact_1" if namespace != "main" else " ".join([
+                or_fact, *(replacements.get(variable, lean_name(variable))
+                           for variable in main_prefix.get(or_fact, ())),
+            ])
+            case_pattern = "or_branch_1 | or_branch_2"
+            for branch_position in range(3, len(branch_expressions) + 1):
+                case_pattern = f"({case_pattern}) | or_branch_{branch_position}"
             proof = [
                 "    classical",
-                f"    have or_cases := {or_fact}",
+                *entry_lines,
+                f"    have or_cases := {or_term}",
                 f"    simp only [{definition_constant(definition_head)}] at or_cases",
-                "    rcases or_cases with or_branch_1 | or_branch_2",
+                f"    rcases or_cases with {case_pattern}",
             ]
             for branch_position, (
                 branch_expression,
@@ -3193,15 +3901,103 @@ def _render_chapter_steps(
                     str(branch_dependency["expression"]["mpl"])
                 )
                 proof.append(f"    · have branch_compact := or_branch_{branch_position}")
-                if str(branch_dependency["namespace"]) == "main":
+                if equality_plan is not None:
+                    case_plan = equality_plan[branch_position - 1]
+                    indexes = [case_plan["source"], *case_plan["equalities"]]
+                    case_namespace = cases[branch_position - 1][1]
+                    inherited = scope_row_guard(fact)
+                    local_witnesses = sorted({
+                        witness for index in indexes
+                        for witness in scoped_witness.get(_row_reference(str(dependencies[index+1]["step"])), ())
+                        if witness not in inherited})
+                    local_guards = {}
+                    if local_witnesses:
+                        assert len(local_witnesses) == 1
+                        witness = local_witnesses[0]
+                        assert isinstance(branch_expression, Atom)
+                        existence = binary_definitions[branch_expression.head]
+                        assert existence["category"] == "existence"
+                        placeholders = {argument for element in existence["elements"]
+                            for atom in iter_atoms(parse_mpl(str(element))) for argument in atom.arguments
+                            if not argument.startswith("u_")}
+                        assert len(placeholders) == 1
+                        parameters = {f"u_{i+1}": argument for i, argument in enumerate(branch_expression.arguments)}
+                        elements = [map_arguments(parse_mpl(str(element)),
+                            lambda name: witness if name in placeholders else parameters.get(name, name))
+                            for element in existence["elements"]]
+                        bundle = elements[0] if len(elements) == 1 else Conjunction(tuple(elements))
+                        required = scope_witness_bundle[(case_namespace, witness)]
+                        projection = "".join(".1" if side == 1 else ".2" for side in _conjunct_path(bundle, required))
+                        witness_name = replacements.get(witness, lean_name(witness))
+                        proof.append(f"      obtain ⟨{witness_name}, case_bundle⟩ := existsAndOfNotForallImpNot branch_compact")
+                        local_guards[witness] = "case_bundle" + projection
+                    for position, index in enumerate(indexes):
+                        dependency = dependencies[index + 1]
+                        source_fact = _row_reference(str(dependency["step"]))
+                        source_scope = str(dependency["namespace"])
+                        if source_scope == "main":
+                            term = " ".join([source_fact, *(replacements.get(variable, lean_name(variable))
+                                for variable in main_prefix.get(source_fact, ()))])
+                        elif scoped_here(source_scope):
+                            term = f"scoped_fact_{index+2}"
+                        else:
+                            assert source_scope == case_namespace
+                            context = scope_contexts[source_scope]
+                            assert context["parent_namespace"] == namespace
+                            assert _scope_layers(context) == [*parent_layers, ((), branch_expression)]
+                            arguments = [replacements.get(variable, lean_name(variable))
+                                for variable in scoped_prefix.get(source_fact, ())]
+                            for layer_index, (variables, _) in enumerate(parent_layers, 1):
+                                arguments.extend(replacements.get(variable, lean_name(variable)) for variable in variables)
+                                arguments.append(f"scope_premise_{layer_index}")
+                            arguments.append("branch_compact")
+                            parent_bound = {variable for variables, _ in parent_layers for variable in variables}
+                            for witness in scoped_witness.get(source_fact, ()):
+                                if witness not in parent_bound | set(scoped_prefix.get(source_fact, ())):
+                                    arguments.append(replacements.get(witness, lean_name(witness)))
+                                arguments.append(local_guards[witness] if witness in local_guards
+                                    else f"witness_guard_{inherited.index(witness)+1}")
+                            term = " ".join([source_fact, *arguments])
+                        proof.append(f"      have case_support_{position} := {term}")
+                    if case_plan["retired"]:
+                        proof.append("      exact False.elim (case_support_0 branch_compact)")
+                    else:
+                        for position in range(1, len(indexes)):
+                            proof.append(f"      cases case_support_{position}")
+                        proof.append("      exact case_support_0")
+                    continue
+                dependency_namespace = str(branch_dependency["namespace"])
+                if dependency_namespace == "main" or scoped_here(dependency_namespace):
                     assert isinstance(dependency_expression, Negation)
+                    refutation_term = (
+                        f"scoped_fact_{dependencies.index(branch_dependency) + 1}"
+                        if scoped_here(dependency_namespace)
+                        else " ".join([branch_fact, *(
+                            replacements.get(variable, lean_name(variable))
+                            for variable in main_prefix.get(branch_fact, ())
+                        )])
+                    )
                     proof.append(
-                        f"      exact False.elim ({branch_fact} branch_compact)"
+                        f"      exact False.elim ({refutation_term} branch_compact)"
                     )
                     continue
-                assert not scoped_prefix.get(branch_fact, ())
-                witnesses = scoped_witness.get(branch_fact, ())
-                branch_application = f"{branch_fact} branch_compact"
+                arguments = [replacements.get(variable, lean_name(variable))
+                             for variable in scoped_prefix.get(branch_fact, ())]
+                for layer_index, (bound_variables, _) in enumerate(parent_layers, 1):
+                    arguments.extend(replacements.get(variable, lean_name(variable))
+                                     for variable in bound_variables)
+                    arguments.append(f"scope_premise_{layer_index}")
+                arguments.append("branch_compact")
+                inherited_witnesses = scope_row_guard(fact)
+                parent_bound = {variable for variables, _ in parent_layers for variable in variables}
+                for witness in scoped_witness.get(branch_fact, ()):
+                    if witness in inherited_witnesses:
+                        if witness not in parent_bound | set(scoped_prefix.get(branch_fact, ())):
+                            arguments.append(replacements.get(witness, lean_name(witness)))
+                        arguments.append(f"witness_guard_{inherited_witnesses.index(witness) + 1}")
+                witnesses = tuple(witness for witness in scoped_witness.get(branch_fact, ())
+                                  if witness not in inherited_witnesses)
+                branch_application = " ".join([branch_fact, *arguments])
                 if witnesses:
                     assert len(witnesses) == 1
                     witness = witnesses[0]
@@ -3278,39 +4074,47 @@ def _render_chapter_steps(
                         f"(({branch_application}) branch_compact)"
                     )
             mechanism = f"explicit OR branch elimination via {lean_constant(definition_head)}"
+        elif action == "definition_compact" and dependencies[0]["source_kind"] == "local_step":
+            # The compact folds an expansion proved earlier in this chapter:
+            # the compact is its definition, so the cited row unfolds to it.
+            assert namespace == "main" and len(dependencies) == 1
+            assert isinstance(conclusion_expression, Atom)
+            assert str(dependencies[0]["namespace"]) == "main"
+            assert "theorem_reference" not in dependencies[0]
+            source_fact = _row_reference(str(dependencies[0]["step"]))
+            proof = [
+                f"    simpa only [{expansion_rules(conclusion_expression.head)}] using {source_fact}"
+            ]
+            mechanism = (
+                f"local definition compaction via "
+                f"{lean_constant(conclusion_expression.head)}"
+            )
         elif action == "definition_compact":
             assert namespace == "main" and len(dependencies) == 1
             assert isinstance(conclusion_expression, Atom)
             reference = dependencies[0]["theorem_reference"]
             assert isinstance(reference, dict)
             if (
-                anchor_head == "AnchorFTA"
-                and not conclusion_expression.arguments
+                not conclusion_expression.arguments
                 and reference.get("certificate_id") is None
             ):
                 source_theorem = parse_mpl(str(reference["theorem"]["mpl"]))
                 assert isinstance(source_theorem, Implication)
-                assert source_theorem.bound_variables == (
-                    "N", "i0", "s", "+", "*", "i1", "i2", "id"
-                )
+                source_anchor = parse_mpl(ANCHOR_MPL[anchor_head])
+                assert isinstance(source_anchor, Atom)
+                assert source_theorem.bound_variables == source_anchor.arguments
                 assert isinstance(source_theorem.premise, Atom)
-                assert source_theorem.premise.head == "AnchorFTA"
+                assert source_theorem.premise.head == anchor_head
                 compiled_context = [
-                    "compiled_N",
-                    "compiled_zero",
-                    "compiled_succ",
-                    "compiled_add",
-                    "compiled_mul",
-                    "compiled_one",
-                    "compiled_two",
-                    "compiled_identity",
+                    "compiled_" + CONTEXT_NAMES[variable]
+                    for variable in source_anchor.arguments
                 ]
                 theorem_application = " ".join(
                     [
                         str(reference["theorem_id"]),
                         *compiled_context,
                         "compiled_anchor",
-                        "relationalInduction",
+                        "compiled_induction",
                         *external_theorem_arguments.get(
                             str(reference["theorem_id"]), []
                         ),
@@ -3319,7 +4123,7 @@ def _render_chapter_steps(
                 proof = [
                     f"    simp only [{expansion_rules(conclusion_expression.head)}]",
                     f"    intro {' '.join(compiled_context)}",
-                    "    intro compiled_anchor",
+                    "    intro compiled_anchor compiled_induction",
                     f"    exact {theorem_application}",
                 ]
                 mechanism = (
@@ -3342,7 +4146,11 @@ def _render_chapter_steps(
                 )
         elif action == "variable_alias":
             assert not dependencies
-            proof = ["    rfl"]
+            proof = ([f"    intro {replacements.get(variable, lean_name(variable))}"
+                      for variable in main_unbound] if namespace == "main" else
+                     _scope_entry_and_specializations(namespace, scope_contexts,
+                         scoped_prefix.get(fact, ()), scope_row_guard(fact), [], replacements))
+            proof.append("    rfl")
             mechanism = "certificate-checked local variable alias"
         elif action == "integration_premise":
             assert len(dependencies) == 1
@@ -3379,6 +4187,35 @@ def _render_chapter_steps(
                 f"    exact scope_premise_{matching_premises[0]}",
             ]
             mechanism = "explicit scoped premise introduction"
+        elif action == "definition_construct":
+            assert len(dependencies) == 1
+            assert dependencies[0]["source_kind"] == "integration_goal_template"
+            if scoped_action:
+                proof = _scope_entry_and_specializations(
+                    namespace, scope_contexts, scoped_prefix.get(fact, ()),
+                    scope_row_guard(fact), [], replacements)
+            else:
+                proof = [
+                    f"    intro {replacements.get(variable, lean_name(variable))}"
+                    for variable in main_unbound
+                ]
+            cursor = conclusion_expression
+            premise_labels = []
+            while isinstance(cursor, Implication):
+                for variable in cursor.bound_variables:
+                    proof.append(
+                        f"    intro {replacements.get(variable, lean_name(variable))}")
+                label = f"integration_premise_{len(premise_labels) + 1}"
+                premise_labels.append(label)
+                proof.append(f"    intro {label}")
+                cursor = cursor.conclusion
+            assert isinstance(cursor, Atom)
+            assert cursor.head == step["reformulation_definition"]
+            term = render_flat_integration_term(
+                step["flat_integration_plan"], premise_labels,
+                lambda name: replacements.get(name, lean_name(name)))
+            proof.append(f"    exact {term}")
+            mechanism = "explicit flat definition construction from recorded premises"
         elif action in {
             "classical_reformulate_empty",
             "integration_conjoin",
@@ -3412,19 +4249,52 @@ def _render_chapter_steps(
                     proof.append(f"    intro {label}")
                     cursor = cursor.conclusion
                 assert len(premise_labels) >= 2
-                proof.append(
-                    f"    simp only [{lean_constant(str(step['reformulation_definition']))}]"
-                )
                 conjunction = premise_labels[0]
                 for label in premise_labels[1:]:
                     conjunction = f"⟨{conjunction}, {label}⟩"
-                proof.append(f"    exact {conjunction}")
+                if step["reformulation_definition"] == EQUALITY:
+                    # Both subsets give the typed equality by extensionality.
+                    assert isinstance(cursor, Atom) and len(premise_labels) == 2
+                    lemma = _extensionality_lemma(cursor, variable_types)
+                    proof.append(f"    exact ({lemma} _ _).mpr {conjunction}")
+                else:
+                    proof.append(
+                        f"    simp only [{lean_constant(str(step['reformulation_definition']))}]"
+                    )
+                    proof.append(f"    exact {conjunction}")
             elif action == "integration_discharge":
                 source_fact = _row_reference(str(dependencies[0]["step"]))
-                proof = [
-                    f"    simpa only [{definition_constant(str(step['scope_context']['definition_head']))}] "
-                    f"using {source_fact}"
-                ]
+                definition_rule = definition_constant(str(step["scope_context"]["definition_head"]))
+                if scoped_witness.get(source_fact, ()):
+                    assert source_fact not in scoped_existential
+                    source_namespace = str(context["namespace"])
+                    source_bound = set(scoped_prefix.get(source_fact, ())) | {
+                        variable for variables, _ in _scope_layers(context) for variable in variables
+                    }
+                    scoped_dependencies = [_scoped_dependency(
+                        dependencies[0], source_fact, scoped_prefix, scoped_witness,
+                        scoped_existential, scoped_existential_guard,
+                    )]
+                    for witness in scoped_witness[source_fact]:
+                        assert witness not in source_bound | _free_tokens(conclusion_expression), (
+                            "integration discharge cannot choose an already bound witness"
+                        )
+                        projector = scope_witness_projector[(source_namespace, witness)]
+                        assert projector in scoped_existential and scoped_witness[projector] == (witness,)
+                        scoped_dependencies.append(_scoped_dependency(
+                            {"namespace": fact_namespaces[projector]}, projector,
+                            scoped_prefix, scoped_witness, scoped_existential, scoped_existential_guard,
+                        ))
+                    proof = [
+                        f"    simp only [{definition_rule}]",
+                        *_scope_entry_and_specializations(
+                            source_namespace, scope_contexts, scoped_prefix.get(source_fact, ()),
+                            (), scoped_dependencies, replacements,
+                        ),
+                        "    exact scoped_fact_1",
+                    ]
+                else:
+                    proof = [f"    simpa only [{definition_rule}] using {source_fact}"]
             elif action == "classical_reformulate_empty":
                 source_fact = _row_reference(str(dependencies[0]["step"]))
                 assert source_fact in main_prefix
@@ -3555,7 +4425,7 @@ def _external_reference_interfaces(
             for reference in references:
                 assert isinstance(reference, dict)
                 certificate_id = reference.get("certificate_id")
-                if certificate_id is None:
+                if certificate_id is None or "_externals_" not in str(certificate_id):
                     continue
                 key = (str(certificate_id), int(reference["source_index"]))
                 fact = (
@@ -3573,13 +4443,13 @@ def _external_reference_interfaces(
                 if corpus_kind(str(certificate_id)) == "peano":
                     fact_application = (
                         f"{fact} N zero succ add mul one "
-                        "(anchorPeanoOfFTA N zero succ add mul one two identity anchor)"
+                        "(anchorPeanoOfFTA N zero succ add mul one two identity anchor) relationalInduction"
                     )
                 else:
                     assert corpus_kind(str(certificate_id)) == "gauss"
                     fact_application = (
                         f"{fact} N zero succ add mul one two identity "
-                        "(anchorGaussOfFTA N zero succ add mul one two identity anchor)"
+                        "(anchorGaussOfFTA N zero succ add mul one two identity anchor) relationalInduction"
                     )
                 if key in fact_by_reference:
                     assert fact_by_reference[key] == fact_application
@@ -3600,9 +4470,9 @@ def _theorem_header(
     """
     @brief Render one public theorem declaration and its introduction sequence.
     @details
-    The anchor and relational induction rule are explicit parameters. An FTA
-    theorem additionally receives the exact hash-validated external facts its
-    chapters cite. Nested MPL binders and premises are introduced in source order
+    The anchor and fixed-structure induction rule are explicit parameters.
+    Connected FTA calls the preceding proof modules. Historical external-list
+    fixtures additionally receive induction-conditioned theorem propositions. Nested MPL binders and premises are introduced in source order
     with stable names.
     @param theorem Neutral certificate theorem.
     @param replacements Chapter-local identifier aliases.
@@ -3700,26 +4570,26 @@ def _chapter_manifest(
     }
 
 
-def _render_direct_theorem(
+def _render_single_chapter_theorem(
     theorem: dict[str, object],
     anchor_head: str = "AnchorPeano",
     binary_definitions: dict[str, object] | None = None,
 ) -> tuple[list[str], dict[str, object]]:
     """
-    @brief Render one direct selected theorem and all of its row facts.
+    @brief Render one selected single-chapter theorem and all of its row facts.
     @details
     An extra chapter assumption is accepted only when it is exactly the reductio
     counterpart of the terminal theorem conclusion.
-    @param theorem Neutral direct-theorem record.
+    @param theorem Neutral single-chapter theorem record.
     @param anchor_head AnchorPeano or AnchorGauss context selector.
     @param binary_definitions Compiled definitions used by schema-3 Gauss rows.
     @return Lean source lines and theorem-level manifest record.
     """
 
-    # The proved-not-broadcast tier's chapter is an ordinary direct walk;
+    # The proved-not-broadcast tier's chapter is an ordinary single-chapter walk;
     # its Lean rendering is identical (the level verdict is a GL-side
     # registration policy, not a proof-content difference).
-    assert theorem["method"] in ("direct", "proved not broadcast")
+    assert theorem["method"] in ("single chapter proof", "proved not broadcast")
     chapters = theorem["chapters"]
     assert isinstance(chapters, list) and len(chapters) == 1
     chapter = chapters[0]
@@ -3766,7 +4636,7 @@ def _render_direct_theorem(
         if assumption_mpl in assumption_map:
             continue
         assert assumption_mpl == reductio_mpl, (
-            f"direct proof has unstated assumption {assumption_mpl!r}"
+            f"single chapter proof has unstated assumption {assumption_mpl!r}"
         )
         assert not reductio
         assumption_map[assumption_mpl] = "reductio"
@@ -4232,6 +5102,8 @@ def _render_induction_theorem(
     @details
     Private helpers replay every certificate row. The public proof composes
     them only through the explicit ordinary relationalInduction premise.
+    A helper's extra assumption may be the exact opposite of the terminal
+    property conclusion; the caller introduces and discharges it by contradiction.
     @param theorem Neutral induction-theorem record.
     @param anchor_head AnchorPeano or AnchorGauss context selector.
     @param binary_definitions Compiled definitions used by schema-3 Gauss rows.
@@ -4286,7 +5158,14 @@ def _render_induction_theorem(
     step_variable_types = step_chapter["variable_types"]
     assert isinstance(step_variable_types, dict)
     step_free_tokens = _helper_free_tokens(step_chapter, step_replacements)
-    property_premises, _ = _flatten_implications(property_expression)
+    property_premises, property_conclusion = _flatten_implications(property_expression)
+    reductio_expression = (
+        property_conclusion.inner
+        if isinstance(property_conclusion, Negation)
+        else Negation(property_conclusion)
+    )
+    reductio_mpl = to_mpl(reductio_expression)
+    step_reductio = False
     step_premise_terms = {
         to_mpl(premise): f"step_premise_{index}"
         for index, premise in enumerate(property_premises, start=1)
@@ -4322,6 +5201,7 @@ def _render_induction_theorem(
         @return Lean local fact name supplied to the helper.
         """
 
+        nonlocal step_reductio
         mpl = to_mpl(expression)
         if step["action"] == "induction_assumption":
             step_id = str(step["id"])
@@ -4346,6 +5226,10 @@ def _render_induction_theorem(
             and expression.arguments == ("rec", "N")
         ):
             return "induction_n_member"
+        if mpl == reductio_mpl:
+            assert not step_reductio
+            step_reductio = True
+            return "step_reductio"
         raise AssertionError(
             f"cannot resolve induction-step helper assumption {mpl!r}"
         )
@@ -4498,6 +5382,10 @@ def _render_induction_theorem(
     zero_variable_types = zero_chapter["variable_types"]
     assert isinstance(zero_variable_types, dict)
     zero_assumption_terms: list[str] = []
+    base_reductio = False
+    base_reductio_proposition = render_expression(
+        reductio_expression, variable_types, base_replacements,
+    )
     for step, expression in _helper_assumptions(zero_chapter):
         if step["action"] == "induction_assumption":
             assert (
@@ -4527,6 +5415,11 @@ def _render_induction_theorem(
         ):
             zero_assumption_terms.append("inductionZeroMember")
             continue
+        if proposition == base_reductio_proposition:
+            assert not base_reductio
+            base_reductio = True
+            zero_assumption_terms.append("base_reductio")
+            continue
         raise AssertionError(
             f"cannot resolve zero helper assumption {to_mpl(expression)!r} "
             f"for {theorem['id']}"
@@ -4543,6 +5436,22 @@ def _render_induction_theorem(
             *zero_assumption_terms,
         ]
     )
+
+    case_introductions: dict[str, list[str]] = {"base": [], "step": []}
+    case_proofs = {"base": zero_application, "step": " ".join(step_application)}
+    for case, reductio in (("base", base_reductio), ("step", step_reductio)):
+        if not reductio:
+            continue
+        assumption = f"{case}_reductio"
+        if isinstance(property_conclusion, Negation):
+            case_introductions[case] = [f"    intro {assumption}"]
+            case_proofs[case] = f"({case_proofs[case]}) {assumption}"
+        else:
+            case_introductions[case] = [
+                "    apply Classical.byContradiction",
+                f"    intro {assumption}",
+            ]
+            case_proofs[case] = f"{assumption} ({case_proofs[case]})"
 
     property_application_terms: list[str] = []
     property_cursor = property_expression
@@ -4636,11 +5545,12 @@ def _render_induction_theorem(
             f"    exact {zero_projection}",
             f"  have inductionBase : {property_at('zero')} := by",
             *base_introductions,
+            *case_introductions["base"],
             (
                 f"    have zeroRule := {helper_names['check_zero']} "
                 f"{helper_call_arguments['check_zero']}"
             ),
-            f"    exact {zero_application}",
+            f"    exact {case_proofs['base']}",
             "  have inductionStep :",
             (
                 f"      ∀ induction_n, N induction_n → {property_at('induction_n')} → "
@@ -4658,19 +5568,15 @@ def _render_induction_theorem(
                 },
                 "step_premise",
             ),
+            *case_introductions["step"],
             *specialized_induction_lines,
             (
                 f"    have stepRule := {helper_names['check_induction_condition']} "
                 f"{helper_call_arguments['check_induction_condition']}"
             ),
-            f"    exact {' '.join(step_application)}",
+            f"    exact {case_proofs['step']}",
             f"  have inductionProperty : {property_at(target)} := by",
-            (
-                "    exact relationalInduction "
-                "N zero succ add mul one two identity anchor"
-                if anchor_head == "AnchorFTA"
-                else "    exact relationalInduction"
-            ),
+            "    exact relationalInduction",
             f"      (fun induction_value => {property_at('induction_value')})",
             f"      {target}",
             "      inductionBase",
@@ -4696,12 +5602,147 @@ def _render_induction_theorem(
     }
 
 
+def _membership_transport_term(plan: dict, proof: str, depth: int = 0) -> str:
+    """
+    @brief Render the explicit proof of a checked membership-body transport.
+    @details
+    Conjunction nodes project and rebuild their two constituents. OR nodes
+    eliminate the source into the same ordered target case. Identity leaves
+    retain the supplied proof. The caller recomputes the plan from the exact
+    source and target expressions before rendering any certificate metadata.
+    @param plan Validated identity, conjunction or ordered OR transport tree.
+    @param proof Lean term proving this node's source proposition.
+    @param depth Nesting depth used for local OR case binder names.
+    @return Lean proof term using only projections, constructors and OR elimination.
+    @invariant No new hypothesis, axiom or admitted proof is introduced.
+    @see membership_transport_plan
+    """
+
+    if plan["kind"] == "identity":
+        return proof
+    assert plan["kind"] in {"and", "or"}
+    assert len(plan["children"]) == 2
+    if plan["kind"] == "and":
+        assert plan["sources"] in ([0, 1], [1, 0])
+        parts = [_membership_transport_term(child, f"({proof}).{index + 1}", depth + 1)
+                 for child, index in zip(plan["children"], plan["sources"])]
+        return f"⟨{parts[0]}, {parts[1]}⟩"
+    assert plan["sources"] == [0, 1]
+    names = [f"membership_left_{depth}", f"membership_right_{depth}"]
+    parts = [_membership_transport_term(child, name, depth + 1)
+             for child, name in zip(plan["children"], names)]
+    return (f"(Or.elim ({proof}) (fun {names[0]} => Or.inl ({parts[0]})) "
+            f"(fun {names[1]} => Or.inr ({parts[1]})))")
+
+
+def _defined_output_proof_term(
+    totality: dict[str, object],
+    binary_definitions: dict[str, dict[str, object]],
+) -> str:
+    """
+    @brief Construct the proof of a certified set or relation definition.
+    @details
+    Each forward clause projects its exact constituent from the predicate
+    witness. The reverse clause applies its recomputed positive-conjunction
+    transport plans and pairs its premises in witness order. Lambda
+    binders follow the compiled implication's first-use order, and the outer
+    conjunction follows the compiled definition's left association. This
+    replays the checked membership characterization without proof search.
+    @param totality Checked defined-output metadata for this reformulation.
+    @param binary_definitions Exact compiled definitions from the certificate.
+    @return Explicit Lean lambda and conjunction-constructor proof term.
+    @invariant Every defining clause is a forward projection or the one reverse rule.
+    """
+
+    assert totality["definition_dependency_acyclic"] is True
+    definition = binary_definitions[str(totality["definition_head"])]
+    assert definition["category"] == "and"
+    output_parameter = f"u_{int(totality['output_argument'])}"
+    output_type = str(totality["output_type"])
+    assert output_type in {"set", "binary_relation"}
+    membership = Atom(
+        "in" if output_type == "set" else "in2",
+        (*map(str, totality["bound_variables"]), output_parameter),
+    )
+    assert len(membership.arguments) == (2 if output_type == "set" else 3)
+    clauses: list[list[Expression]] = []
+    for element in definition["elements"]:
+        compact = parse_mpl(str(element))
+        assert isinstance(compact, Atom)
+        entry = binary_definitions[compact.head]
+        assert entry["category"] == "implication"
+        parameters = {
+            f"u_{index + 1}": argument
+            for index, argument in enumerate(compact.arguments)
+        }
+        clauses.append([
+            map_arguments(parse_mpl(str(part)), lambda name: parameters.get(name, name))
+            for part in entry["elements"]
+        ])
+    forward = [parts[-1] for parts in clauses if parts[:-1] == [membership]]
+    reverse = [parts[:-1] for parts in clauses if parts[-1] == membership]
+    assert forward and len(reverse) == 1
+    assert len(reverse[0]) == len(forward)
+    transports = [membership_transport_plan(
+        _membership_body_key(source, binary_definitions),
+        _membership_body_key(target, binary_definitions),
+    ) for source, target in zip(reverse[0], forward)]
+    assert all(plan is not None for plan in transports)
+    expected_transport = (transports if any(plan["kind"] != "identity" for plan in transports) else None)
+    assert totality.get("reverse_membership_transport") == expected_transport
+    assert len(clauses) == len(forward) + 1
+    defining_expression = parse_mpl(str(totality["defining_expression"]["mpl"]))
+    assert isinstance(defining_expression, Atom)
+    parameters = {
+        f"u_{index + 1}": argument
+        for index, argument in enumerate(defining_expression.arguments)
+    }
+    assert [
+        map_arguments(part, lambda name: parameters.get(name, name))
+        for part in forward
+    ] == [parse_mpl(str(part["mpl"])) for part in totality["witness_elements"]]
+
+    terms: list[str] = []
+    forward_index = 0
+    for parts in clauses:
+        introductions: list[str] = []
+        introduced: set[str] = set()
+        for index, part in enumerate(parts):
+            for atom in iter_atoms(part):
+                for argument in atom.arguments:
+                    if not argument.startswith("u_") and argument not in introduced:
+                        introduced.add(argument)
+                        introductions.append(lean_name(argument))
+            if index < len(parts) - 1:
+                introductions.append(f"definition_premise_{index}")
+        if parts[:-1] == [membership]:
+            projection = ".2" * forward_index
+            if forward_index < len(forward) - 1:
+                projection += ".1"
+            result = "definition_premise_0" + projection
+            forward_index += 1
+        else:
+            assert parts[-1] == membership
+            assert parts[:-1] == reverse[0]
+            transported = [_membership_transport_term(plan, f"definition_premise_{index}")
+                           for index, plan in enumerate(transports)]
+            result = transported[-1]
+            for index in reversed(range(len(forward) - 1)):
+                result = f"⟨{transported[index]}, {result}⟩"
+        terms.append(f"(fun {' '.join(introductions)} => {result})")
+    assert forward_index == len(forward)
+    result = terms[0]
+    for term in terms[1:]:
+        result = f"⟨{result}, {term}⟩"
+    return result
+
+
 def _render_reformulated_theorem(
     theorem: dict[str, object],
     certificate: dict[str, object],
 ) -> tuple[list[str], dict[str, object]]:
     """
-    @brief Render one Gauss theorem reconstructed from a cited theorem.
+    @brief Render one Gauss or FTA theorem reconstructed from a cited theorem.
     @details
     The single row's checked totality metadata builds a set comprehension or
     binary-relation lambda for the GL-defined output. The generated proof
@@ -4709,7 +5750,7 @@ def _render_reformulated_theorem(
     and folds both facts into the recorded existence compact. No existence
     axiom, dependent GL type family, or admitted declaration is introduced.
     @param theorem Neutral reformulated-statement certificate record.
-    @param certificate Complete schema-3 Gauss certificate and type closure.
+    @param certificate Complete schema-3 Gauss or FTA certificate and type closure.
     @return Lean source lines and theorem-level manifest record.
     @invariant The theorem contains one checked theorem-reformulation action.
     """
@@ -4727,15 +5768,25 @@ def _render_reformulated_theorem(
     assert isinstance(dependencies, list) and len(dependencies) == 1
     source_reference = dependencies[0]["theorem_reference"]
     assert isinstance(source_reference, dict)
+    theorem_expression = parse_mpl(str(theorem["theorem"]["mpl"]))
+    assert isinstance(theorem_expression, Implication)
+    assert isinstance(theorem_expression.premise, Atom)
+    anchor_head = theorem_expression.premise.head
+    assert anchor_head in {"AnchorGauss", "AnchorFTA"}
+    source_expression = parse_mpl(str(source_reference["theorem"]["mpl"]))
+    assert isinstance(source_expression, Implication)
+    assert source_expression.premise == theorem_expression.premise
+    binary_definitions = certificate["binary_definitions"]
+    assert isinstance(binary_definitions, dict)
     replacements = _chapter_replacements(chapter)
     lines, _, _, _, _ = _theorem_header(
         theorem,
         replacements,
-        "AnchorGauss",
+        anchor_head,
     )
     lines.append(
         f"  have reformulationSource := {source_reference['theorem_id']} "
-        f"{_context_application('AnchorGauss', source_reference.get('certificate_id'))}"
+        f"{_context_application(anchor_head, source_reference.get('certificate_id'))}"
     )
 
     totality = step["defined_output_totality"]
@@ -4810,33 +5861,9 @@ def _render_reformulated_theorem(
                 for argument in general_parameters
             )
         )
-    if totality["output_type"] == "set":
-        totality_proof.extend(
-            [
-                "    constructor",
-                "    · constructor",
-                "      · intro value witness",
-                "        exact witness.1",
-                "      · intro value witness",
-                "        exact witness.2",
-                "    · intro value member ordering",
-                "      exact ⟨member, ordering⟩",
-            ]
-        )
-    else:
-        assert totality["output_type"] == "binary_relation"
-        totality_proof.extend(
-            [
-                "    constructor",
-                "    · constructor",
-                "      · intro first second witness",
-                "        exact witness.1",
-                "      · intro first second witness",
-                "        exact witness.2",
-                "    · intro first ordering second member",
-                "      exact ⟨ordering, member⟩",
-            ]
-        )
+    totality_proof.append(
+        f"    exact {_defined_output_proof_term(totality, binary_definitions)}"
+    )
     lines.extend(
         [
             f"  have defined_output_totality : {totality_proposition} := by",
@@ -4888,35 +5915,46 @@ def _render_reformulated_theorem(
         replacements,
         "reformulation_premise",
     )
-    source_expression = parse_mpl(str(source_reference["theorem"]["mpl"]))
     source_body = _theorem_body(source_expression)
-    assert isinstance(body, Implication)
-    assert isinstance(body.conclusion, Implication)
-    assert isinstance(source_body, Implication)
-    assert isinstance(source_body.conclusion, Implication)
-    assert isinstance(source_body.conclusion.conclusion, Implication)
-    assert len(source_body.bound_variables) == len(body.bound_variables)
-    assert len(source_body.conclusion.bound_variables) == (
-        len(body.conclusion.bound_variables) + 1
-    )
-    assert not source_body.conclusion.conclusion.bound_variables
-    source_application = " ".join(
-        [
-            "reformulationSource",
-            *(
-                replacements.get(variable, lean_name(variable))
-                for variable in body.bound_variables
-            ),
-            "reformulation_premise_1",
-            *(
-                replacements.get(variable, lean_name(variable))
-                for variable in body.conclusion.bound_variables
-            ),
-            witness_term,
-            "defined_output",
-            "reformulation_premise_2",
-        ]
-    )
+    retained_premises, _ = _flatten_implications(body)
+    supplied_facts = [
+        {
+            "expression": {"mpl": to_mpl(premise)},
+            "proof_term": f"reformulation_premise_{index + 1}",
+        }
+        for index, premise in enumerate(retained_premises)
+    ]
+    supplied_facts.append({
+        "expression": {"mpl": to_mpl(defining_expression)},
+        "proof_term": "defined_output",
+    })
+    ordered_facts = _ordered_implication_dependencies({
+        "id": step["id"],
+        "conclusion": {"mpl": to_mpl(output_property_expression)},
+        "dependencies": [
+            {"expression": {"mpl": to_mpl(source_body)}},
+            *supplied_facts,
+        ],
+    })
+    source_premises, _ = _flatten_implications(source_body)
+    defined_premises = [
+        premise for premise, proof in zip(source_premises, ordered_facts, strict=True)
+        if proof["proof_term"] == "defined_output"
+    ]
+    assert len(defined_premises) == 1 and isinstance(defined_premises[0], Atom)
+    source_output = defined_premises[0].arguments[output_argument - 1]
+    application_terms = ["reformulationSource"]
+    source_cursor = source_body
+    for proof in ordered_facts:
+        assert isinstance(source_cursor, Implication)
+        application_terms.extend(
+            witness_term if variable == source_output else "_"
+            for variable in source_cursor.bound_variables
+        )
+        application_terms.append(str(proof["proof_term"]))
+        source_cursor = source_cursor.conclusion
+    assert not isinstance(source_cursor, Implication)
+    source_application = " ".join(application_terms)
     lines.extend(
         [
             f"  -- {step['id']}: GL tag {step['source_tag']}.",
@@ -4962,9 +6000,9 @@ def render_gauss_theory(
     """
     @brief Render a schema-3 Gauss or FTA corpus over ordinary predicates.
     @details
-    Gauss imports Peano and derives its Peano anchor. FTA imports the existing
-    Gauss module plus its isolated definition delta and derives both external
-    anchors from AnchorFTA. Each corpus remains in certificate dependency order;
+    Gauss imports Peano and derives its Peano anchor. Connected FTA imports
+    Gauss and derives both preceding anchors from AnchorFTA. Historical isolated
+    fixtures additionally carry their definition delta. Each corpus remains in certificate dependency order;
     every proof scope is rendered as an ordinary quantified implication.
     @param certificate Complete schema-3 Gauss or FTA certificate.
     @return Lean source and theorem-level manifest records.
@@ -5014,14 +6052,17 @@ def render_gauss_theory(
             assert corpus["coverage"]["rows"] == TRACKED_CORPUS_COUNTS[corpus_id][1]
         anchor_head = "AnchorFTA"
         namespace = "GLExport.FTA"
-        # An isolated FTA corpus (the tracked release package) rides the
-        # reviewed Gauss module plus its definition delta; a self-contained
-        # corpus (the live shortcut export, independent of the main path)
-        # carries every definition it uses in its own Definitions module.
+        # Isolated certificates import their definition delta. Connected
+        # same-list certificates share the full registry and import Gauss;
+        # external-list fixtures carry self-contained definitions.
         imports = (
             ["import GLExport.Generated.Gauss", "import GLExport.Generated.FTADefinitions"]
             if "definition_isolation" in certificate
-            else ["import GLExport.Generated.Definitions"]
+            else (["import GLExport.Generated.Gauss"]
+                  if certificate.get("certificate_dependencies") and all(
+                      dependency["theorem_list_scope"] == "same"
+                      for dependency in certificate["certificate_dependencies"])
+                  else ["import GLExport.Generated.Definitions"])
         )
         lines = [
             LEAN_LICENSE,
@@ -5130,8 +6171,8 @@ def render_gauss_theory(
     for theorem in theorems:
         assert isinstance(theorem, dict)
         method = str(theorem["method"])
-        if method == "direct":
-            theorem_lines, manifest = _render_direct_theorem(
+        if method == "single chapter proof":
+            theorem_lines, manifest = _render_single_chapter_theorem(
                 theorem,
                 anchor_head,
                 binary_definitions,
@@ -5157,17 +6198,18 @@ def render_gauss_theory(
                 binary_definitions,
             )
         elif method == "proved not broadcast":
-            theorem_lines, manifest = _render_direct_theorem(
+            theorem_lines, manifest = _render_single_chapter_theorem(
                 theorem,
                 anchor_head,
                 binary_definitions,
             )
-        else:
-            assert corpus_kind(corpus_id) == "gauss" and method == "reformulated statement"
+        elif method == "reformulated statement":
             theorem_lines, manifest = _render_reformulated_theorem(
                 theorem,
                 certificate,
             )
+        else:
+            raise AssertionError(f"unsupported theorem method {method!r}")
         lines.extend(theorem_lines)
         manifests.append(manifest)
     lines.extend([f"end {namespace}", ""])
@@ -5207,14 +6249,14 @@ def render_peano_theory(
     for theorem in theorems:
         assert isinstance(theorem, dict)
         method = str(theorem["method"])
-        if method == "direct":
-            theorem_lines, manifest = _render_direct_theorem(theorem, "AnchorPeano", binary_definitions)
+        if method == "single chapter proof":
+            theorem_lines, manifest = _render_single_chapter_theorem(theorem, "AnchorPeano", binary_definitions)
         elif method == "induction":
             theorem_lines, manifest = _render_induction_theorem(theorem, "AnchorPeano", binary_definitions)
         elif method == "or elimination":
             theorem_lines, manifest = _render_or_elimination_theorem(theorem)
         elif method == "proved not broadcast":
-            theorem_lines, manifest = _render_direct_theorem(theorem, "AnchorPeano", binary_definitions)
+            theorem_lines, manifest = _render_single_chapter_theorem(theorem, "AnchorPeano", binary_definitions)
         else:
             assert method == "or theorem"
             theorem_lines, manifest = _render_or_theorem(theorem, "AnchorPeano", binary_definitions)
@@ -5275,8 +6317,9 @@ def write_lean(
     @details
     Definitions and theorem replay are generated from a schema-2 Peano or
     schema-3 Gauss/FTA certificate. The writer rejects proof admissions and
-    asserts each corpus boundary. FTA writes only its isolated definition delta,
-    theorem module, and manifest, preserving every reviewed Peano/Gauss artifact.
+    asserts each corpus boundary. Connected FTA shares the full definition
+    registry and imports Gauss; historical isolated fixtures retain their
+    separate definition delta.
     @param certificate Complete neutral Peano, Gauss, or FTA certificate.
     @param project_directory Existing Lean project root.
     @return None.
@@ -5363,9 +6406,9 @@ def write_lean(
             theorem_path: rendered_source,
         }
     else:
-        # Self-contained FTA corpus: its own Definitions module, the FTA
-        # module importing only that, and a root that makes FTA the default
-        # `lake build` target — nothing from the Peano or Gauss modules.
+        # FTA writes its complete definition closure and becomes the root
+        # target. Connected corpora import Gauss; external-list fixtures use
+        # the self-contained definitions layout.
         assert corpus_kind(str(corpus["id"])) == "fta"
         definitions = render_definitions(certificate)
         rendered_source, rendered_theorems = render_gauss_theory(certificate)

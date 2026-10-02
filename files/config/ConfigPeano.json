@@ -1,4 +1,5 @@
 {
+  "external_conjectures_file": "files/supplied_conjectures/peano.txt",
   "in": {
     "arity": 2,
     "definition_sets": {

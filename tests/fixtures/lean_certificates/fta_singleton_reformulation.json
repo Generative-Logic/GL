@@ -1,0 +1,422 @@
+{
+  "schema_version": 3,
+  "corpus": {
+    "id": "fta_singleton_reformulation_regression"
+  },
+  "binary_definitions": {
+    "EnumerationSet1": {
+      "arity": 2,
+      "category": "and",
+      "elements": [
+        "(implication1736[u_2,u_1])",
+        "(implication1737[u_1,u_2])"
+      ],
+      "signature": [
+        "element",
+        "set"
+      ]
+    },
+    "implication1736": {
+      "arity": 2,
+      "category": "implication",
+      "elements": [
+        "(in[1,u_1])",
+        "(=[1,u_2])"
+      ],
+      "signature": [
+        "set",
+        "element"
+      ]
+    },
+    "implication1737": {
+      "arity": 2,
+      "category": "implication",
+      "elements": [
+        "(=[1,u_1])",
+        "(in[1,u_2])"
+      ],
+      "signature": [
+        "element",
+        "set"
+      ]
+    },
+    "existence21": {
+      "arity": 3,
+      "category": "existence",
+      "elements": [
+        "(EnumerationSet1[u_1,1])",
+        "(interval[u_2,u_3,u_1,u_1,1])"
+      ],
+      "signature": [
+        "element",
+        "set",
+        "ternary_relation"
+      ]
+    }
+  },
+  "types": {
+    "EnumerationSet1": [
+      "element",
+      "set"
+    ],
+    "implication1736": [
+      "set",
+      "element"
+    ],
+    "implication1737": [
+      "element",
+      "set"
+    ],
+    "existence21": [
+      "element",
+      "set",
+      "ternary_relation"
+    ]
+  },
+  "theorems": [
+    {
+      "chapters": [
+        {
+          "number": 303,
+          "role": "reformulated_statement",
+          "scope_contexts": [],
+          "source_file": "303_reformulated_statement.txt",
+          "source_sha256": "54006557515947CFB52E69EC9A7CC3F0E31367629B06453B5D9884F20F2E51BB",
+          "steps": [
+            {
+              "action": "theorem_reformulate",
+              "conclusion": {
+                "bound_variables": [
+                  "N",
+                  "i0",
+                  "s",
+                  "+",
+                  "*",
+                  "i1",
+                  "i2",
+                  "id"
+                ],
+                "conclusion": {
+                  "arguments": [
+                    "i0",
+                    "N",
+                    "+"
+                  ],
+                  "head": "existence21",
+                  "kind": "atom",
+                  "mpl": "(existence21[i0,N,+])"
+                },
+                "kind": "implication",
+                "mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(existence21[i0,N,+]))",
+                "premise": {
+                  "arguments": [
+                    "N",
+                    "i0",
+                    "s",
+                    "+",
+                    "*",
+                    "i1",
+                    "i2",
+                    "id"
+                  ],
+                  "head": "AnchorFTA",
+                  "kind": "atom",
+                  "mpl": "(AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+                },
+                "proof_scope": "ordinary",
+                "source_mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(existence21[i0,N,+]))"
+              },
+              "defined_output_totality": {
+                "bound_variables": [
+                  "1"
+                ],
+                "defining_expression": {
+                  "arguments": [
+                    "i0",
+                    "1"
+                  ],
+                  "head": "EnumerationSet1",
+                  "kind": "atom",
+                  "mpl": "(EnumerationSet1[i0,1])"
+                },
+                "definition_dependency_acyclic": true,
+                "definition_head": "EnumerationSet1",
+                "output_argument": 2,
+                "output_type": "set",
+                "unfold_definitions": [
+                  "EnumerationSet1",
+                  "implication1736",
+                  "implication1737"
+                ],
+                "witness_elements": [
+                  {
+                    "arguments": [
+                      "1",
+                      "i0"
+                    ],
+                    "head": "=",
+                    "kind": "atom",
+                    "mpl": "(=[1,i0])"
+                  }
+                ]
+              },
+              "dependencies": [
+                {
+                  "expression": {
+                    "bound_variables": [
+                      "N",
+                      "i0",
+                      "s",
+                      "+",
+                      "*",
+                      "i1",
+                      "i2",
+                      "id"
+                    ],
+                    "conclusion": {
+                      "bound_variables": [
+                        "W1"
+                      ],
+                      "conclusion": {
+                        "arguments": [
+                          "N",
+                          "+",
+                          "i0",
+                          "i0",
+                          "W1"
+                        ],
+                        "head": "interval",
+                        "kind": "atom",
+                        "mpl": "(interval[N,+,i0,i0,W1])"
+                      },
+                      "kind": "implication",
+                      "mpl": "(>[W1](EnumerationSet1[i0,W1])(interval[N,+,i0,i0,W1]))",
+                      "premise": {
+                        "arguments": [
+                          "i0",
+                          "W1"
+                        ],
+                        "head": "EnumerationSet1",
+                        "kind": "atom",
+                        "mpl": "(EnumerationSet1[i0,W1])"
+                      }
+                    },
+                    "kind": "implication",
+                    "mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[W1](EnumerationSet1[i0,W1])(interval[N,+,i0,i0,W1])))",
+                    "premise": {
+                      "arguments": [
+                        "N",
+                        "i0",
+                        "s",
+                        "+",
+                        "*",
+                        "i1",
+                        "i2",
+                        "id"
+                      ],
+                      "head": "AnchorFTA",
+                      "kind": "atom",
+                      "mpl": "(AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+                    },
+                    "proof_scope": "ordinary",
+                    "source_mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[W1](EnumerationSet1[i0,W1])(interval[N,+,i0,i0,W1])))"
+                  },
+                  "namespace": "main",
+                  "source_kind": "selected_theorem",
+                  "theorem_reference": {
+                    "source_index": 152,
+                    "theorem": {
+                      "bound_variables": [
+                        "N",
+                        "i0",
+                        "s",
+                        "+",
+                        "*",
+                        "i1",
+                        "i2",
+                        "id"
+                      ],
+                      "conclusion": {
+                        "bound_variables": [
+                          "V1"
+                        ],
+                        "conclusion": {
+                          "arguments": [
+                            "N",
+                            "+",
+                            "i0",
+                            "i0",
+                            "V1"
+                          ],
+                          "head": "interval",
+                          "kind": "atom",
+                          "mpl": "(interval[N,+,i0,i0,V1])"
+                        },
+                        "kind": "implication",
+                        "mpl": "(>[V1](EnumerationSet1[i0,V1])(interval[N,+,i0,i0,V1]))",
+                        "premise": {
+                          "arguments": [
+                            "i0",
+                            "V1"
+                          ],
+                          "head": "EnumerationSet1",
+                          "kind": "atom",
+                          "mpl": "(EnumerationSet1[i0,V1])"
+                        }
+                      },
+                      "kind": "implication",
+                      "mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[V1](EnumerationSet1[i0,V1])(interval[N,+,i0,i0,V1])))",
+                      "premise": {
+                        "arguments": [
+                          "N",
+                          "i0",
+                          "s",
+                          "+",
+                          "*",
+                          "i1",
+                          "i2",
+                          "id"
+                        ],
+                        "head": "AnchorFTA",
+                        "kind": "atom",
+                        "mpl": "(AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+                      }
+                    },
+                    "theorem_id": "fta_source_152"
+                  }
+                }
+              ],
+              "id": "chapter_303_line_1",
+              "namespace": "main",
+              "reformulation_definition": "existence21",
+              "source_line": 1,
+              "source_tag": "reformulated from"
+            }
+          ],
+          "variable_types": {}
+        }
+      ],
+      "external_dependencies": [],
+      "id": "fta_source_191",
+      "induction_variable": null,
+      "method": "reformulated statement",
+      "name": "FTA source 191",
+      "source_index": 191,
+      "source_tags": [
+        "reformulated from"
+      ],
+      "theorem": {
+        "bound_variables": [
+          "N",
+          "i0",
+          "s",
+          "+",
+          "*",
+          "i1",
+          "i2",
+          "id"
+        ],
+        "conclusion": {
+          "arguments": [
+            "i0",
+            "N",
+            "+"
+          ],
+          "head": "existence21",
+          "kind": "atom",
+          "mpl": "(existence21[i0,N,+])"
+        },
+        "kind": "implication",
+        "mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(existence21[i0,N,+]))",
+        "premise": {
+          "arguments": [
+            "N",
+            "i0",
+            "s",
+            "+",
+            "*",
+            "i1",
+            "i2",
+            "id"
+          ],
+          "head": "AnchorFTA",
+          "kind": "atom",
+          "mpl": "(AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+        }
+      },
+      "theorem_dependencies": [
+        {
+          "source_index": 152,
+          "theorem": {
+            "bound_variables": [
+              "N",
+              "i0",
+              "s",
+              "+",
+              "*",
+              "i1",
+              "i2",
+              "id"
+            ],
+            "conclusion": {
+              "bound_variables": [
+                "V1"
+              ],
+              "conclusion": {
+                "arguments": [
+                  "N",
+                  "+",
+                  "i0",
+                  "i0",
+                  "V1"
+                ],
+                "head": "interval",
+                "kind": "atom",
+                "mpl": "(interval[N,+,i0,i0,V1])"
+              },
+              "kind": "implication",
+              "mpl": "(>[V1](EnumerationSet1[i0,V1])(interval[N,+,i0,i0,V1]))",
+              "premise": {
+                "arguments": [
+                  "i0",
+                  "V1"
+                ],
+                "head": "EnumerationSet1",
+                "kind": "atom",
+                "mpl": "(EnumerationSet1[i0,V1])"
+              }
+            },
+            "kind": "implication",
+            "mpl": "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[V1](EnumerationSet1[i0,V1])(interval[N,+,i0,i0,V1])))",
+            "premise": {
+              "arguments": [
+                "N",
+                "i0",
+                "s",
+                "+",
+                "*",
+                "i1",
+                "i2",
+                "id"
+              ],
+              "head": "AnchorFTA",
+              "kind": "atom",
+              "mpl": "(AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+            }
+          },
+          "theorem_id": "fta_source_152"
+        }
+      ],
+      "variable_types": {
+        "*": "ternary_relation",
+        "+": "ternary_relation",
+        "N": "set",
+        "i0": "element",
+        "i1": "element",
+        "i2": "element",
+        "id": "binary_relation",
+        "s": "binary_relation"
+      }
+    }
+  ]
+}

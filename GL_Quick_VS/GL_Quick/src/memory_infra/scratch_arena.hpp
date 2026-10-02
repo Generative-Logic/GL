@@ -97,7 +97,10 @@ namespace gl {
         ///
         /// @param global    Pool the arenas draw blocks from.
         /// @param slotCount Number of worker slots (`logicalCores`).
-        void init(GlobalMemoryManager* global, unsigned slotCount);
+        /// @param purpose   Pool attribution of every slot arena's blocks
+        ///                  (`LbArena::setPurpose`); a re-init must repeat it.
+        void init(GlobalMemoryManager* global, unsigned slotCount,
+                  PoolPurpose purpose = PoolPurpose::Unattributed);
 
         /// @brief Whether `init` has run.
         ///
@@ -128,6 +131,7 @@ namespace gl {
 
     private:
         std::deque<ScratchArena> arenas_;  // deque: stable element addresses
+        PoolPurpose purpose_ = PoolPurpose::Unattributed;  // attribution of every slot
         GlobalMemoryManager* global_ = nullptr;
     };
 
@@ -168,7 +172,8 @@ namespace gl {
     /// concerns isolated: this one mixes byte-bump (the DFS stack via
     /// `ArenaStack`) and page tier (the append containers) exactly the way a
     /// per-LB arena already does, while the string arena stays pure. Released per
-    /// worker task alongside the string arena at `performElem2` exit.
+    /// worker task alongside the string arena by `releaseSlotScratch` at every
+    /// executor's exit (phases 1 and 3, the phase-2 executor and finalize).
     ///
     /// @return The singleton (constructed on first use; `init` it via
     ///         `initGenScratchArenas` before any request-generation scratch).
@@ -191,5 +196,34 @@ namespace gl {
     /// @param slotCount Number of worker slots plus the reserved slot
     ///                  (`logicalCores + 1`).
     void initGenScratchArenas(unsigned slotCount);
+
+    /// @brief The process-wide compaction scratch-arena registry — one
+    ///        permutation scratch per worker slot for `LbArena::compactPages`.
+    ///
+    /// @details
+    /// Page compaction needs a scratch arena drawn from a pool INDEPENDENT of
+    /// the deloadable one it compacts (the reclaim must never depend on the
+    /// pool it frees), exclusive to the calling thread. This registry binds
+    /// one such arena per worker slot to the never-deloaded LB-body pool
+    /// (`lbMemory()`); a worker compacting its own claimed logic block uses
+    /// its slot. `compactPages` leaves the scratch without live pages and
+    /// keeps its blocks for reuse.
+    ///
+    /// @return The singleton (constructed on first use; `init` it via
+    ///         `initCompactionScratchArenas` before any compaction).
+    ScratchArenaRegistry& compactionScratchArenas();
+
+    /// @brief Initialize the compaction scratch registry against the LB-body
+    ///        pool.
+    ///
+    /// @details
+    /// Thin forwarder to `compactionScratchArenas().init(&lbMemory(), ...)`
+    /// with the container-scratch purpose; same idempotent-same-shape /
+    /// assert-on-mismatch contract as `initScratchArenas`. Called by the
+    /// `ExpressionAnalyzer` constructor after `initLbMemory`.
+    ///
+    /// @param slotCount Number of worker slots (`logicalCores` plus the
+    ///                  reserved single-threaded slot).
+    void initCompactionScratchArenas(unsigned slotCount);
 
 }

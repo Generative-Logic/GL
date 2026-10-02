@@ -27,7 +27,7 @@ The compressor is **not** a proof-graph optimiser (it does not simplify the per-
 Two phases:
 
 1. **Phase 1** — Build per-theorem proof graphs. For each theorem, spin up an independent LB with *all* theorems as hash-memory rules, *target theorem's premises* as fuel, *target theorem's head* as proof goal. Run hash bursts. Extract a lightweight dependency graph (`CompressorNode`).
-2. **Phase 2** — Greedy elimination. Count per-theorem usage. Sort ascending (least-used first). For each candidate, tentatively add to the dead set; check if every surviving theorem remains derivable without it. If yes, keep dead. If not, mark essential.
+2. **Phase 2** — Greedy elimination. Count per-theorem usage. Sort ascending by usage, then theorem text. For each candidate, tentatively add to the dead set; check if every extracted theorem head remains derivable without it, including heads of removed theorems. If yes, keep dead. If not, mark essential.
 
 End result: the non-dead theorems are the compressed set.
 
@@ -51,28 +51,39 @@ Pass B disintegration is disabled — the compressor needs only the hash-rule pa
 For each of `N` proved theorems, create an independent `Memory` (named `CompressorNode_<i>`):
 
 ```cpp
-Memory* lb = new Memory();
+Memory* lb = analyzer.lbStore.create<Memory>();
 lb->level    = 0;
 lb->isActive = true;
-lb->exprKey  = "CompressorNode_" + std::to_string(i);
+lb->setExprKey("CompressorNode_" + std::to_string(i));
 ```
 
-Into this LB, load *every* proved theorem as an implication rule:
+`Compressor::runPhase1` first parses each theorem once into its premise chain and head. It then loads *every* proved theorem, including the target, into each LB as an implication rule in the original input order. Parsed strings are reused; each LB's rule installation and interners remain independent:
+
+The complete rule-loading loop shares one existing rule-index staging window.
+It closes before seeding, so every installed rule is visible to the next stage.
+Premise and goal deposits share a second window, which closes before proving.
+Nested installs retain the outer window; removers retain their existing
+flush-before-read behavior. This changes flush frequency, preserving the
+sequential records, key identities, and insertion order. Both closes assert
+that they own the single outer window. The direct setup test compares all seven
+index maps in all four hash memories and decoded origin rows against the
+per-install-flush path, before and after seeding.
 
 ```cpp
 for (const std::string& rule : all_theorems) {
-    std::string head = ce::disintegrateImplication(rule, tempChain, analyzer.coreExpressionMap);
+    // chain and head are the cached parser result for rule.
     analyzer.addToHashMemory(chain, head, ..., *lb, lb->overallHashMemory, ...);
-    upsertStatementKey(lb->intKnownStatements,
-        packStatementKey(lb->nameMap.encode(rule), lb->nameMap.encode("main")),
-        true, /*registered=*/true, /*known=*/false);
+    const int64_t key = packStatementKey(
+        lb->nameMap.encode(rule), lb->nameMap.encode("main"));
+    lb->intStatementLevelsMap.assignSetRange(key, lvlNonDerived, lvlNonDerived + 1);
+    upsertStatementKey(lb->intKnownStatements, key, /*local=*/true);
 }
 ```
 
 Split the target theorem into premises + head:
 
 ```cpp
-std::string targetHead = ce::disintegrateImplication(theorem, targetChain, analyzer.coreExpressionMap);
+const std::string& targetHead = theoremHeads[i];
 CompressorNode pNode;
 pNode.originalTheorem = theorem;
 // pNode.head = targetHead; pNode.premises = targetChain
@@ -85,10 +96,10 @@ Run hash bursts. When the hash engine derives new expressions, their provenance 
 ```text
 CompressorNode {
     originalTheorem: string          // the full implication
-    head:            string          // target expression to derive
-    premises:        list<string>    // the "fuel" — the chain's premises
-    graph:           map<string, list<list<string>>>
-                                     // expr → list of alternative dep-sets (from exprOriginMap)
+    head:            ExpressionWithValidity
+    premises:        set<ExpressionWithValidity>
+    graph:           map<ExpressionWithValidity, vector<vector<ExpressionWithValidity>>>
+                                     // expression and scope → alternative dependency lists
 }
 ```
 
@@ -102,41 +113,60 @@ Entry at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
 
 Steps:
 
-1. **Count per-theorem usage** across all `CompressorNode.graph` edges. Each rule cite against a non-premise expression is a usage.
-2. **Sort candidates** ascending by usage. Least-used first — these are the cheapest to attempt removing (least likely to break anything).
+1. **Count per-theorem usage** across all `CompressorNode.graph` dependency entries whose expression text matches a theorem. Repeated entries each count, independently of their scope.
+2. **Sort candidates** ascending by usage, then lexicographically by theorem text. Least-used first — these are the cheapest to attempt removing (least likely to break anything).
 3. **Greedy loop.** For each candidate `t`:
  - Tentatively add `t` to the `dead` set.
- - For every surviving (non-dead) theorem `s`, run `isDerivable(nodes[s], dead)`. If all surviving theorems are derivable, keep `t` dead. Otherwise, mark `t` essential and remove from `dead`.
+ - For every extracted theorem graph, test whether its head is derivable from its premises and the surviving theorem seeds. If every head remains derivable, keep `t` dead. Otherwise, mark `t` essential and remove it from `dead`.
 4. **Result.** The non-dead set is the output — the minimal-essential set under this greedy heuristic.
 
-### The surviving-only detail
+### Removed theorems still need a derivation
 
-**Critical.** When checking derivability of theorems, only the non-dead theorems are checked. Checking dead theorems would create false dependencies where two dead "twin" theorems protect each other from elimination (each derives the other, so removing both breaks neither's derivability — but they are both dead by assumption, which is nonsensical).
-
-This detail is recorded explicitly in the project conventions's "Compressor" section and is load-bearing for the heuristic's correctness.
+`Compressor::runPhase2` checks every extracted graph. Removing a theorem removes its unconditional theorem seed; it does not remove the obligation to derive its head from the remaining seeds and its own premises. Thus two mutually dependent theorems cannot both disappear merely because both were tentatively marked dead. The check is a least fixed point, so an unseeded cycle proves neither endpoint.
 
 ---
 
-## `isDerivable` — the oracle
+## `CompressorReachability` — the derivability oracle
 
 Signature:
 
 ```cpp
-bool Compressor::isDerivable(const CompressorNode& node,
-                              const std::set<std::string>& dead_theorems)
+CompressorReachability(const CompressorNode& node,
+                      const std::vector<std::string>& theorems);
+bool isDerivable(const std::set<std::string>& deadTheorems) const;
 ```
 
-Algorithm (forward reachability):
+`Compressor::runPhase2` constructs one immutable index per extracted graph before testing candidates. Each complete expression and scope pair gets a local integer index; each alternative derivation gets a head index, a dependency count, and one reverse link per dependency occurrence. Repeated dependencies retain repeated links and counter units. Premises and empty alternatives become unconditional seeds. Only main-scope theorem seeds that occur in the graph are retained.
 
-1. **Seed the `alive` set:**
- - Every premise of `node` is alive (definitional — they are the fuel).
- - Every non-`dead` theorem is alive.
- - Every expression with an empty dep-set in `node.graph` is alive (unconditionally derivable).
-2. **Iterate.** For each expression `e` in `node.graph` not yet alive: if any of its dep-sets (alternative derivations) has all its deps alive, mark `e` alive.
-3. **Converge.** Repeat until no new additions.
-4. **Return.** Whether `node.head` is alive.
+Each query creates independent Boolean reachability state, remaining dependency counts, and a queue. It seeds premises, unconditional derivations, and surviving theorem expressions. A newly reachable expression enters the queue once and decrements only its consumers' counters. A zero counter reaches that alternative's head. The query succeeds as soon as the target is reached, or returns false when the queue is exhausted.
+
+This computes the same least fixed point as repeatedly scanning the string graph. An unseeded cycle cannot make its first member reachable. Removed theorems may still be derived through graph edges; removal affects their initial theorem seed only. Scope identities are unchanged. The query emits no proof rows and cannot change candidate ordering or provenance.
 
 Defined at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
+
+Measured on matched full native CUDA runs on 2026-09-06, the indexed oracle
+and shared parser results reduced Peano compression from 20.0558 to 4.3120
+seconds and Gauss from 4.4198 to 1.3710 seconds. All 3,490 captured output
+files remained byte-identical; the full verifier and Lean kernel checks passed.
+Exact commands, phase timings, and comparison evidence are in
+[`rt_parts_plan.md`](../rt_parts_plan.md). `Compressor::run` prints separate
+Phase 1 and Phase 2 durations for future attribution.
+
+The Phase 1 report also separates parsing, logic-block creation, rule installation,
+rule-statement registration, premise/goal seeding, the complete `prove` call,
+origin decoding, graph assembly, decoded-snapshot cleanup, and logic-block
+destruction. These timers wrap serial compressor orchestration; no timer enters
+the statified inference functions. The complete `prove` duration includes work
+outside its individual logged hash-burst iterations, so the two measurements
+must not be treated as interchangeable.
+
+The full attribution run on 2026-09-06 measured 5.39595 seconds in Phase 1:
+3.003492 seconds installing rules, 1.159563 seconds seeding premises and goals,
+1.053759 seconds in the complete prover call, and 0.179136 seconds across all
+other stages. Graph decoding, assembly, and snapshot release together took
+only 0.1143974 seconds. Setup therefore accounts for the largest remaining
+cost on this workload; the detailed per-batch evidence is in
+[`rt_parts_plan.md`](../rt_parts_plan.md).
 
 ---
 
@@ -159,7 +189,7 @@ So the compressor is skipped whenever `ban_disintegration` or `incubator_mode` i
 
 ## Per-run debug dumps
 
-When running with compressor debug hooks enabled (development only), the compressor writes diagnostic files to `files/debug/`:
+Historical compressor investigations used the following development artifacts:
 
 ```
 files/debug/compressor_graph_TARGET.txt           — the full CompressorNode of a target theorem
@@ -170,7 +200,7 @@ files/debug/compressor_origins_TARGET.txt         — origin map snapshot
 files/debug/compressor_phase2_target.txt          — Phase 2 decision trace
 ```
 
-These are present on the current branch from an earlier debugging session. Useful when a compression pass produces a theorem set that breaks later stages.
+The current `compressor.cpp` has no writers for these files. They are historical examples, not current observability. Any new temporary instrumentation follows the repository's dedicated trap-file contract.
 
 ---
 
@@ -178,26 +208,26 @@ These are present on the current branch from an earlier debugging session. Usefu
 
 ### Known & tracked
 
-- **Phase 1 memory cost scales O(N²).** For `N` proved theorems, each of `N` LBs loads all `N` theorems. At current batch sizes (Peano 58, Gauss ≈ 60 pre-compression), this is fine. At FTA scale (expected ~100K per run per memory file ), Phase 1 becomes untenable without a rework — pool sharing or streaming. Flagged as OPEN-5 in `AGENT_SwDD.md`.
+- **Phase 1 rule storage scales O(N²).** For `N` proved theorems, each of `N` LBs loads all `N` theorems. Pool sharing or streaming would require a separate design. Current batch counts and memory costs must be measured, not inferred from earlier releases; the memory question remains OPEN-5 in `AGENT_SwDD.md`.
 - **Greedy is not optimal.** The greedy order (least-used first) is a heuristic, not an optimum. A different order could produce a strictly smaller set. Current expectation: the reduction is "good enough" because the true minimum is not materially smaller on Peano/Gauss corpora. Not measured.
 
 ### Suspected fragility
 
-- **`#pragma optimize("", off)` at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp).** Disables optimisation for Phase 1 — historically a debugging artefact. the project conventions notes this pragma is commented out for full optimisation in the incubator-related code, but the compressor's still carries it. Impact: possibly slower Phase 1 than it could be.
+- **Compiler optimization is enabled.** The current translation unit contains no active `#pragma optimize` directive.
 - **`ban_disintegration` double meaning.** The compressor uses `ban_disintegration = true` as its Pass-B-disable flag. The incubator uses `incubator_mode = true` with its own gate. Confusing — the same end (Pass B off) is reached through two different mechanisms. See [I-7](../30_invariants.md#i-7).
 - **Per-LB hash-memory installation is slow.** Every LB rebuilds the entire implication table via `addToHashMemory` for every rule. There is no sharing.
 
 ### Not exercised by tests
 
-- **Phase 2 tie-breaking determinism.** Two theorems with identical usage counts have an undefined order. A non-deterministic sort (e.g., unstable `std::sort` on an unhashed key) could produce different "minimal" sets on different runs — and since the compressor output is the prover's published set, this would surface as flaky regressions across runs. Not tested.
-- **`isDerivable` correctness on circular dep-set graphs.** The alive-set iteration handles cycles correctly by construction (fixed-point). But a targeted test for "A → B, B → A, neither is a premise" is absent.
+- **Full greedy-order regression coverage.** The comparator explicitly breaks usage-count ties by theorem text. Existing generic stable-sort tests alone do not pin the complete elimination result.
+- **Workload-dependent performance.** The indexed oracle has direct cyclic, repeated-dependency, scope, empty-alternative, and removed-seed tests. A generated test compares 4,096 candidate sets against an independent string-set fixed-point implementation. Runtime still depends on the measured graph sizes and candidate sets; full-run timings are recorded in [`rt_parts_plan.md`](../rt_parts_plan.md).
 
 ---
 
 ## Open questions
 
 - **OPEN-5.** What is the current Phase 1 memory footprint on the Gauss batch? Measure before FTA (where theorem counts spike). Answer belongs here.
-- **OPEN-13 — RESOLVED.** The Phase 2 candidate sort uses `std::stable_sort` at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp) over `sorted_theorems` — the insertion order of the input `all_theorems` vector breaks ties in `stable_sort`, which is deterministic because `all_theorems` is loaded in a fixed order from `theorems.txt`. A separate `std::sort` at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp) sorts the final `essential_list` for output ordering — not load-bearing because that sort operates on content hashes, not on the elimination heuristic. Conclusion: compression output is deterministic across runs on identical input.
+- **OPEN-13 — RESOLVED.** `Compressor::runPhase2` sorts candidates by ascending usage count, then lexicographic theorem text; the stable sort preserves input order only for identical comparator keys. The final `essential_list` is sorted lexicographically by expanded theorem text, not by content hash. Both orders are deterministic on identical input.
 
 ---
 

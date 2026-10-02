@@ -62,5 +62,15 @@ class OrderSymbolTests(unittest.TestCase):
         self.assertNotIn("ℕ", html_text)
 
 
+class InternalWitnessNameTests(unittest.TestCase):
+    def test_current_and_historical_witness_spellings(self) -> None:
+        for name in ("force_lev_2_9", "int_0_lev_2_9", "int_10_lev_2_9", "it_3_lev_2_9", "int_lev_2_9"):
+            for prefix in ("", "u_", "u_u_"):
+                with self.subTest(name=prefix + name):
+                    self.assertTrue(gen._looks_like_internal_var_token(prefix + name))
+        for name in ("force_lev_2", "int_x_lev_2_9", "int_1_lev_2_9_extra", "ordinary"):
+            self.assertFalse(gen._looks_like_internal_var_token(name))
+
+
 if __name__ == "__main__":
     unittest.main()

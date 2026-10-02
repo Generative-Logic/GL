@@ -172,6 +172,20 @@ TEST(theorem_usage_graph, buildstack_rejects_cycle_closing_theorem_leaf) {
     std::vector<std::vector<std::string>> disabled = runBuild();
     ASSERT_TRUE(hasRow(disabled, "A", "U"));
     ASSERT_TRUE(hasRow(disabled, "U", ""));
+
+    // A later reformulation U already has the fixed obligation U -> T.
+    // Seeding that obligation before T's walk must reject the tempting U
+    // theorem leaf even though U's synthetic chapter is not written yet.
+    ana.exportCurrentChapterTheorem = "T";
+    ana.exportTheoremUsage.clear();
+    ana.exportTheoremUsage.addEdgesFromStack("U",
+        {{"U", "main", "reformulated from", "T", "main"}});
+    ASSERT_TRUE(ana.exportTheoremUsage.reaches("U", "T"));
+    ASSERT_FALSE(ana.exportTheoremUsage.reaches("T", "U"));
+    const auto fixedReformulation = runBuild();
+    ASSERT_TRUE(hasRow(fixedReformulation, "A", "FOUNDATION"));
+    ASSERT_FALSE(hasRow(fixedReformulation, "A", "U"));
+    ASSERT_FALSE(hasRow(fixedReformulation, "U", ""));
 }
 
 TEST(theorem_usage_graph, buildstack_contradiction_fallback_requires_twin_record) {

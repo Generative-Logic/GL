@@ -260,7 +260,7 @@ def make_proof_line(expr: str, ns: str, tag: str,
 
 def set_chapter_context(state: VerifierState,
                         thm: Optional[Tuple[str, str, str]] = None,
-                        chapter_type: str = "direct") -> None:
+                        chapter_type: str = "single_chapter_proof") -> None:
     """Mirror ``verify_chapter``'s transient context setup. Per-tag tests
     that bypass ``verify_chapter`` use this so checkers that read
     ``state.current_chapter_thm`` / ``state.current_gl_binary`` /
@@ -324,7 +324,7 @@ def assert_pass(checker: Callable[..., bool], line: ProofLine,
 def assert_chapter_meta_fail(chapter_lines: List[ProofLine],
                              meta_name: str,
                              chapter_thm: Optional[Tuple[str, str, str]] = None,
-                             chapter_type: str = "direct",
+                             chapter_type: str = "single_chapter_proof",
                              expected_failures: int = 1,
                              state: Optional[VerifierState] = None,
                              chapter_file: str = "test_chapter.txt"
@@ -352,7 +352,7 @@ def assert_chapter_meta_fail(chapter_lines: List[ProofLine],
 def assert_chapter_meta_pass(chapter_lines: List[ProofLine],
                              meta_name: str,
                              chapter_thm: Optional[Tuple[str, str, str]] = None,
-                             chapter_type: str = "direct",
+                             chapter_type: str = "single_chapter_proof",
                              state: Optional[VerifierState] = None,
                              chapter_file: str = "test_chapter.txt"
                              ) -> VerifierState:

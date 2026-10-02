@@ -31,7 +31,11 @@
 ///        Plus the input-slot demand route
 ///        (D-288): the
 ///        `inputSlotDemandSlotQualifies` predicate matrix and the fourth
-///        qualification pass's untagged marker install.
+///        qualification pass's untagged marker install. Plus the
+///        theorem-relation demand route
+///        (D-370): the
+///        `theoremRelationDemandSlotQualifies` predicate matrix and the
+///        fifth qualification pass's untagged marker install.
 
 #include "test_harness.hpp"
 
@@ -467,5 +471,189 @@ TEST(disintegration_allowed, input_slot_demand_pass_installs_untagged_marker) {
     ea2.makeNormalizedKeysForAdmission(key55, ea2.body.overallHashMemory,
         ea2.body.nameMap, ea2.body.ruleInterner, head55,
         ea2.parameters.minNumOperatorsKey, impl55, "main", &ea2.body);
+    ASSERT_TRUE(countIn3MarkerAt(ea2, 1) == ctrlBefore);
+}
+
+// Recursion block #1 records its installed induction implication's
+// ruleInterner id (`Memory::recursionAuxyImplId`); the firing site marks that
+// rule's fired head as the induction hypothesis
+// (D-356). Every LB outside a recursion step
+// block keeps 0.
+TEST(disintegration_allowed, recursion_block_records_auxy_implication_id) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    const std::string conj =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
+    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+
+    gl::Memory* anchorLB =
+        ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
+    ASSERT_TRUE(anchorLB != nullptr);
+    gl::Memory* innerLB = ea.simpleMapStore.findChild(anchorLB, "(in2[7,8,3])");
+    ASSERT_TRUE(innerLB != nullptr);
+    // Not recursion step blocks: the id stays 0.
+    ASSERT_EQ(ea.body.recursionAuxyImplId, 0);
+    ASSERT_EQ(anchorLB->recursionAuxyImplId, 0);
+    ASSERT_EQ(innerLB->recursionAuxyImplId, 0);
+
+    // The one digit arg (7 — the in2 INPUT slot; 8 is its output and is
+    // removed by findDigitArgs) spawns recursion block #1 under the
+    // innermost premise LB as rec0.
+    gl::Memory* rec0 = ea.simpleMapStore.findChild(innerLB, "(in2[rec0,7,3])");
+    ASSERT_TRUE(rec0 != nullptr);
+    ASSERT_TRUE(ea.simpleMapStore.findChild(innerLB, "(in2[rec1,8,3])") == nullptr);
+    ASSERT_TRUE(rec0->isPartOfRecursion);
+    ASSERT_TRUE(rec0->recursionAuxyImplId != 0);
+
+    // The recorded id decodes to the block's own induction implication: an
+    // implication text that cites the substituted induction variable.
+    const std::string impl0 =
+        rec0->ruleInterner.decodeView(rec0->recursionAuxyImplId).toStdString();
+    ASSERT_TRUE(impl0.rfind("(>[", 0) == 0);
+    ASSERT_TRUE(impl0.find("rec") != std::string::npos);
+    // And it is exactly one of the installed rules' producer implications.
+    bool found = false;
+    auto& m = rec0->overallHashMemory.encodedMap;
+    for (int32_t id = 1; id <= m.count() && !found; ++id) {
+        for (int32_t j = 0; j < m.runLen(id); ++j) {
+            const gl::LocalMemoryValue rec = m.recordAt(id, j);
+            if (rec.originalImplicationId == rec0->recursionAuxyImplId) { found = true; break; }
+        }
+    }
+    ASSERT_TRUE(found);
+}
+
+// The theorem-relation demand predicate
+// (D-370) on the D2 consumer shape
+// `a<b ∧ a+k=b → k≠0` (pool row 20): the witness slot qualifies; the
+// successor-witness shape (one bound argument), an operator other-premise,
+// a negated other-premise, an atomic other-premise, a disintegration
+// product (`u_` argument), an integration install, a bound candidate and an
+// out-of-range slot refuse.
+TEST(disintegration_allowed, theorem_relation_demand_slot_qualification_matrix) {
+    gl::ExpressionAnalyzer ea(std::string("FTA"));
+
+    // Row-20 shape with plain names — 9=a, 10=b, 11=k (witness).
+    const KeyRun key20({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(strictOrder[1,4,9,10])",
+        "(in3[9,11,10,4])" });
+
+    // The witness slot: premise 2 (a+k=b), input position 1 (k) — the head
+    // (`!(=[2,11])`) is unconstrained on this route.
+    ASSERT_TRUE(ea.theoremRelationDemandSlotQualifies(
+        key20.data(), key20.count(), 2, 1, false));
+
+    // Input position 0 of the same premise (a, bound by the relation):
+    // confinement refuses.
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key20.data(), key20.count(), 2, 0, false));
+
+    // The anchor premise and the relation premise refuse outright.
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key20.data(), key20.count(), 0, 0, false));
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key20.data(), key20.count(), 1, 0, false));
+
+    // Out-of-range input position (in3 declares two inputs).
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key20.data(), key20.count(), 2, 2, false));
+
+    // An integration install refuses.
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key20.data(), key20.count(), 2, 1, true));
+
+    // Successor-witness shape (row 13: s(p)=x ∧ x≤y → p≤y): the marked in2
+    // premise has one non-marker argument bound by the relation —
+    // kTheoremRelationDemandMinBoundArgs refuses.
+    const KeyRun key13({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(in2[9,10,3])",
+        "(preorder[1,4,10,11])" });
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key13.data(), key13.count(), 1, 0, false));
+
+    // An operator among the other premises (row 39: a<b ∧ 1≤c ∧ a·c=x ∧
+    // b·c=y → x<y, marked at a·c=x input slot 1): condition (3) refuses.
+    const KeyRun key39({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(strictOrder[1,4,9,10])",
+        "(preorder[1,4,6,11])",
+        "(in3[9,11,12,5])",
+        "(in3[10,11,13,5])" });
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        key39.data(), key39.count(), 3, 1, false));
+
+    // A negated other-premise refuses.
+    const KeyRun keyNeg({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "!(strictOrder[1,4,9,10])",
+        "(in3[9,11,10,4])" });
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        keyNeg.data(), keyNeg.count(), 2, 1, false));
+
+    // An atomic other-premise (a typing fact) refuses.
+    const KeyRun keyAtom({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(in[9,1])",
+        "(in3[9,11,10,4])" });
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        keyAtom.data(), keyAtom.count(), 2, 1, false));
+
+    // A disintegration product (a `u_`-prefixed premise argument) is not a
+    // received theorem: condition (1) refuses.
+    const KeyRun keyU({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(strictOrder[1,4,u_9,u_10])",
+        "(in3[u_9,11,u_10,4])" });
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        keyU.data(), keyU.count(), 2, 1, false));
+
+    // No anchor element: not a received theorem.
+    const KeyRun keyNoAnchor({
+        "(strictOrder[1,4,9,10])",
+        "(in3[9,11,10,4])" });
+    ASSERT_FALSE(ea.theoremRelationDemandSlotQualifies(
+        keyNoAnchor.data(), keyNoAnchor.count(), 1, 1, false));
+}
+
+// The fifth qualification pass installs an UNTAGGED in3 marker with the
+// marker at an INPUT slot for the row-20 shape, and installs none for the
+// successor-witness shape — D-370.
+TEST(disintegration_allowed, theorem_relation_demand_pass_installs_untagged_marker) {
+    gl::ExpressionAnalyzer ea(std::string("FTA"));
+
+    const std::vector<std::string> key20 = {
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(strictOrder[1,4,9,10])",
+        "(in3[9,11,10,4])" };
+    const std::string head20 = "!(=[2,11])";
+    const std::string impl20 =
+        "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](strictOrder[1,4,9,10])"
+        "(>[11](in3[9,11,10,4])!(=[2,11]))))";
+
+    const int32_t inputBefore = countIn3MarkerAt(ea, 1);
+    ea.makeNormalizedKeysForAdmission(key20, ea.body.overallHashMemory,
+        ea.body.nameMap, ea.body.ruleInterner, head20,
+        ea.parameters.minNumOperatorsKey, impl20, "main", &ea.body);
+    ASSERT_TRUE(countIn3MarkerAt(ea, 1) > inputBefore);
+
+    // Control: the successor-witness shape (row 13) mints no input-slot
+    // marker — the bound-argument floor holds (in2 markers are counted
+    // through the same decoder on the in3 filter: none expected either way,
+    // so the control asserts on the in3 count staying flat AND on the
+    // predicate itself).
+    gl::ExpressionAnalyzer ea2(std::string("FTA"));
+    const std::vector<std::string> key13 = {
+        "(AnchorFTA[1,2,3,4,5,6,7,8])",
+        "(in2[9,10,3])",
+        "(preorder[1,4,10,11])" };
+    const std::string head13 = "(preorder[1,4,9,11])";
+    const std::string impl13 =
+        "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])"
+        "(>[11](preorder[1,4,10,11])(preorder[1,4,9,11]))))";
+    const int32_t ctrlBefore = countIn3MarkerAt(ea2, 1);
+    ea2.makeNormalizedKeysForAdmission(key13, ea2.body.overallHashMemory,
+        ea2.body.nameMap, ea2.body.ruleInterner, head13,
+        ea2.parameters.minNumOperatorsKey, impl13, "main", &ea2.body);
     ASSERT_TRUE(countIn3MarkerAt(ea2, 1) == ctrlBefore);
 }

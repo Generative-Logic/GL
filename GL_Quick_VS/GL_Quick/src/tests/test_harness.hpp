@@ -36,6 +36,10 @@
 ///
 /// Entry point for users is `gl_quick.exe --unit-tests`; `main.py`
 /// invokes it before any pipeline work and aborts on a non-zero exit.
+/// Tests of code that only the CUDA Phase 2 route runs are registered with
+/// `CUDA_TEST(suite, name)`; the processor-route gate
+/// (`--unit-tests --phase2-backend cpu`, what `main.py` runs without
+/// `--GPU`) does not select them, so a processor run needs no CUDA device.
 ///
 /// Performance budget: <30 s wall-clock for the full suite.
 /// Per-test budget ~100 µs–500 ms.
@@ -82,18 +86,21 @@ namespace tests {
 
     /// Registry record for one test. The `suite` and `name` strings
     /// are produced by the `TEST(...)` macro's stringify; they live in
-    /// static storage so storing raw `const char*` is safe.
+    /// static storage so storing raw `const char*` is safe. `cudaRoute`
+    /// marks a `CUDA_TEST`: a test of code only the CUDA Phase 2 route
+    /// runs, which may need a CUDA device.
     struct TestEntry {
         const char* suite;
         const char* name;
         TestFn      fn;
+        bool        cudaRoute;
     };
 
     /// Insert a test into the registry. Called from a static initializer
-    /// emitted by the `TEST(suite, name)` macro at file scope. Order
-    /// across translation units is unspecified by C++ but the runner
-    /// does not rely on it — every test owns its own setup.
-    void registerTest(const char* suite, const char* name, TestFn fn);
+    /// emitted by the `TEST(suite, name)` / `CUDA_TEST(suite, name)` macros
+    /// at file scope. Order across translation units is unspecified by C++
+    /// but the runner does not rely on it — every test owns its own setup.
+    void registerTest(const char* suite, const char* name, TestFn fn, bool cudaRoute);
 
     /// Throw an internal failure exception (caught by `runAllTests`).
     /// Reports the failing expression text and source location to
@@ -103,10 +110,13 @@ namespace tests {
     /// flow analysis.
     [[noreturn]] void fail(const char* file, int line, const char* expr);
 
-    /// Walk the registry, run each test, abort on first failure.
-    /// @return 0 if all tests pass, 1 on the first failure (or on any
-    /// unexpected exception escaping a test body).
-    int runAllTests();
+    /// Walk the registry, run each selected test, abort on first failure.
+    /// @param includeCudaRoute true selects every registered test (the
+    ///        CUDA-route gate); false leaves out every `CUDA_TEST` (the
+    ///        processor-route gate, which a PC without a CUDA device passes).
+    /// @return 0 if all selected tests pass, 1 on the first failure (or on
+    /// any unexpected exception escaping a test body).
+    int runAllTests(bool includeCudaRoute);
 
 }  // namespace tests
 }  // namespace gl
@@ -122,10 +132,21 @@ namespace tests {
 ///     ASSERT_EQ(nm.encode("main"), int16_t(1));
 /// }
 /// @endcode
-#define TEST(suite, name)                                                    \
+#define TEST(suite, name) GL_REGISTERED_TEST(suite, name, false)
+
+/// Define a CUDA-route test: a test of code that only the CUDA Phase 2
+/// route runs, which may need a CUDA device. Every test compiled only under
+/// `GL_CUDA` is one. Selected by `--unit-tests` alone and by
+/// `--unit-tests --phase2-backend cuda`; the processor-route gate
+/// `--unit-tests --phase2-backend cpu` does not run it.
+#define CUDA_TEST(suite, name) GL_REGISTERED_TEST(suite, name, true)
+
+/// Shared expansion of `TEST` and `CUDA_TEST`: a forward declaration, a
+/// static registration variable carrying the route flag, and the body.
+#define GL_REGISTERED_TEST(suite, name, cudaRoute)                           \
     static void suite##_##name##_body();                                     \
     static int  suite##_##name##_reg = (::gl::tests::registerTest(           \
-        #suite, #name, &suite##_##name##_body), 0);                          \
+        #suite, #name, &suite##_##name##_body, cudaRoute), 0);               \
     static void suite##_##name##_body()
 
 /// True-assertion. Calls `gl::tests::fail` with the stringified

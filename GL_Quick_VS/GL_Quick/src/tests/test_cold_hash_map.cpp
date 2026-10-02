@@ -40,6 +40,8 @@
 
 #include "../memory_infra/cold_hash_map.hpp"
 
+#include <map>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -1527,6 +1529,127 @@ TEST(cold_hash_map, blob_map_append_blob_to_run) {
     ASSERT_TRUE(pa == pb);
 }
 
+TEST(cold_hash_map, blob_map_erase_blob_from_run) {
+    // eraseBlobFromRun(id, j) removes ONE blob of key id's run without
+    // rewriting the others and rebases later keys' run starts -- the owner-
+    // removal fast path. Every erase must equal re-assigning the run without
+    // that blob, column for column: first, middle and last blob, an empty
+    // blob, a non-tail key, the pool's last blob, and runs emptied to zero
+    // blobs (the key keeps its id).
+    gl::GlobalMemoryManager g;
+    g.init(kMapTestCfg);
+    gl::LbArena lbA(&g), lbB(&g);
+    gl::DirtyState dA = gl::DirtyState::Clean, dB = gl::DirtyState::Clean;
+    PodBlobMap viaErase(&lbA, &dA), viaAssign(&lbB, &dB);
+    std::vector<std::vector<std::string>> runs = {
+        { "aa", "bbbb", "cc", "" }, { "tail1", "tail2", "tail3" }, { "solo" } };
+    for (int32_t k = 0; k < 3; ++k) {
+        assignBlobs(viaErase, 100 * (k + 1), runs[k]);
+        assignBlobs(viaAssign, 100 * (k + 1), runs[k]);
+    }
+    const auto sameColumns = [&]() {
+        std::vector<char> x, y;
+        viaErase.appendRunStartBytes(x, 0); viaAssign.appendRunStartBytes(y, 0); ASSERT_TRUE(x == y);
+        x.clear(); y.clear();
+        viaErase.appendBlobStartBytes(x, 0); viaAssign.appendBlobStartBytes(y, 0); ASSERT_TRUE(x == y);
+        x.clear(); y.clear();
+        viaErase.appendBlobPoolBytes(x, 0); viaAssign.appendBlobPoolBytes(y, 0); ASSERT_TRUE(x == y);
+        ASSERT_EQ(viaErase.count(), 3);
+        for (int32_t id = 1; id <= 3; ++id) {
+            ASSERT_EQ(viaErase.runLen(id), static_cast<int32_t>(runs[id - 1].size()));
+            for (int32_t j = 0; j < viaErase.runLen(id); ++j)
+                ASSERT_EQ(readBlobStr(viaErase, id, j), runs[id - 1][j]);
+        }
+    };
+    const auto erase = [&](int32_t id, int32_t j) {
+        viaErase.eraseBlobFromRun(id, j);
+        runs[id - 1].erase(runs[id - 1].begin() + j);
+        assignBlobs(viaAssign, 100 * id, runs[id - 1]);
+        sameColumns();
+    };
+    erase(1, 1);   // middle blob of a non-tail key
+    erase(1, 2);   // its empty last blob
+    erase(1, 0);   // its first blob
+    erase(2, 2);   // the pool's last blob
+    erase(3, 0);   // the tail key's run emptied
+    erase(2, 0);
+    erase(1, 0);   // a non-tail run emptied
+    erase(2, 0);   // every run empty
+}
+
+TEST(cold_hash_map, shared_blob_map_erase_blob_from_run_keeps_identifiers) {
+    // In a store bound to a shared byte pool (D-440) the erase splices out
+    // one stored identifier: the survivors keep theirs, the pool gains no
+    // payload, and the logical columns equal a private oracle re-assigned
+    // without the blob. A private oversized survivor keeps its handle and
+    // reads back intact; an erased oversized record leaves the resident pool
+    // at the next quiescent collection.
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{16 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), otherArena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedBytePool pool(&arena, &dirty);
+    PodBlobMap shared(&arena, &dirty), oracle(&otherArena, &dirty);
+    shared.bindSharedBlobBytes(pool, true);
+    const std::string a(700, 'a'), b(800, 'b'), c(900, 'c'), large(12000, 'l');
+    std::vector<std::vector<std::string>> runs = { { a, b, large, c }, { c, a } };
+    for (int32_t k = 0; k < 2; ++k) {
+        assignBlobs(shared, k + 1, runs[k]);
+        assignBlobs(oracle, k + 1, runs[k]);
+    }
+    ASSERT_EQ(pool.count(), 3);
+    const auto same = [&]() {
+        std::vector<char> x, y;
+        shared.appendRunStartBytes(x, 0); oracle.appendRunStartBytes(y, 0); ASSERT_TRUE(x == y);
+        x.clear(); y.clear();
+        shared.appendBlobStartBytes(x, 0); oracle.appendBlobStartBytes(y, 0); ASSERT_TRUE(x == y);
+        x.clear(); y.clear();
+        shared.appendBlobPoolBytes(x, 0); oracle.appendBlobPoolBytes(y, 0); ASSERT_TRUE(x == y);
+        ASSERT_EQ(shared.poolByteCount(), oracle.poolByteCount());
+        for (int32_t id = 1; id <= 2; ++id) {
+            ASSERT_EQ(shared.runLen(id), static_cast<int32_t>(runs[id - 1].size()));
+            for (int32_t j = 0; j < shared.runLen(id); ++j)
+                ASSERT_TRUE(readBlobStr(shared, id, j) == runs[id - 1][j]);
+        }
+    };
+    const auto erase = [&](int32_t id, int32_t j) {
+        shared.eraseBlobFromRun(id, j);
+        runs[id - 1].erase(runs[id - 1].begin() + j);
+        assignBlobs(oracle, id, runs[id - 1]);
+        same();
+        ASSERT_EQ(pool.count(), 3);   // nothing minted, nothing dropped before a collection
+    };
+    erase(1, 1);   // b goes; the oversized survivor shifts left with its handle
+    ASSERT_EQ(shared.residentPoolByteCount(), shared.blobCount() * 4 + 12000);
+    erase(2, 0);   // c leaves run 2 but stays referenced from run 1
+    erase(1, 1);   // the oversized record goes
+    pool.collect(scratch); same();
+    ASSERT_EQ(shared.residentPoolByteCount(), shared.blobCount() * 4);
+    ASSERT_EQ(pool.count(), 2);   // a and c remain referenced
+    shared.release(); pool.release();
+    ASSERT_EQ(pool.count(), 0);
+}
+
+TEST(cold_hash_map, erase_blob_from_run_assertion_probe) {
+    // Negative coverage, driven by .scripts/tests/test_native_run_erase.py:
+    // erasing outside a key's run or on a non-existent key asserts.
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_RUN_ERASE"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_RUN_ERASE")) mode = value;
+#endif
+    gl::GlobalMemoryManager global; global.init(kMapTestCfg);
+    gl::LbArena arena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    PodBlobMap values(&arena, &dirty);
+    assignBlobs(values, 1, {"only"});
+    if (mode == "outside_run") values.eraseBlobFromRun(1, 1);
+    else if (mode == "missing_key") values.eraseBlobFromRun(2, 0);
+}
+
 TEST(cold_hash_map, blob_map_erase_blob_if) {
     gl::GlobalMemoryManager g;
     g.init(kMapTestCfg);
@@ -1907,6 +2030,49 @@ TEST(cold_hash_map, set_map_two_level_spill) {
     }
 }
 
+// Interior splices of long runs across many pages: sorted inserts and
+// grow/shrink whole-set replaces move every later run through the bulk value
+// shift and the bulk run-start adjust; runs and totals match a std oracle.
+TEST(cold_hash_map, set_map_multipage_splices_match_oracle) {
+    gl::GlobalMemoryManager g;
+    g.init(kHashSpillCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    PodSetMap m(&lb, &dirty);
+    std::map<int32_t, std::set<int32_t>> oracle;
+    std::vector<int32_t> keyOrder;
+    uint32_t rng = 0x2468ace1u;
+    auto nx = [&]() { rng = rng * 1664525u + 1013904223u; return rng; };
+    for (int32_t step = 0; step < 4000; ++step) {
+        const int32_t key = static_cast<int32_t>(nx() % 60u);
+        if (oracle.find(key) == oracle.end()) keyOrder.push_back(key);
+        if (nx() % 8u != 0u) {
+            const int32_t value = static_cast<int32_t>(nx() % 5000u);
+            m.insertSorted(key, value);
+            oracle[key].insert(value);
+        } else {
+            std::set<int32_t> next;
+            const uint32_t n = nx() % 400u;
+            for (uint32_t j = 0; j < n; ++j) next.insert(static_cast<int32_t>(nx() % 5000u));
+            const std::vector<int32_t> run(next.begin(), next.end());
+            m.assignSet(key, run.data(), static_cast<int32_t>(run.size()));
+            oracle[key] = next;
+        }
+    }
+    ASSERT_TRUE(g.twoLevelPromotions() > 0);
+    int32_t total = 0;
+    ASSERT_EQ(m.count(), static_cast<int32_t>(keyOrder.size()));
+    for (int32_t i = 0; i < static_cast<int32_t>(keyOrder.size()); ++i) {
+        const std::set<int32_t>& want = oracle[keyOrder[i]];
+        ASSERT_EQ(m.lookup(keyOrder[i]), i + 1);
+        ASSERT_EQ(m.runLen(i + 1), static_cast<int32_t>(want.size()));
+        int32_t j = 0;
+        for (const int32_t v : want) ASSERT_EQ(m.valueAt(i + 1, j++), v);
+        total += static_cast<int32_t>(want.size());
+    }
+    ASSERT_EQ(m.valueCount(), total);
+}
+
 TEST(cold_hash_map, blob_map_two_level_blobpool_spill) {
     gl::GlobalMemoryManager g;
     g.init(kHashSpillCfg);
@@ -1951,4 +2117,288 @@ TEST(cold_hash_map, insert_epoch_tracks_key_set_growth_only) {
     s.resetToFresh();
     ASSERT_EQ(s.insertEpoch(), e0 + 3);       // key set replaced: bump
     ASSERT_EQ(s.count(), 0);
+}
+
+// A find-then-insert that probes once (lookupForInsert + insertAt / mintAt) gives
+// the same ids, values, index size and epochs as lookup + insert / mint, across
+// index growth and an erase-driven rebuild, for POD and byte keys.
+TEST(cold_hash_map, insert_at_probed_slot_matches_insert) {
+    gl::GlobalMemoryManager g;
+    g.init(kMapTestCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    PodMap reference(&lb, &dirty);
+    PodMap probed(&lb, &dirty);
+    uint32_t state = 12345u;
+    const auto nextKey = [&state]() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<int32_t>((state >> 8) % 2500u);
+    };
+    for (int32_t step = 0; step < 6000; ++step) {
+        const int32_t key = nextKey();
+        const int64_t value = 1000LL * step + key;
+        const int32_t referenceId = reference.lookup(key);
+        if (referenceId == 0) reference.insert(key, value);
+        else reference.setValueAt(referenceId, value);
+        PodMap::InsertHint hint;
+        const int32_t probedId = probed.lookupForInsert(key, hint);
+        ASSERT_EQ(probedId, referenceId);
+        if (probedId == 0) ASSERT_EQ(probed.insertAt(key, value, hint), reference.count());
+        else probed.setValueAt(probedId, value);
+        if (step == 3000) {
+            const auto odd = [](int32_t k) { return (k % 3) == 1; };
+            ASSERT_EQ(reference.eraseIf(odd), probed.eraseIf(odd));
+        }
+    }
+    ASSERT_EQ(probed.count(), reference.count());
+    ASSERT_EQ(probed.insertEpoch(), reference.insertEpoch());
+    ASSERT_EQ(probed.indexBytes(), reference.indexBytes());
+    for (int32_t key = 0; key < 2500; ++key) {
+        const int32_t id = reference.lookup(key);
+        ASSERT_EQ(probed.lookup(key), id);
+        if (id != 0) ASSERT_EQ(probed.valueAt(id), reference.valueAt(id));
+    }
+
+    gl::ColdHashSet<gl::BytesKeyStore> names(&lb, &dirty);
+    gl::ColdHashSet<gl::BytesKeyStore> namesProbed(&lb, &dirty);
+    for (int32_t step = 0; step < 900; ++step) {
+        const std::string text = "(p[" + std::to_string(nextKey() % 400) + "])";
+        const gl::StrSpan key(text);
+        const int32_t id = names.mint(key);
+        gl::ColdHashSet<gl::BytesKeyStore>::InsertHint hint;
+        int32_t probedId = namesProbed.lookupForInsert(key, hint);
+        if (probedId == 0) probedId = namesProbed.mintAt(key, hint);
+        ASSERT_EQ(probedId, id);
+    }
+    ASSERT_EQ(namesProbed.count(), names.count());
+    ASSERT_EQ(namesProbed.insertEpoch(), names.insertEpoch());
+    ASSERT_EQ(namesProbed.indexBytes(), names.indexBytes());
+}
+
+
+TEST(cold_hash_map, shared_native_keys_keep_local_identity_and_canonical_bytes) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global), otherArena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedBytePool pool(&arena, &dirty);
+    using Bytes = gl::ColdHashSet<gl::BytesKeyStore>;
+    Bytes first(&arena, &dirty), second(&arena, &dirty), oracle(&otherArena, &dirty);
+    first.keyStore().bindSharedBytes(pool);
+    second.keyStore().bindSharedBytes(pool);
+    ASSERT_TRUE(first.keyStore().sharesBytes());
+    ASSERT_FALSE(oracle.keyStore().sharesBytes());
+    const std::string dead(1700, 'd'), alpha(1700, 'a'), beta(600, 'b');
+    first.mint(gl::StrSpan(dead));
+    const int firstAlpha = first.mint(gl::StrSpan(alpha));
+    const int secondAlpha = second.mint(gl::StrSpan(alpha));
+    second.mint(gl::StrSpan(beta));
+    oracle.mint(gl::StrSpan(alpha)); oracle.mint(gl::StrSpan(beta));
+    ASSERT_EQ(firstAlpha, 2); ASSERT_EQ(secondAlpha, 1);
+    ASSERT_EQ(first.keyAt(firstAlpha).ptr, second.keyAt(secondAlpha).ptr);
+    ASSERT_EQ(first.lookup(gl::StrSpan(beta)), 0);
+    ASSERT_EQ(pool.count(), 3);
+    ASSERT_EQ(pool.logicalByteCount(), static_cast<int64_t>(dead.size() + alpha.size() + beta.size()));
+    ASSERT_TRUE(pool.liveBytes() >= pool.logicalByteCount());
+    ASSERT_TRUE(pool.indexBytes() > 0);
+    std::vector<char> lengths, bytes, expectedLengths, expectedBytes;
+    second.appendLengthBytes(lengths, 0); second.appendContentBytes(bytes, 0);
+    oracle.appendLengthBytes(expectedLengths, 0); oracle.appendContentBytes(expectedBytes, 0);
+    ASSERT_TRUE(lengths == expectedLengths && bytes == expectedBytes);
+    ASSERT_EQ(second.decodeString(1), alpha);
+    first.resetToFresh();
+    pool.collect(scratch);
+    ASSERT_EQ(pool.count(), 2);
+    ASSERT_EQ(second.lookup(gl::StrSpan(alpha)), 1);
+    ASSERT_EQ(second.lookup(gl::StrSpan(beta)), 2);
+    ASSERT_EQ(second.decodeString(1), alpha);
+    ASSERT_EQ(second.decodeString(2), beta);
+    ASSERT_EQ(pool.logicalByteCount(), static_cast<int64_t>(alpha.size() + beta.size()));
+    pool.collect(scratch);
+    Bytes reloaded(&arena, &dirty), copied(&arena, &dirty), plain(&otherArena, &dirty);
+    reloaded.keyStore().bindSharedBytes(pool); copied.keyStore().bindSharedBytes(pool);
+    reloaded.stageLengths(lengths.data(), second.count());
+    reloaded.consumeStagedLengths(bytes.data(), bytes.size());
+    copied.copyFrom(oracle); plain.copyFrom(second);
+    ASSERT_EQ(reloaded.keyAt(1).ptr, second.keyAt(1).ptr);
+    ASSERT_EQ(copied.keyAt(1).ptr, second.keyAt(1).ptr);
+    ASSERT_EQ(plain.decodeString(2), beta);
+    std::vector<char> tail;
+    reloaded.appendContentBytesFromByte(tail, alpha.size());
+    ASSERT_TRUE(tail == std::vector<char>(beta.begin(), beta.end()));
+    ASSERT_EQ(second.eraseIf([&](gl::StrSpan key) { return key.len == static_cast<int>(alpha.size()); }), 1);
+    ASSERT_EQ(second.lookup(gl::StrSpan(beta)), 1);
+    pool.collect(scratch);
+    ASSERT_EQ(reloaded.lookup(gl::StrSpan(alpha)), 1);
+    first.release(); second.release(); reloaded.release(); copied.release();
+    pool.collect(scratch);
+    ASSERT_EQ(pool.count(), 0); ASSERT_EQ(pool.logicalByteCount(), 0);
+    pool.release();
+}
+
+TEST(cold_hash_map, shared_normalized_values_match_owning_run_operations) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global), otherArena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedBytePool pool(&arena, &dirty);
+    gl::ColdHashSet<gl::BytesKeyStore> keys(&arena, &dirty);
+    keys.keyStore().bindSharedBytes(pool);
+    PodBlobMap shared(&arena, &dirty), oracle(&otherArena, &dirty);
+    shared.bindSharedBlobBytes(pool);
+    const std::string a(1700, 'a'), b(800, 'b'), c(900, 'c');
+    keys.mint(gl::StrSpan(a));
+    const auto same = [&]() {
+        std::vector<char> x, y;
+        shared.appendRunStartBytes(x, 0); oracle.appendRunStartBytes(y, 0); ASSERT_TRUE(x == y);
+        x.clear(); y.clear();
+        shared.appendBlobStartBytes(x, 0); oracle.appendBlobStartBytes(y, 0); ASSERT_TRUE(x == y);
+        x.clear(); y.clear();
+        shared.appendBlobPoolBytes(x, 0); oracle.appendBlobPoolBytes(y, 0); ASSERT_TRUE(x == y);
+        ASSERT_EQ(shared.poolByteCount(), oracle.poolByteCount());
+        ASSERT_EQ(shared.residentPoolByteCount(), shared.blobCount() * 4);
+    };
+    assignBlobs(shared, 1, {a, b}); assignBlobs(oracle, 1, {a, b});
+    assignBlobs(shared, 2, {a, c}); assignBlobs(oracle, 2, {a, c}); same();
+    ASSERT_EQ(pool.count(), 3);
+    std::vector<char> buffer;
+    int32_t length = 0;
+    const char* bytes = shared.peekBlobContiguous(1, 0, length, buffer);
+    ASSERT_EQ(bytes, keys.keyAt(1).ptr);
+    assignBlobs(shared, 1, {c}); assignBlobs(oracle, 1, {c}); same();
+    assignBlobs(shared, 1, {b, a, c}); assignBlobs(oracle, 1, {b, a, c}); same();
+    std::vector<char> values;
+    shared.blobAt(1, 1, values); ASSERT_TRUE(values == std::vector<char>(a.begin(), a.end()));
+    PodBlobMap copied(&arena, &dirty), plain(&otherArena, &dirty), loaded(&arena, &dirty);
+    copied.bindSharedBlobBytes(pool); loaded.bindSharedBlobBytes(pool);
+    copied.copyFrom(oracle); plain.copyFrom(shared);
+    std::vector<char> wireKeys, wireRuns, wireStarts, wirePool, copiedPool;
+    shared.keyStore().appendKeyBytes(wireKeys, 0); shared.appendRunStartBytes(wireRuns, 0);
+    shared.appendBlobStartBytes(wireStarts, 0); shared.appendBlobPoolBytes(wirePool, 0);
+    loaded.keyStore().bulkLoadKeyBytes(wireKeys.data(), shared.count()); loaded.rebuildIndex();
+    loaded.bulkLoadRunStartBytes(wireRuns.data(), shared.count());
+    loaded.bulkLoadBlobStartBytes(wireStarts.data(), shared.blobCount());
+    loaded.bulkLoadBlobPoolBytes(wirePool.data(), wirePool.size());
+    loaded.appendBlobPoolBytes(copiedPool, 0); ASSERT_TRUE(copiedPool == wirePool);
+    copiedPool.clear(); plain.appendBlobPoolBytes(copiedPool, 0); ASSERT_TRUE(copiedPool == wirePool);
+    ASSERT_EQ(shared.eraseBlobIf([](int key) { return key == 1; }), 1);
+    ASSERT_EQ(oracle.eraseBlobIf([](int key) { return key == 1; }), 1); same();
+    pool.collect(scratch); same();
+    assignBlobs(shared, 3, {}); assignBlobs(oracle, 3, {}); same();
+    shared.assignAllRunsGenerated(shared.count(), [&](int32_t id, auto& sink) {
+        if (id == 1) sink.unchanged(id); else sink.blob(b.data(), static_cast<int32_t>(b.size()));
+    }, scratch);
+    oracle.assignAllRunsGenerated(oracle.count(), [&](int32_t id, auto& sink) {
+        if (id == 1) sink.unchanged(id); else sink.blob(b.data(), static_cast<int32_t>(b.size()));
+    }, scratch); same();
+    shared.release(); copied.release(); loaded.release(); keys.release(); pool.release();
+}
+
+TEST(cold_hash_map, shared_native_key_assertion_probe) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_SHARED_NATIVE_KEYS"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_SHARED_NATIVE_KEYS")) mode = value;
+#endif
+    gl::GlobalMemoryManager global; global.init(kMapTestCfg);
+    gl::LbArena arena(&global), otherArena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedBytePool pool(&arena, &dirty);
+    gl::ColdHashSet<gl::BytesKeyStore> keys(&arena, &dirty), foreign(&otherArena, &dirty);
+    if (mode == "nonempty") {
+        keys.mint(gl::StrSpan("key", 3)); keys.keyStore().bindSharedBytes(pool);
+    } else if (mode == "cross_block") {
+        foreign.keyStore().bindSharedBytes(pool);
+    } else if (mode == "live_release") {
+        keys.keyStore().bindSharedBytes(pool); keys.mint(gl::StrSpan("key", 3)); pool.release();
+    } else if (mode == "oversized_normalized") {
+        PodBlobMap values(&arena, &dirty); values.bindSharedBlobBytes(pool);
+        assignBlobs(values, 1, {std::string(arena.pageBytes() + 1, 'x')});
+    } else if (mode == "empty_value") {
+        PodBlobMap values(&arena, &dirty); values.bindSharedBlobBytes(pool); assignBlobs(values, 1, {""});
+    }
+}
+
+
+TEST(cold_hash_map, shared_native_last_client_reset_releases_and_can_refill) {
+    gl::GlobalMemoryManager global; global.init(kMapTestCfg);
+    gl::LbArena arena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedBytePool pool(&arena, &dirty);
+    gl::ColdHashSet<gl::BytesKeyStore> keys(&arena, &dirty);
+    PodBlobMap values(&arena, &dirty);
+    keys.keyStore().bindSharedBytes(pool); values.bindSharedBlobBytes(pool);
+    pool.collect(scratch); pool.releaseIfUnused();
+    keys.mint(gl::StrSpan("payload", 7)); assignBlobs(values, 1, {"payload"});
+    keys.resetToFresh(); pool.releaseIfUnused();
+    ASSERT_EQ(pool.count(), 1); ASSERT_TRUE(pool.liveBytes() > 0);
+    values.resetToFresh();
+    ASSERT_EQ(pool.count(), 0); ASSERT_EQ(pool.liveBytes(), 0);
+    keys.mint(gl::StrSpan("second", 6)); assignBlobs(values, 1, {"second"});
+    values.eraseBlobIf([](int) { return true; }); ASSERT_EQ(pool.count(), 1);
+    keys.eraseIf([](gl::StrSpan) { return true; });
+    ASSERT_EQ(pool.count(), 0); ASSERT_EQ(pool.liveBytes(), 0);
+    keys.mint(gl::StrSpan()); ASSERT_EQ(pool.count(), 1);
+    ASSERT_EQ(keys.decodeString(1), std::string());
+    keys.release(); ASSERT_EQ(pool.count(), 0);
+}
+
+
+TEST(cold_hash_map, shared_rule_values_preserve_large_records_and_private_lifetimes) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{16 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), otherArena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::SharedBytePool pool(&arena, &dirty);
+    PodBlobMap first(&arena, &dirty), peer(&arena, &dirty), oracle(&otherArena, &dirty);
+    first.bindSharedBlobBytes(pool, true); peer.bindSharedBlobBytes(pool, true);
+    const std::string small(1500, 's'), large(12000, 'l'), replacement(14000, 'r');
+    assignBlobs(first, 1, {small, large}); assignBlobs(oracle, 1, {small, large});
+    assignBlobs(peer, 7, {small});
+    ASSERT_EQ(pool.count(), 1);
+    ASSERT_EQ(first.residentPoolByteCount(), 12008);
+    const auto identical = [&]() {
+        std::vector<char> a, b;
+        first.appendRunStartBytes(a, 0); oracle.appendRunStartBytes(b, 0); ASSERT_TRUE(a == b);
+        a.clear(); b.clear(); first.appendBlobStartBytes(a, 0); oracle.appendBlobStartBytes(b, 0); ASSERT_TRUE(a == b);
+        a.clear(); b.clear(); first.appendBlobPoolBytes(a, 0); oracle.appendBlobPoolBytes(b, 0); ASSERT_TRUE(a == b);
+    };
+    identical();
+    std::vector<char> a, b;
+    int32_t n = 0, m = 0;
+    ASSERT_EQ(first.peekBlobContiguous(1, 0, n, a), peer.peekBlobContiguous(1, 0, m, b));
+    first.blobAt(1, 1, a); ASSERT_TRUE(a == std::vector<char>(large.begin(), large.end()));
+    assignBlobs(first, 1, {replacement, small}); assignBlobs(oracle, 1, {replacement, small});
+    pool.collect(scratch); identical();
+    ASSERT_EQ(first.residentPoolByteCount(), 14008);
+    PodBlobMap copied(&arena, &dirty), plain(&otherArena, &dirty), loaded(&arena, &dirty);
+    copied.bindSharedBlobBytes(pool, true); loaded.bindSharedBlobBytes(pool, true);
+    copied.copyFrom(first); plain.copyFrom(first);
+    std::vector<char> keys, runs, starts, bytes;
+    first.keyStore().appendKeyBytes(keys, 0); first.appendRunStartBytes(runs, 0);
+    first.appendBlobStartBytes(starts, 0); first.appendBlobPoolBytes(bytes, 0);
+    loaded.keyStore().bulkLoadKeyBytes(keys.data(), first.count()); loaded.rebuildIndex();
+    loaded.bulkLoadRunStartBytes(runs.data(), first.count());
+    loaded.bulkLoadBlobStartBytes(starts.data(), first.blobCount());
+    loaded.bulkLoadBlobPoolBytes(bytes.data(), bytes.size());
+    for (auto* map : {&copied, &plain, &loaded}) {
+        a.clear(); map->appendBlobPoolBytes(a, 0); ASSERT_TRUE(a == bytes);
+    }
+    const auto grownRun = [&](int32_t, auto& sink) {
+        sink.blob(replacement.data(), replacement.size());
+        sink.blob(small.data(), small.size());
+        sink.blob(large.data(), large.size());
+    };
+    first.assignAllRunsGenerated(first.count(), grownRun, scratch);
+    oracle.assignAllRunsGenerated(oracle.count(), grownRun, scratch);
+    pool.collect(scratch); identical(); ASSERT_EQ(first.residentPoolByteCount(), 26012);
+    first.assignAllRunsViaScratch(first.count(), [&](int32_t, auto& sink) { sink.blob(small.data(), small.size()); }, scratch);
+    oracle.assignAllRunsViaScratch(oracle.count(), [&](int32_t, auto& sink) { sink.blob(small.data(), small.size()); }, scratch);
+    pool.collect(scratch); identical(); ASSERT_EQ(first.residentPoolByteCount(), 4);
+    first.release(); copied.release(); loaded.release();
+    peer.blobAt(1, 0, a); ASSERT_TRUE(a == std::vector<char>(small.begin(), small.end()));
+    peer.release(); pool.release(); ASSERT_EQ(pool.count(), 0);
 }

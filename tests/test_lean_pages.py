@@ -91,8 +91,8 @@ def _write_export(root: Path, graph_hash: str, kernel_exit: int = 0) -> None:
         {"id": "peano_source_001", "method": "induction", "source_index": 1, "chapters": [
             {"role": "check_zero", "source_chapter": "1_check_zero.txt", "dispositions": [
                 {"status": "emitted"}, {"status": "emitted"}]}]},
-        {"id": "peano_source_010", "method": "direct", "source_index": 10, "chapters": [
-            {"role": "direct_proof", "source_chapter": "12_direct_proof.txt", "dispositions": [{"status": "emitted"}]}]},
+        {"id": "peano_source_010", "method": "single chapter proof", "source_index": 10, "chapters": [
+            {"role": "single_chapter_proof", "source_chapter": "12_single_chapter_proof.txt", "dispositions": [{"status": "emitted"}]}]},
     ]}), encoding="utf-8")
 
 
@@ -131,7 +131,7 @@ class LoadTests(unittest.TestCase):
 
 class RenderTests(unittest.TestCase):
     def test_links_follow_presence(self) -> None:
-        view = lean_pages.LeanTheoremView(1, "peano_source_001", "direct", "m.lean", "man.json", "c.json", "theorem x", ())
+        view = lean_pages.LeanTheoremView(1, "peano_source_001", "single chapter proof", "m.lean", "man.json", "c.json", "theorem x", ())
         export = lean_pages.LeanExportView("lean_export", "tc", 1, {1: view})
         self.assertEqual(lean_pages.nav_link(export, 1, 7), "<a href='chapter7_lean.html'>Lean 4 proof</a>")
         self.assertEqual(lean_pages.nav_link(export, 2, 8), "")
@@ -142,9 +142,9 @@ class RenderTests(unittest.TestCase):
 
     def test_page_carries_the_source_and_the_links(self) -> None:
         view = lean_pages.LeanTheoremView(
-            1, "peano_source_001", "direct", "GLExport/Generated/Peano.lean", "lean_manifest.json",
+            1, "peano_source_001", "single chapter proof", "GLExport/Generated/Peano.lean", "lean_manifest.json",
             "certificates/peano/certificate.json", "theorem peano_source_001 : True := by\n  exact trivial\n",
-            (("direct_proof", "1_direct_proof.txt", 2),),
+            (("single_chapter_proof", "1_single_chapter_proof.txt", 2),),
         )
         export = lean_pages.LeanExportView("lean_export", "leanprover/lean4:v4.30.0-rc2", 2, {1: view})
         page = lean_pages.render_lean_page(

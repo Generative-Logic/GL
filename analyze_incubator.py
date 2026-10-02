@@ -27,6 +27,7 @@ Analyze incubator theorems.txt vs conjectures.txt (conjectures).
 Lists positive/negative proved theorems and missing conjectures.
 """
 import re
+import math
 import sys
 from collections import defaultdict
 
@@ -68,11 +69,12 @@ def human_arith(head_str):
         op, a, b = mpo.group(1), mpo.group(2), mpo.group(3)
         if op == "4" and a in VAL and b in VAL:
             return f"{VAL[a]}<={VAL[b]}"
-    mf = re.match(r'\(fold\[\d+,\d+,\d+,\d+,(\d+),(\d+),(\d+)\]\)', head_str)
+    mf = re.fullmatch(r'\(fold\[1,3,4,(4|5),8,(\d+),(\d+),(\d+)\]\)', head_str)
     if mf:
-        n, m, p = mf.group(1), mf.group(2), mf.group(3)
+        op, n, m, p = mf.groups()
         if n in VAL and m in VAL and p in VAL:
-            return f"sum(0..{VAL[m]})={VAL[p]}"
+            kind = "sum" if op == "4" else "prod"
+            return f"{kind}({VAL[n]}..{VAL[m]})={VAL[p]}"
     return ""
 
 
@@ -108,13 +110,15 @@ def is_true_fact(head_str):
         if op == "4" and a in VAL and b in VAL:
             return VAL[a] <= VAL[b]
         return None
-    mf = re.match(r'\(fold\[\d+,\d+,\d+,\d+,(\d+),(\d+),(\d+)\]\)', head_str)
+    mf = re.fullmatch(r'\(fold\[1,3,4,(4|5),8,(\d+),(\d+),(\d+)\]\)', head_str)
     if mf:
-        n, m, p = mf.group(1), mf.group(2), mf.group(3)
+        op, n, m, p = mf.groups()
         if n in VAL and m in VAL and p in VAL:
             vn, vm, vp = VAL[n], VAL[m], VAL[p]
-            # fold(N,s,+,id,n,m,p) = sum from i=n to i=m of id(i) = n+...+m
-            return sum(range(vn, vm + 1)) == vp
+            if vn > vm:
+                return None  # Empty intervals have no accumulation convention.
+            operation = sum if op == "4" else math.prod
+            return operation(range(vn, vm + 1)) == vp
         return None
     return None
 
@@ -389,9 +393,9 @@ def analyze():
         mpo = re.match(r'\(preorder\[\d+,\d+,(\d+),(\d+)\]\)', head_str)
         if mpo:
             return all(mpo.group(i) in anchor4_args for i in (1, 2))
-        mf = re.match(r'\(fold\[\d+,\d+,\d+,\d+,(\d+),(\d+),(\d+)\]\)', head_str)
+        mf = re.fullmatch(r'\(fold\[1,3,4,(4|5),8,(\d+),(\d+),(\d+)\]\)', head_str)
         if mf:
-            return all(mf.group(i) in anchor4_args for i in (1, 2, 3))
+            return all(mf.group(i) in anchor4_args for i in (2, 3, 4))
         return False
 
     anchor4_missing = []

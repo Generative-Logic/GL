@@ -29,35 +29,32 @@
 #ifdef GL_CUDA
 
 #include "phase2_sealing.hpp"
+#include "../infra/phase2_trace.hpp"
+#include <optional>
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <limits>
 
 namespace gl::gpu {
 
-    /// @brief Allocate all processor download and sealing scratch once.
+    static_assert(deviceIntegrationJustification
+        == static_cast<int32_t>(RuleJustification::integration));
+
+    /// @brief Record the evaluator capacity; allocates nothing.
     ///
     /// @details
-    /// Mirrors every device output capacity with a fixed-size processor vector
-    /// and reserves reusable per-record sealing scratch at the largest relevant
-    /// run ceiling. These are the only heap allocations performed by this owner.
+    /// The processor columns and the per-record sealing scratch start empty;
+    /// `downloadAndSeal` grows them to the used counts of the windows it seals,
+    /// never beyond this capacity.
     ///
     /// @param fixedCapacity Immutable evaluator element and byte ceilings.
     /// @return An empty reusable sealing arena.
-    /// @invariant Every owned address remains stable for the object lifetime.
+    /// @invariant No column grows beyond the evaluator capacity.
     Phase2SealingArena::Phase2SealingArena(
         Phase2EvaluationCapacity fixedCapacity)
-        : capacity_(fixedCapacity),
-          firingRecords_(fixedCapacity.firingRecords),
-          generatedBytes_(fixedCapacity.generatedBytes),
-          levelValues_(fixedCapacity.levelValues),
-          originDependencies_(fixedCapacity.originDependencies),
-          markerKeys_(fixedCapacity.markerKeys),
-          markerRemainingArgs_(fixedCapacity.markerRemainingArgs),
-          markerArgs_(fixedCapacity.markerArgs),
-          firingOrder_(fixedCapacity.firingRecords),
-          sealedDependenciesScratch_(fixedCapacity.originDependencies) {
+        : capacity_(fixedCapacity) {
         assert(capacity_.logicalBlocks > 0);
         assert(capacity_.firingRecords > 0);
         assert(capacity_.generatedBytes > 0);
@@ -66,18 +63,13 @@ namespace gl::gpu {
         assert(capacity_.markerKeys > 0);
         assert(capacity_.markerRemainingArgs > 0);
         assert(capacity_.markerArgs > 0);
-        const uint32_t stringScratch = std::max({
-            capacity_.markerKeys,
-            capacity_.markerRemainingArgs,
-            capacity_.markerArgs });
-        sealedStringsScratch_.resize(stringScratch);
     }
 
-    /// @brief Download canonical retained GPU records and seal them by block.
+    /// @brief Download retained GPU records into their owning block pages.
     ///
     /// @details
     /// Copies the used device columns into fixed host prefixes, walks only the
-    /// doom-compacted canonical permutation, and translates identifiers and byte
+    /// selected raw or canonical permutation, and translates identifiers and byte
     /// slices without reopening any semantic decision. Source implication
     /// dependency zero is decoded through the projected rule interner; every
     /// other dependency and every validity is decoded through the projected
@@ -86,18 +78,21 @@ namespace gl::gpu {
     /// @param evaluation Device evaluator containing the completed sweep.
     /// @param projection Host twin of the projection uploaded for that sweep.
     /// @param used Exact materialization counts returned by the evaluator.
-    /// @param retainedFiringCount Exact count returned by doom selection.
+    /// @param retainedFiringCount Number of records retained in this window.
     /// @param outputs One bound, filling `SealedPageSet` per logical block.
     /// @param outputCount Number of output sets.
+    /// @param options Ordering, page-set completion and fragment ownership.
     /// @return Number of appended `FiringRecord`s.
-    /// @invariant Retained indices are canonical and grouped by logical block.
+    /// @invariant Canonical indices, when selected, are grouped by logical block.
     uint32_t Phase2SealingArena::downloadAndSeal(
         const CudaPhase2EvaluationBuffer& evaluation,
         const Phase2ProjectionArena& projection,
         const Phase2FiringExpressionResult& used,
         uint32_t retainedFiringCount,
         SealedPageSet* const* outputs,
-        uint32_t outputCount) {
+        uint32_t outputCount,
+        Phase2SealingOptions options) {
+        gl::Phase2TraceScope phase2OperationTrace("Phase2SealingArena::downloadAndSeal");
         assert(outputCount == projection.logicalBlocks.size());
         assert(outputCount > 0);
         assert(outputCount <= capacity_.logicalBlocks);
@@ -114,25 +109,58 @@ namespace gl::gpu {
         assert(used.markerRemainingArgCount <= capacity_.markerRemainingArgs);
         assert(used.markerArgCount <= capacity_.markerArgs);
         assert(retainedFiringCount <= used.firingRecordCount);
+        assert(options.receive == nullptr || !options.finishOutputs);
+        assert(options.canonicalOrder || retainedFiringCount == used.firingRecordCount);
+        assert(options.repeatedMarkerHeader == nullptr
+            || (retainedFiringCount == 1 && options.receive != nullptr
+                && options.repeatedMarkerHeader->isMarker));
+
+        // Grow every column to this window's used count (the largest window so
+        // far stays allocated for the next one). A column's content is
+        // rewritten every window, so a growing column is emptied and released
+        // first and then allocated at exactly the new count.
+        const auto growTo = [](auto& column, uint32_t count) {
+            if (column.size() >= count) return;
+            column.clear();
+            column.shrink_to_fit();
+            column.resize(count);
+        };
+        growTo(firingRecords_, used.firingRecordCount);
+        growTo(generatedBytes_, used.generatedByteCount);
+        growTo(levelValues_, used.levelValueCount);
+        growTo(originDependencies_, used.originDependencyCount);
+        growTo(markerKeys_, used.markerKeyCount);
+        growTo(markerRemainingArgs_, used.markerRemainingArgCount);
+        growTo(markerArgs_, used.markerArgCount);
+        if (options.canonicalOrder) growTo(firingOrder_, retainedFiringCount);
+        // One record's dependencies and strings are a slice of the window's
+        // columns, so the window's counts bound the per-record scratch.
+        growTo(sealedDependenciesScratch_, used.originDependencyCount);
+        growTo(sealedStringsScratch_, std::max({ used.markerKeyCount,
+            used.markerRemainingArgCount, used.markerArgCount }));
+        const auto columnCapacity = [](const auto& column) {
+            return static_cast<uint32_t>(column.size());
+        };
 
         const uint32_t firingRecordCount = evaluation.downloadFiringRecords(
-            firingRecords_.data(), capacity_.firingRecords);
+            firingRecords_.data(), columnCapacity(firingRecords_));
         const uint32_t generatedByteCount = evaluation.downloadGeneratedBytes(
-            generatedBytes_.data(), capacity_.generatedBytes);
+            generatedBytes_.data(), columnCapacity(generatedBytes_));
         const uint32_t levelValueCount = evaluation.downloadLevelValues(
-            levelValues_.data(), capacity_.levelValues);
+            levelValues_.data(), columnCapacity(levelValues_));
         const uint32_t originDependencyCount =
             evaluation.downloadOriginDependencies(
-                originDependencies_.data(), capacity_.originDependencies);
+                originDependencies_.data(), columnCapacity(originDependencies_));
         const uint32_t markerKeyCount = evaluation.downloadMarkerKeys(
-            markerKeys_.data(), capacity_.markerKeys);
+            markerKeys_.data(), columnCapacity(markerKeys_));
         const uint32_t markerRemainingArgCount =
             evaluation.downloadMarkerRemainingArgs(
-                markerRemainingArgs_.data(), capacity_.markerRemainingArgs);
+                markerRemainingArgs_.data(), columnCapacity(markerRemainingArgs_));
         const uint32_t markerArgCount = evaluation.downloadMarkerArgs(
-            markerArgs_.data(), capacity_.markerArgs);
-        const uint32_t firingOrderCount = evaluation.downloadFiringOrder(
-            firingOrder_.data(), capacity_.firingRecords);
+            markerArgs_.data(), columnCapacity(markerArgs_));
+        const uint32_t firingOrderCount = options.canonicalOrder
+            ? evaluation.downloadFiringOrder(firingOrder_.data(), columnCapacity(firingOrder_))
+            : retainedFiringCount;
         assert(firingRecordCount == used.firingRecordCount);
         assert(generatedByteCount == used.generatedByteCount);
         assert(levelValueCount == used.levelValueCount);
@@ -195,17 +223,36 @@ namespace gl::gpu {
         const auto seal = [](SealedPageSet& pages, StrSpan bytes) {
             return SealedString::copyFrom(pages, bytes.ptr, bytes.len);
         };
+        // The fired rule copy of a head or marker record: the retained copy of
+        // the projected LMV the record references (the processor route reads
+        // the same two fields off its LMV; I-284,
+        // D-444).
+        const auto firedRuleCopy = [&](uint32_t blobRecordIndex) -> RuleOwner {
+            assert(blobRecordIndex < projection.blobRuleOwners.size());
+            const RuleOwner copy = projection.blobRuleOwners[blobRecordIndex];
+            assert(copy != 0 && "a firing record references a blob record that is no LMV");
+            return copy;
+        };
 
         uint32_t previousBlock = 0;
         bool havePreviousBlock = false;
+        uint32_t sealedRecords = 0;
         for (uint32_t orderIndex = 0;
              orderIndex < retainedFiringCount; ++orderIndex) {
-            const uint32_t recordIndex = firingOrder_[orderIndex];
+            const uint32_t recordIndex = options.canonicalOrder ? firingOrder_[orderIndex] : orderIndex;
             assert(recordIndex < used.firingRecordCount);
             const DevicePhase2FiringRecord& source =
                 firingRecords_[recordIndex];
             assert(source.logicalBlockIndex < outputCount);
-            if (havePreviousBlock)
+            if (options.blockStops != nullptr) {
+                auto& stop = options.blockStops[source.logicalBlockIndex];
+                assert(stop == INT64_MAX || stop == phase2PendingBlockStop || stop == 0);
+                if (stop == 0) continue;
+                if ((source.flags & deviceFiringDoomTrigger) != 0)
+                    stop = phase2PendingBlockStop;
+            }
+            ++sealedRecords;
+            if (havePreviousBlock && options.canonicalOrder)
                 assert(previousBlock <= source.logicalBlockIndex);
             previousBlock = source.logicalBlockIndex;
             havePreviousBlock = true;
@@ -216,13 +263,26 @@ namespace gl::gpu {
             const bool demand =
                 (source.flags & deviceFiringOrdis2Demand) != 0;
             assert(!(marker && demand));
+            assert(options.repeatedMarkerHeader == nullptr || marker);
             FiringRecord record;
             record.isMarker = marker;
             record.isOrdis2Demand = demand;
-            record.rplExpr2 = seal(pages, checkedSlice(source.expression));
-            record.validityName = seal(
-                pages, projectedName(
-                    source.logicalBlockIndex, source.validityId));
+            if (options.repeatedMarkerHeader) {
+                record = *options.repeatedMarkerHeader;
+                const StrSpan expression = checkedSlice(source.expression);
+                const StrSpan validity = projectedName(source.logicalBlockIndex, source.validityId);
+                assert(record.rplExpr2.size() == expression.len);
+                assert(std::memcmp(record.rplExpr2.data(), expression.ptr, expression.len) == 0);
+                assert(record.validityName.size() == validity.len);
+                assert(std::memcmp(record.validityName.data(), validity.ptr, validity.len) == 0);
+                assert(record.admv.standardMaxAdmissionDepth == source.standardMaxAdmissionDepth);
+                assert(record.admv.standardMaxSecondaryNumber == source.standardMaxSecondaryNumber);
+            }
+            else {
+                record.rplExpr2 = seal(pages, checkedSlice(source.expression));
+                record.validityName = seal(pages,
+                    projectedName(source.logicalBlockIndex, source.validityId));
+            }
 
             if (demand) {
                 assert(source.levelsOffset <= used.levelValueCount);
@@ -276,26 +336,34 @@ namespace gl::gpu {
                     & deviceFiringDoNotDisintegrate) != 0;
                 record.allowOrDisintegration = (source.flags
                     & deviceFiringAllowOrDisintegration) != 0;
-                record.allGood =
-                    (source.flags & deviceFiringAllGood) != 0;
+                record.recursionHead = (source.flags
+                    & deviceFiringRecursionHead) != 0;
                 record.alreadyKnown =
                     (source.flags & deviceFiringAlreadyKnown) != 0;
                 record.iteration = source.iteration;
+                record.ruleCopyOwner = firedRuleCopy(source.blobRecordIndex);
             }
             else {
-                assert(source.markerArgOffset <= used.markerArgCount);
-                assert(source.markerArgCount
-                    <= used.markerArgCount - source.markerArgOffset);
-                assert(source.markerArgCount <= sealedStringsScratch_.size());
-                for (uint32_t argument = 0;
-                     argument < source.markerArgCount; ++argument) {
-                    sealedStringsScratch_[argument] = seal(
-                        pages, checkedSlice(markerArgs_[
-                            source.markerArgOffset + argument]));
+                const RuleOwner firedCopy = firedRuleCopy(source.blobRecordIndex);
+                if (options.repeatedMarkerHeader != nullptr)
+                    assert(record.ruleCopyOwner == firedCopy
+                        && "a marker fragment names another rule copy than its header");
+                record.ruleCopyOwner = firedCopy;
+                if (options.repeatedMarkerHeader == nullptr) {
+                    assert(source.markerArgOffset <= used.markerArgCount);
+                    assert(source.markerArgCount
+                        <= used.markerArgCount - source.markerArgOffset);
+                    assert(source.markerArgCount <= sealedStringsScratch_.size());
+                    for (uint32_t argument = 0;
+                         argument < source.markerArgCount; ++argument) {
+                        sealedStringsScratch_[argument] = seal(
+                            pages, checkedSlice(markerArgs_[
+                                source.markerArgOffset + argument]));
+                    }
+                    record.markerArgsSorted = SealedSpan<SealedString>::copyFrom(
+                        pages, sealedStringsScratch_.data(),
+                        static_cast<int32_t>(source.markerArgCount));
                 }
-                record.markerArgsSorted = SealedSpan<SealedString>::copyFrom(
-                    pages, sealedStringsScratch_.data(),
-                    static_cast<int32_t>(source.markerArgCount));
 
                 assert(source.markerKeyOffset <= used.markerKeyCount);
                 assert(source.markerKeyCount
@@ -310,41 +378,253 @@ namespace gl::gpu {
                     pages, sealedStringsScratch_.data(),
                     static_cast<int32_t>(source.markerKeyCount));
 
-                assert(source.markerRemainingArgOffset
-                    <= used.markerRemainingArgCount);
-                assert(source.markerRemainingArgCount
-                    <= used.markerRemainingArgCount
-                        - source.markerRemainingArgOffset);
-                assert(source.markerRemainingArgCount
-                    <= sealedStringsScratch_.size());
-                for (uint32_t argument = 0;
-                     argument < source.markerRemainingArgCount; ++argument) {
-                    sealedStringsScratch_[argument] = seal(
-                        pages, projectedRule(
-                            source.logicalBlockIndex,
-                            markerRemainingArgs_[
-                                source.markerRemainingArgOffset + argument]));
+                if (options.repeatedMarkerHeader == nullptr) {
+                    assert(source.markerRemainingArgOffset
+                        <= used.markerRemainingArgCount);
+                    assert(source.markerRemainingArgCount
+                        <= used.markerRemainingArgCount
+                            - source.markerRemainingArgOffset);
+                    assert(source.markerRemainingArgCount
+                        <= sealedStringsScratch_.size());
+                    for (uint32_t argument = 0;
+                         argument < source.markerRemainingArgCount; ++argument) {
+                        sealedStringsScratch_[argument] = seal(
+                            pages, projectedRule(
+                                source.logicalBlockIndex,
+                                markerRemainingArgs_[
+                                    source.markerRemainingArgOffset + argument]));
+                    }
+                    record.admv.remainingArgsSorted =
+                        SealedSpan<SealedString>::copyFrom(
+                            pages, sealedStringsScratch_.data(),
+                            static_cast<int32_t>(
+                                source.markerRemainingArgCount));
+                    record.admv.standardMaxAdmissionDepth =
+                        source.standardMaxAdmissionDepth;
+                    record.admv.standardMaxSecondaryNumber =
+                        source.standardMaxSecondaryNumber;
+                    record.admv.flag = false;
+                    record.admv.ordisOnly =
+                        (source.flags & deviceFiringOrdisOnly) != 0;
                 }
-                record.admv.remainingArgsSorted =
-                    SealedSpan<SealedString>::copyFrom(
-                        pages, sealedStringsScratch_.data(),
-                        static_cast<int32_t>(
-                            source.markerRemainingArgCount));
-                record.admv.standardMaxAdmissionDepth =
-                    source.standardMaxAdmissionDepth;
-                record.admv.standardMaxSecondaryNumber =
-                    source.standardMaxSecondaryNumber;
-                record.admv.flag = false;
-                record.admv.ordisOnly =
-                    (source.flags & deviceFiringOrdisOnly) != 0;
-                record.markerNotAtomic =
-                    (source.flags & deviceFiringMarkerNotAtomic) != 0;
             }
-            pages.appendRecord(record);
+            if (options.receive) options.receive(options.context, source.logicalBlockIndex, record, source);
+            else pages.appendRecord(record);
         }
+        if (options.finishOutputs) {
+            for (uint32_t block = 0; block < outputCount; ++block)
+                outputs[block]->seal();
+        }
+        return sealedRecords;
+    }
+
+    /// @brief Execute a complete GPU request stream through bounded downloads.
+    ///
+    /// @details
+    /// Freezes generation at each request drain, evaluates every request
+    /// through bounded owner/value windows, and copies
+    /// complete results to host-owned pages. Marker keys assemble before a
+    /// record is published. No inference or substitution runs on the host.
+    /// A CUDA discharge retains the complete current growth level and stops
+    /// subsequent levels for that block. Capacity drains never commit a stop.
+    /// Output pages seal only after generation and evaluation are exhausted.
+    ///
+    /// @param buffers Device owners holding the immutable input and scratch.
+    /// @param projection Host twin of the uploaded projection.
+    /// @param tasks Host twin of uploaded original task identities.
+    /// @param schedule Original call schedule used by generation.
+    /// @param parameters Existing GPU growth policy.
+    /// @param plan Allocated processing capacities for occupancy measurement.
+    /// @param outputs Bound filling pages for each projected logical block.
+    /// @param outputCount Number of projected blocks and output page sets.
+    /// @param taskSubkeyCounts Complete cumulative subkey counts per task.
+    /// @param taskCapacity Number of supplied task counter slots.
+    /// @param doomLines Optional per-block stop states; returns zero or INT64_MAX.
+    /// @return Logical totals, transfer bytes and completed storage pressure.
+    /// @invariant Scratch fits one CPU-supported output fragment; snapshots
+    ///            stay immutable and no statement is deposited during drains.
+    Phase2StreamExecutionResult Phase2SealingArena::runWindows(
+        Phase2StreamBuffers& buffers, const Phase2ProjectionArena& projection,
+        const Phase2TaskProjectionArena& tasks, const Phase2GrowthScheduleArena& schedule,
+        const DevicePhase2GrowthParameters& parameters, const Phase2BufferPlan& plan,
+        SealedPageSet* const* outputs, uint32_t outputCount,
+        uint64_t* taskSubkeyCounts, uint32_t taskCapacity, int64_t* doomLines) {
+        gl::Phase2TraceScope phase2OperationTrace("Phase2SealingArena::runWindows");
+        assert(outputCount == projection.logicalBlocks.size());
         for (uint32_t block = 0; block < outputCount; ++block)
-            outputs[block]->seal();
-        return retainedFiringCount;
+            assert(outputs[block] != nullptr && outputs[block]->filling());
+        Phase2StreamExecutionResult result{};
+        if (doomLines != nullptr)
+            std::fill(doomLines, doomLines + outputCount, INT64_MAX);
+        struct Context {
+            Phase2SealingArena& sealing;
+            Phase2StreamBuffers& buffers;
+            const Phase2ProjectionArena& projection;
+            SealedPageSet* const* outputs;
+            uint32_t outputCount;
+            const Phase2BufferPlan& plan;
+            Phase2StreamExecutionResult& result;
+            const Phase2TaskProjectionArena& tasks;
+            const Phase2GrowthScheduleArena& schedule;
+            int64_t* blockStops;
+        } context{*this, buffers, projection, outputs, outputCount, plan, result,
+            tasks, schedule, doomLines};
+        const auto drain = [](void* opaque, const CudaPhase2GrowthBuffer&, bool levelComplete) {
+            gl::Phase2TraceScope phase2DrainTrace("GL.Phase2.RequestDrain", levelComplete);
+            auto& context = *static_cast<Context*>(opaque);
+            auto& buffers = context.buffers;
+            auto& result = context.result;
+            const auto ordered = buffers.ordering.orderRequests(
+                buffers.projection, buffers.tasks, buffers.growth);
+            result.feedback.occupied[0] = std::max(result.feedback.occupied[0],
+                static_cast<uint64_t>(ordered.orderedEventCount));
+            result.feedback.occupied[1] = std::max(result.feedback.occupied[1],
+                static_cast<uint64_t>(ordered.requestCount));
+            const uint32_t requestCount = ordered.requestCount;
+            result.evaluatedRequests += requestCount;
+            Phase2EvaluationStreamMetrics metrics{};
+            buffers.evaluation.beginEvaluationWindows(buffers.projection, buffers.tasks,
+                buffers.growth, buffers.ordering, &metrics);
+            while (buffers.evaluation.nextEvaluationValues(buffers.projection,
+                buffers.tasks, buffers.growth, buffers.ordering)) {
+                Phase2FiringCursor cursor{};
+                struct Marker {
+                    SealedPageSet* const* outputs;
+                    uint32_t totalKeys{0};
+                    uint32_t block{UINT32_MAX};
+                    FiringRecord record{};
+                    std::optional<SealedSpanBuilder<SealedString>> keys;
+                } marker{context.outputs};
+                for (;;) {
+                    const auto window = buffers.evaluation.nextFiringWindow(
+                        buffers.projection, buffers.tasks, buffers.growth,
+                        buffers.ordering, cursor);
+                    if (window.state == Phase2FiringWindowState::complete) break;
+                    assert(window.state == Phase2FiringWindowState::ready
+                        && "allocated output minimum must cover one CPU-supported fragment");
+                    result.feedback.occupied[7] = std::max(result.feedback.occupied[7],
+                        static_cast<uint64_t>(window.valueBegin) + window.valueCount);
+                    const auto& used = window.used;
+                    const uint64_t columns[7] = {used.firingRecordCount,
+                        used.generatedByteCount, used.levelValueCount,
+                        used.originDependencyCount, used.markerKeyCount,
+                        used.markerRemainingArgCount, used.markerArgCount};
+                    const uint64_t bytesPerRow[7] = {sizeof(DevicePhase2FiringRecord), 1,
+                        sizeof(int32_t), sizeof(DeviceEvaluationDependency),
+                        sizeof(DeviceEvaluationByteSlice), sizeof(int32_t),
+                        sizeof(DeviceEvaluationByteSlice)};
+                    for (uint32_t column = 0; column < 7; ++column) {
+                        result.outputColumns[column] += columns[column];
+                        result.outputTransferBytes += columns[column] * bytesPerRow[column];
+                        result.feedback.occupied[8 + column] = std::max(
+                            result.feedback.occupied[8 + column], columns[column]);
+                    }
+                    Phase2SealingOptions options{false, false};
+                    if (context.blockStops != nullptr) {
+                        buffers.evaluation.markDoomTriggers(buffers.projection);
+                        options.blockStops = context.blockStops;
+                    }
+                    if (window.markerFragment) {
+                        options.blockStops = nullptr;
+                        marker.totalKeys = window.totalMarkerKeys;
+                        options.context = &marker;
+                        options.repeatedMarkerHeader = marker.keys ? &marker.record : nullptr;
+                        options.receive = [](void* opaque, uint32_t block, const FiringRecord& record,
+                            const DevicePhase2FiringRecord&) {
+                            auto& marker = *static_cast<Marker*>(opaque);
+                            assert(record.isMarker);
+                            if (!marker.keys) {
+                                marker.block = block;
+                                marker.record = record;
+                                marker.keys.emplace(*marker.outputs[block], marker.totalKeys);
+                            }
+                            assert(marker.block == block);
+                            marker.keys->append(record.admv.key.data(), record.admv.key.size());
+                        };
+                    } else {
+                        assert(!marker.keys);
+                    }
+                    const auto sealingStarted = std::chrono::steady_clock::now();
+                    const uint32_t downloaded = context.sealing.downloadAndSeal(
+                        buffers.evaluation, context.projection, used, used.firingRecordCount,
+                        context.outputs, context.outputCount, options);
+                    result.sealingSeconds += std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - sealingStarted).count();
+                    assert(downloaded <= used.firingRecordCount);
+                    assert(options.blockStops != nullptr || downloaded == used.firingRecordCount);
+                    result.sealedRecords += downloaded;
+                    ++result.outputDownloads;
+                    if (window.markerFragment) {
+                        assert(marker.keys);
+                        if (window.markerKeyBegin + window.markerKeyCount == window.totalMarkerKeys) {
+                            marker.record.admv.key = marker.keys->finish();
+                            if (context.blockStops == nullptr || context.blockStops[marker.block] != 0) {
+                                context.outputs[marker.block]->appendRecord(marker.record);
+                                ++result.firingRecords;
+                            }
+                            marker.keys.reset();
+                        }
+                    } else result.firingRecords += downloaded;
+                    const uint64_t capacities[7] = {context.plan.evaluation.firingRecords,
+                        context.plan.evaluation.generatedBytes, context.plan.evaluation.levelValues,
+                        context.plan.evaluation.originDependencies, context.plan.evaluation.markerKeys,
+                        context.plan.evaluation.markerRemainingArgs, context.plan.evaluation.markerArgs};
+                    for (uint32_t column = 0; column < 7; ++column)
+                        if (columns[column] == capacities[column]) ++result.feedback.drains[8 + column];
+                }
+                assert(!marker.keys);
+            }
+            result.feedback.occupied[7] = std::max(result.feedback.occupied[7],
+                static_cast<uint64_t>(std::max(metrics.maximumOwnerWindow, metrics.maximumValueWindow)));
+            result.feedback.drains[7] += metrics.ownerWindows + metrics.valueWindows;
+            if (levelComplete && context.blockStops != nullptr) {
+                for (uint32_t block = 0; block < context.outputCount; ++block)
+                    if (context.blockStops[block] == phase2PendingBlockStop)
+                        context.blockStops[block] = 0;
+            }
+        };
+        const auto retainedCalls = [](void* opaque, uint8_t* keepByCall, uint32_t callCount) {
+            auto& context = *static_cast<Context*>(opaque);
+            assert(context.blockStops != nullptr);
+            assert(callCount == context.schedule.calls.size());
+            bool cutoff = false;
+            for (uint32_t call = 0; call < callCount; ++call) {
+                const auto taskIndex = context.schedule.calls[call].taskIndex;
+                assert(taskIndex < context.tasks.tasks.size());
+                const auto block = context.tasks.tasks[taskIndex].logicalBlockIndex;
+                assert(block < context.outputCount);
+                keepByCall[call] = context.blockStops[block] != 0 ? 1 : 0;
+                if (keepByCall[call] == 0) cutoff = true;
+            }
+            return cutoff;
+        };
+        const auto generationStarted = std::chrono::steady_clock::now();
+        result.growth = buffers.growth.runRequestGrowthWindows(buffers.projection,
+            buffers.tasks, tasks, buffers.filter, schedule, parameters, drain, &context,
+            taskSubkeyCounts, taskCapacity, doomLines != nullptr ? +retainedCalls : nullptr);
+        result.generationAndDrainSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - generationStarted).count();
+        result.feedback.drains[0] = result.growth.drainCount - result.growth.cutoffDrainCount;
+        result.feedback.drains[1] = result.growth.drainCount - result.growth.cutoffDrainCount;
+        result.feedback.occupied[2] = std::min(result.growth.maximumFrontierCount,
+            static_cast<uint64_t>(plan.growth.frontierRecords));
+        // The whole measured level sizes the pass-local frontier store.
+        result.feedback.occupied[static_cast<uint32_t>(Phase2WorkDimension::frontierStore)] =
+            result.growth.maximumFrontierCount;
+        result.feedback.drains[static_cast<uint32_t>(Phase2WorkDimension::frontierStore)] =
+            result.growth.frontierSpills;
+        result.feedback.occupied[3] = result.growth.maximumPrefixPayloadValues;
+        result.feedback.occupied[4] = result.growth.maximumPrefixVariableValues;
+        result.feedback.occupied[5] = result.growth.maximumPrefixSecondaryValues;
+        result.feedback.occupied[6] = result.growth.maximumCandidateWindow;
+        for (uint32_t dimension = 3; dimension < 6; ++dimension)
+            result.feedback.drains[dimension] = result.growth.prefixWindows;
+        result.feedback.drains[6] = result.growth.candidateWindows;
+        if (doomLines != nullptr)
+            for (uint32_t block = 0; block < outputCount; ++block)
+                assert(doomLines[block] == 0 || doomLines[block] == INT64_MAX);
+        for (uint32_t block = 0; block < outputCount; ++block) outputs[block]->seal();
+        return result;
     }
 
 } // namespace gl::gpu

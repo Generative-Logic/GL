@@ -132,6 +132,19 @@ namespace gl {
             assert(arena_ != nullptr);
         }
 
+        /// @brief Bind native key payload to the owning block shared store.
+        ///
+        /// @details Each map keeps its own key identifiers, hash index and owner
+        /// runs. Equal canonical bytes share resident payload across the family.
+        /// Binding happens once while every participating container is empty.
+        ///
+        /// @param pool Same-arena store that outlives this hash-memory instance.
+        /// @return Nothing.
+        /// @invariant Shared storage never merges map membership or scope.
+        void bindSharedBytes(SharedBytePool& pool) {
+            normKeys_.keyStore().bindSharedBytes(pool);
+        }
+
         ReverseArgsIndex(const ReverseArgsIndex&) = delete;
         ReverseArgsIndex& operator=(const ReverseArgsIndex&) = delete;
         ReverseArgsIndex(ReverseArgsIndex&&) = delete;

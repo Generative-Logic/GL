@@ -11,6 +11,10 @@
 # The build is `mimalloc`-optional. To enable mimalloc allocator override:
 #   make USE_MIMALLOC=1     # (also pass -DUSE_MIMALLOC and -lmimalloc)
 #
+# A header change recompiles the units that include it, and a changed build
+# configuration (USE_MIMALLOC, USE_CUDA, the compilers or their flags)
+# recompiles every unit, so `make clean` is never needed for a correct build.
+#
 # The Windows build uses MSBuild via the Visual Studio solution and
 # does NOT use this Makefile -- see `GL_Quick_VS/GL_Quick.sln`.
 
@@ -20,7 +24,10 @@ OPT       ?= -O3
 INCLUDES  := -Isrc
 WARN      := -Wno-builtin-declaration-mismatch
 CXXFLAGS  := $(CXXSTD) $(OPT) $(INCLUDES) $(WARN)
-LDFLAGS   :=
+# -rdynamic puts the executable's own symbols into its dynamic symbol table:
+# the heap profile names allocation sites through dladdr, which sees nothing
+# else (its unit test resolves a probe function by name).
+LDFLAGS   := -rdynamic
 
 # Default ON. Linux users without libmimalloc-dev installed will hit a
 # linker error -- this is intentional: mimalloc is required for cross-
@@ -47,17 +54,36 @@ NVCC      ?= $(CUDA_HOME)/bin/nvcc
 CUDA_ARCH ?= -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120
 
 ifeq ($(USE_CUDA),1)
-  CXXFLAGS += -DGL_CUDA
-  LDFLAGS  += -L$(CUDA_HOME)/lib64 -Wl,-rpath,$(CUDA_HOME)/lib64 -lcudart
+  CXXFLAGS += -DGL_CUDA -I$(CUDA_HOME)/include
+  LDFLAGS  += -L$(CUDA_HOME)/lib64 -Wl,-rpath,$(CUDA_HOME)/lib64 -lcudart -ldl
   CU_SRCS  := $(wildcard src/gpu/*.cu) $(wildcard src/tests/*.cu)
   CU_OBJS  := $(patsubst src/%.cu,build/%.cu.o,$(CU_SRCS))
   # nvcc gets the same standard, optimisation level, include path and
   # preprocessor definitions as the host compiler; host-only warning flags
   # ride -Xcompiler.
-  NVCCFLAGS := $(CXXSTD) $(OPT) $(INCLUDES) $(filter -D%,$(CXXFLAGS)) $(CUDA_ARCH) -Xcompiler "$(WARN)"
+  NVCCFLAGS := $(CXXSTD) $(OPT) -lineinfo $(INCLUDES) $(filter -D%,$(CXXFLAGS)) $(CUDA_ARCH) -Xcompiler "$(WARN)"
+  CUDA_CONFIG := $(NVCC) $(NVCCFLAGS)
 else
   CU_OBJS  :=
+  CUDA_CONFIG :=
 endif
+
+# Header dependencies: every compile also writes `build/<unit>.d`, the
+# project headers the unit includes (`-MP` adds an empty rule per header, so
+# a deleted header does not stop the build). The `-include` at the end makes
+# a header change recompile exactly the units that include it.
+DEPFLAGS := -MMD -MP
+
+# Build configuration: the compilers and their flags, which USE_MIMALLOC and
+# USE_CUDA change, are recorded in `build/config.stamp`. The stamp is
+# rewritten only when they differ from the previous build, and every object
+# and the link depend on it: switching between the processor and the CUDA
+# build, or turning mimalloc on or off, recompiles everything instead of
+# linking objects compiled for another configuration, while an unchanged
+# configuration leaves every object current.
+CONFIG_STAMP := build/config.stamp
+BUILD_CONFIG := $(CXX) $(CXXFLAGS) | $(LDFLAGS) | $(CUDA_CONFIG)
+$(shell mkdir -p build; [ "$$(cat $(CONFIG_STAMP) 2>/dev/null)" = '$(BUILD_CONFIG)' ] || printf '%s\n' '$(BUILD_CONFIG)' > $(CONFIG_STAMP))
 
 # `src/*.cpp` is the production set; `src/infra/*.cpp` is the diagnostic
 # / instrumentation set (hashburst dump, runtime measurement tracker —
@@ -82,19 +108,22 @@ TARGET := gl_quick
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS) $(CU_OBJS)
+$(TARGET): $(OBJS) $(CU_OBJS) $(CONFIG_STAMP)
 	$(CXX) $(OBJS) $(CU_OBJS) -o $@ $(LDFLAGS)
 
-build/%.o: src/%.cpp | build
+build/%.o: src/%.cpp $(CONFIG_STAMP) | build
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
-build/%.cu.o: src/%.cu | build
+build/%.cu.o: src/%.cu $(CONFIG_STAMP) | build
 	@mkdir -p $(@D)
-	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) -MF $(@:.o=.d) -MT $@ -c $< -o $@
 
 build:
 	@mkdir -p build
 
 clean:
 	@rm -rf build $(TARGET)
+
+# Header dependencies written by the compiles (none before the first build).
+-include $(OBJS:.o=.d) $(CU_OBJS:.o=.d)

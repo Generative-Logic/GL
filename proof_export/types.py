@@ -27,6 +27,11 @@ TYPE_LABELS = {
     "P(x(1)(x(1)(1)))": TERNARY_RELATION,
 }
 
+# GL's one equality. It is typed per occurrence: it joins its two arguments,
+# which are elements unless something else types them
+# (I-267).
+EQUALITY = "="
+
 
 class _TypeUnion:
     """Union-find whose roots carry one asserted GL port type."""
@@ -105,6 +110,21 @@ class _TypeUnion:
             f"GL type conflict: {existing!r} versus {kind!r}"
         )
         self.value[root] = kind
+
+    def default(self, node: tuple[object, ...], kind: str) -> None:
+        """
+        @brief Give an unconstrained equivalence class its default GL port type.
+        @details A class that already carries a type keeps it. This is the
+        typing rule's starting point for a class that only `=` joins
+        (I-267), never a way around a conflict.
+        @param node Type-node key.
+        @param kind Default finite GL type label.
+        @return None.
+        """
+
+        root = self.find(node)
+        if root not in self.value:
+            self.value[root] = kind
 
     def resolved(self, node: tuple[object, ...]) -> str:
         """
@@ -203,7 +223,9 @@ def load_type_environment(
     @details
     Constructed OR definitions may override same-named stale fixture entries;
     their semantic source is the checked certificate action. All referenced
-    signature ports are unified against configuration type labels.
+    signature ports are unified against configuration type labels, except
+    `=`: each `=` occurrence joins its own two arguments, and a class only
+    `=` joins is an element (I-267).
     @param config_path Typed GL configuration JSON.
     @param binary_path GL binary definition JSON.
     @param root Primary compiled closure root.
@@ -239,12 +261,22 @@ def load_type_environment(
             assert label in TYPE_LABELS, f"unsupported GL type label {label!r}"
             union.constrain(_signature_node(name, index), TYPE_LABELS[label])
 
+    equality_nodes: list[tuple[object, ...]] = []
     for name in closure:
         entry = binary_entries[name]
         arity = int(entry["arity"])
         arities[name] = arity
         for element_text in entry["elements"]:
             for atom in iter_atoms(parse_mpl(str(element_text))):
+                if atom.head == EQUALITY:
+                    # `=` is typed per occurrence: it joins its two arguments.
+                    assert len(atom.arguments) == 2, f"`=` takes two arguments in {name!r}"
+                    left, right = (
+                        _argument_node(name, argument) for argument in atom.arguments
+                    )
+                    union.unite(left, right)
+                    equality_nodes.extend((left, right))
+                    continue
                 assert atom.head in arities or atom.head in closure, (
                     f"no type signature for {atom.head!r} referenced by {name!r}"
                 )
@@ -260,6 +292,8 @@ def load_type_environment(
                         _argument_node(name, argument),
                         _signature_node(atom.head, index),
                     )
+    for node in equality_nodes:
+        union.default(node, ELEMENT)
 
     needed_names = set(closure) | set(extra_signature_names)
     for name in closure:
@@ -284,24 +318,33 @@ def infer_expression_variables(
     """
     @brief Infer every argument token type across a group of expressions.
     @details Each atom occurrence constrains arguments by its resolved signature;
-    a token joining unlike ports is rejected.
+    `=` instead joins its two arguments, and a class only `=` joins is an
+    element (I-267). A token joining unlike ports is rejected.
     @param expressions Parsed expressions sharing one variable environment.
     @param signatures Resolved atom signatures.
     @return Sorted token-to-type mapping.
     """
 
-    variables: dict[str, str] = {}
+    union = _TypeUnion()
+    tokens: set[str] = set()
+    equality_nodes: list[tuple[object, ...]] = []
     for expression in expressions:
         for atom in iter_atoms(expression):
+            if atom.head == EQUALITY:
+                assert len(atom.arguments) == 2, "`=` takes two arguments"
+                left, right = (("token", argument) for argument in atom.arguments)
+                union.unite(left, right)
+                equality_nodes.extend((left, right))
+                tokens.update(atom.arguments)
+                continue
             assert atom.head in signatures, f"unknown typed MPL head {atom.head!r}"
             signature = signatures[atom.head]
             assert len(atom.arguments) == len(signature), (
                 f"arity mismatch for {atom.head!r}: {len(atom.arguments)} != {len(signature)}"
             )
             for argument, kind in zip(atom.arguments, signature, strict=True):
-                previous = variables.get(argument)
-                assert previous is None or previous == kind, (
-                    f"variable {argument!r} joins {previous!r} and {kind!r} ports"
-                )
-                variables[argument] = kind
-    return dict(sorted(variables.items()))
+                union.constrain(("token", argument), kind)
+                tokens.add(argument)
+    for node in equality_nodes:
+        union.default(node, ELEMENT)
+    return {token: union.resolved(("token", token)) for token in sorted(tokens)}

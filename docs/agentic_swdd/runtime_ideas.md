@@ -16,7 +16,7 @@ Contributions require CLA — see CONTRIBUTING.md.
 > mandatory-containment fold (`D-298`) took the
 > FTA shortcut from 972 s of prover time to 132 s. This file collects the
 > levers that survived that campaign's triage, in the order the maintainer
-> ranked them. Ideas 1 and 2 have since shipped; idea 3 is open. Two candidates
+> ranked them. Ideas 1, 2, and 3 have since shipped. Two candidates
 > were considered and REJECTED — they are recorded at the end so nobody
 > re-proposes them.
 
@@ -340,6 +340,14 @@ than a new format. The obstacle is [I-111](30_invariants.md#i-111): `LbArena`
 models residency as one binary flag with asserts on every `resolve`, and a
 partially-loaded LB is a state it does not have. That is a maintainer decision,
 not a patch.
+
+**Current measurement, 2026-09-06.** The figures in this subsection describe
+the August workload. The full native CUDA baseline recorded in
+[`rt_parts_plan.md`](rt_parts_plan.md) measured IncubatorPeano1's 946
+`buildStack` calls at 0.1093451 seconds, and its complete raw export at
+approximately 0.77 seconds. The earlier multi-second reload bottleneck did
+not reproduce on that run; a new optimization must establish its cost on
+the current workload before relying on the historical estimate above.
 
 Chapter-level parallelism is also viable HERE, unlike on the shortcut — no walk
 exceeds 1.6% of its batch and a greedy 32-way schedule spans 0.33 s / 0.37 s

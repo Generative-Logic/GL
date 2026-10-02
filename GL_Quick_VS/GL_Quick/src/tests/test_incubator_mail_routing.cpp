@@ -69,6 +69,10 @@ namespace {
         "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[2,9,3])(=[9,10])))";
     const char* kThreePremises =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(>[](in[7,1])(in[8,1]))))";
+    const char* kAnchorBridge =
+        "(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(AnchorPeano[1,2,3,4,5,6]))";
+    const char* kNegativeAnchorHead =
+        "(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])!(AnchorPeano[1,2,3,4,5,6]))";
 
     // The premise-LB chain: root -> (AnchorPeano[...], level 0) -> (in2[7,8,3],
     // level 1). Registered outside incubator mode so the grid shape is the
@@ -294,6 +298,8 @@ TEST(incubator_mail_routing, anchor_only_rule_by_shape) {
     ASSERT_FALSE(ea.anchorOnlyRule(kConj));
     ASSERT_TRUE(ea.anchorOnlyRule(kForeignAnchorFact));
     ASSERT_FALSE(ea.anchorOnlyRule(kForeignAnchorFree));
+    ASSERT_FALSE(ea.anchorOnlyRule(kAnchorBridge));
+    ASSERT_TRUE(ea.anchorOnlyRule(kNegativeAnchorHead));
 }
 
 TEST(incubator_mail_routing, load_routing_splits_nested_theorems_by_shape) {
@@ -321,4 +327,55 @@ TEST(incubator_mail_routing, load_routing_splits_nested_theorems_by_shape) {
     ASSERT_EQ(innerPulled.statements.size(), static_cast<std::size_t>(1));
     ASSERT_FALSE(innerPulled.statements.begin()->first
                  == anchorPulled.statements.begin()->first);
+}
+
+TEST(incubator_mail_routing, anchor_bridge_reaches_the_copied_anchor_consumer) {
+    gl::ExpressionAnalyzer ea(std::string("IncubatorGauss3"));
+    ea.parameters.incubator_mode = false;
+    ea.parameters.try_contradiction = false;
+    ea.parameters.try_contradiction_negated_head = false;
+    ea.parameters.compressor_mode = false;
+    ea.parameters.trackHistory = true;
+    ea.addTheoremToMemory(
+        "(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet2[2,6,10])(interval[1,4,2,6,10])))",
+        ea.body, 0, false, ea.globalDependencies);
+    gl::Memory* anchorLB = ea.simpleMapStore.findChild(
+        &ea.body, "(AnchorIncubator3[1,2,3,4,5,6,7,8,9])");
+    ASSERT_TRUE(anchorLB != nullptr);
+    gl::Memory* innerLB = ea.simpleMapStore.findChild(
+        anchorLB, "(EnumerationSet2[2,6,10])");
+    ASSERT_TRUE(innerLB != nullptr);
+    ea.parameters.incubator_mode = true;
+    ea.prehandleAnchor(&ea.body);
+    ASSERT_TRUE(gl::lookupStatementFlags(
+        innerLB->intKnownStatements, innerLB->nameMap,
+        std::string("(AnchorIncubator3[1,x2,3,4,5,x6,7,8,9])"),
+        std::string("main")) != nullptr);
+
+    std::vector<const gl::Memory*> ancestors;
+    for (gl::Memory* lb : { &ea.body, anchorLB, innerLB }) {
+        ea.collectMailAncestors(lb, ancestors);
+        ea.mailLog.registerLb(lb, ancestors);
+    }
+    const std::string groundFact =
+        "(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(in[2,1]))";
+    ea.broadcastTheorems({ groundFact, std::string(kAnchorBridge) },
+                         "broadcast", ea.body, anchorLB);
+
+    gl::Mail anchorPulled;
+    ea.mailLog.pull(anchorLB, anchorPulled);
+    ASSERT_EQ(anchorPulled.statements.size(), static_cast<std::size_t>(1));
+    const gl::Mail anchorIn = gl::routingMailInToHeap(anchorLB->mailIn);
+    ASSERT_EQ(anchorIn.statements.size(), static_cast<std::size_t>(1));
+    gl::Mail innerPulled;
+    ea.mailLog.pull(innerLB, innerPulled);
+    ASSERT_EQ(innerPulled.statements.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(innerPulled.statements.begin()->first
+                == anchorIn.statements.begin()->first);
+    ASSERT_FALSE(innerPulled.statements.begin()->first
+                 == anchorPulled.statements.begin()->first);
+    ASSERT_TRUE(innerPulled.exprOriginMap.count(
+        gl::ExpressionWithValidity(kAnchorBridge, "main")) == 1);
+    ASSERT_TRUE(anchorPulled.exprOriginMap.count(
+        gl::ExpressionWithValidity(groundFact, "main")) == 1);
 }

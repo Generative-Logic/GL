@@ -177,6 +177,91 @@ between sound (main) and unsound (incubator) reformulation.</p>
 </div>
 
 <!-- ===================== 10.1 ===================== -->
+<section aria-labelledby="definition-existence">
+<h2 id="definition-existence">Constructing a defined set or relation</h2>
+<p>A proved implication can also supply an existence theorem when its premise
+defines a set or relation by an exact membership characterization. The defined
+object must not occur in its own defining condition or in the other premises.
+The resulting witness satisfies both the definition and the proved conclusion.</p>
+<p>The Lean replay uses the theorem's own Gauss or FTA context. It constructs
+the predicate witness, proves each direction of its membership definition,
+and applies the cited source theorem with its recorded premises. This works
+with no remaining premise, as for the singleton interval, as well as with one
+or several premises. Missing or mismatched premises stop the export.</p>
+<div class="note" role="img" aria-label="A proved construction implication produces one witness satisfying its definition and property">
+<p><b>Proved:</b> context &rArr; (definition of X &rArr; property of X)</p>
+<p aria-hidden="true">&darr; set-definition reformulation</p>
+<p><b>Generated:</b> context &rArr; &exist;X: definition of X &and; property of X</p>
+</div>
+<p>The Gauss interval and sequence restriction lemmas use this route: a proved
+property of the defined restriction produces an existing restriction with that
+property. The FTA singleton definitions use the same pattern for the set
+<code>{0}</code> and the relation <code>{(0,a)}</code>. FTA sequences begin at
+zero and remain nonempty: endpoint <code>m</code> means length <code>m+1</code>,
+so the singleton interval is <code>[0,0]</code>.</p>
+<p>The extension definitions use the same construction route.
+<code>addToSet[M,a,L]</code> means that an element belongs to L exactly when it
+belongs to M or equals a. <code>appendToSequence[k,a,P,R]</code> means that a
+pair belongs to R exactly when it belongs to P or is the pair (k,a).
+Both definitions use direct OR. The second defines a graph; its function and
+domain properties are proved by the sequence-extension theorem. Together with
+constructive existence, this certifies the FTA ladder's append lemma F5.</p>
+<figure>
+<svg viewBox="0 0 760 180" role="img" aria-label="Successor extension: add the new endpoint to an interval, or its indexed value to a sequence">
+  <defs><marker id="extension-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <text x="380" y="20" fill="#ccc" font-size="13" text-anchor="middle">k is the successor of m; a is a natural number</text>
+  <rect x="20" y="37" width="240" height="45" rx="8" fill="#173A31" stroke="#5DCAA5"/>
+  <text x="140" y="65" fill="#eee" font-size="13" text-anchor="middle">M is the interval [0,m]</text>
+  <path d="M270 60 H480" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#extension-arrow)"/>
+  <text x="375" y="49" fill="#EF9F27" font-size="12" text-anchor="middle">addToSet: add k</text>
+  <rect x="495" y="37" width="245" height="45" rx="8" fill="#173A31" stroke="#5DCAA5"/>
+  <text x="617" y="65" fill="#eee" font-size="13" text-anchor="middle">L is the interval [0,k]</text>
+  <rect x="20" y="105" width="240" height="45" rx="8" fill="#173A31" stroke="#5DCAA5"/>
+  <text x="140" y="133" fill="#eee" font-size="13" text-anchor="middle">P is a sequence on [0,m]</text>
+  <path d="M270 128 H480" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#extension-arrow)"/>
+  <text x="375" y="117" fill="#EF9F27" font-size="12" text-anchor="middle">appendToSequence: add (k,a)</text>
+  <rect x="495" y="105" width="245" height="45" rx="8" fill="#173A31" stroke="#5DCAA5"/>
+  <text x="617" y="133" fill="#eee" font-size="13" text-anchor="middle">R is a sequence on [0,k]</text>
+</svg>
+<figcaption>Certified successor extension: reformulation supplies one extended object with both its membership definition and its interval or sequence property.</figcaption>
+</figure>
+<p>The new object occurs only in the final defining premise and the conclusion.
+This preserves the existing reformulation gate. The same sequence-extension
+lemma can extend an accumulator graph when proving a Fold product.</p>
+<p>Lean replay retains the enclosing assumptions when an OR argument occurs
+inside an implication proof. Case elimination checks every disjunct under those
+same assumptions. For OR introduction, the selected branch is proved under the
+negations of its peers; these extra assumptions are discharged at the parent.</p>
+<figure>
+<svg viewBox="0 0 760 135" role="img" aria-label="Scoped OR proof: parent assumptions enter both branch proofs and remain in the resulting conclusion">
+  <rect x="10" y="40" width="170" height="55" rx="8" fill="#18334b" stroke="#5aa9e6"/>
+  <text x="95" y="63" fill="#fff" font-size="13" text-anchor="middle">Parent assumptions Γ</text>
+  <text x="95" y="82" fill="#b7d9ef" font-size="12" text-anchor="middle">known A or B</text>
+  <path d="M180 57 L260 30 M180 78 L260 105 M470 30 L550 57 M470 105 L550 78" fill="none" stroke="#5aa9e6" stroke-width="2"/>
+  <rect x="260" y="8" width="210" height="44" rx="8" fill="#18334b" stroke="#5aa9e6"/>
+  <text x="365" y="35" fill="#fff" font-size="13" text-anchor="middle">Γ and A prove C</text>
+  <rect x="260" y="83" width="210" height="44" rx="8" fill="#18334b" stroke="#5aa9e6"/>
+  <text x="365" y="110" fill="#fff" font-size="13" text-anchor="middle">Γ and B prove C</text>
+  <rect x="550" y="40" width="200" height="55" rx="8" fill="#18334b" stroke="#80c9a0"/>
+  <text x="650" y="73" fill="#fff" font-size="13" text-anchor="middle">Γ proves C</text>
+</svg>
+<figcaption>The branch assumptions end at convergence; the enclosing assumptions remain.</figcaption>
+</figure>
+<p>The two membership directions can use differently named compiled OR
+predicates with identical bodies. Export checks their exact structure and
+constructs the set from that predicate. Lean checks both directions by unfolding
+the definitions before the source theorem is applied to the constructed set.
+When the append definition instead reverses the endpoint conjunction, the
+exporter records that exact swap and proves it with projections and constructors
+inside the same OR case. The original witness predicate and Lean kernel rules
+remain unchanged; the <a href="provenance.html">provenance chapter</a> shows the
+explicit transport.</p>
+<p>Witnesses remain shared throughout these proofs. An equality rewrite uses the
+appropriate fact about the already chosen witness. When an implication or OR
+subproof closes, Lean obtains each required local witness from its recorded
+existence proof and supplies the same witness to the dependent steps.</p>
+</section>
+
 <h2 id="why">10.1 &nbsp;Why reformulation</h2>
 <p>
 GL only reasons <i>forward</i>: from premises through hash-rule fires to a

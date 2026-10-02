@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschrÃ¤nkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -40,14 +40,19 @@
 #ifdef GL_CUDA
 #include "../gpu/phase2_cuda.hpp"
 #include "../gpu/phase2_sealing.hpp"
+#include "../gpu/phase2_early_exit.hpp"
 #endif
 #include "../memory.hpp"
 #include "../prover.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -185,7 +190,7 @@ gl::gpu::Phase2ProjectionCapacity projectionCapacity(
     capacity.nameSlots = 1024;
     capacity.ruleStringRecords = 256;
     capacity.ruleStringBytes = 16384;
-    capacity.byteMapViews = logicalBlocks * 10;
+    capacity.byteMapViews = logicalBlocks * 14;
     capacity.byteMapEntries = 1024;
     capacity.byteMapSlots = 4096;
     capacity.byteKeyBytes = 65536;
@@ -205,7 +210,511 @@ gl::gpu::Phase2ProjectionCapacity projectionCapacity(
     return capacity;
 }
 
+/// @brief The retained sealing twin of a complete host projection, as the
+///        streamed upload builds it: one window at offset zero appended by
+///        `appendSealingProjection` (the only twin the production sealing
+///        reads).
+std::unique_ptr<gl::gpu::Phase2ProjectionArena> sealingTwin(
+    const gl::gpu::Phase2ProjectionArena& complete) {
+    auto twin = std::make_unique<gl::gpu::Phase2ProjectionArena>(
+        complete.capacity, gl::gpu::Phase2ProjectionArena::SealingOnly{});
+    twin->appendSealingProjection(complete, gl::gpu::Phase2ProjectionArena::ShardBases{});
+    return twin;
+}
+
 }  // namespace
+
+TEST(phase2_projection, growth_order_supports_configured_positions_above_8192) {
+    gl::gpu::DeviceAcceptedGrowthEvent lower{};
+    lower.count = 2;
+    lower.filteredPositionCodes[0] = 8193;
+    lower.filteredPositionCodes[1] = 1;
+    auto higher = lower;
+    higher.filteredPositionCodes[0] = 16384;
+    ASSERT_LT(gl::gpu::growthEventPathComponent(higher, 0),
+        gl::gpu::growthEventPathComponent(lower, 0));
+    ASSERT_GE(gl::gpu::growthEventPathComponent(higher, 0),
+        gl::ExecutionParameters::MAX_FILTERED_POSITION_CODE);
+    higher.count = 1;
+    higher.filteredPositionCodes[0] = UINT16_MAX;
+    ASSERT_EQ(gl::gpu::growthEventPathComponent(higher, 0), UINT16_MAX - 1u);
+    higher.filteredPositionCodes[0] = 0;
+    ASSERT_EQ(gl::gpu::growthEventPathComponent(higher, 0), 0u);
+    higher.count = 0;
+    ASSERT_EQ(gl::gpu::growthEventPathComponent(higher, 0), 0u);
+}
+
+TEST(phase2_projection, candidate_node_windows_preserve_exact_coverage) {
+    const uint64_t starts[] = {0, 2, 2, 5, 9, 9};
+    const uint64_t ends[] = {2, 2, 5, 9, 9, 13};
+    const uint32_t firstKind[] = {0, 2, 4, 5};
+    const uint32_t secondKind[] = {1, 3};
+    const auto empty = gl::gpu::growthCandidateNodeWindow(nullptr, 0, nullptr, nullptr, 0, 1);
+    ASSERT_EQ(empty.begin, 0u);
+    ASSERT_EQ(empty.count, 0u);
+    // Exhaustive integer windows exercise gaps, boundary touches and empty spans.
+    for (uint64_t begin = 0; begin < 15; ++begin) {
+        for (uint64_t end = begin + 1; end <= 16; ++end) {
+            for (bool first : {false, true}) {
+                const uint32_t* indices = first ? firstKind : secondKind;
+                const uint32_t count = first ? 4u : 2u;
+                const auto window = gl::gpu::growthCandidateNodeWindow(
+                    indices, count, starts, ends, begin, end);
+                ASSERT_TRUE(window.begin <= count);
+                ASSERT_TRUE(window.count <= count - window.begin);
+                for (uint32_t index = 0; index < count; ++index) {
+                    const uint32_t node = indices[index];
+                    if (starts[node] == ends[node]) continue;
+                    const bool overlaps = starts[node] < end && ends[node] > begin;
+                    const bool selected = index >= window.begin && index - window.begin < window.count;
+                    ASSERT_EQ(selected, overlaps);
+                }
+            }
+        }
+    }
+    const uint64_t large = 1ull << 40;
+    const uint64_t largeStarts[] = {large, large + 2, large + 9};
+    const uint64_t largeEnds[] = {large + 2, large + 9, large + 15};
+    const uint32_t largeIndices[] = {0, 1, 2};
+    const auto middle = gl::gpu::growthCandidateNodeWindow(
+        largeIndices, 3, largeStarts, largeEnds, large + 2, large + 9);
+    ASSERT_EQ(middle.begin, 1u);
+    ASSERT_EQ(middle.count, 1u);
+}
+
+TEST(phase2_projection, secondary_argument_mask_uses_first_iterative_identity) {
+    gl::IntEncodedExpr expression{};
+    ASSERT_EQ(gl::gpu::growthDistinctSecondaryArgumentMask(expression), 0u);
+    expression.arity = gl::ExecutionParameters::MAX_ARITY;
+    for (int32_t argument = 0; argument < expression.arity; ++argument) {
+        expression.argFullId[argument] = 100 + argument;
+        expression.argIteration[argument] = 0;
+    }
+    ASSERT_EQ(gl::gpu::growthDistinctSecondaryArgumentMask(expression), 0xffffu);
+    expression.argIteration[0] = -1;
+    expression.argFullId[1] = expression.argFullId[0];
+    expression.argFullId[15] = expression.argFullId[1];
+    expression.argIteration[2] = -2;
+    expression.argFullId[3] = expression.argFullId[2];
+    expression.argIteration[3] = 5;
+    ASSERT_EQ(gl::gpu::growthDistinctSecondaryArgumentMask(expression), 0x7ffau);
+    for (int32_t argument = 0; argument < expression.arity; ++argument) {
+        expression.argFullId[argument] = 42;
+        expression.argIteration[argument] = -1;
+    }
+    ASSERT_EQ(gl::gpu::growthDistinctSecondaryArgumentMask(expression), 0u);
+    expression.argIteration[7] = 0;
+    expression.argIteration[15] = 4;
+    ASSERT_EQ(gl::gpu::growthDistinctSecondaryArgumentMask(expression), 0x80u);
+}
+
+// A continuation word keeps the polarity mask and up to two bound argument
+// slots; unpacking restores them exactly, and an unused gate reads slot -1.
+TEST(phase2_projection, next_predicate_word_round_trips_polarity_and_gates) {
+    const uint32_t bare = gl::gpu::packNextPredicateWord(2, -1, 0, -1, 0);
+    ASSERT_EQ(bare, 2u);
+    const auto bareGate = gl::gpu::unpackNextPredicateWord(bare);
+    ASSERT_EQ(bareGate.polarityMask, 2u);
+    ASSERT_EQ(bareGate.slot[0], -1);
+    ASSERT_EQ(bareGate.slot[1], -1);
+
+    const uint32_t one = gl::gpu::packNextPredicateWord(3, 0, 1, -1, 0);
+    const auto oneGate = gl::gpu::unpackNextPredicateWord(one);
+    ASSERT_EQ(oneGate.polarityMask, 3u);
+    ASSERT_EQ(oneGate.slot[0], 0);
+    ASSERT_EQ(oneGate.variable[0], 1);
+    ASSERT_EQ(oneGate.slot[1], -1);
+
+    const int32_t lastSlot = gl::ExecutionParameters::MAX_ARITY - 1;
+    const gl::NameId lastVariable = gl::ExecutionParameters::MAX_KEY_SLOTS;
+    const uint32_t two = gl::gpu::packNextPredicateWord(1, 4, 7, lastSlot, lastVariable);
+    const auto twoGate = gl::gpu::unpackNextPredicateWord(two);
+    ASSERT_EQ(twoGate.polarityMask, 1u);
+    ASSERT_EQ(twoGate.slot[0], 4);
+    ASSERT_EQ(twoGate.variable[0], 7);
+    ASSERT_EQ(twoGate.slot[1], lastSlot);
+    ASSERT_EQ(twoGate.variable[1], lastVariable);
+}
+
+// Bindings: the first key initializes each slot (prefix variable or -1), a
+// disagreeing or fresh argument of a later key clears the slot for good, slots
+// at or above the arity stay -1.
+TEST(phase2_projection, next_premise_bindings_keep_only_agreeing_prefix_variables) {
+    int16_t bound[gl::ExecutionParameters::MAX_ARITY];
+    const gl::NameId first[] = {2, 5, 1};          // prefix has 3 variables
+    gl::gpu::mergeNextPremiseBindings(bound, 3, first, 3, true);
+    ASSERT_EQ(bound[0], 2);
+    ASSERT_EQ(bound[1], -1);                       // fresh variable 5 > 3
+    ASSERT_EQ(bound[2], 1);
+    for (int32_t slot = 3; slot < gl::ExecutionParameters::MAX_ARITY; ++slot)
+        ASSERT_EQ(bound[slot], -1);
+
+    const gl::NameId agreeing[] = {2, 1, 1};
+    gl::gpu::mergeNextPremiseBindings(bound, 3, agreeing, 3, false);
+    ASSERT_EQ(bound[0], 2);
+    ASSERT_EQ(bound[1], -1);                       // cleared slots never return
+    ASSERT_EQ(bound[2], 1);
+
+    const gl::NameId disagreeing[] = {3, 1, 4};
+    gl::gpu::mergeNextPremiseBindings(bound, 3, disagreeing, 3, false);
+    ASSERT_EQ(bound[0], -1);                       // other prefix variable
+    ASSERT_EQ(bound[2], -1);                       // fresh variable
+}
+
+// The device gate resolves bound variables against the node's distinct
+// normalization variables and admits a statement only with the licensed sign
+// and the required argument identifiers; an unbound word checks the sign only.
+TEST(phase2_projection, growth_argument_gate_requires_bound_values) {
+    const gl::NameId variables[] = {900, 41, 42, 43};   // pool; the prefix uses 41..43
+    gl::gpu::DeviceGrowthPrefix prefix{};
+    prefix.variableOffset = 1;
+    prefix.variableCount = 3;
+    const uint32_t word = gl::gpu::packNextPredicateWord(1, 1, 3, -1, 0);
+    const gl::gpu::GrowthArgumentGate gate = gl::gpu::growthArgumentGate(word, prefix, variables);
+    ASSERT_EQ(gate.slot[0], 1);
+    ASSERT_EQ(gate.required[0], 43);
+
+    gl::IntEncodedExpr expression{};
+    expression.arity = 2;
+    expression.negation = 0;
+    expression.argId[0] = 7;
+    expression.argId[1] = 43;
+    ASSERT_TRUE(gate.admits(expression));
+    expression.argId[1] = 42;
+    ASSERT_FALSE(gate.admits(expression));        // other prefix variable's value
+    expression.argId[1] = 43;
+    expression.negation = 1;
+    ASSERT_FALSE(gate.admits(expression));        // unlicensed sign
+
+    const gl::gpu::GrowthArgumentGate open = gl::gpu::growthArgumentGate(
+        gl::gpu::packNextPredicateWord(2, -1, 0, -1, 0), prefix, variables);
+    ASSERT_TRUE(open.admits(expression));
+    expression.negation = 0;
+    ASSERT_FALSE(open.admits(expression));
+}
+
+TEST(phase2_projection, predicate_ranges_preserve_original_positions) {
+    const uint32_t ranks[] = {1, 1, 3, 3, 3, 7};
+    uint64_t keys[8]{};
+    for (uint32_t i = 0; i < 6; ++i)
+        keys[i + 1] = (static_cast<uint64_t>(ranks[i])
+            << gl::gpu::kDeviceFilterStatementIndexBits) | (20u + i);
+    for (uint32_t start = 0; start <= 6; ++start) {
+        for (uint32_t rank = 0; rank <= 8; ++rank) {
+            const auto found = gl::gpu::growthPredicateRange(keys, 1, 6, start, rank);
+            uint32_t expected = 0;
+            for (uint32_t position = start; position < 6; ++position) {
+                const bool selected = position >= found.begin && position - found.begin < found.count;
+                ASSERT_EQ(selected, ranks[position] == rank);
+                if (ranks[position] == rank) ++expected;
+            }
+            ASSERT_EQ(found.count, expected);
+        }
+    }
+    ASSERT_EQ(gl::gpu::growthPredicateRange(nullptr, 0, 0, 0, 5).count, 0u);
+}
+
+TEST(phase2_projection, prefix_index_preserves_polarity_arguments_and_memory_kind) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    const gl::NameId main = body.nameMap.encode("main");
+    const gl::NameId a = body.nameMap.encode("prefixA");
+    const gl::NameId b = body.nameMap.encode("prefixB");
+    const gl::NameId c = body.nameMap.encode("prefixC");
+    const int32_t source = body.ruleInterner.encode("prefixSource");
+    const auto owner = gl::packRuleOwner(source, main);
+    auto& ownerScratch = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    const auto subkey = [](gl::HashMemory& memory, gl::NameId count,
+                           std::initializer_list<gl::NameId> values) {
+        memory.normalizedEncodedSubkeys.assignRun(
+            gl::NormKey{count, std::vector<gl::NameId>(values)}, std::vector<gl::OwnerSet>{gl::OwnerSet{}});
+    };
+    const auto whole = [&](gl::HashMemory& memory, gl::NameId count,
+                           std::initializer_list<gl::NameId> values) {
+        const std::vector<gl::NameId> key(values);
+        gl::ExpressionAnalyzer::addWholeKeyOwner(memory.normalizedEncodedKeys,
+            count, key.data(), static_cast<int32_t>(key.size()), owner, ownerScratch);
+    };
+    subkey(body.overallHashMemory, 1, {a, 0, 1, 0});
+    subkey(body.overallHashMemory, 1, {b, 0, 1, 0});
+    subkey(body.overallHashMemory, 1, {c, 0});
+    subkey(body.overallHashMemory, 2, {a, 0, 1, 0, b, 0, 1, 0});
+    subkey(body.overallHashMemory, 2, {a, 0, 1, 0, b, 1, 2, 0});
+    whole(body.overallHashMemory, 2, {a, 0, 1, 0, b, 0, 2, 0});
+    whole(body.overallHashMemory, 3, {a, 0, 1, 0, b, 0, 1, 0, c, 0});
+    whole(body.overallHashMemory, 3, {a, 0, 1, 0, b, 0, 2, 0, c, 1});
+    subkey(body.localHashMemory, 1, {a, 0, 1, 0});
+    subkey(body.localHashMemory, 1, {c, 0});
+    whole(body.localHashMemory, 2, {a, 0, 1, 0, c, 0});
+    auto capacity = projectionCapacity(1, 1,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 256);
+    gl::gpu::Phase2ProjectionArena arena(capacity);
+    const auto block = arena.appendLogicalBlock(body, analyzer, 0x0fu, true);
+    const auto bounds = gl::gpu::measurePhase2ProjectionUsage(body, analyzer, 0x0fu, true);
+    ASSERT_EQ(block.byteMapViewCount, 14u);
+    ASSERT_EQ(bounds.byteMapViews, 14u);
+    ASSERT_EQ(arena.byteMapEntries.size(), bounds.byteMapEntries);
+    ASSERT_EQ(arena.byteKeyBytes.size(), bounds.byteKeyBytes);
+    ASSERT_EQ(arena.blobBytes.size(), bounds.blobBytes);
+    const auto next = [&](uint32_t memory, gl::NameId count,
+                          std::initializer_list<gl::NameId> prefix) {
+        std::vector<gl::NameId> query{count, static_cast<gl::NameId>(prefix.size())};
+        query.insert(query.end(), prefix.begin(), prefix.end());
+        std::vector<std::pair<gl::NameId, uint32_t>> result;
+        const auto& view = arena.byteMapViews[block.byteMapViewOffset + 10 + memory];
+        for (uint32_t i = 0; i < view.entryCount; ++i) {
+            const auto& entry = arena.byteMapEntries[view.entryOffset + i];
+            if (entry.keyLength != query.size() * sizeof(gl::NameId)
+                || std::memcmp(arena.byteKeyBytes.data() + entry.keyOffset,
+                    query.data(), entry.keyLength) != 0) continue;
+            ASSERT_EQ(entry.blobRecordCount, 1u);
+            const auto& blob = arena.blobRecords[entry.blobRecordOffset];
+            for (uint32_t at = 0; at < blob.byteLength; at += 8) {
+                gl::NameId core = 0;
+                uint32_t mask = 0;
+                std::memcpy(&core, arena.blobBytes.data() + blob.byteOffset + at, 4);
+                std::memcpy(&mask, arena.blobBytes.data() + blob.byteOffset + at + 4, 4);
+                result.emplace_back(core, mask);
+            }
+        }
+        return result;
+    };
+    const std::vector<std::pair<gl::NameId, uint32_t>> bothB{{b, 3}};
+    const std::vector<std::pair<gl::NameId, uint32_t>> positiveC{{c, 1}};
+    const std::vector<std::pair<gl::NameId, uint32_t>> negativeC{{c, 2}};
+    ASSERT_TRUE(next(0, 1, {a, 0, 1, 0}) == bothB);
+    ASSERT_TRUE(next(0, 2, {a, 0, 1, 0, b, 0, 1, 0}) == positiveC);
+    ASSERT_TRUE(next(0, 2, {a, 0, 1, 0, b, 0, 2, 0}) == negativeC);
+    ASSERT_TRUE(next(1, 1, {a, 0, 1, 0}) == positiveC);
+    ASSERT_TRUE(next(2, 0, {}).empty());
+    ASSERT_TRUE(next(0, 1, {b, 0, 1, 0}).empty());
+    ASSERT_EQ(next(0, 0, {}).size(), 3u);
+}
+
+TEST(phase2_projection, shared_key_sizing_and_reverse_alias_preserve_membership) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    body.nameMap.encode("main");
+    const gl::NameId core = body.nameMap.encode("sharedProjectionKey");
+    const gl::NormKey key{1, {core, 0}};
+    gl::OwnerSet first;
+    gl::OwnerSet second;
+    second.hasLooseOwner = true;
+    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(key, {first});
+    body.localHashMemory.normalizedEncodedSubkeys.assignRun(key, {second});
+    body.workingMemory.normalizedEncodedSubkeys.assignRun(key, {first});
+    const gl::Int16SetKey remaining{{core}};
+    body.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(remaining, {key});
+    const auto shared = gl::gpu::measurePhase2SharedKeyUsage(body, 0x0bu, true);
+    const auto bounds = gl::gpu::measurePhase2ProjectionUsage(body, analyzer, 0x0bu, true);
+    const uint64_t expectedBytes = gl::Codec<gl::NormKey>::encode(key).size()
+        + gl::Codec<gl::Int16SetKey>::encode(remaining).size() + 2 * sizeof(gl::NameId);
+    ASSERT_EQ(shared.byteKeyBytes, expectedBytes);
+    ASSERT_EQ(shared.byteMapEntries, 3u);
+    ASSERT_EQ(shared.byteMapSlots, 6u);
+    ASSERT_EQ(shared.blobRecords, 3u);
+    ASSERT_EQ(shared.blobBytes, 24u);
+    auto capacity = projectionCapacity(2, 1,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1) * 2, 512);
+    capacity.byteKeyBytes = static_cast<uint32_t>(bounds.byteKeyBytes * 2);
+    gl::gpu::Phase2ProjectionArena arena(capacity);
+    const auto block = arena.appendLogicalBlock(body, analyzer, 0x0bu, true);
+    ASSERT_EQ(arena.byteKeyBytes.size(), expectedBytes);
+    ASSERT_EQ(arena.blobBytes.size(), bounds.blobBytes);
+    ASSERT_EQ(arena.reverseKeyBytes.size(), 0u);
+    const auto& overall = arena.byteMapEntries[arena.byteMapViews[block.byteMapViewOffset + 1].entryOffset];
+    const auto& local = arena.byteMapEntries[arena.byteMapViews[block.byteMapViewOffset + 3].entryOffset];
+    const auto& working = arena.byteMapEntries[arena.byteMapViews[block.byteMapViewOffset + 7].entryOffset];
+    ASSERT_EQ(overall.keyOffset, local.keyOffset);
+    ASSERT_EQ(overall.keyOffset, working.keyOffset);
+    ASSERT_TRUE(overall.blobRecordOffset != local.blobRecordOffset);
+    const auto& firstBlob = arena.blobRecords[overall.blobRecordOffset];
+    const auto& secondBlob = arena.blobRecords[local.blobRecordOffset];
+    ASSERT_TRUE(arena.blobBytes[firstBlob.byteOffset] != arena.blobBytes[secondBlob.byteOffset]);
+    ASSERT_EQ(arena.byteMapViews[block.byteMapViewOffset + 5].entryCount, 0u);
+    const auto& forward = arena.byteMapEntries[arena.byteMapViews[block.byteMapViewOffset + 9].entryOffset];
+    const auto& reverse = arena.reverseMapEntries[arena.reverseMapViews[block.reverseMapViewOffset].entryOffset];
+    ASSERT_EQ(reverse.keyOffset, arena.blobRecords[forward.blobRecordOffset].byteOffset);
+    const auto secondBlock = arena.appendLogicalBlock(body, analyzer, 0x0bu, true);
+    ASSERT_EQ(arena.byteKeyBytes.size(), expectedBytes * 2);
+    const auto& nextKey = arena.byteMapEntries[arena.byteMapViews[secondBlock.byteMapViewOffset + 1].entryOffset];
+    ASSERT_TRUE(nextKey.keyOffset != overall.keyOffset);
+    ASSERT_EQ(body.overallHashMemory.normalizedEncodedSubkeys.count(), 1);
+    ASSERT_EQ(body.localHashMemory.normalizedEncodedSubkeys.count(), 1);
+}
+
+TEST(phase2_projection, shared_key_empty_and_assertion_probe) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    const auto empty = gl::gpu::measurePhase2SharedKeyUsage(body, 1u, true);
+    ASSERT_EQ(empty.byteKeyBytes, 0u);
+    ASSERT_EQ(empty.byteMapEntries, 0u);
+    ASSERT_EQ(empty.blobBytes, 0u);
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_PROJECTION_KEYS"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_PROJECTION_KEYS")) mode = value;
+#endif
+    if (mode == "mask") {
+        gl::gpu::measurePhase2SharedKeyUsage(body, 0u, true);
+        ASSERT_TRUE(false);
+    }
+    else if (mode == "missing_arity") {
+        body.nameMap.encode("main");
+        const gl::NameId core = body.nameMap.encode("missingSingleton");
+        const gl::NormKey key{2, {core, 0, core, 0}};
+        body.overallHashMemory.normalizedEncodedSubkeys.assignRun(key, {gl::OwnerSet{}});
+        gl::gpu::measurePhase2SharedKeyUsage(body, 1u, true);
+        ASSERT_TRUE(false);
+    }
+    else {
+        ASSERT_TRUE(mode.empty());
+    }
+}
+
+TEST(phase2_projection, signed_core_prefilter_preserves_order_and_rebuilds) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    auto first = gl::encodeExpression(gl::StrSpan("(p[a])", 6),
+        gl::StrSpan("main", 4), body.nameMap);
+    auto negative = gl::encodeExpression(gl::StrSpan("!(p[b])", 7),
+        gl::StrSpan("main", 4), body.nameMap);
+    auto last = gl::encodeExpression(gl::StrSpan("(p[b])", 6),
+        gl::StrSpan("main", 4), body.nameMap);
+    body.intEncodedStatements.push_back(first);
+    body.intEncodedStatements.push_back(negative);
+    body.intEncodedStatements.push_back(last);
+    const gl::NameId key[] = { first.nameId, 0, 1, 0 };
+    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+        body.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    std::set<std::pair<gl::NameId, int32_t>> cores;
+    gl::forEachPremiseCore(body, [&](gl::NameId core, int32_t polarity) {
+        cores.emplace(core, polarity);
+    });
+    ASSERT_EQ(cores.size(), 1u);
+    ASSERT_TRUE(cores.count({first.nameId, 0}) == 1);
+    ASSERT_TRUE(cores.count({first.nameId, 1}) == 0);
+    gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 2,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 1024));
+    const auto projected = arena.appendLogicalBlock(body, analyzer);
+    ASSERT_EQ(projected.statementCount, 2u);
+    ASSERT_EQ(arena.statements[0].originalId, first.originalId);
+    ASSERT_EQ(arena.statements[1].originalId, last.originalId);
+    ASSERT_EQ(arena.projectedStatementIndex(0, 0), 0);
+    ASSERT_EQ(arena.projectedStatementIndex(0, 2), 1);
+    // Source ordinals survive the in-place adoption of a slice shard.
+    const gl::gpu::Phase2ProjectionCapacity oneBlock = projectionCapacity(1, 2,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 1024);
+    gl::gpu::Phase2ProjectionArena merged(oneBlock, oneBlock);
+    gl::gpu::Phase2ProjectionArena slice(
+        oneBlock, merged, gl::gpu::Phase2ProjectionCapacity{});
+    slice.appendLogicalBlock(body, analyzer);
+    gl::gpu::Phase2ProjectionArena* shards[] = { &slice };
+    uint32_t firstBlock[1]{ 5 };
+    gl::gpu::Phase2ProjectionWorkers mergeWorkers(2);
+    merged.adoptShards(shards, 1, firstBlock,
+        gl::gpu::Phase2ProjectionArena::ShardBases{}, mergeWorkers);
+    ASSERT_EQ(firstBlock[0], 0u);
+    ASSERT_EQ(merged.projectedStatementIndex(0, 2), 1);
+    arena.clear();
+    body.localHashMemory.normalizedEncodedSubkeys.resetToFresh();
+    const auto empty = arena.appendLogicalBlock(body, analyzer);
+    ASSERT_EQ(empty.statementCount, 0u);
+    arena.clear();
+    const gl::NameId negKey[] = { first.nameId, 1, 1, 0 };
+    gl::ExpressionAnalyzer::addWholeKeyOwner(
+        body.workingMemory.normalizedEncodedKeys, 1, negKey, 4, 1,
+        gl::genScratchArenas().forSlot(0));
+    const auto refreshed = arena.appendLogicalBlock(body, analyzer);
+    ASSERT_EQ(refreshed.statementCount, 1u);
+    ASSERT_EQ(arena.statements[0].originalId, negative.originalId);
+}
+
+TEST(phase2_projection, upload_is_used_as_premise_only) {
+    // The device receives exactly the rows whose SIGNED core is used as a
+    // premise: `(p, positive)` is the only premise core here, so the negated
+    // `p` row and both `q` rows stay on the host.
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    auto pPos = gl::encodeExpression(gl::StrSpan("(p[a])", 6),
+        gl::StrSpan("main", 4), body.nameMap);
+    auto pNeg = gl::encodeExpression(gl::StrSpan("!(p[b])", 7),
+        gl::StrSpan("main", 4), body.nameMap);
+    auto qPos = gl::encodeExpression(gl::StrSpan("(q[c])", 6),
+        gl::StrSpan("main", 4), body.nameMap);
+    auto qNeg = gl::encodeExpression(gl::StrSpan("!(q[d])", 7),
+        gl::StrSpan("main", 4), body.nameMap);
+    body.intEncodedStatements.push_back(pPos);
+    body.intEncodedStatements.push_back(pNeg);
+    body.intEncodedStatements.push_back(qPos);
+    body.intEncodedStatements.push_back(qNeg);
+    const gl::NameId key[] = { pPos.nameId, 0, 1, 0 };
+    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+        body.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 4,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 1024));
+    const auto projected = arena.appendLogicalBlock(body, analyzer);
+    ASSERT_EQ(projected.statementCount, 1u);
+    ASSERT_EQ(arena.statements[0].originalId, pPos.originalId);
+    ASSERT_EQ(arena.projectedStatementIndex(0, 0), 0);
+}
+
+TEST(phase2_projection, phase1_scope_cleanup_precedes_projection) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    body.isActive = true;
+    body.level = 0;
+    const auto closed = body.nameMap.encodePush(gl::NameMap::MAIN_ID, "closed_case");
+    const auto child = body.nameMap.encodePush(closed, "nested_case");
+    const auto sibling = body.nameMap.encodePush(gl::NameMap::MAIN_ID, "live_case");
+    const int levels[] = {0};
+    for (auto validity : {gl::NameMap::MAIN_ID, closed, child, sibling}) {
+        const std::string expression = "(p[" + std::to_string(validity) + "])";
+        const auto row = gl::encodeExpression(gl::EncodedExpression(expression,
+            body.nameMap.decode(validity)), body.nameMap);
+        body.intEncodedStatements.push_back(row);
+        body.intLocalEncodedStatements.push_back(row);
+        body.intLocalEncodedStatementsDelta.push_back(row);
+        const auto key = gl::packStatementKey(row.originalId, validity);
+        body.intLocalEncodedStatementsSet.mint(key);
+        gl::upsertStatementKey(body.intKnownStatements, key, true);
+        body.intStatementLevelsMap.assignSet(key, levels, 1);
+        const std::string scope = body.nameMap.decode(validity);
+        gl::addOriginEncoded(body.exprOriginMap, body.originInterner,
+            gl::StrSpan(expression), gl::StrSpan(scope),
+            gl::OriginTag::taskFormulation, nullptr, 0, 8);
+    }
+    const auto core = body.nameMap.lookup("p");
+    const gl::NameId key[] = {core, 0, 1, 0};
+    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+        body.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    gl::LocalMemoryValue owner{};
+    owner.validityId = closed;
+    const gl::NormKey normalized{1, {core, 0, 1, 0}};
+    for (auto* hash : {&body.overallHashMemory, &body.localHashMemory, &body.localHashMemoryDelta})
+        hash->encodedMap.assignRun(normalized, {owner});
+    body.pendingWipeScopes.mint(child);
+    body.pendingWipeScopes.mint(closed);
+    analyzer.standardProcessing(body, nullptr,
+        body.nextIterationInternalMail, body.sameIterationInternalMail, -1);
+    ASSERT_EQ(body.intEncodedStatements.size(), 2);
+    ASSERT_TRUE(body.overallHashMemory.encodedMap.empty());
+    ASSERT_TRUE(body.localHashMemory.encodedMap.empty());
+    ASSERT_TRUE(body.localHashMemoryDelta.encodedMap.empty());
+    ASSERT_TRUE(body.intValidityNamesToFilter.contains(closed));
+    ASSERT_TRUE(body.intValidityNamesToFilter.contains(child));
+    gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 4,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 2048));
+    const auto projected = arena.appendLogicalBlock(body, analyzer);
+    ASSERT_EQ(projected.statementCount, 2u);
+    for (uint32_t i = 0; i < projected.statementCount; ++i) {
+        ASSERT_FALSE(body.nameMap.ancContains(arena.statements[i].validityId, closed));
+    }
+}
 
 TEST(phase2_projection, backend_defaults_to_processor_and_accepts_explicit_cuda) {
     // The product default is the processor route (`use_gpu` false, no
@@ -215,12 +724,12 @@ TEST(phase2_projection, backend_defaults_to_processor_and_accepts_explicit_cuda)
     ASSERT_TRUE(defaultAnalyzer.parameters.allow_ssd_deload);
     ASSERT_EQ(defaultAnalyzer.phase2Backend, gl::Phase2Backend::cpu);
 #ifdef GL_CUDA
-    // `main.py --GPU` arrives as the explicit CUDA override; the
-    // backend-derived SSD policy makes a CUDA batch resident-only. A build
+    // `main.py --GPU` arrives as the explicit CUDA override; a CUDA batch
+    // keeps the SSD permission and pages like a processor batch. A build
     // without CUDA support refuses the selection at construction instead.
     gl::ExpressionAnalyzer cudaAnalyzer("FTA", gl::Phase2Backend::cuda);
     ASSERT_EQ(cudaAnalyzer.phase2Backend, gl::Phase2Backend::cuda);
-    ASSERT_FALSE(cudaAnalyzer.parameters.allow_ssd_deload);
+    ASSERT_TRUE(cudaAnalyzer.parameters.allow_ssd_deload);
 #endif
     // The explicit processor override is accepted as well.
     gl::ExpressionAnalyzer cpuAnalyzer("FTA", gl::Phase2Backend::cpu);
@@ -261,13 +770,18 @@ TEST(phase2_projection, physical_block_and_task_ceilings_are_independent) {
     ASSERT_EQ(gl::gpu::kFtaShortcutPhase2GrowthCapacity.rawRequests, 262144u);
     ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.calls, 4096u);
     ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.rawRequests, 524288u);
-    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.frontierRecords, 4194304u);
-    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.prefixPayloadValues,
-        gl::gpu::kFtaShortcutPhase2GrowthCapacity.prefixPayloadValues);
-    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.prefixVariableValues,
-        gl::gpu::kFtaShortcutPhase2GrowthCapacity.prefixVariableValues);
-    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.prefixSecondaryValues,
-        gl::gpu::kFtaShortcutPhase2GrowthCapacity.prefixSecondaryValues);
+    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.frontierRecords, 3670016u);
+    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.acceptedEvents, 6291456u);
+    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.prefixPayloadValues, 109051904u);
+    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.prefixVariableValues, 29360128u);
+    ASSERT_EQ(gl::gpu::kFullRunPhase2GrowthCapacity.prefixSecondaryValues, 6291456u);
+    // Every resized pool retains at least twenty percent over its recorded full-corpus peak.
+    const auto& commonGrowth = gl::gpu::kFullRunPhase2GrowthCapacity;
+    ASSERT_TRUE(5ULL * commonGrowth.acceptedEvents >= 6ULL * 5214880ULL);
+    ASSERT_TRUE(5ULL * commonGrowth.frontierRecords >= 6ULL * 2888479ULL);
+    ASSERT_TRUE(5ULL * commonGrowth.prefixPayloadValues >= 6ULL * 88141734ULL);
+    ASSERT_TRUE(5ULL * commonGrowth.prefixVariableValues >= 6ULL * 23900106ULL);
+    ASSERT_TRUE(5ULL * commonGrowth.prefixSecondaryValues >= 6ULL * 4426243ULL);
 #ifdef GL_CUDA
     ASSERT_EQ(gl::gpu::kFtaShortcutPhase2GrowthCapacity.frontierRecords,
         gl::gpu::kFtaShortcutPhase2OrderingCapacity.events);
@@ -284,6 +798,7 @@ TEST(phase2_projection, physical_block_and_task_ceilings_are_independent) {
     ASSERT_EQ(gl::gpu::kFtaShortcutPhase2EvaluationCapacity.markerKeys,
         131072u);
     ASSERT_EQ(gl::gpu::kFullRunPhase2EvaluationCapacity.markerKeys, 524288u);
+    ASSERT_EQ(sizeof(gl::gpu::DeviceEvaluationOwnerWork), 8u);
 #endif
 }
 
@@ -322,13 +837,12 @@ TEST(phase2_projection, rows_names_parents_and_ranks_are_lossless) {
         arena.appendLogicalBlock(body, analyzer);
 
     ASSERT_EQ(projected.statementOffset, 0u);
-    ASSERT_EQ(projected.statementCount, 2u);
+    ASSERT_EQ(projected.statementCount, 0u);
     ASSERT_EQ(projected.nameRecordOffset, 0u);
     ASSERT_EQ(projected.nameRecordCount,
               static_cast<uint32_t>(body.nameMap.nameCount() + 1));
     ASSERT_EQ(projected.nameByteCount, byteCount);
-    ASSERT_TRUE(std::memcmp(&arena.statements[0], &first, sizeof(first)) == 0);
-    ASSERT_TRUE(std::memcmp(&arena.statements[1], &second, sizeof(second)) == 0);
+    ASSERT_TRUE(arena.statements.empty());
 
     for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id) {
         ASSERT_EQ(projectedName(arena, projected, id), body.nameMap.decode(id));
@@ -391,7 +905,7 @@ TEST(phase2_projection, append_offsets_and_clear_reuse_fixed_storage) {
               firstProjection.nameRecordOffset + firstProjection.nameRecordCount);
     ASSERT_EQ(secondProjection.nameByteOffset,
               firstProjection.nameByteOffset + firstProjection.nameByteCount);
-    ASSERT_EQ(arena.statements.size(), 2u);
+    ASSERT_EQ(arena.statements.size(), 0u);
     ASSERT_EQ(arena.nameRecords.size(), static_cast<std::size_t>(records));
     ASSERT_EQ(arena.nameBytes.size(), static_cast<std::size_t>(bytes));
     ASSERT_EQ(arena.timing.logicalBlocks, 2u);
@@ -485,6 +999,32 @@ TEST(phase2_projection, identical_read_only_string_columns_share_exactly) {
               first.ruleStringRecordOffset);
 }
 
+// Sharing compares a new block against the arena's projected copy of the
+// earlier block, so a change to the earlier block after its projection (or its
+// deload) cannot affect the decision.
+TEST(phase2_projection, sharing_compares_the_projected_copy_not_the_live_block) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory firstBody;
+    const gl::NameId firstMain = firstBody.nameMap.encode("main");
+    firstBody.nameMap.encodePush(firstMain, "child");
+    firstBody.ruleInterner.encode("rule_a");
+    gl::Memory laterBody;
+    const gl::NameId laterMain = laterBody.nameMap.encode("main");
+    laterBody.nameMap.encodePush(laterMain, "child");
+    laterBody.ruleInterner.encode("rule_a");
+
+    gl::gpu::Phase2ProjectionArena arena(projectionCapacity(4, 4, 16, 128));
+    const auto first = arena.appendLogicalBlock(firstBody, analyzer);
+    // The first block changes after its projection.
+    firstBody.nameMap.encode("extra");
+    firstBody.ruleInterner.encode("rule_extra");
+    const auto later = arena.appendLogicalBlock(laterBody, analyzer);
+    ASSERT_EQ(later.nameRecordOffset, first.nameRecordOffset);
+    ASSERT_EQ(later.nameByteOffset, first.nameByteOffset);
+    ASSERT_EQ(later.ruleStringRecordOffset, first.ruleStringRecordOffset);
+    ASSERT_EQ(later.ruleStringByteOffset, first.ruleStringByteOffset);
+}
+
 TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     gl::ExpressionAnalyzer analyzer("Peano");
     analyzer.compiledExpressions["theta"] = gl::LogicalEntity(
@@ -566,8 +1106,6 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     richBody.intValidityNamesToFilter.mint(mainId);
     richBody.frozenOrBranches.mint(nameId);
     richBody.intToBeProved.assignSet(statementKey, levels, 1);
-    richBody.canBeSentIds.mint(nameId);
-    richBody.canBeSentMarkerIds.mint(nameId);
 
     const gl::gpu::Phase2ProjectionCapacity capacity = projectionCapacity(
         2, 2, 16, 512);
@@ -575,8 +1113,14 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     serial.appendLogicalBlock(prefixBody, analyzer);
     serial.appendLogicalBlock(richBody, analyzer);
 
-    gl::gpu::Phase2ProjectionArena prefixShard(capacity);
-    gl::gpu::Phase2ProjectionArena richShard(capacity);
+    // Two slice shards laid end to end in one backing arena write straight
+    // into it; adoption closes the gap between them and rebases every column.
+    const gl::gpu::Phase2ProjectionCapacity storage =
+        gl::gpu::addProjectionCapacity(capacity, capacity);
+    gl::gpu::Phase2ProjectionArena backing(capacity, storage);
+    gl::gpu::Phase2ProjectionArena prefixShard(
+        capacity, backing, gl::gpu::Phase2ProjectionCapacity{});
+    gl::gpu::Phase2ProjectionArena richShard(capacity, backing, capacity);
     prefixShard.appendLogicalBlock(prefixBody, analyzer);
     richShard.appendLogicalBlock(richBody, analyzer);
     ASSERT_TRUE(!richShard.byteMapEntries.empty());
@@ -584,18 +1128,129 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     ASSERT_TRUE(!richShard.reverseMapEntries.empty());
     ASSERT_TRUE(!richShard.podMapEntries.empty());
     ASSERT_TRUE(!richShard.podRunValues.empty());
+    // The shards own no column storage: their rows live in the backing arena.
+    ASSERT_EQ(prefixShard.hostBytes(), uint64_t(0));
+    ASSERT_EQ(richShard.hostBytes(), uint64_t(0));
+    ASSERT_TRUE(backing.hostBytes() > 0);
+    ASSERT_TRUE(richShard.statements.data()
+        == backing.statements.data() + capacity.statements);
+    ASSERT_TRUE(richShard.metadataBytes.data()
+        == backing.metadataBytes.data() + capacity.metadataBytes);
+    const uint64_t richShardTimingRows = richShard.timing.retainedStatementRows;
 
-    gl::gpu::Phase2ProjectionArena merged(capacity);
-    ASSERT_EQ(merged.appendShard(prefixShard), 0u);
-    ASSERT_EQ(merged.appendShard(richShard), 1u);
-    ASSERT_EQ(merged.timing.logicalBlocks, 2u);
-    ASSERT_EQ(merged.logicalBlocks.size(), serial.logicalBlocks.size());
-    ASSERT_EQ(merged.statements.size(), serial.statements.size());
-    ASSERT_EQ(merged.nameRecords.size(), serial.nameRecords.size());
-    ASSERT_EQ(merged.byteMapEntries.size(), serial.byteMapEntries.size());
-    ASSERT_EQ(merged.reverseMapEntries.size(), serial.reverseMapEntries.size());
-    ASSERT_EQ(merged.podMapEntries.size(), serial.podMapEntries.size());
-    ASSERT_EQ(projectionChecksum(merged), projectionChecksum(serial));
+    gl::gpu::Phase2ProjectionArena* shards[] = { &prefixShard, &richShard };
+    uint32_t firstBlocks[2]{ 7, 7 };
+    gl::gpu::Phase2ProjectionWorkers adoptionWorkers(3);
+    backing.adoptShards(shards, 2, firstBlocks,
+        gl::gpu::Phase2ProjectionArena::ShardBases{}, adoptionWorkers);
+    ASSERT_EQ(firstBlocks[0], 0u);
+    ASSERT_EQ(firstBlocks[1], 1u);
+    ASSERT_EQ(backing.timing.logicalBlocks, 2u);
+    ASSERT_EQ(backing.logicalBlocks.size(), serial.logicalBlocks.size());
+    ASSERT_EQ(backing.statements.size(), serial.statements.size());
+    ASSERT_EQ(backing.nameRecords.size(), serial.nameRecords.size());
+    ASSERT_EQ(backing.byteMapEntries.size(), serial.byteMapEntries.size());
+    ASSERT_EQ(backing.reverseMapEntries.size(), serial.reverseMapEntries.size());
+    ASSERT_EQ(backing.podMapEntries.size(), serial.podMapEntries.size());
+    ASSERT_EQ(projectionChecksum(backing), projectionChecksum(serial));
+    ASSERT_TRUE(backing.sourceStatementIndices == serial.sourceStatementIndices);
+    ASSERT_EQ(backing.timing.retainedStatementRows, serial.timing.retainedStatementRows);
+    ASSERT_TRUE(richShard.logicalBlocks.empty() && richShard.byteMapEntries.empty());
+    ASSERT_TRUE(prefixShard.statements.empty() && prefixShard.metadataBytes.empty());
+    ASSERT_EQ(richShard.timing.retainedStatementRows, richShardTimingRows);
+
+    // Three shards with an empty middle one: the empty slice adopts nothing
+    // and the third shard's rows close up behind the first.
+    const gl::gpu::Phase2ProjectionCapacity three = projectionCapacity(3, 4, 32, 1024);
+    gl::gpu::Phase2ProjectionArena serialThree(three);
+    serialThree.appendLogicalBlock(prefixBody, analyzer);
+    serialThree.appendLogicalBlock(richBody, analyzer);
+    const gl::gpu::Phase2ProjectionCapacity twoSlices =
+        gl::gpu::addProjectionCapacity(capacity, capacity);
+    gl::gpu::Phase2ProjectionArena backingThree(
+        three, gl::gpu::addProjectionCapacity(twoSlices, capacity));
+    gl::gpu::Phase2ProjectionArena first(
+        capacity, backingThree, gl::gpu::Phase2ProjectionCapacity{});
+    gl::gpu::Phase2ProjectionArena empty(capacity, backingThree, capacity);
+    gl::gpu::Phase2ProjectionArena third(capacity, backingThree, twoSlices);
+    first.appendLogicalBlock(prefixBody, analyzer);
+    third.appendLogicalBlock(richBody, analyzer);
+    gl::gpu::Phase2ProjectionArena* threeShards[] = { &first, &empty, &third };
+    uint32_t threeFirst[3]{ 9, 9, 9 };
+    backingThree.adoptShards(threeShards, 3, threeFirst,
+        gl::gpu::Phase2ProjectionArena::ShardBases{}, adoptionWorkers);
+    ASSERT_EQ(threeFirst[0], 0u);
+    ASSERT_EQ(threeFirst[1], 1u);
+    ASSERT_EQ(threeFirst[2], 1u);
+    ASSERT_EQ(backingThree.timing.logicalBlocks, 2u);
+    ASSERT_EQ(projectionChecksum(backingThree), projectionChecksum(serialThree));
+    ASSERT_TRUE(backingThree.sourceStatementIndices == serialThree.sourceStatementIndices);
+
+    // Adoption at stream bases equals whole adoption followed by the separate
+    // stream rebase: every reference lands at its complete-image offset in one
+    // pass (D-447).
+    gl::gpu::Phase2ProjectionArena::ShardBases streamBases{};
+    {
+        uint32_t words[24];
+        for (uint32_t field = 0; field < 24; ++field) words[field] = 1000u + 37u * field;
+        static_assert(sizeof(streamBases) == sizeof(words));
+        std::memcpy(&streamBases, words, sizeof(words));
+    }
+    gl::gpu::Phase2ProjectionArena serialStreamed(capacity);
+    serialStreamed.appendLogicalBlock(prefixBody, analyzer);
+    serialStreamed.appendLogicalBlock(richBody, analyzer);
+    serialStreamed.rebaseForStream(streamBases);
+    gl::gpu::Phase2ProjectionArena backingStreamed(capacity, storage);
+    gl::gpu::Phase2ProjectionArena prefixStreamed(
+        capacity, backingStreamed, gl::gpu::Phase2ProjectionCapacity{});
+    gl::gpu::Phase2ProjectionArena richStreamed(capacity, backingStreamed, capacity);
+    prefixStreamed.appendLogicalBlock(prefixBody, analyzer);
+    richStreamed.appendLogicalBlock(richBody, analyzer);
+    gl::gpu::Phase2ProjectionArena* streamedShards[] = { &prefixStreamed, &richStreamed };
+    uint32_t streamedFirst[2]{ 7, 7 };
+    backingStreamed.adoptShards(streamedShards, 2, streamedFirst, streamBases, adoptionWorkers);
+    ASSERT_EQ(streamedFirst[0], 0u);
+    ASSERT_EQ(streamedFirst[1], 1u);
+    ASSERT_EQ(projectionChecksum(backingStreamed), projectionChecksum(serialStreamed));
+    ASSERT_EQ(std::memcmp(backingStreamed.logicalBlocks.data(), serialStreamed.logicalBlocks.data(),
+        serialStreamed.logicalBlocks.size() * sizeof(gl::gpu::DeviceLogicalBlockProjection)), 0);
+    ASSERT_EQ(backingStreamed.logicalBlocks[1].statementOffset,
+        streamBases.statement + serial.logicalBlocks[1].statementOffset);
+    ASSERT_TRUE(backingStreamed.byteMapSlots == serialStreamed.byteMapSlots);
+    ASSERT_TRUE(backingStreamed.podMapSlots == serialStreamed.podMapSlots);
+    ASSERT_TRUE(backingStreamed.reverseMapSlots == serialStreamed.reverseMapSlots);
+    ASSERT_TRUE(backingStreamed.nameSlots == serialStreamed.nameSlots);
+    ASSERT_TRUE(backingStreamed.sourceStatementIndices == serialStreamed.sourceStatementIndices);
+}
+
+TEST(phase2_projection, projection_workers_run_every_task_once_per_job) {
+    gl::gpu::Phase2ProjectionWorkers workers(3);
+    std::vector<int> hits(100, 0);
+    std::atomic<uint32_t> calls{0};
+    auto count = [&hits, &calls](uint32_t task) {
+        ++hits[task];
+        calls.fetch_add(1, std::memory_order_relaxed);
+    };
+    // Successive jobs of different sizes, including none and more tasks than
+    // threads, reuse the same threads; every index runs exactly once per job
+    // and the job's writes are visible when `run` returns.
+    const uint32_t sizes[] = { 0, 1, 3, 25, 100, 7 };
+    uint32_t expectedCalls = 0;
+    for (const uint32_t size : sizes) {
+        std::fill(hits.begin(), hits.end(), 0);
+        workers.run(size, count);
+        expectedCalls += size;
+        for (uint32_t task = 0; task < hits.size(); ++task)
+            ASSERT_EQ(hits[task], task < size ? 1 : 0);
+        ASSERT_EQ(calls.load(), expectedCalls);
+    }
+    // A single thread runs every task of a job in turn.
+    gl::gpu::Phase2ProjectionWorkers single(1);
+    std::vector<uint32_t> order;
+    auto record = [&order](uint32_t task) { order.push_back(task); };
+    single.run(5, record);
+    ASSERT_EQ(order.size(), std::size_t(5));
+    for (uint32_t task = 0; task < 5; ++task) ASSERT_EQ(order[task], task);
 }
 
 TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
@@ -673,8 +1328,6 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     body.frozenOrBranches.mint(nameId);
     const int goalAux[1] = { 7 };
     body.intToBeProved.assignSet(statementKey, goalAux, 1);
-    body.canBeSentIds.mint(nameId);
-    body.canBeSentMarkerIds.mint(nameId);
 
     const gl::gpu::Phase2ProjectionUsage usage =
         gl::gpu::measurePhase2ProjectionUsage(body, analyzer);
@@ -693,7 +1346,7 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     const uint64_t remainingKeyBytes =
         static_cast<uint64_t>(gl::Codec<gl::Int16SetKey>::encode(
             remainingKey).size());
-    ASSERT_EQ(usage.byteKeyBytes, normKeyBytes * 6 + remainingKeyBytes);
+    ASSERT_EQ(usage.byteKeyBytes, normKeyBytes + remainingKeyBytes);
     ASSERT_EQ(usage.blobRecords, 3u);
     ASSERT_EQ(usage.blobBytes,
         static_cast<uint64_t>(gl::Codec<gl::OwnerSet>::serialize(owner).size()
@@ -702,11 +1355,11 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     ASSERT_EQ(usage.reverseMapViews, 1u);
     ASSERT_EQ(usage.reverseMapEntries, 1u);
     ASSERT_EQ(usage.reverseMapSlots, 2u);
-    ASSERT_EQ(usage.reverseKeyBytes, normKeyBytes);
+    ASSERT_EQ(usage.reverseKeyBytes, 0u);
     ASSERT_EQ(usage.reverseOwners, 1u);
-    ASSERT_EQ(usage.podMapViews, 11u);
-    ASSERT_EQ(usage.podMapEntries, 11u);
-    ASSERT_EQ(usage.podMapSlots, 22u);
+    ASSERT_EQ(usage.podMapViews, 9u);
+    ASSERT_EQ(usage.podMapEntries, 9u);
+    ASSERT_EQ(usage.podMapSlots, 18u);
     ASSERT_EQ(usage.podRunValues, 3u);
     ASSERT_EQ(usage.mandatoryStatementKeys, 3u);
     ASSERT_EQ(usage.metadataBytes,
@@ -718,7 +1371,7 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
         arena.appendLogicalBlock(body, analyzer);
     ASSERT_EQ(projected.byteMapViewCount, 10u);
     ASSERT_EQ(projected.reverseMapViewCount, 1u);
-    ASSERT_EQ(projected.podMapViewCount, 11u);
+    ASSERT_EQ(projected.podMapViewCount, 9u);
     ASSERT_EQ(projected.ruleStringRecordCount, 3u);
     ASSERT_EQ(projected.localKeyCount, 1u);
     ASSERT_EQ(projected.deltaKeyCount, 1u);
@@ -751,7 +1404,7 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     ASSERT_EQ(reverseEntry.ownerCount, 1u);
     ASSERT_EQ(arena.reverseOwners[reverseEntry.ownerOffset], 1);
     ASSERT_TRUE(std::memcmp(
-        arena.reverseKeyBytes.data() + reverseEntry.keyOffset,
+        arena.blobBytes.data() + reverseEntry.keyOffset,
         gl::Codec<gl::NormKey>::serialize(normKey).data(),
         static_cast<std::size_t>(normKeyBytes)) == 0);
     const gl::gpu::DevicePodMapView& knownView =
@@ -771,7 +1424,7 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     ASSERT_EQ(selectedUsage.byteMapViews, 10u);
     ASSERT_LT(selectedUsage.byteMapEntries, usage.byteMapEntries);
     ASSERT_LT(selectedUsage.byteMapSlots, usage.byteMapSlots);
-    ASSERT_LT(selectedUsage.byteKeyBytes, usage.byteKeyBytes);
+    ASSERT_EQ(selectedUsage.byteKeyBytes, usage.byteKeyBytes);
 
     gl::gpu::Phase2ProjectionArena selectedArena(projectionCapacity(
         1, 1, static_cast<uint32_t>(body.nameMap.nameCount() + 1), 256));
@@ -795,6 +1448,85 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
         gl::gpu::DeviceByteMapKind::overallEncoded);
     ASSERT_EQ(selectedArena.byteMapViews[selected.byteMapViewOffset + 9].kind,
         gl::gpu::DeviceByteMapKind::overallRemainingArgs);
+}
+
+// The CUDA packing reads the measurement each logic block records at the end
+// of its phase 1: the stump-free usage plus a part's stumps equals the direct
+// measurement, the selection names the batches' hash memories, and the record
+// stores exactly those values with the burst stamp.
+TEST(phase2_projection, recorded_phase2_measurement_equals_the_direct_one) {
+    const auto bit = [](gl::gpu::DeviceHashMemoryKind memory) {
+        return 1u << static_cast<uint32_t>(memory);
+    };
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    const gl::NameId main = body.nameMap.encode("main");
+    const gl::NameId name = body.nameMap.encode("recorded-shape");
+    const gl::IntEncodedExpr statement =
+        projectionStatement(name, name, main, name);
+    body.intLocalEncodedStatements.push_back(statement);
+    body.intExternalStatements.push_back(statement);
+    const gl::NormKey key{ 1, { name } };
+    gl::LocalMemoryValue value;
+    value.valueId = body.ruleInterner.encode("recorded-rule");
+    body.workingMemory.encodedMap.assignRun(
+        key, std::vector<gl::LocalMemoryValue>{ value });
+    body.localHashMemory.encodedMap.assignRun(
+        key, std::vector<gl::LocalMemoryValue>{ value });
+
+    // Selection: working (map + local statements), overall (externals with
+    // local statements) and local (map + externals); no local delta.
+    const uint32_t expected = bit(gl::gpu::DeviceHashMemoryKind::working)
+        | bit(gl::gpu::DeviceHashMemoryKind::overall)
+        | bit(gl::gpu::DeviceHashMemoryKind::local);
+    ASSERT_EQ(gl::gpu::selectPhase2HashMemories(body, false), expected);
+    ASSERT_EQ(gl::gpu::selectPhase2HashMemories(body, true),
+              bit(gl::gpu::DeviceHashMemoryKind::overall));
+    const gl::Memory emptyBody;
+    ASSERT_EQ(gl::gpu::selectPhase2HashMemories(emptyBody, false), 0u);
+
+    // Stumps are added per part; unscheduled and counter-example usage keep none.
+    const gl::gpu::Phase2TaskProjectionUsage stumpFree =
+        gl::gpu::measurePhase2TaskProjectionUsage(body, 0, false);
+    const gl::gpu::Phase2TaskProjectionUsage withStumps =
+        gl::gpu::phase2TaskUsageWithStumps(stumpFree, 5, false);
+    const gl::gpu::Phase2TaskProjectionUsage direct =
+        gl::gpu::measurePhase2TaskProjectionUsage(body, 5, false);
+    ASSERT_EQ(withStumps.tasks, direct.tasks);
+    ASSERT_EQ(withStumps.batches, direct.batches);
+    ASSERT_EQ(withStumps.terms, direct.terms);
+    ASSERT_EQ(withStumps.stumps, 5u);
+    const gl::gpu::Phase2TaskProjectionUsage unscheduled =
+        gl::gpu::phase2TaskUsageWithStumps(
+            gl::gpu::measurePhase2TaskProjectionUsage(emptyBody, 0, false), 3, false);
+    ASSERT_EQ(unscheduled.tasks, 0u);
+    ASSERT_EQ(unscheduled.stumps, 0u);
+    const gl::gpu::Phase2TaskProjectionUsage counterExample =
+        gl::gpu::phase2TaskUsageWithStumps(
+            gl::gpu::measurePhase2TaskProjectionUsage(emptyBody, 0, true), 0, true);
+    ASSERT_EQ(counterExample.tasks, 1u);
+    ASSERT_EQ(counterExample.stumps, 0u);
+
+    // The record holds exactly the direct values and the burst stamp.
+    analyzer.phase2MeasurementEpoch = 7;
+    analyzer.recordPhase2Measurement(body);
+    ASSERT_EQ(body.phase2MeasurementEpoch, uint64_t(7));
+    ASSERT_EQ(body.phase2TaskUsage.tasks, stumpFree.tasks);
+    ASSERT_EQ(body.phase2TaskUsage.batches, stumpFree.batches);
+    ASSERT_EQ(body.phase2TaskUsage.terms, stumpFree.terms);
+    ASSERT_EQ(body.phase2TaskUsage.stumps, 0u);
+    ASSERT_EQ(body.phase2SelectedHashMemories, expected);
+    const gl::gpu::Phase2ProjectionUsage projection =
+        gl::gpu::measurePhase2ProjectionUsage(body, analyzer, expected, true);
+    ASSERT_TRUE(std::memcmp(&body.phase2ProjectionUsage, &projection,
+                            sizeof(projection)) == 0);
+    ASSERT_EQ(body.phase2ProjectionUsage.logicalBlocks, uint64_t(1));
+    gl::Memory quietBody;
+    analyzer.recordPhase2Measurement(quietBody);
+    ASSERT_EQ(quietBody.phase2MeasurementEpoch, uint64_t(7));
+    ASSERT_EQ(quietBody.phase2TaskUsage.tasks, 0u);
+    ASSERT_EQ(quietBody.phase2SelectedHashMemories, 0u);
+    ASSERT_EQ(quietBody.phase2ProjectionUsage.logicalBlocks, uint64_t(0));
 }
 
 TEST(phase2_projection, task_inputs_are_pointer_free_ordered_and_reusable) {
@@ -982,7 +1714,7 @@ TEST(phase2_projection, task_inputs_are_pointer_free_ordered_and_reusable) {
 TEST(phase2_projection, filter_class_census_uses_the_complete_exact_tuple) {
     gl::gpu::Phase2FilterScheduleCapacity capacity{};
     capacity.calls = 8;
-    capacity.examinedRows = 128;
+    capacity.examinedRows = 256;
     capacity.retainedRows = 64;
     capacity.maximumExaminedRowsPerCall = 32;
     gl::gpu::Phase2FilterScheduleArena schedule(capacity);
@@ -1002,18 +1734,21 @@ TEST(phase2_projection, filter_class_census_uses_the_complete_exact_tuple) {
     schedule.appendCall(
         3, gl::gpu::DeviceHashMemoryKind::overall, 12, 1, 16);
 
+    schedule.appendCall(
+        3, gl::gpu::DeviceHashMemoryKind::overall, 12, 1, 17, 4096);
+
     const gl::gpu::Phase2FilterClassCensus census =
         schedule.measureClassReuse();
-    ASSERT_EQ(census.callCount, 7u);
-    ASSERT_EQ(census.uniqueClassCount, 6u);
+    ASSERT_EQ(census.callCount, 8u);
+    ASSERT_EQ(census.uniqueClassCount, 7u);
     ASSERT_EQ(census.duplicateCallCount, 1u);
-    ASSERT_EQ(census.uniqueExaminedRows, 101u);
+    ASSERT_EQ(census.uniqueExaminedRows, 118u);
     ASSERT_EQ(census.duplicateExaminedRows, 17u);
     ASSERT_EQ(census.maximumClassMultiplicity, 2u);
-    ASSERT_EQ(schedule.calls.size(), 7u);
-    ASSERT_EQ(schedule.examinedRows, 118u);
-    ASSERT_EQ(schedule.classes.size(), 6u);
-    ASSERT_EQ(schedule.callClassIndices.size(), 7u);
+    ASSERT_EQ(schedule.calls.size(), 8u);
+    ASSERT_EQ(schedule.examinedRows, 135u);
+    ASSERT_EQ(schedule.classes.size(), 7u);
+    ASSERT_EQ(schedule.callClassIndices.size(), 8u);
     ASSERT_EQ(schedule.callClassIndices[0], 0u);
     ASSERT_EQ(schedule.callClassIndices[1], 0u);
     ASSERT_EQ(schedule.callClassIndices[2], 1u);
@@ -1021,11 +1756,13 @@ TEST(phase2_projection, filter_class_census_uses_the_complete_exact_tuple) {
     ASSERT_EQ(schedule.callClassIndices[4], 3u);
     ASSERT_EQ(schedule.callClassIndices[5], 4u);
     ASSERT_EQ(schedule.callClassIndices[6], 5u);
+    ASSERT_EQ(schedule.callClassIndices[7], 6u);
+    ASSERT_EQ(schedule.calls[7].maximumFilteredStatements, 4096u);
     ASSERT_EQ(schedule.classMultiplicities[0], 2u);
-    for (uint32_t classIndex = 1; classIndex < 6; ++classIndex) {
+    for (uint32_t classIndex = 1; classIndex < 7; ++classIndex) {
         ASSERT_EQ(schedule.classMultiplicities[classIndex], 1u);
     }
-    ASSERT_EQ(schedule.classExaminedRows, 101u);
+    ASSERT_EQ(schedule.classExaminedRows, 118u);
 
     schedule.clear();
     const gl::gpu::Phase2FilterClassCensus empty =
@@ -1039,7 +1776,7 @@ TEST(phase2_projection, filter_class_census_uses_the_complete_exact_tuple) {
 }
 
 #ifdef GL_CUDA
-TEST(phase2_projection, fixed_cuda_task_buffer_upload_is_exact) {
+CUDA_TEST(phase2_projection, fixed_cuda_task_buffer_upload_is_exact) {
     gl::gpu::Phase2TaskProjectionCapacity capacity{};
     capacity.tasks = 2;
     capacity.batches = 4;
@@ -1077,7 +1814,18 @@ TEST(phase2_projection, fixed_cuda_task_buffer_upload_is_exact) {
     ASSERT_EQ(device.launchChecksum(), taskProjectionChecksum(host));
 }
 
-TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
+CUDA_TEST(phase2_projection, filter_examined_volume_exceeds_32_bits_without_repeated_storage) {
+    gl::gpu::Phase2FilterScheduleArena schedule({4096, 1ull << 34, 1, 1u << 22});
+    for (uint32_t call = 0; call < 4096; ++call)
+        schedule.appendCall(0, gl::gpu::DeviceHashMemoryKind::overall, 0, 1, 1u << 22);
+    const auto census = schedule.measureClassReuse();
+    ASSERT_EQ(schedule.examinedRows, 1ull << 34);
+    ASSERT_EQ(census.uniqueClassCount, 1u);
+    ASSERT_EQ(census.uniqueExaminedRows, 1ull << 22);
+    ASSERT_EQ(census.duplicateExaminedRows, (1ull << 34) - (1ull << 22));
+}
+
+CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
     gl::ExpressionAnalyzer analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 3;
     gl::Memory body;
@@ -1125,12 +1873,22 @@ TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
                     fixtureOwner, ownerArena);
             }
             else {
-                gl::ExpressionAnalyzer::addShortSubkeyOwner(
-                    memory->normalizedEncodedSubkeys, 1, keyData, 4,
-                    fixtureOwner);
+                gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+                    memory->normalizedEncodedSubkeys, 1, keyData, 4);
             }
         }
     }
+    // Rejected rows force retained statement indices beyond the old packed field.
+    constexpr uint32_t rejectedPrefix = (1u << 18) + 1;
+    gl::IntEncodedExpr acceptedStatements[6]{};
+    for (uint32_t row = 0; row < 6; ++row)
+        acceptedStatements[row] = body.intEncodedStatements[row];
+    body.intEncodedStatements.clear();
+    gl::IntEncodedExpr rejected = acceptedStatements[5];
+    for (uint32_t row = 0; row < rejectedPrefix; ++row)
+        body.intEncodedStatements.push_back(rejected);
+    for (const auto& statement : acceptedStatements)
+        body.intEncodedStatements.push_back(statement);
     std::clog << "[phase2-filter-twin] fixture ready\n" << std::flush;
 
     uint32_t nameBytes = 0;
@@ -1145,6 +1903,9 @@ TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
         hostProjection.appendLogicalBlock(body, analyzer);
     std::clog << "[phase2-filter-twin] projection packed\n" << std::flush;
     gl::gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionLimits);
+    // A uniform rank translation preserves lexical order while crossing 18 bits.
+    for (auto& name : hostProjection.nameRecords)
+        name.decodedLexRank += (1u << 18);
     deviceProjection.upload(hostProjection);
     std::clog << "[phase2-filter-twin] projection uploaded\n" << std::flush;
 
@@ -1182,7 +1943,7 @@ TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
     filterLimits.calls = 2048;
     filterLimits.examinedRows = 16777216;
     filterLimits.retainedRows = 1048576;
-    filterLimits.maximumExaminedRowsPerCall = 262144;
+    filterLimits.maximumExaminedRowsPerCall = rejectedPrefix + 6;
     gl::gpu::Phase2FilterScheduleArena schedule(filterLimits);
     const gl::gpu::DeviceHashMemoryKind kinds[5] = {
         gl::gpu::DeviceHashMemoryKind::overall,
@@ -1214,8 +1975,9 @@ TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
         ASSERT_EQ(counts[call], static_cast<uint32_t>(expected[call].size()));
         for (uint32_t row = 0; row < counts[call]; ++row) {
             const uint64_t key = sortedKeys[keyOffset++];
-            ASSERT_EQ(static_cast<uint32_t>(
-                key >> gl::gpu::kDeviceFilterCallShift), call);
+            ASSERT_TRUE((key >> gl::gpu::kDeviceFilterStatementIndexBits)
+                >= (1u << 18));
+            ASSERT_TRUE(expected[call][row] >= rejectedPrefix);
             ASSERT_EQ(static_cast<gl::NameId>(
                 key & gl::gpu::kDeviceFilterStatementIndexMask),
                 expected[call][row]);
@@ -1224,7 +1986,81 @@ TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
     ASSERT_EQ(keyOffset, retained);
 }
 
-TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
+CUDA_TEST(phase2_projection, configurable_filter_keeps_rows_beyond_old_limit) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.maxIterationNumberVariable = 1;
+    gl::Memory body;
+    const gl::NameId main = body.nameMap.encode("main");
+    gl::IntEncodedExpr first = gl::encodeExpression(
+        gl::EncodedExpression("(z[a])", "main"), body.nameMap);
+    const gl::IntEncodedExpr second = gl::encodeExpression(
+        gl::EncodedExpression("(a[b])", "main"), body.nameMap);
+    for (const auto& row : {first, second}) {
+        const gl::NameId key[] = {row.nameId, row.negation, 1, 0};
+        gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+            body.overallHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    }
+    constexpr uint32_t rejected = 257;
+    constexpr uint32_t eligible = 9040;
+    first.maxIteration = 2;
+    for (uint32_t i = 0; i < rejected; ++i)
+        body.intEncodedStatements.push_back(first);
+    first.maxIteration = -1;
+    for (uint32_t i = 0; i < eligible; ++i)
+        body.intEncodedStatements.push_back(i % 2 == 0 ? first : second);
+
+    uint32_t nameBytes = 0;
+    for (gl::NameId i = 1; i <= body.nameMap.nameCount(); ++i)
+        nameBytes += static_cast<uint32_t>(body.nameMap.decodeView(i).len);
+    const auto limits = projectionCapacity(1, rejected + eligible,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), nameBytes);
+    gl::gpu::Phase2ProjectionArena host(limits);
+    const auto block = host.appendLogicalBlock(body, analyzer);
+    gl::gpu::CudaPhase2ProjectionBuffer device(limits);
+    device.upload(host);
+    const gl::gpu::Phase2FilterScheduleCapacity filterLimits{
+        3, 3ull * (rejected + eligible), 32768, rejected + eligible};
+    gl::gpu::Phase2FilterScheduleArena schedule(filterLimits);
+    const uint32_t caps[] = {3, 8192, 16384};
+    std::vector<std::vector<gl::NameId>> expected;
+    for (const uint32_t cap : caps) {
+        analyzer.parameters.maxNumberFilteredStatements = static_cast<int>(cap);
+        std::vector<gl::NameId> rows(cap);
+        const gl::NameId count = analyzer.filterIntEncodedStatements(
+            gl::IntStmtView(body.intEncodedStatements), body.overallHashMemory,
+            body, true, rows.data(), analyzer.parameters.maxNumberFilteredStatements);
+        rows.resize(count);
+        ASSERT_EQ(static_cast<uint32_t>(count), std::min(cap, eligible));
+        ASSERT_EQ(rows.front(), static_cast<gl::NameId>(rejected));
+        ASSERT_EQ(rows.back(), static_cast<gl::NameId>(rejected + count - 1));
+        std::stable_sort(rows.begin(), rows.end(), [&](gl::NameId l, gl::NameId r) {
+            return gl::compareSpans(body.nameMap.decodeView(body.intEncodedStatements[l].nameId),
+                body.nameMap.decodeView(body.intEncodedStatements[r].nameId)) < 0;
+        });
+        expected.push_back(rows);
+        schedule.appendCall(0, gl::gpu::DeviceHashMemoryKind::overall,
+            1, 1, block.statementCount, cap);
+    }
+    ASSERT_EQ(schedule.classes.size(), 3u);
+    gl::gpu::CudaPhase2FilterSortBuffer filter(filterLimits);
+    const uint32_t retained = filter.filterAndSort(device, schedule);
+    uint32_t counts[3]{};
+    ASSERT_EQ(filter.downloadCallCounts(counts, 3), 3u);
+    std::vector<uint64_t> keys(retained);
+    ASSERT_EQ(filter.downloadSortedKeys(keys.data(), retained), retained);
+    uint32_t offset = 0;
+    for (uint32_t call = 0; call < 3; ++call) {
+        ASSERT_EQ(counts[call], expected[call].size());
+        for (const auto index : expected[call]) {
+            ASSERT_EQ(static_cast<gl::NameId>(keys[offset++]
+                & gl::gpu::kDeviceFilterStatementIndexMask), index);
+        }
+    }
+    ASSERT_EQ(offset, retained);
+    ASSERT_EQ(counts[2], eligible);
+}
+
+CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     gl::ExpressionAnalyzer analyzer("Peano");
     analyzer.compiledExpressions["delta"] = gl::LogicalEntity(
         "atomic", {}, "delta", 1);
@@ -1293,8 +2129,6 @@ TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     body.intValidityNamesToFilter.mint(mainId);
     body.frozenOrBranches.mint(nameId);
     body.intToBeProved.assignSet(statementKey, levels, 1);
-    body.canBeSentIds.mint(nameId);
-    body.canBeSentMarkerIds.mint(nameId);
 
     uint32_t byteCount = 0;
     for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id)
@@ -1321,6 +2155,144 @@ TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     device.beginPhase2Upload(host);
     device.finishPhase2Upload();
     ASSERT_EQ(device.launchChecksum(), projectionChecksum(host));
+
+    // Compare two complete streamed windows with the existing in-place
+    // shard-adoption oracle, including every nonempty semantic column.
+    const auto twice = gl::gpu::addProjectionCapacity(capacity, capacity);
+    gl::gpu::Phase2ProjectionArena expected(twice, twice);
+    gl::gpu::Phase2ProjectionArena first(capacity, expected, {});
+    gl::gpu::Phase2ProjectionArena second(capacity, expected, capacity);
+    first.appendLogicalBlock(body, analyzer);
+    second.appendLogicalBlock(body, analyzer);
+    gl::gpu::Phase2ProjectionArena* oracleShards[] = {&first, &second};
+    uint32_t firstBlocks[2]{};
+    gl::gpu::Phase2ProjectionWorkers oracleWorkers(2);
+    expected.adoptShards(oracleShards, 2, firstBlocks,
+        gl::gpu::Phase2ProjectionArena::ShardBases{}, oracleWorkers);
+    ASSERT_EQ(gl::gpu::phase2ProjectionHostBytes(twice), expected.hostBytes());
+
+    gl::gpu::Phase2ProjectionArena retained(twice,
+        gl::gpu::Phase2ProjectionArena::SealingOnly{});
+    const uint64_t retainedBytes = retained.hostBytes();
+    ASSERT_TRUE(retainedBytes < expected.hostBytes());
+    ASSERT_EQ(retained.statements.capacity(), std::size_t(0));
+    ASSERT_EQ(retained.byteKeyBytes.capacity(), std::size_t(0));
+    gl::gpu::CudaPhase2ProjectionBuffer streamed(twice);
+    gl::gpu::Phase2ProjectionArena::ShardBases ends{};
+    streamed.beginStreamedUpload();
+    for (int window = 0; window < 2; ++window) {
+        gl::gpu::Phase2ProjectionArena source(capacity);
+        source.appendLogicalBlock(body, analyzer);
+        source.timing.mergeNanoseconds = static_cast<uint64_t>(window + 1);
+        const auto next = source.streamedEnd(ends);
+        source.rebaseForStream(ends);
+        streamed.appendStreamedUpload(source, ends);
+        retained.appendSealingProjection(source, ends);
+        ASSERT_EQ(retained.timing.logicalBlocks, retained.logicalBlocks.size());
+        ASSERT_EQ(retained.timing.logicalBlocks, static_cast<uint64_t>(window + 1));
+        ends = next;
+    }
+    streamed.finishPhase2Upload();
+    ASSERT_EQ(streamed.launchChecksum(), projectionChecksum(expected));
+    ASSERT_EQ(retained.timing.mergeNanoseconds, 3ull);
+    ASSERT_EQ(retained.timing.sourceStatementRows, expected.timing.sourceStatementRows);
+    ASSERT_EQ(retained.timing.retainedStatementRows, expected.timing.retainedStatementRows);
+    ASSERT_EQ(retained.timing.prefixFilterKeys, expected.timing.prefixFilterKeys);
+    ASSERT_EQ(retained.timing.prefixFilterPredicates, expected.timing.prefixFilterPredicates);
+    ASSERT_EQ(retained.timing.prefixFilterBytes, expected.timing.prefixFilterBytes);
+    ASSERT_EQ(retained.logicalBlocks.size(), expected.logicalBlocks.size());
+    ASSERT_EQ(std::memcmp(retained.logicalBlocks.data(), expected.logicalBlocks.data(),
+        expected.logicalBlocks.size() * sizeof(gl::gpu::DeviceLogicalBlockProjection)), 0);
+    ASSERT_TRUE(retained.sourceStatementIndices == expected.sourceStatementIndices);
+    ASSERT_TRUE(retained.nameBytes == expected.nameBytes);
+    ASSERT_TRUE(retained.ruleStringBytes == expected.ruleStringBytes);
+    ASSERT_EQ(std::memcmp(retained.nameRecords.data(), expected.nameRecords.data(),
+        expected.nameRecords.size() * sizeof(gl::gpu::DeviceNameRecord)), 0);
+    ASSERT_EQ(std::memcmp(retained.ruleStringRecords.data(), expected.ruleStringRecords.data(),
+        expected.ruleStringRecords.size() * sizeof(gl::gpu::DeviceRuleStringRecord)), 0);
+    for (uint32_t block = 0; block < retained.logicalBlocks.size(); ++block) {
+        const auto& descriptor = retained.logicalBlocks[block];
+        for (uint32_t row = 0; row < descriptor.statementCount; ++row) {
+            const auto sourceIndex = retained.sourceStatementIndices[descriptor.statementOffset + row];
+            ASSERT_EQ(retained.projectedStatementIndex(block, sourceIndex), static_cast<gl::NameId>(row));
+        }
+    }
+    // The retained rule copy of every complete-image blob record: the LMV's
+    // implication and scope on the overall encoded-map runs, zero elsewhere
+    // (I-284).
+    std::vector<int64_t> wantedOwners(expected.blobRecords.size(), 0);
+    int32_t lmvRecords = 0;
+    for (const gl::gpu::DeviceByteMapView& view : expected.byteMapViews) {
+        if (view.kind != gl::gpu::DeviceByteMapKind::overallEncoded) continue;
+        for (uint32_t e = view.entryOffset; e < view.entryOffset + view.entryCount; ++e) {
+            const gl::gpu::DeviceByteMapEntry& entry = expected.byteMapEntries[e];
+            for (uint32_t r = entry.blobRecordOffset;
+                 r < entry.blobRecordOffset + entry.blobRecordCount; ++r) {
+                const gl::gpu::DeviceBlobRecord& blob = expected.blobRecords[r];
+                const gl::LmvBlobView lmv(expected.blobBytes.data() + blob.byteOffset,
+                    static_cast<int32_t>(blob.byteLength));
+                wantedOwners[r] = gl::packRuleOwner(lmv.originalImplicationId(), lmv.validityId());
+                ASSERT_EQ(wantedOwners[r], packedOwner);
+                ++lmvRecords;
+            }
+        }
+    }
+    ASSERT_TRUE(lmvRecords > 0);
+    ASSERT_TRUE(static_cast<std::size_t>(lmvRecords) < wantedOwners.size());
+    ASSERT_EQ(retained.blobRuleOwners.size(), wantedOwners.size());
+    for (std::size_t r = 0; r < wantedOwners.size(); ++r)
+        ASSERT_EQ(retained.blobRuleOwners[r], wantedOwners[r]);
+
+    // The upload thread reproduces the synchronous sequence: windows adopted at
+    // their stream bases are uploaded and retained in submission order while
+    // the next window is built (D-447).
+    {
+        gl::gpu::Phase2ProjectionWorkers workers(2);
+        gl::gpu::CudaPhase2ProjectionBuffer overlapped(twice);
+        gl::gpu::Phase2ProjectionArena overlappedRetained(twice,
+            gl::gpu::Phase2ProjectionArena::SealingOnly{});
+        overlapped.beginStreamedUpload();
+        gl::gpu::Phase2WindowUploader uploader(overlapped, overlappedRetained);
+        gl::gpu::Phase2ProjectionArena::ShardBases windowEnds{};
+        for (int windowIndex = 0; windowIndex < 2; ++windowIndex) {
+            auto window = std::make_unique<gl::gpu::Phase2ProjectionArena>(capacity, capacity);
+            uint32_t windowFirst[1]{ 3 };
+            {
+                gl::gpu::Phase2ProjectionArena shard(
+                    capacity, *window, gl::gpu::Phase2ProjectionCapacity{});
+                shard.appendLogicalBlock(body, analyzer);
+                gl::gpu::Phase2ProjectionArena* windowShards[] = { &shard };
+                window->adoptShards(windowShards, 1, windowFirst, windowEnds, workers);
+            }
+            ASSERT_EQ(windowFirst[0], 0u);
+            const auto next = window->streamedEnd(windowEnds);
+            uploader.submit(std::move(window), windowEnds);
+            windowEnds = next;
+        }
+        uploader.finish();
+        overlapped.finishPhase2Upload();
+        ASSERT_EQ(overlapped.launchChecksum(), projectionChecksum(expected));
+        ASSERT_EQ(overlapped.pinnedHostBytes(), uint64_t(0));
+        ASSERT_EQ(overlappedRetained.logicalBlocks.size(), retained.logicalBlocks.size());
+        ASSERT_EQ(std::memcmp(overlappedRetained.logicalBlocks.data(), retained.logicalBlocks.data(),
+            retained.logicalBlocks.size() * sizeof(gl::gpu::DeviceLogicalBlockProjection)), 0);
+        ASSERT_TRUE(overlappedRetained.sourceStatementIndices == retained.sourceStatementIndices);
+        ASSERT_TRUE(overlappedRetained.nameBytes == retained.nameBytes);
+        ASSERT_TRUE(overlappedRetained.ruleStringBytes == retained.ruleStringBytes);
+        ASSERT_EQ(std::memcmp(overlappedRetained.nameRecords.data(), retained.nameRecords.data(),
+            retained.nameRecords.size() * sizeof(gl::gpu::DeviceNameRecord)), 0);
+        ASSERT_EQ(std::memcmp(overlappedRetained.ruleStringRecords.data(),
+            retained.ruleStringRecords.data(),
+            retained.ruleStringRecords.size() * sizeof(gl::gpu::DeviceRuleStringRecord)), 0);
+        ASSERT_TRUE(overlappedRetained.blobRuleOwners == retained.blobRuleOwners);
+        ASSERT_EQ(overlappedRetained.timing.logicalBlocks, uint64_t(2));
+    }
+    retained.clear();
+    ASSERT_TRUE(retained.logicalBlocks.empty());
+    ASSERT_TRUE(retained.nameBytes.empty());
+    ASSERT_TRUE(retained.blobRuleOwners.empty());
+    ASSERT_EQ(retained.hostBytes(), retainedBytes);
+
 
     const auto byteProbe = [](
         gl::gpu::DeviceLookupProbeKind probeKind,
@@ -1412,7 +2384,7 @@ TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     };
     for (uint32_t ordinal = 0;
          ordinal <= static_cast<uint32_t>(
-             gl::gpu::DevicePodMapKind::mailEligibleMarkers);
+             gl::gpu::DevicePodMapKind::goals);
          ++ordinal) {
         gl::gpu::DeviceLookupProbe probe{};
         probe.kind = gl::gpu::DeviceLookupProbeKind::podMap;
@@ -1439,7 +2411,7 @@ TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     ASSERT_EQ(device.launchLookupProbe(podMiss).recordIndex, -1);
 }
 
-TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor) {
+CUDA_TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor) {
     gl::Memory body;
     body.setExprKey("cuda_growth_candidate");
     gl::ExpressionAnalyzer analyzer("Peano");
@@ -1522,6 +2494,17 @@ TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor) {
     body.localHashMemoryDelta.normalizedEncodedSubkeys.assignRun(
         shortKey, std::vector<gl::OwnerSet>{ rejectingOwner });
 
+    // A production install indexes each singleton premise as well as the
+    // multi-premise key. Keep this direct key-probe fixture complete.
+    for (const gl::IntEncodedExpr* expression : expressions) {
+        gl::NameId singleton[gl::ExecutionParameters::MAX_KEY_SLOTS];
+        const gl::NameId length = analyzer.makeIntNormalizedKeyFromEncoded(
+            &expression, 1, singleton, gl::ExecutionParameters::MAX_KEY_SLOTS);
+        gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+            body.overallHashMemory.normalizedEncodedSubkeys, 1,
+            singleton, length);
+    }
+
     uint32_t nameBytes = 0;
     for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id)
         nameBytes += static_cast<uint32_t>(body.nameMap.decodeView(id).len);
@@ -1579,7 +2562,7 @@ TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor) {
     ASSERT_EQ(shortAccepted.wholeKeyPresent, 0u);
 }
 
-TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
+CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     gl::ExpressionAnalyzer analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 3;
     analyzer.parameters.standardMaxSecondaryNumber = 9;
@@ -1624,7 +2607,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     for (uint32_t index = 0; index < 5; ++index) {
         const gl::NameId nameId = names.encode(statementNames[index]);
         const std::string original = index == 2
-            ? "(c[int_lev_1_2])"
+            ? "(c[int_0_lev_1_2])"
             : std::string("(") + statementNames[index] + "[x])";
         const gl::NameId originalId = names.encode(original);
         gl::IntEncodedExpr statement = projectionStatement(
@@ -1671,11 +2654,16 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         gl::genScratchArenas().slotCount() - 1);
     const auto addLooseSubkey = [&](const std::vector<gl::NameId>& indices) {
         const gl::NormKey key = normalizedKey(indices);
-        gl::OwnerSet owner;
-        owner.hasLooseOwner = true;
-        owner.owners.emplace_back(fixtureOwner, -1);
-        body.overallHashMemory.normalizedEncodedSubkeys.assignRun(
-            key, std::vector<gl::OwnerSet>{ owner });
+        ASSERT_TRUE(key.numberExpressions < gl::ExpressionAnalyzer::kSubkeyUCheckMinElements);
+        gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
+            body.overallHashMemory.normalizedEncodedSubkeys,
+            key.numberExpressions, key.data.data(), static_cast<int32_t>(key.data.size()));
+        const int32_t id = body.overallHashMemory.normalizedEncodedSubkeys.lookup(key);
+        ASSERT_TRUE(id != 0);
+        const auto value = body.overallHashMemory.normalizedEncodedSubkeys.recordAt(id, 0);
+        ASSERT_FALSE(value.hasLooseOwner);
+        ASSERT_TRUE(value.owners.empty() && value.uSignatures.empty());
+        ASSERT_EQ(gl::Codec<gl::OwnerSet>::serialize(value).size(), 9u);
     };
     const auto addWhole = [&](const std::vector<gl::NameId>& indices) {
         const gl::NormKey key = normalizedKey(indices);
@@ -1745,6 +2733,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     const int32_t gpuRemainingAlphaId = body.ruleInterner.encode("alpha");
     const int32_t gpuSourceId = body.ruleInterner.encode(
         "(>[gpuPremise,(gpuHead[1,u_u_static])])");
+    body.recursionAuxyImplId = gpuSourceId;
     for (std::size_t index = 0; index < evaluationRequests.size(); ++index) {
         const uint32_t valueCount = index == 2 ? 2u : 1u;
         std::vector<gl::LocalMemoryValue> values(valueCount);
@@ -1779,7 +2768,6 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         gl::StatementKey{ initiallyKnown.originalId, initiallyKnown.validityId },
         initiallyKnownLevels, 2);
     const gl::NameId markerMailId = names.encode("(c[marker])");
-    body.canBeSentMarkerIds.mint(markerMailId);
     const gl::NameId knownNumericHead = names.encode("(gpuHead[1,static])");
     const gl::NameId knownProductHead = names.encode(
         "(gpuHead[product_variable,static])");
@@ -1806,7 +2794,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             static_cast<uint32_t>(names.nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
     const gl::gpu::DeviceLogicalBlockProjection block =
-        hostProjection.appendLogicalBlock(body, analyzer);
+        hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
     gl::gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionLimits);
     deviceProjection.upload(hostProjection);
 
@@ -1863,6 +2851,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     growthLimits.prefixVariableValues = 256;
     growthLimits.prefixSecondaryValues = 256;
     growthLimits.candidateWindowRecords = 4;
+    growthLimits.frontierStoreRecords = 64;
     gl::gpu::CudaPhase2GrowthBuffer growth(growthLimits);
     const gl::gpu::Phase2GrowthResult result = growth.runRequestGrowth(
         deviceProjection, deviceTasks, deviceFilter, growthSchedule,
@@ -1940,6 +2929,314 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     std::sort(expectedRequests.begin(), expectedRequests.end());
     ASSERT_EQ(actualRequests, expectedRequests);
 
+    gl::gpu::Phase2GrowthCapacity streamLimits = growthLimits;
+    streamLimits.frontierRecords = 2;
+    streamLimits.frontierStoreRecords = 2;   // every larger level spills to host pages
+    streamLimits.acceptedEvents = 2;
+    streamLimits.rawRequests = 1;
+    streamLimits.prefixPayloadValues = 12;
+    streamLimits.prefixVariableValues = 4;
+    streamLimits.prefixSecondaryValues = 2;
+    streamLimits.candidateWindowRecords = 64;
+    gl::gpu::CudaPhase2GrowthBuffer streamingGrowth(streamLimits);
+    struct GrowthCapture {
+        std::vector<gl::gpu::DeviceAcceptedGrowthEvent> events;
+        std::vector<gl::gpu::DeviceRawGrowthRequest> requests;
+    } capturedGrowth;
+    const auto captureGrowth = [](void* context, const gl::gpu::CudaPhase2GrowthBuffer& buffer, bool) {
+        auto& captured = *static_cast<GrowthCapture*>(context);
+        gl::gpu::DeviceAcceptedGrowthEvent eventRows[2];
+        gl::gpu::DeviceRawGrowthRequest requestRows[1];
+        const uint32_t eventCount = buffer.downloadAcceptedEvents(eventRows, 2);
+        const uint32_t requestCount = buffer.downloadRawRequests(requestRows, 1);
+        captured.events.insert(captured.events.end(), eventRows, eventRows + eventCount);
+        captured.requests.insert(captured.requests.end(), requestRows, requestRows + requestCount);
+    };
+    uint64_t streamedSubkeyCount = 0;
+    const auto streamed = streamingGrowth.runRequestGrowthWindows(deviceProjection,
+        deviceTasks, hostTasks, deviceFilter, growthSchedule,
+        {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+         analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+        captureGrowth, &capturedGrowth, &streamedSubkeyCount, 1);
+    ASSERT_EQ(streamed.acceptedEventCount, 7ull);
+    ASSERT_EQ(streamed.rawRequestCount, 4ull);
+    ASSERT_EQ(streamedSubkeyCount, 5ull);
+    ASSERT_TRUE(streamed.drainCount > 1);
+    ASSERT_TRUE(streamed.maximumFrontierCount > streamLimits.frontierRecords);
+    ASSERT_TRUE(streamed.maximumCandidateWindow > streamLimits.frontierRecords);
+    ASSERT_TRUE(streamed.maximumCandidateWindow > streamLimits.rawRequests);
+    ASSERT_TRUE(streamed.maximumHostBackingBytes > 0);
+    ASSERT_TRUE(streamed.frontierSpills > 0);
+    ASSERT_EQ(streamed.uploadedFrontierBytes, streamed.downloadedFrontierBytes);
+    std::vector<std::string> streamedEvents, streamedRequests;
+    for (const auto& event : capturedGrowth.events) streamedEvents.push_back(eventText(event));
+    for (const auto& request : capturedGrowth.requests) streamedRequests.push_back(eventText(request.event));
+    std::sort(streamedEvents.begin(), streamedEvents.end());
+    std::sort(streamedRequests.begin(), streamedRequests.end());
+    ASSERT_EQ(streamedEvents, expectedEvents);
+    ASSERT_EQ(streamedRequests, expectedRequests);
+
+    auto smallWindowLimits = streamLimits;
+    smallWindowLimits.candidateWindowRecords = 2;
+    smallWindowLimits.prefixPayloadValues = growthLimits.prefixPayloadValues;
+    smallWindowLimits.prefixVariableValues = growthLimits.prefixVariableValues;
+    smallWindowLimits.prefixSecondaryValues = growthLimits.prefixSecondaryValues;
+    gl::gpu::CudaPhase2GrowthBuffer smallWindowGrowth(smallWindowLimits);
+    GrowthCapture smallWindowCapture;
+    uint64_t smallWindowSubkeys = 0;
+    const auto sliced = smallWindowGrowth.runRequestGrowthWindows(deviceProjection,
+        deviceTasks, hostTasks, deviceFilter, growthSchedule,
+        {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+         analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+        captureGrowth, &smallWindowCapture, &smallWindowSubkeys, 1);
+    ASSERT_TRUE(sliced.candidateNodeWindowQueries > 0);
+    ASSERT_TRUE(sliced.scheduledGateNodes < sliced.unslicedGateNodes);
+    ASSERT_EQ(sliced.acceptedEventCount, 7ull);
+    ASSERT_EQ(sliced.rawRequestCount, 4ull);
+    ASSERT_EQ(smallWindowSubkeys, 5ull);
+    std::vector<std::string> slicedEvents, slicedRequests;
+    for (const auto& event : smallWindowCapture.events) slicedEvents.push_back(eventText(event));
+    for (const auto& request : smallWindowCapture.requests) slicedRequests.push_back(eventText(request.event));
+    std::sort(slicedEvents.begin(), slicedEvents.end());
+    std::sort(slicedRequests.begin(), slicedRequests.end());
+    ASSERT_EQ(slicedEvents, expectedEvents);
+    ASSERT_EQ(slicedRequests, expectedRequests);
+
+    // A store that holds every level keeps the whole frontier on the device:
+    // no host page moves, same events and requests.
+    auto storeLimits = streamLimits;
+    storeLimits.frontierStoreRecords = 64;
+    gl::gpu::CudaPhase2GrowthBuffer storeGrowth(storeLimits);
+    GrowthCapture storeCapture;
+    uint64_t storeSubkeys = 0;
+    const auto stored = storeGrowth.runRequestGrowthWindows(deviceProjection,
+        deviceTasks, hostTasks, deviceFilter, growthSchedule,
+        {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+         analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+        captureGrowth, &storeCapture, &storeSubkeys, 1);
+    ASSERT_EQ(stored.acceptedEventCount, 7ull);
+    ASSERT_EQ(stored.rawRequestCount, 4ull);
+    ASSERT_EQ(storeSubkeys, 5ull);
+    ASSERT_EQ(stored.frontierSpills, 0ull);
+    ASSERT_EQ(stored.uploadedFrontierBytes, 0ull);
+    ASSERT_EQ(stored.downloadedFrontierBytes, 0ull);
+    ASSERT_TRUE(stored.maximumFrontierCount > storeLimits.frontierRecords);
+    std::vector<std::string> storedEvents, storedRequests;
+    for (const auto& event : storeCapture.events) storedEvents.push_back(eventText(event));
+    for (const auto& request : storeCapture.requests) storedRequests.push_back(eventText(request.event));
+    std::sort(storedEvents.begin(), storedEvents.end());
+    std::sort(storedRequests.begin(), storedRequests.end());
+    ASSERT_EQ(storedEvents, expectedEvents);
+    ASSERT_EQ(storedRequests, expectedRequests);
+
+    // Global cutoff and duplicate ownership follow original order, not drains.
+    for (bool interrupted : {false, true}) {
+        gl::gpu::Phase2EarlyExitLedger ledger(hostProjection, hostTasks, growthSchedule);
+        gl::SealedPageSet pages;
+        pages.bind(&gl::staticMemory());
+        gl::SealedPageSet* outputs[] = {&pages};
+        const auto receive = [&](uint32_t request, uint64_t position, const char* name, bool trigger) {
+            gl::FiringRecord record;
+            record.rplExpr2 = gl::SealedString::copyFrom(pages, name, static_cast<int32_t>(std::strlen(name)));
+            gl::gpu::DevicePhase2FiringRecord source{};
+            source.requestIndex = request;
+            source.growthPosition = position;
+            source.flags = trigger ? gl::gpu::deviceFiringDoomTrigger : 0;
+            ledger.observeHeaders(&source, 1);
+            if (trigger) ASSERT_TRUE(ledger.retainsHeader(source));
+            ledger.receive(source, record);
+        };
+        if (!interrupted) {
+            ASSERT_FALSE(ledger.beginDrain(true, 4, 3));
+            receive(0, 1, "A", false);
+            receive(1, 2, "B0", true);
+            receive(1, 2, "B1", false);
+            receive(2, 4, "C", false);
+        } else {
+            const uint32_t physicalOrder[] = {3, 2, 1, 0};
+            for (uint32_t at = 0; at < 4; ++at) {
+                const uint32_t order = physicalOrder[at];
+                ASSERT_TRUE(ledger.beginDrain(at == 3, 1, 1));
+                gl::gpu::DeviceAcceptedGrowthEvent event{};
+                event.count = 1;
+                event.statementIndices[0] = order == 0 ? 0 : (order == 3 ? 2 : 1);
+                event.filteredPositionCodes[0] = static_cast<uint16_t>(order + 1);
+                event.flags = 7;
+                ledger.appendEvents(&event, 1);
+                const gl::gpu::DeviceOrderedRequestToken token{1, 0, 0};
+                ledger.appendRequests(&token, 1);
+                if (order == 0) receive(0, 1, "A", false);
+                else if (order == 3) receive(0, 1, "C", false);
+                else {
+                    receive(0, 1, order == 1 ? "B0" : "late-B0", true);
+                    receive(0, 1, order == 1 ? "B1" : "late-B1", false);
+                }
+            }
+        }
+        int64_t cutoff = 0;
+        ASSERT_EQ(ledger.finish(outputs, 1, &cutoff), 3ull);
+        pages.seal();
+        ASSERT_EQ(cutoff, static_cast<int64_t>(2ull << 14));
+        ASSERT_EQ(ledger.evaluatedRequests, 3ull);
+        std::vector<std::string> names;
+        pages.forEachRecord<gl::FiringRecord>([&](const auto& record) { names.push_back(record.rplExpr2.toStdString()); });
+        std::sort(names.begin(), names.end());
+        ASSERT_EQ(names, (std::vector<std::string>{"A", "B0", "B1"}));
+        pages.freePages();
+    }
+
+    {
+        gl::gpu::Phase2EarlyExitLedger empty(hostProjection, hostTasks, growthSchedule);
+        gl::SealedPageSet pages;
+        pages.bind(&gl::staticMemory());
+        gl::SealedPageSet* outputs[] = {&pages};
+        int64_t cutoff = 0;
+        ASSERT_EQ(empty.finish(outputs, 1, &cutoff), 0ull);
+        ASSERT_EQ(cutoff, gl::kNoDoomLine);
+        pages.seal();
+        pages.freePages();
+    }
+    {
+        gl::gpu::Phase2TaskProjectionArena cutoffTasks(taskLimits);
+        gl::gpu::Phase2GrowthScheduleArena cutoffSchedule(2);
+        for (uint32_t part = 0; part < 2; ++part) {
+            gl::ExpressionStump stump{};
+            stump.allIdx[0] = static_cast<gl::NameId>(part);
+            stump.count = 1;
+            cutoffTasks.appendTask(0, &batch, 1, &stump, 1, static_cast<gl::NameId>(part), 2,
+                analyzer.parameters.maxIterationNumberVariable, 0);
+            cutoffSchedule.appendCall(part, cutoffTasks.tasks[part].batchOffset, 0);
+        }
+        for (bool interrupted : {false, true}) {
+            gl::gpu::Phase2EarlyExitLedger ledger(hostProjection, cutoffTasks, cutoffSchedule);
+            gl::SealedPageSet pages;
+            pages.bind(&gl::staticMemory());
+            gl::SealedPageSet* outputs[] = {&pages};
+            if (!interrupted) ASSERT_FALSE(ledger.beginDrain(true, 2, 2));
+            for (int part = 1; part >= 0; --part) {
+                if (interrupted) {
+                    ASSERT_TRUE(ledger.beginDrain(part == 0, 1, 1));
+                    gl::gpu::DeviceAcceptedGrowthEvent event{};
+                    event.callIndex = static_cast<uint32_t>(part);
+                    event.count = 1;
+                    event.statementIndices[0] = part;
+                    event.filteredPositionCodes[0] = 1;
+                    event.flags = 7;
+                    ledger.appendEvents(&event, 1);
+                    const gl::gpu::DeviceOrderedRequestToken token{1, 0, 0};
+                    ledger.appendRequests(&token, 1);
+                }
+                gl::FiringRecord record;
+                record.rplExpr2 = gl::SealedString::copyFrom(pages, part ? "loser" : "winner", part ? 5 : 6);
+                gl::gpu::DevicePhase2FiringRecord source{};
+                source.requestIndex = interrupted ? 0 : static_cast<uint32_t>(part);
+                source.partOrdinal = static_cast<uint32_t>(part);
+                source.growthPosition = 1;
+                source.flags = gl::gpu::deviceFiringDoomTrigger;
+                ledger.receive(source, record);
+                if (part == 0) { source.flags = 0; ledger.receive(source, record); }
+            }
+            int64_t cutoff = 0;
+            ASSERT_EQ(ledger.finish(outputs, 1, &cutoff), 2ull);
+            ASSERT_EQ(cutoff, static_cast<int64_t>(1ull << 14));
+            pages.seal();
+            pages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+                ASSERT_EQ(record.rplExpr2.toStdString(), std::string("winner"));
+            });
+            pages.freePages();
+        }
+    }
+
+    // Transfer pages do not split a fitting frontier execution window.
+    for (uint32_t copies : {1031u, gl::gpu::phase2FrontierCopyRows + 7}) {
+        const gl::gpu::Phase2FilterScheduleCapacity manyFilterLimits{copies, copies * 64, copies * 64, 64};
+        gl::gpu::Phase2FilterScheduleArena manyFilterSchedule(manyFilterLimits);
+        gl::gpu::Phase2GrowthScheduleArena manySchedule(copies);
+        for (uint32_t call = 0; call < copies; ++call) {
+            manyFilterSchedule.appendCall(0, gl::gpu::DeviceHashMemoryKind::overall,
+                analyzer.parameters.maxIterationNumberVariable, 1, block.statementCount);
+            manySchedule.appendCall(0, 0, call);
+        }
+        gl::gpu::CudaPhase2FilterSortBuffer manyFilter(manyFilterLimits);
+        ASSERT_EQ(manyFilter.filterAndSort(deviceProjection, manyFilterSchedule), 5u);
+        gl::gpu::Phase2GrowthCapacity manyLimits{copies, 64, 65536, 65536,
+            32768, 2097152, 1048576, 1048576, 65536, 65536};
+        std::vector<std::string> expectedMany;
+        for (uint32_t call = 0; call < copies; ++call)
+            for (const auto& event : expectedEvents)
+                expectedMany.push_back(std::to_string(call) + ":" + event);
+        std::sort(expectedMany.begin(), expectedMany.end());
+        for (bool constrained : {false, true}) {
+            if (constrained && copies != 1031) continue;
+            if (constrained) manyLimits.prefixPayloadValues = 512;
+            gl::gpu::CudaPhase2GrowthBuffer manyGrowth(manyLimits);
+            GrowthCapture captured;
+            const auto capture = [](void* opaque, const gl::gpu::CudaPhase2GrowthBuffer& buffer, bool) {
+                auto& captured = *static_cast<GrowthCapture*>(opaque);
+                std::vector<gl::gpu::DeviceAcceptedGrowthEvent> rows(65536);
+                const auto count = buffer.downloadAcceptedEvents(rows.data(), 65536);
+                captured.events.insert(captured.events.end(), rows.begin(), rows.begin() + count);
+            };
+            uint64_t subkeys = 0;
+            const auto streamedMany = manyGrowth.runRequestGrowthWindows(deviceProjection,
+                deviceTasks, hostTasks, manyFilter, manySchedule,
+                {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+                 analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+                capture, &captured, &subkeys, 1);
+            ASSERT_EQ(streamedMany.acceptedEventCount, copies * 7ull);
+            ASSERT_EQ(streamedMany.rawRequestCount, copies * 4ull);
+            ASSERT_EQ(subkeys, copies * 5ull);
+            ASSERT_EQ(streamedMany.drainCount, 1ull);
+            ASSERT_TRUE(streamedMany.frontierTransferRows > 0);
+            ASSERT_TRUE(streamedMany.frontierTransferRows <= gl::gpu::phase2FrontierCopyRows);
+            // Every level fits the store: no frontier row crosses to the host.
+            ASSERT_EQ(streamedMany.frontierTransferCalls, 0ull);
+            ASSERT_EQ(streamedMany.frontierSpills, 0ull);
+            ASSERT_EQ(streamedMany.uploadedFrontierBytes, 0ull);
+            ASSERT_EQ(streamedMany.downloadedFrontierBytes, 0ull);
+            if (constrained) { ASSERT_TRUE(streamedMany.prefixWindows > 3); }
+            else { ASSERT_EQ(streamedMany.prefixWindows, 3ull); }
+            std::vector<std::string> actual;
+            for (const auto& event : captured.events)
+                actual.push_back(std::to_string(event.callIndex) + ":" + eventText(event));
+            std::sort(actual.begin(), actual.end());
+            ASSERT_EQ(actual, expectedMany);
+            ASSERT_TRUE(streamedMany.probeWindows > 0);
+            ASSERT_TRUE(streamedMany.exactCountReads > 0);
+        }
+        if (copies != 1031) {
+            // A request ceiling below one candidate window's survivors keeps two
+            // half-size probe windows in flight: the bounds tighten from lagged
+            // counter snapshots, requests still drain exactly, every event matches.
+            auto requestLimits = manyLimits;
+            requestLimits.rawRequests = 8192;
+            gl::gpu::CudaPhase2GrowthBuffer requestGrowth(requestLimits);
+            GrowthCapture requestCapture;
+            const auto captureEvents = [](void* opaque, const gl::gpu::CudaPhase2GrowthBuffer& buffer, bool) {
+                auto& captured = *static_cast<GrowthCapture*>(opaque);
+                std::vector<gl::gpu::DeviceAcceptedGrowthEvent> rows(65536);
+                const auto count = buffer.downloadAcceptedEvents(rows.data(), 65536);
+                captured.events.insert(captured.events.end(), rows.begin(), rows.begin() + count);
+            };
+            uint64_t requestSubkeys = 0;
+            const auto bounded = requestGrowth.runRequestGrowthWindows(deviceProjection,
+                deviceTasks, hostTasks, manyFilter, manySchedule,
+                {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+                 analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+                captureEvents, &requestCapture, &requestSubkeys, 1);
+            ASSERT_EQ(bounded.acceptedEventCount, copies * 7ull);
+            ASSERT_EQ(bounded.rawRequestCount, copies * 4ull);
+            ASSERT_EQ(requestSubkeys, copies * 5ull);
+            ASSERT_TRUE(bounded.drainCount > 1);
+            ASSERT_TRUE(bounded.probeWindows > bounded.candidateWindows);
+            std::vector<std::string> actual;
+            for (const auto& event : requestCapture.events)
+                actual.push_back(std::to_string(event.callIndex) + ":" + eventText(event));
+            std::sort(actual.begin(), actual.end());
+            ASSERT_EQ(actual, expectedMany);
+        }
+    }
+
     {
         gl::gpu::CudaPhase2GrowthBuffer observationGrowth(growthLimits);
         const gl::gpu::Phase2GrowthResult observation =
@@ -1996,14 +3293,13 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
 
     gl::gpu::Phase2OrderingCapacity orderingLimits{};
     orderingLimits.events = 128;
-    orderingLimits.deduplicationSlots = 128;
     orderingLimits.requests = 64;
     gl::gpu::CudaPhase2OrderingBuffer ordering(orderingLimits);
     const gl::gpu::Phase2OrderingResult ordered =
-        ordering.orderAndDeduplicate(
+        ordering.orderRequests(
             deviceProjection, deviceTasks, growth);
     ASSERT_EQ(ordered.orderedEventCount, 7u);
-    ASSERT_EQ(ordered.uniqueRequestCount, 4u);
+    ASSERT_EQ(ordered.requestCount, 4u);
     std::vector<uint32_t> orderedIndices(ordered.orderedEventCount);
     ordering.downloadOrderedEventIndices(
         orderedIndices.data(), static_cast<uint32_t>(orderedIndices.size()));
@@ -2016,16 +3312,24 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     };
     ASSERT_EQ(orderedEventText, expectedOrderedEvents);
     std::vector<gl::gpu::DeviceOrderedRequestToken> orderedRequests(
-        ordered.uniqueRequestCount);
+        ordered.requestCount);
     ordering.downloadOrderedRequests(
         orderedRequests.data(),
         static_cast<uint32_t>(orderedRequests.size()));
+    gl::gpu::DeviceAcceptedGrowthEvent eventWindow[2];
+    growth.downloadAcceptedEventWindow(2, 2, eventWindow);
+    ASSERT_EQ(std::memcmp(eventWindow, events.data() + 2, sizeof(eventWindow)), 0);
+    growth.downloadAcceptedEventWindow(static_cast<uint32_t>(events.size()), 0, nullptr);
+    gl::gpu::DeviceOrderedRequestToken requestWindow[2];
+    ordering.downloadOrderedRequestWindow(1, 2, requestWindow);
+    ASSERT_EQ(std::memcmp(requestWindow, orderedRequests.data() + 1, sizeof(requestWindow)), 0);
+    ordering.downloadOrderedRequestWindow(static_cast<uint32_t>(orderedRequests.size()), 0, nullptr);
     const uint64_t expectedGrowthPositions[4] = { 3, 4, 5, 5 };
     const uint32_t expectedEventOrders[4] = { 2, 3, 5, 6 };
     const std::string expectedOrderedRequests[4] = {
         "1:2:7", "2:1,2:7", "2:0,2:6", "3:0,1,2:6"
     };
-    for (uint32_t index = 0; index < ordered.uniqueRequestCount; ++index) {
+    for (uint32_t index = 0; index < ordered.requestCount; ++index) {
         ASSERT_EQ(orderedRequests[index].growthPosition,
                   expectedGrowthPositions[index]);
         ASSERT_EQ(orderedRequests[index].eventOrder,
@@ -2076,8 +3380,66 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         }
     }
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer);
+    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
     deviceProjection.upload(hostProjection);
+    // CPU and CUDA must reject an impure marker even when its owner is an
+    // OR branch. Classifying that same argument as a recursion product makes
+    // the marker legal without changing any ordinary head inference.
+    body.overallHashMemory.remainingArgsReverseIndex.rebuildReverseIndex(
+        body.overallHashMemory.remainingArgsNormalizedEncodedMap, ownerArena);
+    for (bool recursionProduct : {false, true}) {
+        if (recursionProduct)
+            body.overallHashMemory.productsOfRecursionIds.mint(variableVSecondary);
+        hostProjection.clear();
+        hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+        deviceProjection.upload(hostProjection);
+        ASSERT_EQ(evaluation.expandEvaluationWork(deviceProjection, deviceTasks,
+            growth, ordering).localValueCount, 5u);
+        gl::gpu::Phase2OutputUsage purityBounds[5]{};
+        evaluation.measureFiringOutputBounds(deviceProjection, deviceTasks,
+            growth, ordering, 0, 5, purityBounds);
+        uint64_t boundedRecords = 0;
+        for (const auto& bound : purityBounds)
+            boundedRecords += bound.columns[0];
+        ASSERT_EQ(boundedRecords, recursionProduct ? 5ull : 4ull);
+        ASSERT_EQ(evaluation.materializeFiringExpressions(deviceProjection,
+            deviceTasks, growth, ordering).firingRecordCount,
+            recursionProduct ? 5u : 4u);
+
+        gl::SealedPageSet processorPages;
+        processorPages.bind(&gl::staticMemory());
+        for (std::size_t index = 0; index < evaluationRequests.size(); ++index) {
+            gl::StaticRequest request{};
+            request.count = static_cast<int32_t>(evaluationRequests[index].size());
+            request.maxIteration = -1;
+            for (int32_t premise = 0; premise < request.count; ++premise)
+                request.intExprs[premise] = &body.intEncodedStatements[
+                    evaluationRequests[index][premise]];
+            const auto& key = rawEvaluationKeys[index];
+            request.normalizedKey = gl::IntNormalizedKey(key.numberExpressions,
+                key.data.data(), static_cast<int32_t>(key.data.size()));
+            analyzer.checkLocalEncodedMemoryStatic(request, body,
+                gl::scratchArenas().slotCount() - 1, processorPages);
+        }
+        uint32_t processorHeads = 0;
+        uint32_t processorMarkers = 0;
+        processorPages.seal();
+        processorPages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            if (record.isMarker) {
+                ++processorMarkers;
+                ASSERT_EQ(record.validityName.toStdString(), names.decode(markerOrBranchId));
+            }
+            else ++processorHeads;
+        });
+        ASSERT_EQ(processorHeads, 4u);
+        ASSERT_EQ(processorMarkers, recursionProduct ? 1u : 0u);
+        processorPages.freePages();
+    }
+    // Growth above exercised a real secondary argument. The evaluation fixture
+    // now classifies it as a recursion product; a zero-secondary limit keeps
+    // W and its shadow excluded during the later streaming-controller twins.
+    analyzer.parameters.maxNumberSecondaryVariables = 0;
+    analyzer.parameters.maxNumberSecondaryVariablesOrint = 0;
     const gl::gpu::Phase2EvaluationResult evaluationResult =
         evaluation.expandEvaluationWork(
             deviceProjection, deviceTasks, growth, ordering);
@@ -2111,6 +3473,46 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         valueRequests.push_back(work.requestIndex);
     std::sort(valueRequests.begin(), valueRequests.end());
     ASSERT_EQ(valueRequests, std::vector<uint32_t>({ 0, 1, 2, 2, 3 }));
+
+    gl::gpu::Phase2OutputUsage measuredOutputs[5]{};
+    evaluation.measureFiringOutputBounds(deviceProjection, deviceTasks, growth,
+        ordering, 0, 5, measuredOutputs);
+    for (uint32_t index = 0; index < 5; ++index) {
+        ASSERT_TRUE(measuredOutputs[index].columns[0] <= 1);
+        ASSERT_TRUE(measuredOutputs[index].columns[1] > 0);
+    }
+
+    // Force both owner and value expansion to cross their processing bounds.
+    auto windowLimits = evaluationLimits;
+    windowLimits.reverseOwners = 1;
+    windowLimits.candidateOwners = 1;
+    windowLimits.encodedHits = 1;
+    windowLimits.localValues = 1;
+    gl::gpu::CudaPhase2EvaluationBuffer windowed(windowLimits);
+    windowed.beginEvaluationWindows(deviceProjection, deviceTasks, growth, ordering);
+    std::vector<std::pair<uint32_t, uint32_t>> windowValues;
+    uint32_t windowFirings = 0;
+    while (windowed.nextEvaluationValues(deviceProjection, deviceTasks, growth, ordering)) {
+        gl::gpu::DeviceEvaluationValueWork work{};
+        ASSERT_EQ(windowed.downloadValueWork(&work, 1), 1u);
+        windowValues.emplace_back(work.requestIndex, work.blobRecordIndex);
+        const auto produced = windowed.materializeFiringExpressions(
+            deviceProjection, deviceTasks, growth, ordering);
+        windowFirings += produced.firingRecordCount;
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> expectedWindowValues;
+    for (const auto& work : valueWork)
+        expectedWindowValues.emplace_back(work.requestIndex, work.blobRecordIndex);
+    std::sort(windowValues.begin(), windowValues.end());
+    std::sort(expectedWindowValues.begin(), expectedWindowValues.end());
+    ASSERT_EQ(windowValues, expectedWindowValues);
+    ASSERT_EQ(windowFirings, 5u);
+    // Exhaustion closes the continuation; the same frozen image may be replayed.
+    windowed.beginEvaluationWindows(deviceProjection, deviceTasks, growth, ordering);
+    uint32_t repeatedValues = 0;
+    while (windowed.nextEvaluationValues(deviceProjection, deviceTasks, growth, ordering))
+        ++repeatedValues;
+    ASSERT_EQ(repeatedValues, 5u);
 
     const gl::gpu::Phase2FiringExpressionResult firingExpressions =
         evaluation.materializeFiringExpressions(
@@ -2194,17 +3596,68 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     };
 
     gl::gpu::Phase2SealingArena sealing(evaluationLimits);
+    ASSERT_EQ(sealing.hostBytes(), uint64_t(0));   // construction allocates nothing
     gl::SealedPageSet sealedOutput;
     sealedOutput.bind(&gl::staticMemory());
     gl::SealedPageSet* sealedOutputs[1] = { &sealedOutput };
     ASSERT_EQ(sealing.downloadAndSeal(
-        evaluation, hostProjection, firingExpressions, 5,
+        evaluation, *sealingTwin(hostProjection), firingExpressions, 5,
         sealedOutputs, 1), 5u);
     ASSERT_TRUE(sealedOutput.sealed());
     ASSERT_EQ(sealedOutput.recordCount(), 5);
+    {
+        // The columns hold exactly this window's used counts, not the
+        // evaluator capacity.
+        const gl::gpu::Phase2FiringExpressionResult& w = firingExpressions;
+        const uint64_t expectedSealingBytes =
+            uint64_t(w.firingRecordCount) * sizeof(gl::gpu::DevicePhase2FiringRecord)
+            + uint64_t(w.generatedByteCount)
+            + uint64_t(w.levelValueCount) * sizeof(int32_t)
+            + uint64_t(w.originDependencyCount) * sizeof(gl::gpu::DeviceEvaluationDependency)
+            + uint64_t(w.markerKeyCount) * sizeof(gl::gpu::DeviceEvaluationByteSlice)
+            + uint64_t(w.markerRemainingArgCount) * sizeof(int32_t)
+            + uint64_t(w.markerArgCount) * sizeof(gl::gpu::DeviceEvaluationByteSlice)
+            + uint64_t(5) * sizeof(uint32_t)
+            + uint64_t(std::max({ w.markerKeyCount, w.markerRemainingArgCount,
+                  w.markerArgCount })) * sizeof(gl::SealedString)
+            + uint64_t(w.originDependencyCount) * sizeof(gl::SealedExpressionWithValidity);
+        ASSERT_EQ(sealing.hostBytes(), expectedSealingBytes);
+    }
+    const auto sealedContent = [](const gl::FiringRecord& record) {
+        std::vector<std::string> values;
+        const auto number = [&](auto value) { values.push_back(std::to_string(value)); };
+        const auto strings = [&](const auto& run) {
+            number(run.size());
+            for (const auto& text : run) values.push_back(text.toStdString());
+        };
+        number(record.isMarker); number(record.isOrdis2Demand);
+        values.push_back(record.rplExpr2.toStdString());
+        values.push_back(record.validityName.toStdString());
+        number(record.levels.size());
+        for (int level : record.levels) number(level);
+        values.push_back(record.originTag.toStdString());
+        number(record.originDeps.size());
+        for (const auto& dependency : record.originDeps) {
+            values.push_back(dependency.original.toStdString());
+            values.push_back(dependency.validityName.toStdString());
+        }
+        number(record.doNotDisintegrate); number(record.allowOrDisintegration);
+        number(record.recursionHead); number(record.alreadyKnown);
+        number(record.iteration); number(record.demandSourceImplId);
+        strings(record.markerArgsSorted); strings(record.admv.key);
+        strings(record.admv.remainingArgsSorted);
+        number(record.admv.standardMaxAdmissionDepth);
+        number(record.admv.standardMaxSecondaryNumber);
+        number(record.admv.flag); number(record.admv.ordisOnly);
+        return values;
+    };
+    std::vector<std::vector<std::string>> expectedSealedContent;
+    std::vector<std::string> expectedSealedMarker;
     uint32_t sealedIndex = 0;
     sealedOutput.forEachRecord<gl::FiringRecord>(
         [&](const gl::FiringRecord& sealed) {
+            expectedSealedContent.push_back(sealedContent(sealed));
+            if (sealed.isMarker) expectedSealedMarker = sealedContent(sealed);
             ASSERT_TRUE(sealedIndex < firingOrder.size());
             const gl::gpu::DevicePhase2FiringRecord& source =
                 firingRecords[firingOrder[sealedIndex]];
@@ -2215,6 +3668,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
                 & gl::gpu::deviceFiringMarker) != 0;
             ASSERT_EQ(sealed.isMarker, sourceMarker);
             ASSERT_FALSE(sealed.isOrdis2Demand);
+            ASSERT_EQ(sealed.recursionHead, !sourceMarker);
             if (!sourceMarker) {
                 ASSERT_EQ(sealed.originTag.toStdString(), "implication");
                 ASSERT_EQ(sealed.levels.size(),
@@ -2246,8 +3700,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
                 ASSERT_EQ(sealed.allowOrDisintegration,
                     (source.flags
                         & gl::gpu::deviceFiringAllowOrDisintegration) != 0);
-                ASSERT_EQ(sealed.allGood,
-                    (source.flags & gl::gpu::deviceFiringAllGood) != 0);
+
                 ASSERT_EQ(sealed.alreadyKnown,
                     (source.flags & gl::gpu::deviceFiringAlreadyKnown) != 0);
                 ASSERT_EQ(sealed.iteration, source.iteration);
@@ -2284,9 +3737,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
                 ASSERT_FALSE(sealed.admv.flag);
                 ASSERT_EQ(sealed.admv.ordisOnly,
                     (source.flags & gl::gpu::deviceFiringOrdisOnly) != 0);
-                ASSERT_EQ(sealed.markerNotAtomic,
-                    (source.flags
-                        & gl::gpu::deviceFiringMarkerNotAtomic) != 0);
+
             }
             ++sealedIndex;
         });
@@ -2317,8 +3768,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             ASSERT_EQ(record.flags, static_cast<uint32_t>(
                 gl::gpu::deviceFiringMarker
                 | gl::gpu::deviceFiringDisintegrationAllowed
-                | gl::gpu::deviceFiringOrdisOnly
-                | gl::gpu::deviceFiringMarkerNotAtomic));
+                | gl::gpu::deviceFiringOrdisOnly));
             ASSERT_EQ(record.levelsCount, 0u);
             ASSERT_EQ(record.originDependencyCount, 0u);
             ASSERT_EQ(record.markerKeyCount, 2u);
@@ -2347,9 +3797,8 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         ASSERT_EQ(record.standardMaxSecondaryNumber, 0);
         uint32_t expectedFlags =
             gl::gpu::deviceFiringDisintegrationAllowed
-            | gl::gpu::deviceFiringAlreadyKnown;
-        if (record.requestIndex == 0 || record.requestIndex == 2)
-            expectedFlags |= gl::gpu::deviceFiringAllGood;
+            | gl::gpu::deviceFiringAlreadyKnown
+            | gl::gpu::deviceFiringRecursionHead;
         if (record.flags != expectedFlags) {
             std::fprintf(stderr,
                 "[phase2-gpu] head request=%u flags=%u expected=%u expression=%s\n",
@@ -2401,10 +3850,356 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     std::sort(expectedFiredExpressions.begin(), expectedFiredExpressions.end());
     ASSERT_EQ(firedExpressions, expectedFiredExpressions);
 
+    // Bounds cover all output columns for each independently emitted value.
+    gl::SealedPageSet streamedOutput;
+    streamedOutput.bind(&gl::staticMemory());
+    gl::SealedPageSet* streamedOutputs[] = {&streamedOutput};
+    for (uint32_t valueIndex = 0; valueIndex < valueWork.size(); ++valueIndex) {
+        const auto single = evaluation.materializeFiringExpressions(
+            deviceProjection, deviceTasks, growth, ordering, valueIndex, 1);
+        const uint64_t actual[] = {single.firingRecordCount, single.generatedByteCount,
+            single.levelValueCount, single.originDependencyCount, single.markerKeyCount,
+            single.markerRemainingArgCount, single.markerArgCount};
+        for (uint32_t column = 0; column < 7; ++column)
+            ASSERT_TRUE(actual[column] <= measuredOutputs[valueIndex].columns[column]);
+        ASSERT_EQ(sealing.downloadAndSeal(evaluation, *sealingTwin(hostProjection), single,
+            single.firingRecordCount, streamedOutputs, 1, {false, false}), single.firingRecordCount);
+        ASSERT_TRUE(streamedOutput.filling());
+    }
+    ASSERT_EQ(streamedOutput.recordCount(), 5);
+    streamedOutput.seal();
+    std::vector<std::vector<std::string>> actualSealedContent;
+    streamedOutput.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+        actualSealedContent.push_back(sealedContent(record));
+    });
+    std::sort(actualSealedContent.begin(), actualSealedContent.end());
+    std::sort(expectedSealedContent.begin(), expectedSealedContent.end());
+    ASSERT_EQ(actualSealedContent, expectedSealedContent);
+    streamedOutput.freePages();
+    uint32_t markerValue = static_cast<uint32_t>(valueWork.size());
+    std::vector<std::string> expectedMarkerKeys;
+    for (const auto& record : firingRecords) {
+        if ((record.flags & gl::gpu::deviceFiringMarker) == 0) continue;
+        for (uint32_t index = 0; index < valueWork.size(); ++index) {
+            if (valueWork[index].requestIndex == record.requestIndex
+                && valueWork[index].blobRecordIndex == record.blobRecordIndex)
+                markerValue = index;
+        }
+        for (uint32_t key = 0; key < record.markerKeyCount; ++key)
+            expectedMarkerKeys.push_back(sliceText(markerKeys[record.markerKeyOffset + key]));
+    }
+    ASSERT_TRUE(markerValue < valueWork.size());
+    ASSERT_EQ(expectedMarkerKeys.size(), std::size_t{2});
+    gl::SealedPageSet fragmentedOutput;
+    fragmentedOutput.bind(&gl::staticMemory());
+    gl::SealedPageSet* fragmentedOutputs[] = {&fragmentedOutput};
+    gl::SealedSpanBuilder<gl::SealedString> markerBuilder(fragmentedOutput, 2);
+    struct MarkerAssembly {
+        gl::SealedSpanBuilder<gl::SealedString>* keys;
+        gl::FiringRecord record{};
+        bool started{false};
+    } markerAssembly{&markerBuilder};
+    gl::gpu::Phase2SealingOptions fragmentOptions{false, false};
+    fragmentOptions.context = &markerAssembly;
+    fragmentOptions.receive = [](void* context, uint32_t blockIndex, const gl::FiringRecord& record,
+        const gl::gpu::DevicePhase2FiringRecord&) {
+        auto& assembly = *static_cast<MarkerAssembly*>(context);
+        ASSERT_EQ(blockIndex, 0u);
+        ASSERT_TRUE(record.isMarker);
+        if (assembly.started) {
+            ASSERT_EQ(assembly.record.rplExpr2.data(), record.rplExpr2.data());
+            ASSERT_EQ(assembly.record.markerArgsSorted.data(), record.markerArgsSorted.data());
+            ASSERT_EQ(assembly.record.admv.remainingArgsSorted.data(), record.admv.remainingArgsSorted.data());
+        } else {
+            assembly.record = record;
+            assembly.started = true;
+        }
+        assembly.keys->append(record.admv.key.data(), record.admv.key.size());
+    };
+    std::vector<std::string> segmentedMarkerKeys;
+    for (uint32_t key = 0; key < expectedMarkerKeys.size(); ++key) {
+        gl::gpu::Phase2OutputUsage bound{};
+        evaluation.measureFiringOutputBounds(deviceProjection, deviceTasks, growth,
+            ordering, markerValue, 1, &bound, key, 1);
+        ASSERT_EQ(bound.columns[4], 1ull);
+        const auto fragment = evaluation.materializeFiringExpressions(
+            deviceProjection, deviceTasks, growth, ordering, markerValue, 1, key, 1);
+        ASSERT_EQ(fragment.firingRecordCount, 1u);
+        ASSERT_EQ(fragment.markerKeyCount, 1u);
+        ASSERT_EQ(fragment.markerRemainingArgCount, 2u);
+        ASSERT_EQ(fragment.markerArgCount, 1u);
+        ASSERT_EQ(fragment.generatedByteCount, bound.columns[1]);
+        fragmentOptions.repeatedMarkerHeader = markerAssembly.started ? &markerAssembly.record : nullptr;
+        ASSERT_EQ(sealing.downloadAndSeal(evaluation, *sealingTwin(hostProjection), fragment,
+            1, fragmentedOutputs, 1, fragmentOptions), 1u);
+        ASSERT_TRUE(fragmentedOutput.filling());
+        ASSERT_EQ(fragmentedOutput.recordCount(), 0);
+        std::vector<char> bytes(fragment.generatedByteCount);
+        ASSERT_EQ(evaluation.downloadGeneratedBytes(bytes.data(), fragment.generatedByteCount),
+            fragment.generatedByteCount);
+        gl::gpu::DeviceEvaluationByteSlice keySlice{};
+        ASSERT_EQ(evaluation.downloadMarkerKeys(&keySlice, 1), 1u);
+        segmentedMarkerKeys.emplace_back(bytes.data() + keySlice.offset, keySlice.length);
+    }
+    ASSERT_EQ(segmentedMarkerKeys, expectedMarkerKeys);
+    markerAssembly.record.admv.key = markerBuilder.finish();
+    fragmentedOutput.appendRecord(markerAssembly.record);
+    fragmentedOutput.seal();
+    ASSERT_EQ(fragmentedOutput.recordCount(), 1);
+    ASSERT_EQ(sealedContent(markerAssembly.record), expectedSealedMarker);
+    fragmentedOutput.freePages();
+
+    auto plannedLimits = evaluationLimits;
+    plannedLimits.firingRecords = 1;
+    plannedLimits.generatedBytes = 128;
+    plannedLimits.levelValues = 4;
+    plannedLimits.originDependencies = 4;
+    plannedLimits.markerKeys = 1;
+    plannedLimits.markerRemainingArgs = 2;
+    plannedLimits.markerArgs = 1;
+    gl::gpu::CudaPhase2EvaluationBuffer plannedEvaluation(plannedLimits);
+    ASSERT_EQ(plannedEvaluation.expandEvaluationWork(deviceProjection, deviceTasks,
+        growth, ordering).localValueCount, 5u);
+    gl::gpu::Phase2SealingArena plannedSealing(plannedLimits);
+    gl::SealedPageSet plannedOutput;
+    plannedOutput.bind(&gl::staticMemory());
+    gl::SealedPageSet* plannedOutputs[] = {&plannedOutput};
+    gl::SealedSpanBuilder<gl::SealedString> plannedMarkerKeys(plannedOutput, 2);
+    MarkerAssembly plannedMarker{&plannedMarkerKeys};
+    gl::gpu::Phase2FiringCursor firingCursor{};
+    uint32_t plannedDownloads = 0;
+    uint32_t plannedFragments = 0;
+    for (;;) {
+        const auto window = plannedEvaluation.nextFiringWindow(
+            deviceProjection, deviceTasks, growth, ordering, firingCursor);
+        if (window.state == gl::gpu::Phase2FiringWindowState::complete) break;
+        ASSERT_EQ(window.state, gl::gpu::Phase2FiringWindowState::ready);
+        ASSERT_TRUE(plannedOutput.filling());
+        if (window.markerFragment) {
+            ASSERT_EQ(window.totalMarkerKeys, 2u);
+            ASSERT_EQ(window.markerKeyBegin, plannedFragments);
+            ASSERT_EQ(window.markerKeyCount, 1u);
+            auto options = fragmentOptions;
+            options.context = &plannedMarker;
+            options.repeatedMarkerHeader = plannedMarker.started ? &plannedMarker.record : nullptr;
+            ASSERT_EQ(plannedSealing.downloadAndSeal(plannedEvaluation, *sealingTwin(hostProjection),
+                window.used, window.used.firingRecordCount, plannedOutputs, 1, options), 1u);
+            ++plannedFragments;
+            if (firingCursor.markerKey == 0) {
+                plannedMarker.record.admv.key = plannedMarkerKeys.finish();
+                plannedOutput.appendRecord(plannedMarker.record);
+            }
+        } else {
+            plannedSealing.downloadAndSeal(plannedEvaluation, *sealingTwin(hostProjection),
+                window.used, window.used.firingRecordCount, plannedOutputs, 1, {false, false});
+        }
+        ++plannedDownloads;
+    }
+    ASSERT_EQ(plannedDownloads, 6u);
+    ASSERT_EQ(plannedFragments, 2u);
+    ASSERT_EQ(firingCursor.value, 5u);
+    ASSERT_EQ(firingCursor.markerKey, 0u);
+    ASSERT_EQ(plannedOutput.recordCount(), 5);
+    plannedOutput.seal();
+    actualSealedContent.clear();
+    plannedOutput.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+        actualSealedContent.push_back(sealedContent(record));
+    });
+    std::sort(actualSealedContent.begin(), actualSealedContent.end());
+    ASSERT_EQ(actualSealedContent, expectedSealedContent);
+    plannedOutput.freePages();
+    ASSERT_EQ(plannedEvaluation.nextFiringWindow(deviceProjection, deviceTasks,
+        growth, ordering, firingCursor).state, gl::gpu::Phase2FiringWindowState::complete);
+
+    // Exercise the production controller with every request in a separate drain.
+    gl::gpu::CudaPhase2GrowthBuffer controllerGrowth(streamLimits);
+    gl::gpu::CudaPhase2OrderingBuffer controllerOrdering({2, 1});
+    auto controllerLimits = plannedLimits;
+    controllerLimits.requests = 1;
+    controllerLimits.reverseOwners = controllerLimits.candidateOwners = 1;
+    controllerLimits.encodedHits = controllerLimits.localValues = 1;
+    gl::gpu::CudaPhase2EvaluationBuffer controllerEvaluation(controllerLimits);
+    gl::gpu::Phase2SealingArena controllerSealing(controllerLimits);
+    gl::gpu::Phase2BufferPlan controllerPlan{};
+    controllerPlan.growth = streamLimits;
+    controllerPlan.evaluation = controllerLimits;
+    gl::gpu::Phase2StreamBuffers controllerBuffers{deviceProjection, deviceTasks,
+        deviceFilter, controllerGrowth, controllerOrdering, controllerEvaluation};
+    gl::SealedPageSet controllerOutput;
+    controllerOutput.bind(&gl::staticMemory());
+    gl::SealedPageSet* controllerOutputs[] = {&controllerOutput};
+    uint64_t controllerSubkeys = 0;
+    const auto controlled = controllerSealing.runWindows(controllerBuffers,
+        *sealingTwin(hostProjection), hostTasks, growthSchedule,
+        {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+         analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0}, controllerPlan,
+        controllerOutputs, 1, &controllerSubkeys, 1);
+    ASSERT_EQ(controlled.evaluatedRequests, 4ull);
+    ASSERT_EQ(controlled.firingRecords, 5ull);
+    ASSERT_EQ(controllerSubkeys, 5ull);
+    ASSERT_TRUE(controlled.growth.drainCount > 1);
+    ASSERT_TRUE(controlled.outputDownloads >= 6);
+    ASSERT_TRUE(controlled.outputTransferBytes > 0);
+    actualSealedContent.clear();
+    controllerOutput.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+        actualSealedContent.push_back(sealedContent(record));
+    });
+    std::sort(actualSealedContent.begin(), actualSealedContent.end());
+    ASSERT_EQ(actualSealedContent, expectedSealedContent);
+    controllerOutput.freePages();
+
+    // Enabling level stops without a discharge preserves the complete stream.
+    {
+        gl::SealedPageSet pages;
+        pages.bind(&gl::staticMemory());
+        gl::SealedPageSet* outputs[] = {&pages};
+        uint64_t subkeys = 0;
+        int64_t stop = 0;
+        const auto full = controllerSealing.runWindows(controllerBuffers,
+            *sealingTwin(hostProjection), hostTasks, growthSchedule,
+            {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+             analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+            controllerPlan, outputs, 1, &subkeys, 1, &stop);
+        ASSERT_EQ(stop, INT64_MAX);
+        ASSERT_EQ(full.firingRecords, controlled.firingRecords);
+        ASSERT_EQ(subkeys, controllerSubkeys);
+        std::vector<std::vector<std::string>> content;
+        pages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            content.push_back(sealedContent(record));
+        });
+        std::sort(content.begin(), content.end());
+        ASSERT_EQ(content, expectedSealedContent);
+        pages.freePages();
+    }
+
+    // Insufficient minimum fragment capacity is a scheduling state, not a write.
+    for (uint32_t column : {1u, 2u, 3u, 5u}) {
+        auto blockedLimits = evaluationLimits;
+        if (column == 1) blockedLimits.generatedBytes = 1;
+        if (column == 2) blockedLimits.levelValues = 1;
+        if (column == 3) blockedLimits.originDependencies = 1;
+        if (column == 5) blockedLimits.markerRemainingArgs = 1;
+        gl::gpu::CudaPhase2EvaluationBuffer blocked(blockedLimits);
+        ASSERT_EQ(blocked.expandEvaluationWork(deviceProjection, deviceTasks,
+            growth, ordering).localValueCount, 5u);
+        uint32_t blockedValue = 0;
+        while (measuredOutputs[blockedValue].columns[column] <= 1) {
+            ++blockedValue;
+            ASSERT_TRUE(blockedValue < 5);
+        }
+        gl::gpu::Phase2FiringCursor blockedCursor{blockedValue, 0};
+        for (uint32_t repeat = 0; repeat < 2; ++repeat) {
+            const auto window = blocked.nextFiringWindow(deviceProjection, deviceTasks,
+                growth, ordering, blockedCursor);
+            ASSERT_EQ(window.state, gl::gpu::Phase2FiringWindowState::needsCapacity);
+            ASSERT_TRUE(window.required.columns[column] > 1);
+            ASSERT_EQ(blockedCursor.value, blockedValue);
+            ASSERT_EQ(blockedCursor.markerKey, 0u);
+            ASSERT_EQ(window.used.firingRecordCount, 0u);
+        }
+    }
+    ASSERT_EQ(evaluation.materializeFiringExpressions(
+        deviceProjection, deviceTasks, growth, ordering).firingRecordCount, 5u);
+
+    // Metadata transfer pages must not become execution or download boundaries.
+    {
+        constexpr uint32_t plainValues = 2053;
+        gl::LocalMemoryValue plain;
+        plain.valueId = gpuHeadId;
+        plain.originalImplicationId = gpuSourceId;
+        plain.justification = gl::RuleJustification::implication;
+        plain.validityId = mainId;
+        plain.levels = {4, 5};
+        body.overallHashMemory.encodedMap.assignRun(
+            mappedEvaluationKey(evaluationRequests[0]),
+            std::vector<gl::LocalMemoryValue>(plainValues, plain));
+        const auto bulkInput = gl::gpu::makePhase2BufferPlanInput(
+            gl::gpu::measurePhase2ProjectionUsage(body, analyzer, 0x0fu, true), {}, 0, 0, 0);
+        gl::gpu::Phase2ProjectionArena bulkProjection(bulkInput.projection);
+        bulkProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+        gl::gpu::CudaPhase2ProjectionBuffer bulkDevice(bulkInput.projection);
+        bulkDevice.upload(bulkProjection);
+        auto bulkLimits = evaluationLimits;
+        bulkLimits.localValues = bulkLimits.firingRecords = 4096;
+        bulkLimits.generatedBytes = 1u << 20;
+        bulkLimits.levelValues = bulkLimits.originDependencies = 1u << 15;
+        gl::gpu::CudaPhase2EvaluationBuffer bulkEvaluation(bulkLimits);
+        const auto expanded = bulkEvaluation.expandEvaluationWork(bulkDevice, deviceTasks, growth, ordering);
+        ASSERT_EQ(expanded.localValueCount, plainValues + 4);
+        const auto complete = bulkEvaluation.materializeFiringExpressions(
+            bulkDevice, deviceTasks, growth, ordering);
+        ASSERT_EQ(complete.firingRecordCount, plainValues + 4);
+        ASSERT_EQ(bulkEvaluation.orderFiringRecords(bulkDevice), plainValues + 4);
+        gl::gpu::Phase2SealingArena bulkSealing(bulkLimits);
+        gl::SealedPageSet referencePages;
+        referencePages.bind(&gl::staticMemory());
+        gl::SealedPageSet* referenceOutputs[] = {&referencePages};
+        bulkSealing.downloadAndSeal(bulkEvaluation, *sealingTwin(bulkProjection), complete,
+            complete.firingRecordCount, referenceOutputs, 1);
+        std::vector<std::vector<std::string>> referenceContent;
+        referencePages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            referenceContent.push_back(sealedContent(record));
+        });
+        std::sort(referenceContent.begin(), referenceContent.end());
+        referencePages.freePages();
+        gl::gpu::Phase2FiringCursor bulkCursor{};
+        const auto bulkWindow = bulkEvaluation.nextFiringWindow(
+            bulkDevice, deviceTasks, growth, ordering, bulkCursor);
+        ASSERT_EQ(bulkWindow.state, gl::gpu::Phase2FiringWindowState::ready);
+        ASSERT_EQ(bulkWindow.valueCount, plainValues + 4);
+        ASSERT_EQ(bulkWindow.used.firingRecordCount, complete.firingRecordCount);
+        ASSERT_TRUE(bulkWindow.valueCount > 2 * gl::gpu::CudaPhase2EvaluationBuffer::outputPlanningRows);
+        ASSERT_EQ(bulkEvaluation.nextFiringWindow(bulkDevice, deviceTasks, growth, ordering,
+            bulkCursor).state, gl::gpu::Phase2FiringWindowState::complete);
+        gl::SealedPageSet bulkPages;
+        bulkPages.bind(&gl::staticMemory());
+        gl::SealedPageSet* bulkOutputs[] = {&bulkPages};
+        bulkSealing.downloadAndSeal(bulkEvaluation, *sealingTwin(bulkProjection), bulkWindow.used,
+            bulkWindow.used.firingRecordCount, bulkOutputs, 1, {false, true});
+        std::vector<std::vector<std::string>> bulkContent;
+        bulkPages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            bulkContent.push_back(sealedContent(record));
+        });
+        std::sort(bulkContent.begin(), bulkContent.end());
+        ASSERT_EQ(bulkContent, referenceContent);
+        bulkPages.freePages();
+
+        // An actual output limit still drains at the exact fitting boundary.
+        auto cutLimits = bulkLimits;
+        cutLimits.firingRecords = 2048;
+        gl::gpu::CudaPhase2EvaluationBuffer cutEvaluation(cutLimits);
+        cutEvaluation.expandEvaluationWork(bulkDevice, deviceTasks, growth, ordering);
+        gl::gpu::Phase2FiringCursor cutCursor{};
+        const auto firstCut = cutEvaluation.nextFiringWindow(bulkDevice, deviceTasks, growth, ordering, cutCursor);
+        ASSERT_EQ(firstCut.valueCount, 2048u);
+        ASSERT_EQ(firstCut.used.firingRecordCount, 2048u);
+        ASSERT_EQ(cutCursor.value, 2048u);
+        gl::gpu::Phase2SealingArena cutSealing(cutLimits);
+        gl::SealedPageSet cutPages;
+        cutPages.bind(&gl::staticMemory());
+        gl::SealedPageSet* cutOutputs[] = {&cutPages};
+        cutSealing.downloadAndSeal(cutEvaluation, *sealingTwin(bulkProjection), firstCut.used,
+            firstCut.used.firingRecordCount, cutOutputs, 1, {false, false});
+        const auto lastCut = cutEvaluation.nextFiringWindow(bulkDevice, deviceTasks, growth, ordering, cutCursor);
+        ASSERT_EQ(lastCut.valueCount, plainValues + 4 - 2048);
+        ASSERT_EQ(cutCursor.value, plainValues + 4);
+        cutSealing.downloadAndSeal(cutEvaluation, *sealingTwin(bulkProjection), lastCut.used,
+            lastCut.used.firingRecordCount, cutOutputs, 1, {false, true});
+        bulkContent.clear();
+        cutPages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            bulkContent.push_back(sealedContent(record));
+        });
+        std::sort(bulkContent.begin(), bulkContent.end());
+        ASSERT_EQ(bulkContent, referenceContent);
+        cutPages.freePages();
+        body.overallHashMemory.encodedMap.assignRun(
+            mappedEvaluationKey(evaluationRequests[0]), std::vector<gl::LocalMemoryValue>{plain});
+    }
+
     body.intToBeProved.assignSet(
         gl::packStatementKey(knownSecondaryHead, mainId), nullptr, 0);
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer);
+    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     const uint32_t goalRetainedCount =
@@ -2425,6 +4220,72 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     }
     ASSERT_EQ(goalRetainedCount, 1u);
     ASSERT_EQ(goalDoomLine, static_cast<int64_t>(3ull << 14));
+    evaluation.markDoomTriggers(deviceProjection);
+    std::vector<gl::gpu::DevicePhase2FiringRecord> triggerHeaders(5);
+    ASSERT_EQ(evaluation.downloadFiringRecords(triggerHeaders.data(), 5), 5u);
+    uint32_t triggers = 0;
+    for (const auto& header : triggerHeaders) {
+        if ((header.flags & gl::gpu::deviceFiringDoomTrigger) != 0) {
+            ASSERT_EQ(header.validityId, mainId);
+            ASSERT_EQ(header.requestIndex, 0u);
+            ++triggers;
+        }
+    }
+    ASSERT_EQ(triggers, 1u);
+    // Observing a discharge does not remove other outputs or repeated firings
+    // from the current level. Only a committed stop excludes a later download.
+    {
+        gl::SealedPageSet pages;
+        pages.bind(&gl::staticMemory());
+        gl::SealedPageSet* outputs[] = {&pages};
+        int64_t stop = INT64_MAX;
+        gl::gpu::Phase2SealingOptions options{false, false};
+        options.blockStops = &stop;
+        for (uint32_t copy = 0; copy < 2; ++copy) {
+            ASSERT_EQ(sealing.downloadAndSeal(evaluation, *sealingTwin(hostProjection),
+                firingExpressions, 5, outputs, 1, options), 5u);
+            ASSERT_EQ(stop, gl::gpu::phase2PendingBlockStop);
+        }
+        ASSERT_EQ(pages.recordCount(), 10);
+        stop = 0;
+        ASSERT_EQ(sealing.downloadAndSeal(evaluation, *sealingTwin(hostProjection),
+            firingExpressions, 5, outputs, 1, options), 0u);
+        ASSERT_EQ(pages.recordCount(), 10);
+        pages.seal();
+        std::vector<std::vector<std::string>> content;
+        pages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            content.push_back(sealedContent(record));
+        });
+        std::sort(content.begin(), content.end());
+        auto repeated = expectedSealedContent;
+        repeated.insert(repeated.end(), expectedSealedContent.begin(), expectedSealedContent.end());
+        std::sort(repeated.begin(), repeated.end());
+        ASSERT_EQ(content, repeated);
+        pages.freePages();
+    }
+    {
+        gl::SealedPageSet earlyOutput;
+        earlyOutput.bind(&gl::staticMemory());
+        gl::SealedPageSet* earlyOutputs[] = {&earlyOutput};
+        uint64_t subkeys = 0;
+        int64_t cutoff = 0;
+        const auto controlledEarly = controllerSealing.runWindows(controllerBuffers,
+            *sealingTwin(hostProjection), hostTasks, growthSchedule,
+            {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+             analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+            controllerPlan, earlyOutputs, 1, &subkeys, 1, &cutoff);
+        ASSERT_TRUE(controlledEarly.growth.drainCount > 1);
+        ASSERT_TRUE(controlledEarly.growth.prunedFrontierNodes > 0);
+        ASSERT_TRUE(controlledEarly.growth.rawRequestCount < controlled.growth.rawRequestCount);
+        ASSERT_EQ(controlledEarly.firingRecords, static_cast<uint64_t>(goalRetainedCount));
+        ASSERT_EQ(cutoff, 0ll);
+        ASSERT_EQ(earlyOutput.recordCount(), 1);
+        earlyOutput.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            ASSERT_EQ(record.rplExpr2.toStdString(), std::string("(gpuHead[secondary_v_shadow,static])"));
+        });
+        earlyOutput.freePages();
+    }
+
     uint32_t goalDoomRequest = 5;
     ASSERT_EQ(evaluation.downloadDoomRequestIndices(
         &goalDoomRequest, 1), 1u);
@@ -2439,7 +4300,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     body.intToBeProved.assignSet(
         gl::packStatementKey(knownProductHead, mainId), nullptr, 0);
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer);
+    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     ASSERT_EQ(evaluation.selectDoomPrefixes(deviceProjection), 4u);
@@ -2459,9 +4320,58 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             expectedSharedPositionRequests[index]);
     }
 
+    // A two-premise discharge keeps every result through that level, including
+    // all marker fragments, independently of request and output capacities.
+    std::vector<std::vector<std::string>> levelContent;
+    for (bool small : {true, false}) {
+        auto limits = streamLimits;
+        if (!small) {
+            limits.acceptedEvents = 16;
+            limits.rawRequests = 8;
+        }
+        gl::gpu::CudaPhase2GrowthBuffer levelGrowth(limits);
+        gl::gpu::CudaPhase2OrderingBuffer levelOrdering({limits.acceptedEvents, limits.rawRequests});
+        const auto outputLimits = small ? controllerLimits : evaluationLimits;
+        gl::gpu::CudaPhase2EvaluationBuffer levelEvaluation(outputLimits);
+        gl::gpu::Phase2SealingArena levelSealing(outputLimits);
+        gl::gpu::Phase2StreamBuffers buffers{deviceProjection, deviceTasks,
+            deviceFilter, levelGrowth, levelOrdering, levelEvaluation};
+        auto plan = controllerPlan;
+        plan.growth = limits;
+        plan.evaluation = outputLimits;
+        gl::SealedPageSet pages;
+        pages.bind(&gl::staticMemory());
+        gl::SealedPageSet* outputs[] = {&pages};
+        uint64_t subkeys = 0;
+        int64_t stop = INT64_MAX;
+        const auto result = levelSealing.runWindows(buffers, *sealingTwin(hostProjection),
+            hostTasks, growthSchedule,
+            {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+             analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
+            plan, outputs, 1, &subkeys, 1, &stop);
+        ASSERT_EQ(stop, 0ll);
+        ASSERT_EQ(result.firingRecords, 4ull);
+        ASSERT_EQ(result.evaluatedRequests, 3ull);
+        ASSERT_TRUE(result.growth.prunedFrontierNodes > 0);
+        std::vector<std::vector<std::string>> content;
+        uint32_t markers = 0;
+        pages.forEachRecord<gl::FiringRecord>([&](const auto& record) {
+            content.push_back(sealedContent(record));
+            if (record.isMarker) {
+                ++markers;
+                ASSERT_EQ(sealedContent(record), expectedSealedMarker);
+            }
+        });
+        ASSERT_EQ(markers, 1u);
+        std::sort(content.begin(), content.end());
+        if (small) levelContent = content;
+        else ASSERT_EQ(content, levelContent);
+        pages.freePages();
+    }
+
     analyzer.parameters.compressor_mode = true;
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer);
+    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     ASSERT_EQ(evaluation.selectDoomPrefixes(deviceProjection), 5u);
@@ -2480,7 +4390,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         gl::StatementKey{ negatedSecondaryHead, mainId },
         gl::StatementFlags{ true, false });
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer);
+    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     ASSERT_EQ(evaluation.selectDoomPrefixes(deviceProjection), 1u);
@@ -2529,11 +4439,67 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     };
     std::sort(expectedStumpEvents.begin(), expectedStumpEvents.end());
     ASSERT_EQ(actualStumpEvents, expectedStumpEvents);
+    capturedGrowth.events.clear();
+    capturedGrowth.requests.clear();
+    const auto streamedStumps = streamingGrowth.runRequestGrowthWindows(deviceProjection,
+        deviceTasks, hostTasks, deviceFilter, growthSchedule,
+        {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+         analyzer.parameters.maxNumberSecondaryVariablesOrint, 1, 0},
+        captureGrowth, &capturedGrowth, &streamedSubkeyCount, 1);
+    ASSERT_EQ(streamedStumps.acceptedEventCount, 3ull);
+    ASSERT_EQ(streamedStumps.rawRequestCount, 2ull);
+    ASSERT_EQ(streamedSubkeyCount, 2ull);
+    streamedEvents.clear();
+    for (const auto& event : capturedGrowth.events) streamedEvents.push_back(eventText(event));
+    std::sort(streamedEvents.begin(), streamedEvents.end());
+    ASSERT_EQ(streamedEvents, expectedStumpEvents);
+    // Roomy windows seed every stump of both calls in one pair launch; the
+    // second call on the same task repeats each record under its own index.
+    {
+        gl::gpu::Phase2FilterScheduleArena twoFilterSchedule(filterLimits);
+        for (int call = 0; call < 2; ++call)
+            twoFilterSchedule.appendCall(0, gl::gpu::DeviceHashMemoryKind::overall,
+                analyzer.parameters.maxIterationNumberVariable, 1, block.statementCount);
+        gl::gpu::CudaPhase2FilterSortBuffer twoFilter(filterLimits);
+        ASSERT_EQ(twoFilter.filterAndSort(deviceProjection, twoFilterSchedule), 5u);
+        gl::gpu::Phase2GrowthScheduleArena twoCalls(4);
+        twoCalls.appendCall(0, 0, 0);
+        twoCalls.appendCall(0, 0, 1);
+        gl::gpu::CudaPhase2GrowthBuffer roomyGrowth(growthLimits);
+        const auto captureRoomy = [](void* context, const gl::gpu::CudaPhase2GrowthBuffer& buffer, bool) {
+            auto& captured = *static_cast<GrowthCapture*>(context);
+            std::vector<gl::gpu::DeviceAcceptedGrowthEvent> eventRows(128);
+            std::vector<gl::gpu::DeviceRawGrowthRequest> requestRows(64);
+            const uint32_t eventCount = buffer.downloadAcceptedEvents(eventRows.data(), 128);
+            const uint32_t requestCount = buffer.downloadRawRequests(requestRows.data(), 64);
+            captured.events.insert(captured.events.end(), eventRows.begin(), eventRows.begin() + eventCount);
+            captured.requests.insert(captured.requests.end(), requestRows.begin(), requestRows.begin() + requestCount);
+        };
+        GrowthCapture roomyCapture;
+        uint64_t roomySubkeys = 0;
+        const auto roomy = roomyGrowth.runRequestGrowthWindows(deviceProjection,
+            deviceTasks, hostTasks, twoFilter, twoCalls,
+            {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
+             analyzer.parameters.maxNumberSecondaryVariablesOrint, 1, 0},
+            captureRoomy, &roomyCapture, &roomySubkeys, 1);
+        ASSERT_EQ(roomyCapture.requests.size(), 4u);
+        ASSERT_EQ(roomy.acceptedEventCount, 6ull);
+        ASSERT_EQ(roomy.rawRequestCount, 4ull);
+        ASSERT_EQ(roomySubkeys, 4ull);
+        std::vector<std::string> roomyEvents, expectedRoomyEvents;
+        for (const auto& event : roomyCapture.events)
+            roomyEvents.push_back(std::to_string(event.callIndex) + ":" + eventText(event));
+        for (const char* call : {"0:", "1:"})
+            for (const auto& event : expectedStumpEvents) expectedRoomyEvents.push_back(call + event);
+        std::sort(roomyEvents.begin(), roomyEvents.end());
+        std::sort(expectedRoomyEvents.begin(), expectedRoomyEvents.end());
+        ASSERT_EQ(roomyEvents, expectedRoomyEvents);
+    }
     const gl::gpu::Phase2OrderingResult orderedStumps =
-        ordering.orderAndDeduplicate(
+        ordering.orderRequests(
             deviceProjection, deviceTasks, growth);
     ASSERT_EQ(orderedStumps.orderedEventCount, 3u);
-    ASSERT_EQ(orderedStumps.uniqueRequestCount, 2u);
+    ASSERT_EQ(orderedStumps.requestCount, 2u);
     std::vector<uint32_t> orderedStumpIndices(
         orderedStumps.orderedEventCount);
     ordering.downloadOrderedEventIndices(
@@ -2543,7 +4509,7 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_EQ(eventText(stumpEvents[orderedStumpIndices[1]]), "2:0,1:1");
     ASSERT_EQ(eventText(stumpEvents[orderedStumpIndices[2]]), "3:0,1,2:6");
     std::vector<gl::gpu::DeviceOrderedRequestToken> orderedStumpRequests(
-        orderedStumps.uniqueRequestCount);
+        orderedStumps.requestCount);
     ordering.downloadOrderedRequests(
         orderedStumpRequests.data(),
         static_cast<uint32_t>(orderedStumpRequests.size()));
@@ -2553,11 +4519,11 @@ TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_EQ(orderedStumpRequests[1].eventOrder, 2u);
 }
 
-TEST(phase2_projection, cuda_ordering_deduplicates_first_request_per_call) {
+CUDA_TEST(phase2_projection, cuda_ordering_keeps_equal_requests_within_and_across_drains) {
     gl::ExpressionAnalyzer analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 3;
     gl::Memory body;
-    body.setExprKey("cuda_ordering_dedup");
+    body.setExprKey("cuda_ordering_repeats");
     gl::NameMap& names = body.nameMap;
     const gl::NameId mainId = names.encode("main");
     const gl::NameId nameId = names.encode("duplicate_name");
@@ -2657,6 +4623,7 @@ TEST(phase2_projection, cuda_ordering_deduplicates_first_request_per_call) {
     growthLimits.prefixVariableValues = 128;
     growthLimits.prefixSecondaryValues = 128;
     growthLimits.candidateWindowRecords = 16;
+    growthLimits.frontierStoreRecords = 16;
     gl::gpu::CudaPhase2GrowthBuffer growth(growthLimits);
     const gl::gpu::Phase2GrowthResult growthResult = growth.runRequestGrowth(
         deviceProjection, deviceTasks, deviceFilter, growthSchedule,
@@ -2667,14 +4634,13 @@ TEST(phase2_projection, cuda_ordering_deduplicates_first_request_per_call) {
 
     gl::gpu::Phase2OrderingCapacity orderingLimits{};
     orderingLimits.events = 16;
-    orderingLimits.deduplicationSlots = 16;
     orderingLimits.requests = 8;
     gl::gpu::CudaPhase2OrderingBuffer ordering(orderingLimits);
     const gl::gpu::Phase2OrderingResult result =
-        ordering.orderAndDeduplicate(
+        ordering.orderRequests(
             deviceProjection, deviceTasks, growth);
     ASSERT_EQ(result.orderedEventCount, 4u);
-    ASSERT_EQ(result.uniqueRequestCount, 2u);
+    ASSERT_EQ(result.requestCount, 4u);
     std::vector<gl::gpu::DeviceAcceptedGrowthEvent> events(4);
     growth.downloadAcceptedEvents(events.data(), 4);
     std::vector<uint32_t> eventOrder(4);
@@ -2687,19 +4653,133 @@ TEST(phase2_projection, cuda_ordering_deduplicates_first_request_per_call) {
     ASSERT_EQ(events[eventOrder[2]].statementIndices[0], 0);
     ASSERT_EQ(events[eventOrder[3]].callIndex, 1u);
     ASSERT_EQ(events[eventOrder[3]].statementIndices[0], 1);
-    std::vector<gl::gpu::DeviceOrderedRequestToken> requests(2);
-    ordering.downloadOrderedRequests(requests.data(), 2);
-    ASSERT_EQ(requests[0].eventOrder, 0u);
-    ASSERT_EQ(requests[0].growthPosition, 1ull);
-    ASSERT_EQ(events[requests[0].eventIndex].callIndex, 0u);
-    ASSERT_EQ(events[requests[0].eventIndex].statementIndices[0], 0);
-    ASSERT_EQ(requests[1].eventOrder, 2u);
-    ASSERT_EQ(requests[1].growthPosition, 3ull);
-    ASSERT_EQ(events[requests[1].eventIndex].callIndex, 1u);
-    ASSERT_EQ(events[requests[1].eventIndex].statementIndices[0], 0);
+    std::vector<gl::gpu::DeviceOrderedRequestToken> requests(4);
+    ASSERT_EQ(ordering.downloadOrderedRequests(requests.data(), 4), 4u);
+    for (uint32_t i = 0; i < 4; ++i) {
+        ASSERT_EQ(requests[i].eventOrder, i);
+        ASSERT_EQ(requests[i].growthPosition, static_cast<uint64_t>(i + 1));
+        ASSERT_EQ(events[requests[i].eventIndex].callIndex, i / 2);
+        ASSERT_EQ(events[requests[i].eventIndex].statementIndices[0], static_cast<int32_t>(i % 2));
+    }
+    // Repeated invocations do not remember or suppress earlier request keys.
+    ASSERT_EQ(ordering.orderRequests(deviceProjection, deviceTasks, growth).requestCount, 4u);
+    ASSERT_EQ(ordering.downloadOrderedRequests(requests.data(), 4), 4u);
+
+    // Moving physical task/batch slots preserves all four requests.
+    hostTasks.appendTask(0, batches, 2, nullptr, 0, 0, 0,
+        analyzer.parameters.maxIterationNumberVariable, 0);
+    deviceTasks.upload(hostTasks);
+    for (auto& call : growthSchedule.calls) {
+        call.taskIndex = 1;
+        call.batchIndex += 2;
+    }
+    growth.runRequestGrowth(deviceProjection, deviceTasks, deviceFilter, growthSchedule,
+        {8, 8, 8, gl::gpu::kDeviceGrowthProductionCooperativeSpan, 0});
+    ASSERT_EQ(ordering.orderRequests(deviceProjection, deviceTasks, growth).requestCount, 4u);
+    hostTasks.tasks[1].stumpOrdinal = 1;
+    hostTasks.tasks[1].stumpTotal = 2;
+    deviceTasks.upload(hostTasks);
+    ASSERT_EQ(ordering.orderRequests(deviceProjection, deviceTasks, growth).requestCount, 4u);
+
+    auto tinyLimits = growthLimits;
+    tinyLimits.frontierRecords = 1;
+    tinyLimits.frontierStoreRecords = 1;
+    tinyLimits.acceptedEvents = 1;
+    tinyLimits.rawRequests = 1;
+    tinyLimits.candidateWindowRecords = 1;
+    gl::gpu::CudaPhase2GrowthBuffer tinyGrowth(tinyLimits);
+    struct RequestDrain {
+        const gl::gpu::CudaPhase2ProjectionBuffer* projection;
+        const gl::gpu::CudaPhase2TaskBuffer* tasks;
+        gl::gpu::CudaPhase2OrderingBuffer* ordering;
+        uint32_t retained{0};
+    } drainContext{&deviceProjection, &deviceTasks, &ordering};
+    const auto drainRequests = [](void* context, const gl::gpu::CudaPhase2GrowthBuffer& stream, bool) {
+        auto& state = *static_cast<RequestDrain*>(context);
+        state.retained += state.ordering->orderRequests(
+            *state.projection, *state.tasks, stream).requestCount;
+    };
+    uint64_t streamedCounts[2]{};
+    const auto streamed = tinyGrowth.runRequestGrowthWindows(deviceProjection, deviceTasks,
+        hostTasks, deviceFilter, growthSchedule,
+        {8, 8, 8, gl::gpu::kDeviceGrowthProductionCooperativeSpan, 0},
+        drainRequests, &drainContext, streamedCounts, 2);
+    ASSERT_EQ(streamed.acceptedEventCount, 4ull);
+    ASSERT_EQ(streamed.rawRequestCount, 4ull);
+    ASSERT_EQ(streamed.drainCount, 4ull);
+    ASSERT_EQ(drainContext.retained, 4u);
+    ASSERT_EQ(streamedCounts[0], 0ull);
+    ASSERT_EQ(streamedCounts[1], 4ull);
 }
 
-TEST(phase2_projection, fixed_cuda_phase2_buffers_report_owned_bytes) {
+CUDA_TEST(phase2_projection, repeated_large_request_windows_need_no_host_history) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory body;
+    body.setExprKey("history_pages");
+    const auto mainId = body.nameMap.encode("main");
+    const auto nameId = body.nameMap.encode("historyPredicate");
+    for (uint32_t i = 0; i < 129; ++i) {
+        const auto variable = "v" + std::to_string(i);
+        const auto original = "(historyPredicate[" + variable + "])";
+        body.intEncodedStatements.push_back(projectionStatement(nameId,
+            body.nameMap.encode(original), mainId, body.nameMap.encode(variable)));
+    }
+    const auto keyFor = [&](int count) {
+        const gl::IntEncodedExpr* premises[] = {
+            &body.intEncodedStatements[0], &body.intEncodedStatements[1]};
+        gl::NameId data[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
+        const auto size = analyzer.makeIntNormalizedKeyFromEncoded(
+            premises, count, data, gl::ExecutionParameters::MAX_KEY_SLOTS);
+        return gl::NormKey{count, std::vector<gl::NameId>(data, data + size)};
+    };
+    const auto rule = gl::packRuleOwner(body.ruleInterner.encode("(historyRule[1,2])"), mainId);
+    gl::OwnerSet owner;
+    owner.hasLooseOwner = true;
+    owner.owners.emplace_back(rule, -1);
+    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(keyFor(1), std::vector<gl::OwnerSet>{owner});
+    const auto pairKey = keyFor(2);
+    auto& scratch = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    gl::ExpressionAnalyzer::addWholeKeyOwner(body.overallHashMemory.normalizedEncodedKeys,
+        pairKey.numberExpressions, pairKey.data.data(), static_cast<int32_t>(pairKey.data.size()), rule, scratch);
+    body.overallHashMemory.maxKeyLength = 2;
+    uint32_t nameBytes = 0;
+    for (gl::NameId i = 1; i <= body.nameMap.nameCount(); ++i)
+        nameBytes += static_cast<uint32_t>(body.nameMap.decodeView(i).len);
+    const auto projectionLimits = projectionCapacity(1, 129,
+        static_cast<uint32_t>(body.nameMap.nameCount() + 1), nameBytes);
+    gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
+    const auto block = hostProjection.appendLogicalBlock(body, analyzer);
+    gl::gpu::CudaPhase2ProjectionBuffer projection(projectionLimits);
+    projection.upload(hostProjection);
+    const gl::gpu::Phase2TaskProjectionCapacity taskLimits{1, 1, 1, 1};
+    gl::gpu::Phase2TaskProjectionArena hostTasks(taskLimits);
+    gl::gpu::Phase2RequestBatchInput batch{};
+    batch.memory = gl::gpu::DeviceHashMemoryKind::overall;
+    hostTasks.appendTask(0, &batch, 1, nullptr, 0, 0, 0,
+        analyzer.parameters.maxIterationNumberVariable, 1);
+    gl::gpu::CudaPhase2TaskBuffer tasks(taskLimits);
+    tasks.upload(hostTasks);
+    const gl::gpu::Phase2FilterScheduleCapacity filterLimits{1, 256, 256, 256};
+    gl::gpu::Phase2FilterScheduleArena filterSchedule(filterLimits);
+    filterSchedule.appendCall(0, gl::gpu::DeviceHashMemoryKind::overall,
+        analyzer.parameters.maxIterationNumberVariable, 1, block.statementCount);
+    gl::gpu::CudaPhase2FilterSortBuffer filter(filterLimits);
+    ASSERT_EQ(filter.filterAndSort(projection, filterSchedule), 129u);
+    gl::gpu::Phase2GrowthScheduleArena schedule(1);
+    schedule.appendCall(0, 0, 0);
+    gl::gpu::CudaPhase2GrowthBuffer growth({1, 256, 512, 16384, 16384, 8192, 4096, 4096, 16384, 512});
+    const auto grown = growth.runRequestGrowth(projection, tasks, filter, schedule, {8, 8, 8, 4, 0});
+    constexpr uint32_t pairCount = 129 * 128 / 2;
+    ASSERT_EQ(grown.rawRequestCount, pairCount);
+    gl::gpu::CudaPhase2OrderingBuffer ordering({16384, 16384});
+    ASSERT_EQ(ordering.orderRequests(projection, tasks, growth).requestCount, pairCount);
+    const auto hostBlocksBeforeRepeat = gl::staticMemory().blocksInUse();
+    ASSERT_EQ(ordering.orderRequests(projection, tasks, growth).requestCount, pairCount);
+    ASSERT_EQ(gl::staticMemory().blocksInUse(), hostBlocksBeforeRepeat);
+
+}
+
+CUDA_TEST(phase2_projection, fixed_cuda_phase2_buffers_report_owned_bytes) {
     gl::gpu::Phase2ProjectionCapacity projectionCapacity{};
     projectionCapacity.logicalBlocks = 512;
     projectionCapacity.statements = 262144;
@@ -2726,7 +4806,7 @@ TEST(phase2_projection, fixed_cuda_phase2_buffers_report_owned_bytes) {
     projectionCapacity.mandatoryStatementKeys = 262144;
     projectionCapacity.metadataBytes = 16384;
     gl::gpu::CudaPhase2ProjectionBuffer projection(projectionCapacity);
-    ASSERT_EQ(projection.fixedAllocationBytes(), 299951120ull);
+    ASSERT_EQ(projection.fixedAllocationBytes(), 270593040ull);   // 262144 statement rows of 240 bytes
 
     gl::gpu::Phase2TaskProjectionCapacity taskCapacity{};
     taskCapacity.tasks = 512;
@@ -2755,17 +4835,17 @@ TEST(phase2_projection, fixed_cuda_phase2_buffers_report_owned_bytes) {
     capacity.prefixVariableValues = 5505024;
     capacity.prefixSecondaryValues = 1310720;
     capacity.candidateWindowRecords = 16777216;
+    capacity.frontierStoreRecords = 1048576;
     gl::gpu::CudaPhase2GrowthBuffer buffer(capacity);
     ASSERT_TRUE(buffer.fixedAllocationBytes() > 800097352ull);
     ASSERT_TRUE(buffer.fixedAllocationBytes() < 1024ull * 1024ull * 1024ull);
-    ASSERT_EQ(buffer.fixedAllocationBytes(), 812965447ull);
+    ASSERT_EQ(buffer.fixedAllocationBytes(), 824501863ull);   // includes 2048 per-call keep-flag bytes
 
     gl::gpu::Phase2OrderingCapacity orderingCapacity{};
     orderingCapacity.events = 2097152;
-    orderingCapacity.deduplicationSlots = 262144;
     orderingCapacity.requests = 131072;
     gl::gpu::CudaPhase2OrderingBuffer ordering(orderingCapacity);
-    ASSERT_GE(ordering.fixedAllocationBytes(), 81788932ull);
+    ASSERT_GE(ordering.fixedAllocationBytes(), 79691780ull);
     ASSERT_TRUE(ordering.fixedAllocationBytes() < 512ull * 1024ull * 1024ull);
 
     gl::gpu::Phase2EvaluationCapacity evaluationCapacity{};
@@ -2784,12 +4864,311 @@ TEST(phase2_projection, fixed_cuda_phase2_buffers_report_owned_bytes) {
     evaluationCapacity.markerArgs = 2048;
     gl::gpu::CudaPhase2EvaluationBuffer evaluation(evaluationCapacity);
     const uint64_t evaluationBytes = evaluation.fixedAllocationBytes();
-    if (evaluationBytes != 37269035ull) {
+    if (evaluationBytes != 38899251ull) {
         std::fprintf(stderr, "[phase2-gpu] evaluator bytes=%llu\n",
             static_cast<unsigned long long>(evaluationBytes));
     }
-    ASSERT_EQ(evaluationBytes, 37269035ull);
+    ASSERT_EQ(evaluationBytes, 38899251ull);
     ASSERT_TRUE(evaluation.fixedAllocationBytes()
         < 64ull * 1024ull * 1024ull);
 }
+
+// The level-end cutoff removes exactly the nodes of cut-off calls and keeps the
+// survivors in order, across frontier pages, as the node-by-node walk did.
+CUDA_TEST(phase2_projection, prune_frontier_by_call_matches_the_node_walk) {
+    gl::LbArena arena(&gl::staticMemory());
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::PagedVector<gl::gpu::DeviceGrowthNode> frontier(&arena, &dirty);
+    std::mt19937 random(20260925u);
+    constexpr uint32_t callCount = 7;
+    for (int trial = 0; trial < 8; ++trial) {
+        frontier.clear();
+        std::vector<gl::gpu::DeviceGrowthNode> nodes;
+        const int32_t size = trial == 0 ? 0 : 1 + static_cast<int32_t>(random() % 900);
+        for (int32_t i = 0; i < size; ++i) {
+            gl::gpu::DeviceGrowthNode node{};
+            node.callIndex = static_cast<uint32_t>(random() % callCount);
+            node.runOrdinal = static_cast<uint32_t>(i);
+            node.count = 1 + static_cast<gl::NameId>(random() % 4);
+            node.startPosition = static_cast<gl::NameId>(3 * i);
+            node.filteredPositions[0] = static_cast<gl::NameId>(i);
+            nodes.push_back(node);
+            frontier.push_back(node);
+        }
+        uint8_t keep[callCount];
+        for (uint32_t call = 0; call < callCount; ++call)
+            keep[call] = trial == 1 ? 1 : trial == 2 ? 0
+                : static_cast<uint8_t>(random() % 2);
+        std::vector<gl::gpu::DeviceGrowthNode> expected;
+        for (const auto& node : nodes)
+            if (keep[node.callIndex] != 0) expected.push_back(node);
+        const uint64_t removed = gl::gpu::pruneFrontierByCall(frontier, keep, callCount);
+        ASSERT_EQ(removed, static_cast<uint64_t>(nodes.size() - expected.size()));
+        ASSERT_EQ(frontier.size(), static_cast<int32_t>(expected.size()));
+        for (int32_t i = 0; i < frontier.size(); ++i)
+            ASSERT_EQ(std::memcmp(&frontier[i], &expected[static_cast<std::size_t>(i)],
+                sizeof(gl::gpu::DeviceGrowthNode)), 0);
+    }
+    frontier.clear();
+}
+
+// The device half of the level-end cutoff keeps exactly the host walk's
+// survivors in order, across thread blocks; zero rows are a no-op.
+CUDA_TEST(phase2_projection, device_frontier_prune_matches_the_host_prune) {
+    std::mt19937 random(20261001u);
+    constexpr uint32_t callCount = 9;
+    gl::LbArena arena(&gl::staticMemory());
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::PagedVector<gl::gpu::DeviceGrowthNode> frontier(&arena, &dirty);
+    for (int trial = 0; trial < 6; ++trial) {
+        const uint32_t size = trial == 0 ? 0u : 1u + static_cast<uint32_t>(random() % 5000);
+        std::vector<gl::gpu::DeviceGrowthNode> rows(size);
+        frontier.clear();
+        for (uint32_t i = 0; i < size; ++i) {
+            rows[i].callIndex = static_cast<uint32_t>(random() % callCount);
+            rows[i].runOrdinal = i;
+            rows[i].count = 1 + static_cast<gl::NameId>(random() % 4);
+            rows[i].startPosition = static_cast<gl::NameId>(2 * i);
+            rows[i].filteredPositions[0] = static_cast<gl::NameId>(i);
+            frontier.push_back(rows[i]);
+        }
+        uint8_t keep[callCount];
+        for (uint32_t call = 0; call < callCount; ++call)
+            keep[call] = trial == 1 ? 1 : trial == 2 ? 0 : static_cast<uint8_t>(random() % 2);
+        std::vector<gl::gpu::DeviceGrowthNode> survivors(size + 1);
+        const uint32_t kept = gl::gpu::pruneDeviceFrontierByCallOnHost(rows.data(), size, keep,
+            callCount, survivors.data());
+        const uint64_t removed = gl::gpu::pruneFrontierByCall(frontier, keep, callCount);
+        ASSERT_EQ(static_cast<uint64_t>(kept) + removed, static_cast<uint64_t>(size));
+        ASSERT_EQ(static_cast<int32_t>(kept), frontier.size());
+        for (uint32_t i = 0; i < kept; ++i)
+            ASSERT_EQ(std::memcmp(&survivors[i], &frontier[static_cast<int32_t>(i)],
+                sizeof(gl::gpu::DeviceGrowthNode)), 0);
+    }
+    frontier.clear();
+}
+
+// The device packs the three prefix sizes the host schedules windows from; the
+// host unpacks exactly the values of the full records, across thread blocks.
+CUDA_TEST(phase2_projection, packed_prefix_sizes_round_trip_the_measured_fields) {
+    std::mt19937 random(7u);
+    std::vector<gl::gpu::DeviceGrowthPrefix> prefixes(1500);
+    for (auto& prefix : prefixes) {
+        prefix.payloadOffset = static_cast<uint32_t>(random());
+        prefix.variableOffset = static_cast<uint32_t>(random());
+        prefix.secondaryOffset = static_cast<uint32_t>(random());
+        prefix.payloadLength = static_cast<uint16_t>(random());
+        prefix.variableCount = static_cast<uint16_t>(random());
+        prefix.secondaryCount = static_cast<uint16_t>(random());
+        prefix.reserved = static_cast<uint16_t>(random());
+        prefix.packedSummary = static_cast<uint32_t>(random());
+        prefix.candidateCount = static_cast<uint32_t>(random());
+    }
+    prefixes[0].payloadLength = prefixes[0].variableCount = prefixes[0].secondaryCount = 0xffffu;
+    prefixes[1].payloadLength = prefixes[1].variableCount = prefixes[1].secondaryCount = 0;
+    std::vector<uint64_t> packed(prefixes.size() + 1, ~0ull);
+    gl::gpu::packPhase2PrefixSizesOnHost(prefixes.data(),
+        static_cast<uint32_t>(prefixes.size()), packed.data());
+    for (std::size_t i = 0; i < prefixes.size(); ++i) {
+        const gl::gpu::Phase2PrefixSizes sizes = gl::gpu::unpackPhase2PrefixSizes(packed[i]);
+        ASSERT_EQ(sizes.payloadLength, prefixes[i].payloadLength);
+        ASSERT_EQ(sizes.variableCount, prefixes[i].variableCount);
+        ASSERT_EQ(sizes.secondaryCount, prefixes[i].secondaryCount);
+    }
+    ASSERT_EQ(packed[prefixes.size()], ~0ull);   // nothing written past the run
+    gl::gpu::packPhase2PrefixSizesOnHost(prefixes.data(), 0, packed.data());
+    ASSERT_EQ(packed[prefixes.size()], ~0ull);
+}
 #endif
+
+TEST(phase2_projection, construction_waves_bound_even_single_worker_ownership) {
+    auto capacity = gl::gpu::kFtaShortcutPhase2ProjectionCapacity;
+    std::array<gl::gpu::Phase2ProjectionUsage,512> usage{};
+    std::array<uint32_t,512> ends{};
+    for (auto& row : usage) {
+        row.logicalBlocks = 1;
+        row.metadataBytes = 48;
+    }
+    const auto count = gl::gpu::planProjectionConstructionWaves(
+        usage.data(),static_cast<uint32_t>(usage.size()),capacity,
+        ends.data(),static_cast<uint32_t>(ends.size()));
+    ASSERT_EQ(count,2u);
+    ASSERT_EQ(ends[0],341u);
+    ASSERT_EQ(ends[1],512u);
+    uint32_t begin=0;
+    for (uint32_t wave=0;wave<count;++wave) {
+        uint64_t bytes=0;
+        for (uint32_t i=begin;i<ends[wave];++i) bytes+=usage[i].metadataBytes;
+        ASSERT_TRUE(bytes<=capacity.metadataBytes);
+        begin=ends[wave];
+    }
+    ASSERT_EQ(begin,512u);
+    capacity.statements=3;
+    for (uint32_t i=0;i<4;++i) usage[i].statements=2;
+    ASSERT_EQ(gl::gpu::planProjectionConstructionWaves(usage.data(),4,
+        capacity,ends.data(),static_cast<uint32_t>(ends.size())),4u);
+    for (uint32_t i=0;i<4;++i) ASSERT_EQ(ends[i],i+1);
+    ASSERT_EQ(gl::gpu::planProjectionConstructionWaves(nullptr,0,capacity,nullptr,0),0u);
+}
+
+TEST(projection_column, owning_column_appends_resizes_iterates_and_compares) {
+    gl::gpu::ProjectionColumn<int32_t> column;
+    ASSERT_EQ(column.capacity(), std::size_t(0));
+    ASSERT_EQ(column.ownedBytes(), uint64_t(0));
+    column.reserve(8);
+    ASSERT_EQ(column.capacity(), std::size_t(8));
+    ASSERT_EQ(column.ownedBytes(), uint64_t(8 * sizeof(int32_t)));
+    ASSERT_TRUE(column.empty());
+    column.push_back(4);
+    const int32_t more[3] = { 5, 6, 7 };
+    column.insert(column.end(), more, more + 3);
+    column.resize(6, -1);
+    ASSERT_EQ(column.size(), std::size_t(6));
+    ASSERT_EQ(column[0], 4);
+    ASSERT_EQ(column[3], 7);
+    ASSERT_EQ(column.back(), -1);
+    column.resize(7);                    // value-initialized
+    ASSERT_EQ(column[6], 0);
+    column.resize(5);                    // shrinking lowers the length only
+    ASSERT_EQ(column.size(), std::size_t(5));
+    column.resize(7);
+    ASSERT_EQ(column[5], 0);
+    int32_t sum = 0;
+    for (const int32_t value : column) sum += value;
+    ASSERT_EQ(sum, 4 + 5 + 6 + 7 - 1);
+    gl::gpu::ProjectionColumn<int32_t> same;
+    same.reserve(7);
+    const int32_t values[7] = { 4, 5, 6, 7, -1, 0, 0 };
+    same.insert(same.end(), values, values + 7);
+    ASSERT_TRUE(column == same);
+    same[2] = 9;
+    ASSERT_TRUE(!(column == same));
+    const gl::gpu::ProjectionColumn<int32_t>& view = column;
+    ASSERT_TRUE(view.data() == column.data() && view.end() - view.begin() == 7);
+    column.clear();
+    ASSERT_TRUE(column.empty());
+    ASSERT_EQ(column.capacity(), std::size_t(8));
+}
+
+TEST(projection_column, slices_write_into_the_owner_and_move_back_in_place) {
+    gl::gpu::ProjectionColumn<char> storage;
+    storage.reserve(10);
+    gl::gpu::ProjectionColumn<char> first;
+    gl::gpu::ProjectionColumn<char> second;
+    first.attachSlice(storage, 0, 4);
+    second.attachSlice(storage, 4, 6);
+    ASSERT_EQ(first.ownedBytes(), uint64_t(0));
+    ASSERT_EQ(second.capacity(), std::size_t(6));
+    ASSERT_TRUE(second.data() == storage.data() + 4);
+    first.push_back('a');
+    first.push_back('b');
+    const char tail[3] = { 'x', 'y', 'z' };
+    second.insert(second.end(), tail, tail + 3);
+    ASSERT_EQ(storage.size(), std::size_t(0));   // slices do not change the owner
+    storage.appendMoved(first);                  // already in place
+    storage.appendMoved(second);                 // closes the two-element gap
+    ASSERT_EQ(storage.size(), std::size_t(5));
+    ASSERT_EQ(std::string(storage.data(), storage.size()), std::string("abxyz"));
+    ASSERT_TRUE(first.empty() && second.empty());
+    ASSERT_EQ(storage.ownedBytes(), uint64_t(10));
+}
+
+TEST(phase2_projection, projection_capacities_add_field_by_field) {
+    static_assert(sizeof(gl::gpu::Phase2ProjectionCapacity) == 24 * sizeof(uint32_t));
+    const gl::gpu::Phase2ProjectionCapacity left = projectionCapacity(2, 3, 4, 5);
+    gl::gpu::Phase2ProjectionCapacity right = projectionCapacity(1, 1, 1, 1);
+    right.metadataBytes = 7;
+    const gl::gpu::Phase2ProjectionCapacity sum = gl::gpu::addProjectionCapacity(left, right);
+    uint32_t l[24], r[24], t[24];
+    std::memcpy(l, &left, sizeof l);
+    std::memcpy(r, &right, sizeof r);
+    std::memcpy(t, &sum, sizeof t);
+    for (int field = 0; field < 24; ++field) ASSERT_EQ(t[field], l[field] + r[field]);
+    ASSERT_EQ(sum.logicalBlocks, 3u);
+    ASSERT_EQ(sum.metadataBytes, left.metadataBytes + 7u);
+    const gl::gpu::Phase2ProjectionCapacity same =
+        gl::gpu::addProjectionCapacity(left, gl::gpu::Phase2ProjectionCapacity{});
+    ASSERT_EQ(std::memcmp(&same, &left, sizeof left), 0);
+}
+
+
+TEST(phase2_projection, streamed_projection_assertion_probe) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_INVALID_STREAMED_PROJECTION"), 0);
+    if (value != nullptr) mode = value;
+    std::free(value);
+#else
+    if (const char* value = std::getenv("GL_TEST_INVALID_STREAMED_PROJECTION")) mode = value;
+#endif
+    if (mode.empty()) return;
+    const auto capacity = projectionCapacity(1, 1, 2, 8);
+    gl::gpu::Phase2ProjectionArena source(capacity);
+    gl::gpu::Phase2ProjectionArena::ShardBases bases{};
+    if (mode == "offset") {
+        gl::gpu::DeviceNameRecord record{};
+        record.byteOffset = 1;
+        source.nameRecords.push_back(record);
+        bases.nameByte = UINT32_MAX;
+        source.rebaseForStream(bases);
+    } else if (mode == "retained_base") {
+        gl::gpu::Phase2ProjectionArena retained(capacity,
+            gl::gpu::Phase2ProjectionArena::SealingOnly{});
+        bases.block = 1;
+        retained.appendSealingProjection(source, bases);
+    } else if (mode == "append_before_begin") {
+#ifdef GL_CUDA
+        gl::gpu::CudaPhase2ProjectionBuffer device(capacity);
+        device.appendStreamedUpload(source, bases);
+#else
+        ASSERT_TRUE(false);
+#endif
+    } else if (mode == "adopt_stream_offset") {
+        // The second shard is placed at block 1; a stream base at the top of
+        // the 32-bit range cannot address it.
+        const auto two = projectionCapacity(2, 1, 2, 8);
+        gl::gpu::Phase2ProjectionArena backing(two, gl::gpu::addProjectionCapacity(two, two));
+        gl::gpu::Phase2ProjectionArena firstShard(two, backing, gl::gpu::Phase2ProjectionCapacity{});
+        gl::gpu::Phase2ProjectionArena secondShard(two, backing, two);
+        firstShard.logicalBlocks.push_back(gl::gpu::DeviceLogicalBlockProjection{});
+        gl::gpu::Phase2ProjectionArena* shards[] = { &firstShard, &secondShard };
+        uint32_t firstBlocks[2]{};
+        bases.block = UINT32_MAX;
+        gl::gpu::Phase2ProjectionWorkers workers(1);
+        backing.adoptShards(shards, 2, firstBlocks, bases, workers);
+    } else if (mode == "workers_nested_job") {
+        gl::gpu::Phase2ProjectionWorkers workers(1);
+        auto inner = [](uint32_t) {};
+        auto outer = [&workers, &inner](uint32_t) { workers.run(1, inner); };
+        workers.run(1, outer);
+    } else if (mode == "uploader_submit_after_finish") {
+#ifdef GL_CUDA
+        gl::gpu::CudaPhase2ProjectionBuffer device(capacity);
+        gl::gpu::Phase2ProjectionArena retained(capacity,
+            gl::gpu::Phase2ProjectionArena::SealingOnly{});
+        device.beginStreamedUpload();
+        gl::gpu::Phase2WindowUploader uploader(device, retained);
+        uploader.finish();
+        uploader.submit(std::make_unique<gl::gpu::Phase2ProjectionArena>(capacity), bases);
+#else
+        ASSERT_TRUE(false);
+#endif
+    } else if (mode == "uploader_destroyed_unfinished") {
+#ifdef GL_CUDA
+        gl::gpu::CudaPhase2ProjectionBuffer device(capacity);
+        gl::gpu::Phase2ProjectionArena retained(capacity,
+            gl::gpu::Phase2ProjectionArena::SealingOnly{});
+        device.beginStreamedUpload();
+        {
+            gl::gpu::Phase2WindowUploader uploader(device, retained);
+        }
+#else
+        ASSERT_TRUE(false);
+#endif
+    } else {
+        ASSERT_TRUE(false);
+    }
+    ASSERT_TRUE(false);
+}

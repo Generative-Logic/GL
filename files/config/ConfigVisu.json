@@ -195,18 +195,105 @@
 	"output_args": [],
 	"max_size_expression": 5
   },
-  "fold": {
-    "arity": 7,
+  "addToSet": {
+    "arity": 3,
     "definition_sets": {
-      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false],
-      "4": ["P(x(1)(1))", false], "5": ["(1)", true], "6": ["(1)", true], "7": ["(1)", true]
+      "1": [
+        "P(1)",
+        true
+      ],
+      "2": [
+        "(1)",
+        true
+      ],
+      "3": [
+        "P(1)",
+        true
+      ]
+    },
+    "full_mpl": "addToSet.mpl",
+    "short_mpl": "(addToSet[M,a,L])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "appendToSequence": {
+    "arity": 4,
+    "definition_sets": {
+      "1": [
+        "(1)",
+        true
+      ],
+      "2": [
+        "(1)",
+        true
+      ],
+      "3": [
+        "P(x(1)(1))",
+        true
+      ],
+      "4": [
+        "P(x(1)(1))",
+        true
+      ]
+    },
+    "full_mpl": "appendToSequence.mpl",
+    "short_mpl": "(appendToSequence[n,a,f,g])",
+    "max_count_per_conjecture": 0,
+    "input_args": [
+      "n"
+    ],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "fold": {
+    "arity": 8,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(1))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "5": [
+        "P(x(1)(1))",
+        false
+      ],
+      "6": [
+        "(1)",
+        true
+      ],
+      "7": [
+        "(1)",
+        true
+      ],
+      "8": [
+        "(1)",
+        true
+      ]
     },
     "full_mpl": "fold.mpl",
-	"short_mpl": "(fold[N,s,+,f,n,m,p])",
-	"max_count_per_conjecture": 0,
-	"input_args": ["n", "m"],
-	"output_args": ["p"],
-	"max_size_expression": 4
+    "short_mpl": "(fold[N,s,+,op,f,n,m,p])",
+    "max_count_per_conjecture": 0,
+    "input_args": [
+      "n",
+      "m"
+    ],
+    "output_args": [
+      "p"
+    ],
+    "max_size_expression": 4
   },
   "preorder": {
     "arity": 4,
@@ -232,6 +319,64 @@
 	"output_args": [],
 	"max_size_expression": 4
   },
+  "remainder": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["P(x(1)(x(1)(1)))", false], "4": ["(1)", true], "5": ["(1)", true], "6": ["(1)", true]
+    },
+    "full_mpl": "remainder.mpl",
+	"short_mpl": "(remainder[N,+,*,a,d,r])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["a", "d"],
+	"output_args": ["r"],
+	"max_size_expression": 6
+  },
+  "nontrivialFactor": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["(1)", false],
+      "5": ["(1)", true],
+      "6": ["(1)", true]
+    },
+    "full_mpl": "nontrivialFactor.mpl",
+    "short_mpl": "(nontrivialFactor[N,+,*,i2,n,a])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["n"],
+    "output_args": ["a"],
+    "max_size_expression": 6
+  },
+  "prime": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["(1)", false],
+      "5": ["(1)", false],
+      "6": ["(1)", true]
+    },
+    "full_mpl": "prime.mpl",
+    "short_mpl": "(prime[N,+,*,i1,i2,p])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["p"],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "quotient": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["P(x(1)(x(1)(1)))", false], "4": ["(1)", true], "5": ["(1)", true], "6": ["(1)", true]
+    },
+    "full_mpl": "quotient.mpl",
+	"short_mpl": "(quotient[N,+,*,a,d,q])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["a", "d"],
+	"output_args": ["q"],
+	"max_size_expression": 6
+  },
   "identity": {
 	"arity": 2,
     "definition_sets": {
@@ -255,6 +400,48 @@
 	"input_args": [],
 	"output_args": [],
 	"max_size_expression": 4  
+  },
+  "EnumerationSet1": {
+    "arity": 2,
+    "definition_sets": {
+      "1": [
+        "(1)",
+        true
+      ],
+      "2": [
+        "P(1)",
+        true
+      ]
+    },
+    "full_mpl": "EnumerationSet1.mpl",
+    "short_mpl": "(EnumerationSet1[a,M])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "EnumerationRelationSet1": {
+    "arity": 3,
+    "definition_sets": {
+      "1": [
+        "(1)",
+        true
+      ],
+      "2": [
+        "(1)",
+        true
+      ],
+      "3": [
+        "P(x(1)(1))",
+        true
+      ]
+    },
+    "full_mpl": "EnumerationRelationSet1.mpl",
+    "short_mpl": "(EnumerationRelationSet1[a,b,X])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
   },
   "EnumerationSet2": {
     "arity": 3,

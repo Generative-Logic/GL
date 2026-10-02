@@ -27,23 +27,29 @@ def run_tests() -> None:
     original_seed = run_modes._seed_per_batch_binary
     original_native = run_modes.run_gl_quick
     original_merge = run_modes._merge_into_shared
+    original_vacuity = run_modes._filter_vacuous_tainted
     original_sleep = run_modes.time.sleep
+    original_migrate = run_modes.compilation_state.migrate_batch
     try:
         run_modes.configuration_reader = lambda _path: SimpleNamespace(
-            parameters=SimpleNamespace(simple_facts_parameters=[])
+            parameters=SimpleNamespace(simple_facts_parameters=[]),
+            raw_proof_graph_folder="files/raw_proof_graph",
+            theorems_folder=None, generate_conjectures=True, external_conjectures_file="",
         )
         run_modes._find_gl_quick_exe = lambda: run_modes.PROJECT_ROOT / "fake_gl_quick"
         run_modes.subprocess.run = lambda *_args, **_kwargs: calls.append("conjecturer")
         run_modes._seed_per_batch_binary = lambda _tag: calls.append("seed")
-        run_modes.run_gl_quick = lambda _tag: calls.append("native")
+        run_modes.run_gl_quick = lambda _tag, phase2_backend=None: calls.append("native")
         run_modes._merge_into_shared = lambda _tag: calls.append("merge")
+        run_modes._filter_vacuous_tainted = lambda *_: calls.append("vacuity")
 
         def reject_sleep(_seconds: float) -> None:
             raise AssertionError("_run_batch must not insert a fixed filesystem wait")
 
+        run_modes.compilation_state.migrate_batch = lambda *_: calls.append("migration")
         run_modes.time.sleep = reject_sleep
         run_modes._run_batch("Peano", [], add_cross_anchor=False)
-        assert calls == ["conjecturer", "seed", "native", "merge"]
+        assert calls == ["conjecturer", "seed", "native", "migration", "merge", "vacuity"]
     finally:
         run_modes.configuration_reader = original_reader
         run_modes._find_gl_quick_exe = original_find
@@ -51,7 +57,9 @@ def run_tests() -> None:
         run_modes._seed_per_batch_binary = original_seed
         run_modes.run_gl_quick = original_native
         run_modes._merge_into_shared = original_merge
+        run_modes._filter_vacuous_tainted = original_vacuity
         run_modes.time.sleep = original_sleep
+        run_modes.compilation_state.migrate_batch = original_migrate
 
 
 if __name__ == "__main__":

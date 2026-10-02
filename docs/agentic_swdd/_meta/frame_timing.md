@@ -36,6 +36,21 @@ WSL measurement runs use `.scripts/wsl_snapshot.py`, which performs the direct w
 
 - Cross-process append ordering is not an interface. Records are aggregated by stage, parent, and batch; consumers must never infer execution order from JSON-lines order.
 
+## Concurrent finalization
+
+`run_modes.py` and `_finish_full_graphs` finish main processed chapters before
+launching the incubator output process. The child renders and verifies incubator
+chapters while the parent exports and checks Lean, renders main HTML, and verifies
+main chapters. Each process owns its renderer state and output tree. The parent
+joins the child on success and failure, retains its log, and combines both verifier
+counts only after successful child execution. Main HTML still follows Lean.
+
+`python.finalization` is the elapsed wall-time scope under `python.pipeline`.
+Its main and incubator child scopes overlap, so their sum is not elapsed time;
+a negative child-sum residual at this parent represents overlap. Descendant stage
+records retain their individual costs. Use the measured parent wall duration in
+whole-run attribution. See `D-345`.
+
 ---
 
 <!-- GL-PAGE-FOOTER -->

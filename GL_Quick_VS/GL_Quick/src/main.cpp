@@ -50,17 +50,24 @@
 #ifdef USE_MIMALLOC
 #include <mimalloc.h>
 #endif
+#include "project_paths.hpp"
 #include "run_modes.hpp"
 #include "conjecturer.hpp"
 #include "prover.hpp"
+#include "infra/phase2_trace.hpp"
 #include "infra/rt_tracker.hpp"
 #include "infra/mem_tracker.hpp"
+#include "infra/heap_profile.hpp"
 #include "memory_infra/global_memory_manager.hpp"
+#include "memory_infra/heap_allocator.hpp"
 #include "tests/test_harness.hpp"
 
 namespace {
 
 #ifdef _WIN32
+// Enable explicitly when a full process image is needed for crash diagnosis.
+constexpr bool kWriteAbortFullMemoryDump = false;
+
 /// @brief Write a full-memory minidump of the current process to
 ///        `.debug/crashdumps/` on `SIGABRT` (an assert firing).
 ///
@@ -72,8 +79,8 @@ namespace {
 /// `MiniDumpWriteDump` records the exact faulting stack. It is
 /// re-entrancy-guarded, best-effort by design (a diagnostic writer must
 /// never mask the abort — the process still dies with the original
-/// signal), and permanent general crash plumbing: every assert, every
-/// batch (maintainer directive).
+/// signal). The handler is installed only when
+/// `kWriteAbortFullMemoryDump` is enabled.
 ///
 /// @param signalNumber The signal that fired (always `SIGABRT` here;
 ///                     required by the `signal` handler signature).
@@ -104,18 +111,20 @@ void writeAbortMinidump(int signalNumber) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // Before the first large allocation: arenas that place blocks above
+    // 64 MiB, so freed blocks go back to the operating system
+    // (D-427).
+    gl::configureHeapAllocator();
 #ifdef _WIN32
-    // Route assert/abort through Windows Error Reporting so the LocalDumps
-    // registry policy captures a full .dmp with the faulting stack (an
-    // abort otherwise fast-fails past WER and leaves only the text trace).
-    // Permanent diagnostic setting (maintainer directive): no abort message
-    // box, always report.
-    _set_abort_behavior(0, _WRITE_ABORT_MSG);
-    _set_abort_behavior(_CALL_REPORTFAULT, _CALL_REPORTFAULT);
-    // Self-written minidump on assert/abort: the LocalDumps policy misses
-    // the CRT abort path, so the SIGABRT handler writes the full dump itself
-    // with the faulting stack.
-    std::signal(SIGABRT, writeAbortMinidump);
+    // Assertion failures terminate without a full process dump unless the
+    // diagnostic switch is explicitly enabled. Suppress the abort dialog in
+    // both modes.
+    _set_abort_behavior(
+        kWriteAbortFullMemoryDump ? _CALL_REPORTFAULT : 0,
+        _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    if (kWriteAbortFullMemoryDump) {
+        std::signal(SIGABRT, writeAbortMinidump);
+    }
 #endif
     // Whether this invocation is the --unit-tests gate. Suppresses the
     // mimalloc banner below so the console-summary contract documented
@@ -129,6 +138,31 @@ int main(int argc, char* argv[]) {
     int v = mi_version();  // ensure mimalloc override DLL is loaded
     if (!isUnitTests) {
         std::cout << "mimalloc version: " << v << std::endl;
+    }
+#endif
+
+#if MEM_MEASUREMENT
+    // Opt-in allocation-site sampling for the heap census: GL_HEAP_PROFILE_KIB
+    // is the sampling interval in KiB (see docs/agentic_swdd/_meta/
+    // memory_measurement.md). Unset: live-heap counting only.
+    {
+#ifdef _WIN32
+        char text[32]{};
+        std::size_t required = 0;
+        const errno_t status = getenv_s(&required, text, sizeof(text), "GL_HEAP_PROFILE_KIB");
+        assert(status == 0 && "GL_HEAP_PROFILE_KIB must be a short integer");
+        const char* value = required == 0 ? nullptr : text;
+#else
+        const char* value = std::getenv("GL_HEAP_PROFILE_KIB");
+#endif
+        // The unit-test gate enables sampling inside its own heap-profile test.
+        if (value != nullptr && !isUnitTests) {
+            char* end = nullptr;
+            const long long kib = std::strtoll(value, &end, 10);
+            assert(end != value && *end == '\0' && kib > 0
+                && "GL_HEAP_PROFILE_KIB must be a positive integer");
+            gl::heap_profile::enable(static_cast<int64_t>(kib) * 1024);
+        }
     }
 #endif
     auto start = std::chrono::high_resolution_clock::now();
@@ -146,13 +180,7 @@ int main(int argc, char* argv[]) {
     // --mirror-externals <theoremsDir>: rebuild compressed_external_theorems.txt
     if (argc >= 3 && std::strcmp(argv[1], "--mirror-externals") == 0) {
         namespace fs = std::filesystem;
-        // argv[0] may be relative (`./gl_quick`); make it absolute and
-        // lexically normalise before walking up to the project root, or the
-        // three parent_path() steps collapse a relative path to empty.
-        std::error_code argvEc;
-        const fs::path projectRoot =
-            fs::absolute(fs::path(argv[0]), argvEc).lexically_normal()
-                .parent_path().parent_path().parent_path();
+        const fs::path& projectRoot = gl::projectRoot();
         const fs::path theoremsDir = projectRoot / argv[2];
         const fs::path extPath = theoremsDir / "externally_provided_theorems.txt";
         const fs::path compPath = theoremsDir / "compressed_external_theorems.txt";
@@ -253,38 +281,33 @@ int main(int argc, char* argv[]) {
     // such as `gl_quick.exe Peano` do NOT trigger this gate; the harness
     // is opt-in via flag for them.
     //
-    // Working-directory hardening: Linux/macOS users `make` from
-    // `GL_Quick_VS/GL_Quick/` and naturally invoke `./gl_quick --unit-tests`
-    // from there. The ExpressionAnalyzer constructor's config search is
-    // anchored on the current working directory; running from the build
-    // dir would fail to locate `files/config/Config*.json` and abort with
-    // a missing-anchor assert. Resolve project root from argv[0] (the
-    // binary lives at `<project>/GL_Quick_VS/GL_Quick/gl_quick(.exe)`,
-    // three parent_path() walks up to the project root) and chdir there
-    // before running tests. This matches the path resolution used by
-    // the --mirror-externals branch above.
-    if (argc >= 2 && std::strcmp(argv[1], "--unit-tests") == 0) {
-        namespace fs = std::filesystem;
+    // `--unit-tests` alone or with `--phase2-backend cuda` runs every
+    // compiled test. `--phase2-backend cpu` is the processor-route gate
+    // main.py runs without `--GPU`: it leaves out the CUDA-route tests, so a
+    // processor run needs no CUDA device. Anything else after the flag is a
+    // caller bug.
+    //
+    // Unit fixtures use relative paths inside the deployed project tree.
+    if (isUnitTests) {
+        bool includeCudaRoute = true;
+        if (argc > 2) {
+            assert(argc == 4 && std::strcmp(argv[2], "--phase2-backend") == 0
+                   && "--unit-tests accepts only --phase2-backend cpu|cuda");
+            const bool cpu = std::strcmp(argv[3], "cpu") == 0;
+            assert((cpu || std::strcmp(argv[3], "cuda") == 0)
+                   && "--phase2-backend requires cpu or cuda");
+            includeCudaRoute = !cpu;
+        }
         std::error_code ec;
-        // argv[0] may be relative (`./gl_quick` when run from the build
-        // dir). Make it absolute and lexically normalise before walking up
-        // to the project root, otherwise the three parent_path() steps
-        // collapse a relative path to empty and the chdir is skipped, so the
-        // config search runs from the build dir and aborts on missing-anchor.
-        const fs::path exePath =
-            fs::absolute(fs::path(argv[0]), ec).lexically_normal();
-        const fs::path projectRoot =
-            exePath.parent_path().parent_path().parent_path();
-        assert(!projectRoot.empty()
-               && "project-root walk from argv[0] yielded an empty path");
-        fs::current_path(projectRoot, ec);
-        assert(!ec && "chdir to project root failed");
-        return gl::tests::runAllTests();
+        std::filesystem::current_path(gl::projectRoot(), ec);
+        assert(!ec && "chdir to runtime project root failed");
+        return gl::tests::runAllTests(includeCudaRoute);
     }
 
     // Grab anchor id if provided (e.g., "Peano" or "Gauss")
     // Default to IncubatorPeano for MSVS F5 debugging; full_run passes "Peano"/"Gauss" via argv
     std::string anchor_id = (argc > 1) ? std::string(argv[1]) : "Gauss";
+    gl::Phase2TraceScope phase2BatchTrace(anchor_id.c_str());
 
     // Optional batch-path file overrides (shortcut mode):
     //   gl_quick.exe <Tag> [--conjectures-file <path>] [--externals-file <path>]
@@ -295,8 +318,14 @@ int main(int argc, char* argv[]) {
     std::string conjecturesFile;
     std::string externalsFile;
     std::string phase2Backend;
+    bool shortcutMode = false;
     bool phase2BackendSeen = false;
     for (int i = 2; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--shortcut") == 0) {
+            assert(!shortcutMode && "--shortcut must be supplied at most once");
+            shortcutMode = true;
+            continue;
+        }
         const bool isConjectures =
             std::strcmp(argv[i], "--conjectures-file") == 0;
         const bool isExternals =
@@ -322,7 +351,7 @@ int main(int argc, char* argv[]) {
 
     // run_modes::quickRun();
     run_modes::fullRun(
-        anchor_id, conjecturesFile, externalsFile, phase2Backend);
+        anchor_id, conjecturesFile, externalsFile, phase2Backend, shortcutMode);
 
 #if RT_MEASUREMENT
     // Cross-burst RT aggregate for this batch process (one batch per

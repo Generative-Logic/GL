@@ -174,9 +174,13 @@ namespace gl {
         /// @param flagCode  The flag code (`kMailStatementFlag*`).
         /// @param iteration The sender disintegration's witness-generation
         ///                  stamp; -1 = none.
+        /// @param integrated The sender registered the statement as the head
+        ///                  of one of its integration rules' firings (default
+        ///                  false; D-444).
         void setStatementFlag(int64_t key, int32_t flagCode,
-            int32_t iteration) {
-            const int32_t packed = packMailStatementFlag(flagCode, iteration);
+            int32_t iteration, bool integrated = false) {
+            const int32_t packed = packMailStatementFlag(flagCode, iteration,
+                integrated);
             const int32_t id = statementFlags_.lookup(key);
             if (id != 0) {
                 statementFlags_.upsert(key,

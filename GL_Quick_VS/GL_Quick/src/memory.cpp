@@ -32,8 +32,10 @@
 // function bodies live here.
 
 #include "memory.hpp"
+#include "memory_infra/paged_sorted_ordinals.hpp"
 
 #include "prover.hpp"
+#include "infra/hashburst_dump.hpp"
 #include "parameters.hpp"
 #include "memory_infra/lb_deload.hpp"
 #include "memory_infra/deload_stats.hpp"
@@ -552,6 +554,8 @@ namespace gl {
         assert((!op.isRemove() || (op.visited != nullptr && op.dropSet != nullptr))
             && "addToHashMemory: a removal without its visited set or drop set");
         if (op.isRemove()) targetIntMemory.ownerlessPending = true;
+        if (op.isRemove() && &targetIntMemory == &mb.overallHashMemory)
+            forgetUnaryImplication(mb, originalImplicationSpan, validityNameSpan);
 
         // Own multiplyImplication loop — fully independent from addToHashMemory.
         // The span form emits each copy onto mulStrArena (string tier) as a
@@ -624,12 +628,12 @@ namespace gl {
                 if (parameters.trackHistory) {
                     RT_SCOPE_HERE("HM_COPY_HISTORY");
                     const OriginDep mulDeps[1] = {
-                        { originalImplicationCleanSpan, StrSpan("main", 4) } };
+                        { originalImplicationCleanSpan, validityNameSpan } };
                     const int mulCap = (parameters.compressor_mode
                         ? parameters.compressor_max_origins_per_expr
                         : parameters.max_origin_per_expr);
                     addOriginEncoded(mb.exprOriginMap, mb.originInterner, copySpan,
-                        StrSpan("main", 4), OriginTag::multipliedFrom, mulDeps, 1, mulCap);
+                        validityNameSpan, OriginTag::multipliedFrom, mulDeps, 1, mulCap);
                     // Direct mailOut.exprOriginMap write — DOCUMENTED EXCEPTION
                     // to the fillMailOut-sole-writer policy. The multiplied
                     // implication installs as a *rule* in overallHashMemory
@@ -637,7 +641,7 @@ namespace gl {
                     // intLocalEncodedStatementsDelta), so `fillMailOut` cannot
                     // propagate the "multiplied from" history line via the
                     // delta-driven copy. See I-64 Caveats.
-                    mb.addMailOutOrigin(copySpan, StrSpan("main", 4),
+                    mb.addMailOutOrigin(copySpan, validityNameSpan,
                         OriginTag::multipliedFrom, mulDeps, 1, mulCap);
                 }
 
@@ -677,6 +681,37 @@ namespace gl {
                 ruleOwner = packRuleOwner(
                     mb.ruleInterner.encode(originalImplicationSpan), ownerVid);
             }
+            // The rule and each of its copies belong to the task on whose
+            // behalf they are installed; an install without a task records
+            // them as independent, so a later task never claims them
+            // (I-284).
+            if (!op.isRemove()) {
+                const int64_t task = mb.integrationTaskContext;
+                assert((task == 0 || originalImplicationSpan.len > 0)
+                    && "addToHashMemory: an integration rule without an implication text");
+                assert(!integrationTaskRetired(mb, task)
+                    && "addToHashMemory: a retired node installs a rule");
+                // The finished-task wipe removes a task-owned rule by
+                // replaying the integration install (all route arguments
+                // zero, justification `integration`) on overall, local and
+                // delta; any other install on behalf of a task would be
+                // replayed inexactly.
+                assert((task == 0
+                        || (equalSpans(justificationSpan, StrSpan("integration", 11))
+                            && maxAdmissionDepth == 0 && maxSecondaryNumber == 0
+                            && !partOfRecursion && minNumOperatorsKey == 0
+                            && !performAdmissionMapUpdate && secondTarget == nullptr
+                            && &targetIntMemory != &mb.workingMemory))
+                    && "addToHashMemory: a task-owned rule outside the integration install the wipe replays");
+                if (c == 0) {
+                    const int64_t* ruleTask = mb.lbMemory.integrationRuleOwners.find(ruleOwner);
+                    if (ruleTask != nullptr) noteIntegrationReach(mb, *ruleTask, task);
+                    else mb.lbMemory.integrationRuleOwners.insert(ruleOwner, task);
+                }
+                const int64_t* copyTask = mb.lbMemory.integrationCopyOwners.find(owner);
+                if (copyTask != nullptr) noteIntegrationReach(mb, *copyTask, task);
+                else mb.lbMemory.integrationCopyOwners.insert(owner, task);
+            }
 
             // The copy's owning rules (copyOwners, keyed by the packed copy
             // owner): two rules can multiply into one copy text, so the
@@ -710,6 +745,12 @@ namespace gl {
                 op.dropSet->mint(owner);
             }
             } // RT_SCOPE HM_COPY_OWNERS
+
+            if (!op.isRemove() && &targetIntMemory == &mb.overallHashMemory
+                && curKeyN > 0 && equalSpans(justificationSpan, StrSpan("implication", 11))) {
+                rememberUnaryImplication(mb, curKeyRun, curKeyN, curValueSpan, copySpan,
+                    originalImplicationSpan, validityNameSpan, levels, levelCount, secondTarget == nullptr);
+            }
 
             // --- Shared members (path-independent, needed for integration) ---
             // implication = curKey + curValue as a StrSpan run.
@@ -776,11 +817,15 @@ namespace gl {
                     for (int32_t i = 0; i < trigN; ++i) {
                         ScratchScope trScope(tgStrArena);
                         StrSpan tKey, tVal;
-                        decodeTemplateKeyView(trig.keyAt(tidx[i]), mb.templateInterner, mb.nameMap, tKey, tVal);
+                        const int64_t triggerKey = trig.keyAt(tidx[i]);
+                        decodeTemplateKeyView(triggerKey, mb.templateInterner, mb.nameMap, tKey, tVal);
                         const ScratchString tKeyC = ScratchString::copyFrom(tgStrArena, tKey.ptr, tKey.len);
                         const ScratchString tValC = ScratchString::copyFrom(tgStrArena, tVal.ptr, tVal.len);
+                        // Keys derived from a trigger belong to the trigger's
+                        // task (I-284).
                         makeAdmissionKeys(implRun, implRunN, StrSpan(tKeyC),
-                            trigTarget, StrSpan(tValC), mb);
+                            trigTarget, StrSpan(tValC), mb,
+                            mb.lbMemory.admissionTriggerOwners.findOr(triggerKey, int64_t{0}));
                     }
                 }
             }
@@ -789,11 +834,13 @@ namespace gl {
             RT_SCOPE_HERE("HM_ADMISSION_NORMKEYS");
             this->makeNormalizedKeysForAdmission(curKeyRun, curKeyN, targetIntMemory,
                 mb.nameMap, mb.ruleInterner, curValueSpan, minNumOperatorsKey,
-                copySpan, validityNameSpan, &mb, op, &encMemo, stagingPtr);
+                copySpan, validityNameSpan, &mb, op, &encMemo, stagingPtr,
+                equalSpans(justificationSpan, StrSpan("integration", 11)));
             if (secondTarget != nullptr) {
                 this->makeNormalizedKeysForAdmission(curKeyRun, curKeyN, *secondTarget,
                     mb.nameMap, mb.ruleInterner, curValueSpan, minNumOperatorsKey,
-                    copySpan, validityNameSpan, &mb, op, &encMemo, staging2Ptr);
+                    copySpan, validityNameSpan, &mb, op, &encMemo, staging2Ptr,
+                    equalSpans(justificationSpan, StrSpan("integration", 11)));
             }
             }
 
@@ -815,14 +862,25 @@ namespace gl {
             if (performAdmissionMapUpdate && !op.isRemove())
             {
                 RT_SCOPE_HERE("HM_UPDATE_ADMISSION_MAP");
-                // keyPlusValue == implRun (curKey + curValue, already built).
+                // PREMISES ONLY (curKeyRun), never the head: the
+                // premise-completion demand asks for a missing premise
+                // instance; the head is the rule's product and is never a
+                // demand (D-379 — the head-marker
+                // bug filed `!(in3[q,d,t,marker])` demands on the `×` slot
+                // of the negated-existence expansion rules). The stored
+                // admission key list is therefore the premise chain, and
+                // the `isAdmitted` re-key replays premises only. The demand
+                // is filed at the installing rule's own scope: a rule that
+                // lives in an OR case branch demands only inside that
+                // branch (the route-(a) probe reads the exact scope plus
+                // strict ancestors), never at `main`.
                 updateAdmissionMap(mb,
-                    implRun, implRunN,
+                    curKeyRun, curKeyN,
                     curRemRun, curRemN,
                     maxAdmissionDepth,
                     maxSecondaryNumber,
                     partOfRecursion,
-                    StrSpan("main", 4));
+                    validityNameSpan);
             }
 
             // --- Inner: add this single key/value to int hash memory ---
@@ -1139,22 +1197,22 @@ namespace gl {
                     subLen = st.pos;
                     }
 
-                    // A subkey below kSubkeyUCheckMinElements records its owner
-                    // on the signature-free record; from there on its
+                    // A subkey below kSubkeyUCheckMinElements has an empty
+                    // persistent record; from there on its
                     // u_-signature record gains the owner with the signature's
                     // index — via the raw-key door (no owning NormKey). Under
-                    // the remove policy the owner's pairs leave the record.
+                    // the remove policy only long subkeys lose owner pairs.
                     if (op.isRemove()) {
                         removeRuleSubkeyEntry(targetIntMemory, op,
                             static_cast<NameId>(index + 1), subBuf, subLen,
                             owner, genArena);
                     } else if (subEncCount < kSubkeyUCheckMinElements) {
                         RT_SCOPE_HERE("HM_SK_WRITE_SHORT");
-                        stageShortSubkeyOwner(staging.subkeys,
-                            static_cast<NameId>(index + 1), subBuf, subLen, owner);
+                        stageEmptySubkeyRecord(staging.subkeys,
+                            static_cast<NameId>(index + 1), subBuf, subLen);
                         if (staging2Ptr != nullptr) {
-                            stageShortSubkeyOwner(staging2Ptr->subkeys,
-                                static_cast<NameId>(index + 1), subBuf, subLen, owner);
+                            stageEmptySubkeyRecord(staging2Ptr->subkeys,
+                                static_cast<NameId>(index + 1), subBuf, subLen);
                         }
                     } else {
                         RT_SCOPE_HERE("HM_SK_WRITE_MERGE");
@@ -1262,7 +1320,8 @@ namespace gl {
         int minNumOperatorsKey,
         const std::string& originalImpl,
         const std::string& validityName,
-        const Memory* mbTrap) {
+        const Memory* mbTrap,
+        bool integrationJustified) {
         // Vector forwarder onto the span-run body (the additive twin) — build a
         // stack StrSpan run over the caller-stable vector strings, byte-identical.
         StrSpan keyRun[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1];
@@ -1272,7 +1331,8 @@ namespace gl {
         for (int32_t i = 0; i < keyFwdN; ++i) keyRun[i] = StrSpan(key[i]);
         makeNormalizedKeysForAdmission(keyRun, keyFwdN, intHashMemory, nameMap,
             ruleInterner, StrSpan(value), minNumOperatorsKey,
-            StrSpan(originalImpl), StrSpan(validityName), mbTrap);
+            StrSpan(originalImpl), StrSpan(validityName), mbTrap,
+            RuleIndexOp{}, nullptr, nullptr, integrationJustified);
     }
 
     bool ExpressionAnalyzer::ordisRouteQualifies(const StrSpan* key,
@@ -1336,7 +1396,7 @@ namespace gl {
 
     // Doxygen at the declaration (prover.hpp).
     bool ExpressionAnalyzer::ordis2DemandSlotQualifies(const StrSpan* key,
-        int32_t keyN, int32_t index) const
+        int32_t keyN, int32_t index, bool integrationJustified) const
     {
         const StrSpan elem = key[index];
 
@@ -1404,20 +1464,28 @@ namespace gl {
         // substantive premise.
         if (!anySubstantive) return false;
 
-        // MINIMUM PREMISE COUNT (maintainer-set 2026-08-10), checked LAST:
-        // only premise-rich rules mint demand — at least
+        // MINIMUM PREMISE COUNT, checked LAST: only premise-rich rules
+        // mint demand — without this gate every short rule with a
+        // qualifying compound slot installs demand-marker families across
+        // all LBs (the post-eligibility-fix RT explosion). The floor is
+        // justification-split: general rules need
         // kOrdis2DemandMinPremises NON-anchor premises, the qualifying
-        // slot included (the B5 shape: slot + guard + two products).
-        // Without this gate every short rule with a qualifying compound
-        // slot installs demand-marker families across all LBs (the
-        // post-eligibility-fix RT explosion).
+        // slot included (the B5 shape: slot + guard + two products);
+        // integration-justified rules — a goal's flat integration-rule
+        // variants and its per-level conjunct rules — need
+        // kOrdis2DemandMinPremisesIntegration (the D1 closure rule: three
+        // typings + two matched conjuncts + the one missing ground
+        // compound premise).
         {
             int32_t nonAnchorN = 0;
             for (int32_t i = 0; i < keyN; ++i) {
                 if (isAnchor(key[i])) continue;
                 ++nonAnchorN;
             }
-            if (nonAnchorN < ExecutionParameters::kOrdis2DemandMinPremises) {
+            const int32_t minPremises = integrationJustified
+                ? ExecutionParameters::kOrdis2DemandMinPremisesIntegration
+                : ExecutionParameters::kOrdis2DemandMinPremises;
+            if (nonAnchorN < minPremises) {
                 return false;
             }
         }
@@ -1526,6 +1594,146 @@ namespace gl {
         return true;
     }
 
+    /// @brief Decide whether one (premise, input slot) pair of a RECEIVED
+    ///        THEOREM rule installs an untagged input-slot demand variant
+    ///        through the theorem-relation route
+    ///        (D-370).
+    ///
+    /// @details
+    /// Conditions, in order: (1) received theorem — an anchor element in
+    /// the key, no `u_`-prefixed premise argument, not integration
+    /// justified; (2) the marked premise is a positive config-operator
+    /// application and `inputPos` names one of its config input slots;
+    /// (3) every other non-anchor premise is a positive config-backed
+    /// compound relation; (4) confinement; (5) concreteness; (6) at least
+    /// `kTheoremRelationDemandMinBoundArgs` other arguments of the marked
+    /// premise are bound by a relation premise. The head is unconstrained.
+    ///
+    /// @param key      The rule's premise run (anchor included).
+    /// @param keyN     The premise count.
+    /// @param index    The candidate premise slot.
+    /// @param inputPos The position within the premise operator's
+    ///                 `inputIndices` (NOT the raw argument index).
+    /// @param integrationJustified Whether the install carries the
+    ///                 integration justification (refuses).
+    /// @return `true` iff the pair installs an untagged demand variant.
+    /// @invariant Read-only; mints nothing.
+    /// @see inputSlotDemandSlotQualifies, makeNormalizedKeysForAdmission.
+    bool ExpressionAnalyzer::theoremRelationDemandSlotQualifies(
+        const StrSpan* key, int32_t keyN, int32_t index, int32_t inputPos,
+        bool integrationJustified) const
+    {
+        const auto isAnchor = [](StrSpan e) -> bool {
+            return e.len >= 7
+                && equalSpans(StrSpan(e.ptr, 7), StrSpan("(Anchor", 7));
+        };
+        const auto isUPrefixed = [](StrSpan a) -> bool {
+            return a.len >= 2 && a.ptr[0] == 'u' && a.ptr[1] == '_';
+        };
+
+        // (1) A received theorem: anchored, no `u_` premise argument (the
+        // D-32 productOfDisintegration would be true otherwise), and not an
+        // integration install.
+        if (integrationJustified) return false;
+        if (index < 0 || index >= keyN) return false;
+        bool anchored = false;
+        for (int32_t i = 0; i < keyN; ++i) {
+            if (isAnchor(key[i])) { anchored = true; continue; }
+            StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t iN = getArgsSpans(key[i], iArgs,
+                                            ExecutionParameters::MAX_ARITY);
+            for (int32_t a = 0; a < iN; ++a) {
+                if (isUPrefixed(iArgs[a])) return false;
+            }
+        }
+        if (!anchored) return false;
+
+        // (2) The marked premise: a positive config operator, slot in range.
+        const StrSpan elem = key[index];
+        if (isAnchor(elem)) return false;
+        if (elem.len > 0 && elem.ptr[0] == '!') return false;
+        const ce::CoreExpressionConfig* cfg =
+            coreConfig(extractExpressionSpan(elem));
+        if (cfg == nullptr) return false;
+        if (inputPos < 0
+            || inputPos >= static_cast<int32_t>(cfg->inputIndices.size())) {
+            return false;
+        }
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t argsN = getArgsSpans(elem, args,
+                                           ExecutionParameters::MAX_ARITY);
+        const int idx = cfg->inputIndices[inputPos];
+        if (idx < 0 || idx >= argsN) return false;
+        const StrSpan cand = args[idx];
+
+        // (3) Every other non-anchor premise is a positive config-backed
+        // compound relation (the `updateAdmissionMap` notion: a compiled
+        // NON-atomic core that has a config — preorder / strictOrder /
+        // remainder …). At least one such premise must exist.
+        int32_t relationN = 0;
+        for (int32_t i = 0; i < keyN; ++i) {
+            if (i == index || isAnchor(key[i])) continue;
+            const StrSpan other = key[i];
+            if (other.len > 0 && other.ptr[0] == '!') return false;
+            const StrSpan core = extractExpressionSpan(other);
+            const LogicalEntity* ent =
+                (core.len > 0) ? compiledEntity(core) : nullptr;
+            if (ent == nullptr
+                || equalSpans(StrSpan(ent->category), StrSpan("atomic", 6))) {
+                return false;
+            }
+            if (coreConfig(core) == nullptr) return false;
+            ++relationN;
+        }
+        if (relationN == 0) return false;
+
+        // (4) Confinement: the candidate appears in no other key element.
+        for (int32_t i = 0; i < keyN; ++i) {
+            if (i == index) continue;
+            StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t iN = getArgsSpans(key[i], iArgs,
+                                            ExecutionParameters::MAX_ARITY);
+            for (int32_t a = 0; a < iN; ++a) {
+                if (equalSpans(iArgs[a], cand)) return false;
+            }
+        }
+
+        // (5) Concreteness + (6) the bound-argument floor: every other
+        // argument of the marked premise appears in some other key element
+        // (anchor included); a repeated candidate fails. An argument that
+        // is an anchor slot name (appears in an anchor element — the
+        // operator slot `4`, the numerals) is bound but NOT counted; only
+        // the arguments bound by a RELATION premise count against
+        // kTheoremRelationDemandMinBoundArgs.
+        int32_t boundByRelation = 0;
+        for (int32_t a = 0; a < argsN; ++a) {
+            if (a == idx) continue;
+            const StrSpan other = args[a];
+            if (equalSpans(other, cand)) return false;
+            bool inAnchor = false;
+            bool byRelation = false;
+            for (int32_t i = 0; i < keyN; ++i) {
+                if (i == index) continue;
+                StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t iN = getArgsSpans(key[i], iArgs,
+                                                ExecutionParameters::MAX_ARITY);
+                bool here = false;
+                for (int32_t x = 0; x < iN; ++x) {
+                    if (equalSpans(iArgs[x], other)) { here = true; break; }
+                }
+                if (!here) continue;
+                if (isAnchor(key[i])) inAnchor = true; else byRelation = true;
+            }
+            if (!inAnchor && !byRelation) return false;
+            if (!inAnchor && byRelation) ++boundByRelation;
+        }
+        if (boundByRelation
+            < ExecutionParameters::kTheoremRelationDemandMinBoundArgs) {
+            return false;
+        }
+        return true;
+    }
+
     void ExpressionAnalyzer::makeNormalizedKeysForAdmission(
         const StrSpan* key, int32_t keyN,
         HashMemory& intHashMemory,
@@ -1538,9 +1746,37 @@ namespace gl {
         const Memory* mbTrap,
         const RuleIndexOp& op,
         KeyEncodeMemo* memo,
-        RuleIndexStaging* staging) {
+        RuleIndexStaging* staging,
+        bool integrationJustified) {
 
-        (void)mbTrap;
+        static const bool traceEnabled = [] {
+#ifdef _WIN32
+            size_t required = 0;
+            const errno_t result = getenv_s(&required, nullptr, 0, "GL_FTA_BLOWUP_TRACE");
+            assert(result == 0);
+            return required != 0;
+#else
+            return std::getenv("GL_FTA_BLOWUP_TRACE") != nullptr;
+#endif
+        }();
+        const bool traceTarget = traceEnabled && mbTrap && hashburst_dump::isTargetLB(*mbTrap);
+        const auto traceQualification = [&](const char* stage, int32_t index, int32_t validCount,
+                bool classic = false, bool local = false, bool headOverlap = false) {
+            if (!traceTarget) return;
+            std::ostringstream line;
+            line << "[FTA-DEMAND-RULE] " << stage << " scope=" << validityName.toStdString()
+                 << " remove=" << op.isRemove() << " index=" << index << " valid=" << validCount
+                 << " minimum=" << minNumOperatorsKey << " classic=" << classic << " local=" << local
+                 << " headOverlap=" << headOverlap << " key={";
+            for (int32_t i = 0; i < keyN; ++i) line << (i ? ";" : "") << key[i].toStdString();
+            line << "} head=" << value.toStdString() << " carrier=" << originalImpl.toStdString() << "\n";
+            // permanent instrument: GL_FTA_BLOWUP_TRACE (AGENTS.md Rule 36), off unless the variable is set
+            std::ofstream trace(".debug/traps.log", std::ios::app);
+            assert(trace.is_open());
+            trace << line.str();
+        };
+        traceQualification("enter", -1, -1);
+
         // The premise encode memo: the install's per-copy memo when the
         // caller shares one (bound to this very key run — asserted), else a
         // local one for a standalone call. Both are the same contract; every
@@ -1608,7 +1844,8 @@ namespace gl {
             assert(keyN <= kO2KeyCap
                 && "ordis2-demand pass: key size exceeds cap");
             for (int32_t index = 0; index < keyN; ++index) {
-                if (!ordis2DemandSlotQualifies(key, keyN, index)) continue;
+                if (!ordis2DemandSlotQualifies(key, keyN, index,
+                        integrationJustified)) continue;
                 int binary[kO2KeyCap];
                 for (int32_t i = 0; i < keyN; ++i) binary[i] = 0;
                 StrSpan subkey[kO2KeyCap];
@@ -1627,7 +1864,9 @@ namespace gl {
                     static_cast<std::size_t>(index), StrSpan(),
                     binary, subkey, subCount, intHashMemory, nameMap,
                     ruleInterner, originalImpl, ownerVid, owner,
-                    /*ordisOnly=*/false, /*ordis2Demand=*/true, op, encMemo, stg);
+                    /*ordisOnly=*/false, /*ordis2Demand=*/true, op, encMemo, stg,
+                    integrationJustified ? RuleJustification::integration
+                                         : RuleJustification::none);
             }
         }
 
@@ -1694,6 +1933,72 @@ namespace gl {
             }
         }
 
+        // FIFTH, independent qualification pass
+        // (D-370) — the theorem-relation route:
+        // a RECEIVED THEOREM whose other premises are all compound relations
+        // installs an UNTAGGED marker variant for each qualifying input
+        // slot of its one operator premise, exactly like the fourth pass
+        // (marked argument = the input-slot candidate, subkey = every other
+        // premise, anchor included; instantiated by the marker branch when
+        // the subkey matches live facts, drained into the algebra
+        // admissionMap, read through the ancestor-inclusive probe). The
+        // predicate replaces the D-288 head-input condition and premise
+        // floor with the structural description of the rule plus the
+        // bound-argument floor; a pair the fourth pass already installed
+        // installs the same variant again, which the index dedups.
+        {
+            RT_SCOPE_HERE("ADM_PASS_THEOREM_RELATION");
+            constexpr int32_t kTRKeyCap =
+                ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
+            assert(keyN <= kTRKeyCap
+                && "theorem-relation demand pass: key size exceeds cap");
+            for (int32_t index = 0; index < keyN; ++index) {
+                if (isAnchor(key[index])) continue;
+                if (key[index].len > 0 && key[index].ptr[0] == '!') continue;
+                const ce::CoreExpressionConfig* elemCfg =
+                    coreConfig(extractExpressionSpan(key[index]));
+                if (elemCfg == nullptr) continue;
+                StrSpan elemArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t elemArgsN = getArgsSpans(key[index], elemArgs,
+                    ExecutionParameters::MAX_ARITY);
+                const int32_t inputN =
+                    static_cast<int32_t>(elemCfg->inputIndices.size());
+                for (int32_t ip = 0; ip < inputN; ++ip) {
+                    // A pair the fourth pass installed is not installed
+                    // twice.
+                    if (inputSlotDemandSlotQualifies(key, keyN, index, ip,
+                            value)) {
+                        continue;
+                    }
+                    if (!theoremRelationDemandSlotQualifies(key, keyN, index,
+                            ip, integrationJustified)) {
+                        continue;
+                    }
+                    const int idx = elemCfg->inputIndices[ip];
+                    assert(idx >= 0 && idx < elemArgsN
+                        && "theorem-relation demand pass: qualified slot out of range");
+                    const StrSpan cand = elemArgs[idx];
+                    int binary[kTRKeyCap];
+                    for (int32_t i = 0; i < keyN; ++i) binary[i] = 0;
+                    StrSpan subkey[kTRKeyCap];
+                    int32_t subCount = 0;
+                    for (int32_t i = 0; i < keyN; ++i) {
+                        if (i == index) continue;
+                        binary[i] = 1;
+                        subkey[subCount++] = key[i];
+                    }
+                    assert(subCount >= 1
+                        && "theorem-relation demand pass: qualifying slot with empty subkey");
+                    installAdmissionMarkerVariants(key,
+                        static_cast<std::size_t>(keyN),
+                        static_cast<std::size_t>(index), cand,
+                        binary, subkey, subCount, intHashMemory, nameMap,
+                        ruleInterner, originalImpl, ownerVid, owner,
+                        /*ordisOnly=*/false, /*ordis2Demand=*/false, op, encMemo, stg);
+                }
+            }
+        }
+
         // Two mutually exclusive qualification routes: the regular
         // (A)/(B)/(C) gates retain their existing eligibility criteria; a
         // rule failing all three may still install ordisOnly-tagged marker
@@ -1701,6 +2006,7 @@ namespace gl {
         // demand evidence, invisible to general Pass-B admission.
         const bool regularQualified =
             implicationIsQualified(key, keyN, value, minNumOperatorsKey);
+        traceQualification(regularQualified ? "regular" : "not-regular", -1, -1);
         if (!regularQualified && !ordisRouteQualifies(key, keyN, value)) {
             return;
         }
@@ -1849,6 +2155,7 @@ namespace gl {
                 }
             }
             if (!haveOutput) {
+                traceQualification("no-output", static_cast<int32_t>(index), -1);
                 continue;
             }
 
@@ -1903,6 +2210,8 @@ namespace gl {
                 accept = false;
             }
 
+            traceQualification(accept ? "install-marker" : "reject-marker", static_cast<int32_t>(index),
+                validCount, acceptedByClassic, acceptedByLocalU, outputMatchesHeadOutputSlot(outputArg, value));
             if (!accept) continue;
 
             installAdmissionMarkerVariants(key, n, index, outputArg,
@@ -1926,7 +2235,8 @@ namespace gl {
         bool ordis2Demand,
         const RuleIndexOp& op,
         KeyEncodeMemo& memo,
-        RuleIndexStaging& staging) {
+        RuleIndexStaging& staging,
+        RuleJustification demandJustification) {
         {
             constexpr int32_t kKeyCap =
                 ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
@@ -2044,8 +2354,8 @@ namespace gl {
                                     owner, genScratchArenas().forSlot(mnkGenSlot));
                             } else if (subEncCount < kSubkeyUCheckMinElements) {
                                 RT_SCOPE_HERE("ADM_SK_WRITE_SHORT");
-                                stageShortSubkeyOwner(staging.subkeys,
-                                    static_cast<NameId>(si + 1), subBuf, subLen, owner);
+                                stageEmptySubkeyRecord(staging.subkeys,
+                                    static_cast<NameId>(si + 1), subBuf, subLen);
                             } else {
                                 RT_SCOPE_HERE("ADM_SK_WRITE_MERGE");
                                 stageSubkeySignatures(staging.subkeys,
@@ -2237,7 +2547,7 @@ namespace gl {
                         static_cast<NameId>(sn), bufIgnored, lenIgnored,
                         valueId, isMarker, keyIds, keyIdsN, remIds, remScratchN,
                         originalImplId, ownerVid, mnkGenArena,
-                        nullptr, 0, RuleJustification::none, false, true,
+                        nullptr, 0, demandJustification, false, true,
                         ordisOnly, /*subsetExclusion=*/false, ordis2Demand);
                     }
                     {
@@ -2542,7 +2852,11 @@ namespace gl {
         // are identical.
         // ---------------------------------------------------------------
         const IntStmtView allIntStmts(body.intEncodedStatements);
-        NameId filteredIdx[8192];
+        assert(parameters.maxNumberFilteredStatements > 0
+            && parameters.maxNumberFilteredStatements <= ExecutionParameters::MAX_FILTERED_POSITION_CODE);
+        NameId* filteredIdx = reinterpret_cast<NameId*>(genArena.resolve(genArena.alloc(
+            parameters.maxNumberFilteredStatements * static_cast<int32_t>(sizeof(NameId)),
+            static_cast<int32_t>(alignof(NameId)))));
         NameId nFiltered = 0;
         {
         // RT part 1 of 2: statement-universe filter + name sort — the fixed
@@ -2551,7 +2865,7 @@ namespace gl {
         // A candidate is the whole request, so a statement that is a whole key on
         // its own is admitted alongside the growable subkeys.
         nFiltered = filterIntEncodedStatements(allIntStmts,
-            intMemory, body, /*alsoAcceptFullKeys=*/true, filteredIdx, 8192);
+            intMemory, body, /*alsoAcceptFullKeys=*/true, filteredIdx, parameters.maxNumberFilteredStatements);
         // Name-only stable_sort. Emergence-order tie resolution is deterministic by
         // the stable_sort contract across MSVC STL and libstdc++ — cross-host
         // byte-identical at this site. The Gauss / fold theorem proves under this
@@ -3041,9 +3355,13 @@ namespace gl {
         // The statement universe, filtered by the subkey growth probe, then
         // name-sorted exactly as the search sorts it (ties keep ascending
         // statement index).
-        NameId filteredIdx[8192];
+        assert(parameters.maxNumberFilteredStatements > 0
+            && parameters.maxNumberFilteredStatements <= ExecutionParameters::MAX_FILTERED_POSITION_CODE);
+        NameId* filteredIdx = reinterpret_cast<NameId*>(genArena.resolve(genArena.alloc(
+            parameters.maxNumberFilteredStatements * static_cast<int32_t>(sizeof(NameId)),
+            static_cast<int32_t>(alignof(NameId)))));
         const NameId nFiltered = filterIntEncodedStatements(allIntStmts,
-            mem, body, /*alsoAcceptFullKeys=*/false, filteredIdx, 8192);
+            mem, body, /*alsoAcceptFullKeys=*/false, filteredIdx, parameters.maxNumberFilteredStatements);
         gpuProducerFilterCalls.fetch_add(1, std::memory_order_relaxed);
         gpuFilterInputStatements.fetch_add(
             static_cast<uint64_t>(allIntStmts.size()),
@@ -3697,15 +4015,40 @@ namespace gl {
                     // in the ordis2 machinery): checked FIRST so neither
                     // sibling branch ever processes a demand LMV. Nothing
                     // of the marker / admission machinery is touched (no
-                    // admv, no sawMarker path). Purity discipline as the
-                    // marker branch's: an
-                    // impure match outside an or branch registers no
-                    // demand.
-                    const bool inOrBranch =
-                        containsSpan(hitValidityView,
-                                     StrSpan("_boundary_orint_", 16));
-                    if (!pure && !inOrBranch) {
+                    // admv, no sawMarker path). Ordinary demands require
+                    // pure premises in every scope, including OR branches.
+                    // Integration demands are exempt from the purity gate
+                    // (maintainer decision 2026-08-24,
+                    // D-357): a goal's
+                    // integration rule is matched by the goal's own
+                    // hypothesis-chain witnesses (int_/it_ products the
+                    // recursion head unpacks without enrolling them as
+                    // products of recursion), so the impurity that guards
+                    // general rules against algebra-iteration churn would
+                    // silence exactly the near-miss the demand exists for.
+                    const bool integrationDemand =
+                        lmv.justification() == RuleJustification::integration;
+                    if (!pure && !integrationDemand) {
                         continue;
+                    }
+
+                    // "Really missing" gate (maintainer decision
+                    // 2026-08-24, D-358):
+                    // a demand names a premise the rule is waiting for; a
+                    // ground text already known at the deposit scope or an
+                    // ancestor is not missing — the full rule fires on the
+                    // same facts — so no demand is staged. The shared
+                    // ancestorKnown predicate (Site F semantics), non-minting
+                    // span lookup; intKnownStatements is burst-fixed, so the
+                    // verdict is the same here as at apply time.
+                    {
+                        const NameId knownOrigId =
+                            memoryBlock.nameMap.lookup(StrSpan(rplScratch2));
+                        if (knownOrigId != 0
+                            && ancestorKnown(memoryBlock, knownOrigId, hitValidityId,
+                                             /*includeSelf=*/true)) {
+                            continue;
+                        }
                     }
 
                     // I-171 mirror (maintainer-approved 2026-08-10): a
@@ -3854,13 +4197,6 @@ namespace gl {
                     }
 
 
-                    bool allGood = (hitValidityId == NameMap::MAIN_ID);
-                    for (NameId i = 0; i < reqCount; ++i) {
-                        if (!allowedForMail(nm.decodeView(req.intExprs[i]->originalId), memoryBlock)) {
-                            allGood = false;
-                        }
-                    }
-
                     // Site F mirror — gate the deposit on the same already-known
                     // ancestor-scan addExprToMemoryBlock runs at entry: a head
                     // already known at any ancestor scope records no fresh
@@ -3893,7 +4229,7 @@ namespace gl {
 
                     // Capture the head deposit. applyFiringRecords sorts the
                     // burst's records into canonical order and applies them:
-                    // canBeSentIds on allGood int_lev carriers, then (when not alreadyKnown)
+                    // the statement and its history when not already known
                     // sameIterationInternalMail.statements + exprOriginMap +
                     // disintegrationSignals. Capturing instead of depositing
                     // inline makes the cap-bounded addOrigin selection and the
@@ -3923,6 +4259,15 @@ namespace gl {
                             SealedSpan<SealedExpressionWithValidity>::copyFrom(
                                 sealedPages, originBuf, 1 + sealedPremisesCount);
                         rec.doNotDisintegrate = doNotDisintegrate;
+                        // The induction implication's head is the induction
+                        // hypothesis: its disintegration products are admitted
+                        // demand-free (D-356).
+                        // Identity = the rule's producer implication id against
+                        // the block's installed auxy implication id (0 outside
+                        // recursion step blocks, so never equal there).
+                        rec.recursionHead = memoryBlock.recursionAuxyImplId != 0
+                            && lmv.originalImplicationId()
+                               == memoryBlock.recursionAuxyImplId;
                         // Park-first (I-184):
                         // a single-exclusion rule IS a disintegration product,
                         // but its fired reduced-or head must not open a cohort
@@ -3932,9 +4277,10 @@ namespace gl {
                         rec.allowOrDisintegration =
                             lmv.productOfDisintegration()
                             && !lmv.subsetExclusion();
-                        rec.allGood = allGood;
                         rec.alreadyKnown = alreadyKnown;
                         rec.iteration = iteration;
+                        rec.ruleCopyOwner = packRuleOwner(
+                            lmv.originalImplicationId(), lmv.validityId());
                         sealedPages.appendRecord(rec);
                         ++g_gpuEvaluationUsage.headRecords;
                         g_gpuEvaluationUsage.generatedBytes +=
@@ -3946,18 +4292,9 @@ namespace gl {
                     }
                 }
                 else {
-                    // Purity gate is relaxed ONLY inside OR-branch scopes
-                    // (`_boundary_orint_` in the validity name). Case-split
-                    // branches legitimately carry fresh it_/int_ witnesses
-                    // that are iteration-bearing but not yet products of
-                    // recursion — denying those admissions leaves §4.2-style
-                    // ladder steps unreachable.
-                    // Anywhere else (main / hypo / non-or boundary) the
-                    // original purity gate stands, to prevent runaway fan-out.
-                    const bool inOrBranch =
-                        containsSpan(hitValidityView,
-                                     StrSpan("_boundary_orint_", 16));
-                    if (!pure && !inOrBranch) {
+                    // Algebraic premises cannot demand another construction.
+                    // The same purity guard applies inside OR branches.
+                    if (!pure) {
                         continue;
                     }
 
@@ -4081,13 +4418,10 @@ namespace gl {
                     const LogicalEntity* markerEntity =
                         compiledEntity(extractExpressionSpan(StrSpan(rplScratch2)));
                     assert(markerEntity && "marker rule head core expression must be compiled");
-                    const bool markerNotAtomic =
-                        !equalSpans(StrSpan(markerEntity->category), StrSpan("atomic", 6));
 
                     // Capture the marker deposit. applyFiringRecords replays it
                     // in canonical order: deferredIntegrationPreps (the
-                    // integration-template registration), canBeSentMarkerIds
-                    // (non-atomic), and admissionKeysAlgebra (the algebra-
+                    // integration-template registration) and admissionKeysAlgebra (the algebra-
                     // admissionMap staging drained by drainAdmissionKeysAlgebra in
                     // firing order). Capturing keeps the staged-vector drain order
                     // partition-independent. See D-117.
@@ -4105,7 +4439,8 @@ namespace gl {
                         rec.markerArgsSorted = SealedSpan<SealedString>::copyFrom(
                             sealedPages, markerArgsBuf, uniqueArgCount);
                         rec.admv = admv;
-                        rec.markerNotAtomic = markerNotAtomic;
+                        rec.ruleCopyOwner = packRuleOwner(
+                            lmv.originalImplicationId(), lmv.validityId());
                         sealedPages.appendRecord(rec);
                         ++g_gpuEvaluationUsage.markerRecords;
                         g_gpuEvaluationUsage.generatedBytes +=
@@ -4138,11 +4473,10 @@ namespace gl {
     /// carrying that exact order walks its index directly. The resulting
     /// container state is a function of the firing SET, not the request-
     /// generation ORDER — the determinism the LB split relies on. Head records
-    /// feed `canBeSentIds`
-    /// (gated on `allGood`) and, when not already known,
+    /// deposit, when not already known,
     /// `sameIterationInternalMail.statements` + `.exprOriginMap` (capped
     /// `addOrigin`) + `.disintegrationSignals`. Marker records feed
-    /// `deferredIntegrationPreps`, `canBeSentMarkerIds` (non-atomic), and
+    /// `deferredIntegrationPreps` and
     /// `admissionKeysAlgebra`. Deactivation and discharge are deferred to Phase
     /// 3's post-burst absorb, so they are not handled here. The sealed views feed the span
     /// doors directly — no per-record string materialization at this
@@ -4185,35 +4519,7 @@ namespace gl {
             });
         }
 
-        // Pointer-INDEX std::sort, not stable_sort: the comparator below is a
-        // strict total order over every deposit-affecting field (I-77), so no
-        // two distinct firings tie and the stable variant's insertion-order
-        // tie-break is moot. Sorting a pointer index under the same strict
-        // total order yields the identical content sequence as the former
-        // in-place record sort: a strict-total-order sort has a unique output
-        // sequence, and content-identical duplicates are byte-indistinguishable
-        // in the deposit stream — so the deposit bytes cannot depend on input
-        // permutation or sort algorithm.
-        const int32_t total = static_cast<int32_t>(refs.size());
-        // The index is contiguous, and one arena allocation holds at most one pool
-        // block -- kFiringRecordSortChunk slots. A burst producing more firings than
-        // that is sorted in CHUNKS of one block, each on its own, and the chunks are
-        // consumed merged below. At or below one chunk this is exactly what it was:
-        // a single std::sort over one contiguous index, at the same cost.
-        //
-        // The chunking exists because the stump split pushed a Peano induction LB
-        // past the old hard ceiling: its rule-parts stopped truncating at the
-        // submatch cap, so the burst ran to completion and produced 80,147 records.
-        // The ceiling was a property of the allocation, never of the merge.
-        constexpr int32_t kChunk = ExecutionParameters::kFiringRecordSortChunk;
-        const int32_t chunkCount = firingRecordsCanonical
-            ? 0 : (total + kChunk - 1) / kChunk;
-        assert(chunkCount <= ExecutionParameters::kMaxFiringRecordSortChunks
-            && "firing-record sort needs more chunks than the cursor arrays hold - "
-               "raise kMaxFiringRecordSortChunks deliberately, never truncate");
-        int32_t* chunk[ExecutionParameters::kMaxFiringRecordSortChunks] = { nullptr };
-        int32_t chunkLen[ExecutionParameters::kMaxFiringRecordSortChunks] = { 0 };
-        int32_t chunkAt[ExecutionParameters::kMaxFiringRecordSortChunks] = { 0 };
+        const int32_t total = refs.size();
         const auto recordLess =
                 [&memoryBlock](const FiringRecord& a, const FiringRecord& b) -> bool {
                 // Sealed views compare by content (compareSpans ==
@@ -4283,7 +4589,6 @@ namespace gl {
                         return a.doNotDisintegrate < b.doNotDisintegrate;
                     if (a.allowOrDisintegration != b.allowOrDisintegration)
                         return a.allowOrDisintegration < b.allowOrDisintegration;
-                    if (a.allGood != b.allGood) return a.allGood < b.allGood;
                     if (a.alreadyKnown != b.alreadyKnown) return a.alreadyKnown < b.alreadyKnown;
                     return false;
                 }
@@ -4308,52 +4613,55 @@ namespace gl {
                 c = lexLess3(a.admv.remainingArgsSorted,
                              b.admv.remainingArgsSorted);
                 if (c != 0) return c < 0;
-                if (a.markerNotAtomic != b.markerNotAtomic)
-                    return a.markerNotAtomic < b.markerNotAtomic;
                 return false;
             };
-        for (int32_t c = 0; c < chunkCount; ++c) {
-            const int32_t lo = c * kChunk;
-            const int32_t len = (total - lo < kChunk) ? (total - lo) : kChunk;
-            chunk[c] = reinterpret_cast<int32_t*>(gArena.resolve(gArena.alloc(
-                len * static_cast<int32_t>(sizeof(int32_t)),
-                static_cast<int32_t>(alignof(int32_t)))));
-            for (int32_t k = 0; k < len; ++k) chunk[c][k] = lo + k;
-            std::sort(chunk[c], chunk[c] + len, [&](int32_t x, int32_t y) {
-                return recordLess(*refs[x], *refs[y]);
-            });
-            chunkLen[c] = len;
-        }
-        // Pull the next record index in sorted order across the chunks. The
-        // comparator is a strict TOTAL order (no two distinct firings tie, I-77), so
-        // the merged sequence is unique -- identical to the single std::sort it
-        // generalises, and the deposit bytes still cannot depend on input
-        // permutation, part count, chunking or sort algorithm. With one chunk this
-        // is a walk down chunk[0] and costs no comparison at all.
+        PagedSortedOrdinals sorted(gArena, firingRecordsCanonical ? 0 : total,
+            [&refs, &recordLess](int32_t left, int32_t right) {
+                return recordLess(*refs[left], *refs[right]);
+            }, ExecutionParameters::kFiringRecordSortChunk);
         int32_t canonicalAt = 0;
         const auto nextIdx = [&]() -> int32_t {
             if (firingRecordsCanonical) {
                 assert(canonicalAt < total);
                 return canonicalAt++;
             }
-            int32_t bestC = -1;
-            for (int32_t c = 0; c < chunkCount; ++c) {
-                if (chunkAt[c] >= chunkLen[c]) continue;
-                if (bestC < 0) { bestC = c; continue; }
-                if (recordLess(*refs[chunk[c][chunkAt[c]]],
-                               *refs[chunk[bestC][chunkAt[bestC]]]))
-                    bestC = c;
-            }
-            assert(bestC >= 0 && "firing-record merge ran dry before its total");
-            return chunk[bestC][chunkAt[bestC]++];
+            return sorted.next();
         };
 
         const int maxOrigins = parameters.compressor_mode
             ? parameters.compressor_max_origins_per_expr
             : parameters.max_origin_per_expr;
 
+        // Marker records equal in content but fired by different rule copies
+        // are adjacent in the canonical order, which leaves their relative
+        // order to the firing sequence (the device ties on its record index).
+        // Their owning tasks are emitted in task-content order instead, so the
+        // task a run's first replay registers as parent is a function of the
+        // firing set (I-284). Task 0 (an independent
+        // firing) sorts first.
+        DirtyState runDirty = DirtyState::Clean;
+        PagedVector<int64_t> runTasks(&gArena, &runDirty);
+        const auto taskLess = [&memoryBlock](int64_t a, int64_t b) -> bool {
+            if (a == b || b == 0) return false;
+            if (a == 0) return true;
+            StrSpan aText, aScope, bText, bScope;
+            decodeTemplateKeyView(a, memoryBlock.templateInterner,
+                memoryBlock.nameMap, aText, aScope);
+            decodeTemplateKeyView(b, memoryBlock.templateInterner,
+                memoryBlock.nameMap, bText, bScope);
+            const int c = compareSpans(aText, bText);
+            if (c != 0) return c < 0;
+            const int cs = compareSpans(aScope, bScope);
+            assert(cs != 0 && "distinct task keys decode to equal content");
+            return cs < 0;
+        };
+        int32_t lookAhead = -1;
+
         for (int32_t ri = 0; ri < total; ++ri) {
-            const FiringRecord& rec = *refs[nextIdx()];
+            int32_t idx = lookAhead;
+            if (idx >= 0) lookAhead = -1;
+            else idx = nextIdx();
+            const FiringRecord& rec = *refs[idx];
             if (rec.isOrdis2Demand) {
                 // Demand deposits — an OWN kind, checked FIRST (neither
                 // head nor marker; maintainer decision 2026-08-10). They
@@ -4374,13 +4682,6 @@ namespace gl {
                 // stable until the post-drain sweep frees it (I-3).
                 const StrSpan expr(rec.rplExpr2);
                 const StrSpan validity(rec.validityName);
-                if (rec.allGood && containsSpan(expr, StrSpan("int_lev_", 8))) {
-                    // `allowedForMail` probes the memo only for
-                    // `int_lev_*` carriers — any other entry could never
-                    // be read.
-                    memoryBlock.canBeSentIds.mint(
-                        memoryBlock.nameMap.encode(expr));
-                }
                 if (!rec.alreadyKnown) {
                     insertInternalStatement(memoryBlock.sameIterationInternalMail,
                                             memoryBlock.nameMap, expr, validity,
@@ -4407,32 +4708,62 @@ namespace gl {
                                       expr, validity, tag, depsBuf, depN,
                                       maxOrigins);
                     }
+                    // A head fired by a rule copy that an integration task
+                    // owns carries the integrated mark to the absorb, which
+                    // marks the registered row (D-444).
+                    // The mark OR-merges in the signal, so equal records of a
+                    // run need no order.
+                    const bool integrated = rec.ruleCopyOwner != 0
+                        && memoryBlock.lbMemory.integrationCopyOwners
+                               .findOr(rec.ruleCopyOwner, int64_t{0}) != 0;
                     setInternalDisintegrationSignal(
                         memoryBlock.sameIterationInternalMail,
                         memoryBlock.nameMap, expr, validity,
                         rec.doNotDisintegrate, rec.allowOrDisintegration,
-                        rec.iteration);
+                        rec.iteration, rec.recursionHead, false, integrated);
                 }
             } else {
                 // Marker deposits stay sealed end-to-end: the staging
                 // vectors carry the views, the drains materialize at their
                 // mint points, and performElemPhase2 clears the vectors
                 // post-drain — before the post-join sweep frees the pages.
-                memoryBlock.deferredIntegrationPreps.push_back(
-                    DeferredIntegrationPrep{ rec.rplExpr2,
-                                             rec.markerArgsSorted,
-                                             rec.validityName });
-                if (rec.markerNotAtomic) {
-                    memoryBlock.canBeSentMarkerIds.mint(
-                        memoryBlock.nameMap.encode(StrSpan(rec.rplExpr2)));
+                runTasks.clear();
+                runTasks.push_back(memoryBlock.lbMemory.integrationCopyOwners
+                    .findOr(rec.ruleCopyOwner, int64_t{0}));
+                while (ri + 1 < total) {
+                    const int32_t nextRecord = nextIdx();
+                    const FiringRecord& other = *refs[nextRecord];
+                    if (recordLess(rec, other) || recordLess(other, rec)) {
+                        lookAhead = nextRecord;
+                        break;
+                    }
+                    runTasks.push_back(memoryBlock.lbMemory.integrationCopyOwners
+                        .findOr(other.ruleCopyOwner, int64_t{0}));
+                    ++ri;
                 }
-                memoryBlock.admissionKeysAlgebra.push_back(
-                    AdmissionKeyAlgebraRecord{
+                for (int32_t i = 1; i < runTasks.size(); ++i) {
+                    const int64_t task = runTasks[i];
+                    int32_t j = i;
+                    for (; j > 0 && taskLess(task, runTasks[j - 1]); --j)
+                        runTasks.setAt(j, runTasks[j - 1]);
+                    runTasks.setAt(j, task);
+                }
+                for (int32_t i = 0; i < runTasks.size(); ++i) {
+                    DeferredIntegrationPrep prep{ rec.rplExpr2,
+                                                  rec.markerArgsSorted,
+                                                  rec.validityName };
+                    prep.ownerTask = runTasks[i];
+                    memoryBlock.deferredIntegrationPreps.push_back(prep);
+                    AdmissionKeyAlgebraRecord algebra{
                         SealedExpressionWithValidity{ rec.rplExpr2,
                                                       rec.validityName },
-                        rec.admv});
+                        rec.admv };
+                    algebra.ownerTask = runTasks[i];
+                    memoryBlock.admissionKeysAlgebra.push_back(algebra);
+                }
             }
         }
+        assert(lookAhead < 0 && "a looked-ahead firing record was never applied");
         // Reclaim the index + the refs list's byte-bump footprint; refs's
         // page-tier pages are freed by its destructor (independent tier).
         gArena.popTo(mark);
@@ -4483,6 +4814,17 @@ namespace gl {
     /// @see `AdmissionKeyAlgebraRecord` — the staged record type.
     void ExpressionAnalyzer::drainAdmissionKeysAlgebra(Memory& memoryBlock)
     {
+        static const bool traceEnabled = [] {
+#ifdef _WIN32
+            size_t required = 0;
+            const errno_t result = getenv_s(&required, nullptr, 0, "GL_FTA_BLOWUP_TRACE");
+            assert(result == 0);
+            return required != 0;
+#else
+            return std::getenv("GL_FTA_BLOWUP_TRACE") != nullptr;
+#endif
+        }();
+        const bool traceTarget = traceEnabled && hashburst_dump::isTargetLB(memoryBlock);
         // This drain worker's slot + gen-scratch arena (the house idiom):
         // hosts each record's serialized admission blob + the RMW splice's
         // verbatim run copies, reclaimed per record by the popTo below.
@@ -4499,8 +4841,17 @@ namespace gl {
             // sweep, so they stay valid across the whole record replay.
             const StrSpan keyOriginal(rec.key.original);
             const StrSpan keyValidity(rec.key.validityName);
+            if (traceTarget) {
+                // permanent instrument: GL_FTA_BLOWUP_TRACE (AGENTS.md Rule 36), off unless the variable is set
+                std::ofstream trace(".debug/traps.log", std::ios::app);
+                assert(trace.is_open());
+                trace << "[FTA-DEMAND-DRAIN] key=" << keyOriginal.toStdString()
+                      << " scope=" << keyValidity.toStdString() << " ordis=" << rec.value.ordisOnly << "\n";
+            }
             const int64_t recPk = mintTemplateKey(memoryBlock.templateInterner,
                 memoryBlock.nameMap, keyOriginal, keyValidity);
+            const bool keyExisted =
+                memoryBlock.overallHashMemory.admissionMap.lookup(recPk) != 0;
 
             // (1) admissionMap insert — this drain is the single-threaded
             // intern point for the staged value (I-68/I-83). Fast path: the
@@ -4517,10 +4868,25 @@ namespace gl {
                     blob.ptr, blob.len, memoryBlock.valueInterner, drainArena);
                 drainArena.popTo(recMark);
             }
+            // The permission belongs to the task owning the fired rule
+            // (I-284).
+            recordIntegrationOwner(memoryBlock, memoryBlock.lbMemory.algebraKeyOwners,
+                recPk, rec.ownerTask, keyExisted);
 
-            // (3) admissionStatusMap.
+            // (3) admissionStatusMap. The status is the template's
+            // recursion ownership and merges like updateAdmissionMap's
+            // write: a recursion-owned record sets it, an ordinary record
+            // keeps an existing recursion status instead of clearing it
+            // (D-413; an overwrite with
+            // 0 silenced updateAdmissionMapRecursion for the induction
+            // hypothesis template once an ordinary rule demanded the same
+            // template).
+            const uint8_t* existingStatus = memoryBlock.overallHashMemory.admissionStatusMap.find(recPk);
+            const bool recursionStatus = rec.value.flag
+                || (existingStatus != nullptr && *existingStatus != 0);
             memoryBlock.overallHashMemory.admissionStatusMap.upsert(recPk,
-                static_cast<uint8_t>(0));
+                static_cast<uint8_t>(recursionStatus ? 1 : 0));
+
 
             // (4) vars-in-keys cache for the algebra equi-class hook. The
             // args are zero-copy span slices, encoded per-arg in
@@ -4599,7 +4965,10 @@ namespace gl {
             }
             // Marker replays are statement-driven — no owning goal, so no
             // goal-carrying payload (the replay's mints nest under scopes the
-            // admission machinery already owns, or stay bare on main).
+            // admission machinery already owns, or stay bare on main). The
+            // preparation runs on behalf of the task owning the fired rule; an
+            // independent firing prepares a root (I-284).
+            IntegrationTaskScope taskScope(memoryBlock, rec.ownerTask);
             prepareIntegration(StrSpan(rec.expression), args, n,
                                memoryBlock, StrSpan(rec.validityName), StrSpan());
         }
@@ -4647,66 +5016,68 @@ namespace gl {
     }
 
     // ------------------------------------------------------------------
-    // Memory::wipeSubtree — radical subtree wipe on implication closure.
-    // Takes the closed scope's NameMap validity id (`closedVid`, minted
-    // and non-main, both assert-enforced).
-    //
-    // Replaces the pre-existing selective cleanup
-    // (`cleanUpIntegrationPreparation*` and the equivalent per-victim
-    // work inside `cleanUpOrIntegrationBranches`). See the Doxygen block
-    // above the declaration in memory.hpp for the full structure list,
-    // preserved-on-purpose rationale, and references to invariants.
-    //
-    // Implementation note. Membership is the `validityNodes` forest walk:
-    // an id is closed iff `closedVid` lies on its parent chain, self
-    // included (`NameMap::collectClosedSubtreeIds`). This is provably
-    // equivalent to the retired text predicate `validityName ==
-    // closedScope OR validityName starts with closedScope + "_boundary_"`
-    // because per [I-2](../../docs/agentic_swdd/30_invariants.md#i-2) every
-    // non-`"main"` scope name was minted via
-    // `NameMap::encodePush(parent, payload)` whose payload assert forbids
-    // embedded delimiters — each name's `"_boundary_"` decomposition is
-    // unique and equals its recorded parent chain
-    // (I-139). The one non-NameMap id space —
-    // `expandedImplications`' lbStateInterner scope half — keeps the text
-    // gate as a zero-copy span twin.
+    // The single-root interface uses the same stable union cleanup as the
+    // end-of-phase batch. NameMap parentage defines subtree membership;
+    // expandedImplications retains its separate interned-text scope test.
+    // Proof history, cohort bookkeeping and the owning parent goals survive.
     // ------------------------------------------------------------------
     void Memory::wipeSubtree(NameId closedVid) {
-        assert(closedVid > 0 && closedVid <= nameMap.nameCount()
-            && "wipeSubtree: closedVid is not a minted NameMap id");
-        assert(closedVid != NameMap::MAIN_ID
-            && "wipeSubtree: 'main' is never closed");
+        wipeSubtrees(&closedVid, 1);
+    }
 
-        // Closed-subtree membership via ONE validityNodes forest walk
-        // (`collectClosedSubtreeIds`): bit `id` is set iff `closedVid` is
-        // on id's parent chain (self included) — provably equivalent to
-        // the retired text predicate `v == closedScope || v starts with
-        // closedScope + "_boundary_"` (I-139: the
-        // encodePush payload assert makes every name's delimiter
-        // decomposition unique and equal to its recorded parent chain).
-        // The bitmap is sized from the live nameCount at this call seam
-        // (one bit per minted id; words * 64 > nameCount strictly, re-checked
-        // by the collectClosedSubtreeIds capacity assert) and rides the
-        // per-slot gen-scratch BYTE-BUMP tier — a fixed stack array cannot
-        // follow MAX_NAME_IDS (1M ids = 125 KB of stack). The ascending id
-        // vector rides the same arena's PAGE tier (I-124) and doubles as the
-        // step-11 mint order; both share the per-task releaseAll lifetime.
-        // Every int-keyed sweep below consults the bitmap; one
-        // O(nameCount x depth) walk amortizes the membership cost across
-        // all of them.
+    /// @brief Wipe an ordered union of closed scope subtrees in one pass.
+    ///
+    /// @details
+    /// Build one membership bitmap through the NameMap parent forest, then
+    /// stably filter each affected runtime container once. Assign each closed
+    /// name to its first covering input root so final filter insertions match
+    /// sequential single-root wipes, including overlapping and repeated roots.
+    /// Proof history and booked convergence contributions remain unchanged.
+    ///
+    /// @param closedRoots Caller-owned ordered run of minted non-main roots.
+    /// @param rootCount Number of roots; zero is an empty cleanup operation.
+    /// @return Nothing.
+    /// @invariant Survivor bytes and filter mint order equal sequential wipes.
+    /// @invariant Saved goal levels leave only when their cohort parent closes.
+    /// @see Memory::wipeSubtree, NameMap::parentOf, wipeEncodedMapForClosed.
+    void Memory::wipeSubtrees(const NameId* closedRoots, int32_t rootCount) {
+        assert(rootCount >= 0 && (rootCount == 0 || closedRoots != nullptr)
+            && "wipeSubtrees: invalid root run");
+        if (rootCount == 0) return;
+
         const unsigned slot = (ExpressionAnalyzer::g_currentCoreId >= 0)
             ? static_cast<unsigned>(ExpressionAnalyzer::g_currentCoreId)
             : genScratchArenas().slotCount() - 1;
         ScratchArena& gArena = genScratchArenas().forSlot(slot);
-        DirtyState ascDirty = DirtyState::Clean;
-        PagedVector<NameId> closedAsc(&gArena, &ascDirty);
+        ScratchScope scratch(gArena);
+        DirtyState scratchDirty = DirtyState::Clean;
+        ColdHashMap<PodKeyStore<NameId>, int32_t> rootOrder(&gArena, &scratchDirty);
+        struct ClosedScope { NameId id; int32_t firstRoot; };
+        PagedVector<ClosedScope> closedScopes(&gArena, &scratchDirty);
         const int32_t nameHighWater = nameMap.nameCount();
+        for (int32_t rootIndex = 0; rootIndex < rootCount; ++rootIndex) {
+            const NameId root = closedRoots[rootIndex];
+            assert(root > 0 && root <= nameHighWater
+                && "wipeSubtrees: root is not a minted NameMap id");
+            assert(root != NameMap::MAIN_ID
+                && "wipeSubtrees: 'main' is never closed");
+            if (rootOrder.lookup(root) == 0) rootOrder.insert(root, rootIndex);
+        }
         const int32_t closedWords = nameHighWater / 64 + 1;
         uint64_t* closedBits = reinterpret_cast<uint64_t*>(gArena.resolve(
             gArena.alloc(closedWords * static_cast<int32_t>(sizeof(uint64_t)),
                          static_cast<int32_t>(alignof(uint64_t)))));
-        nameMap.collectClosedSubtreeIds(closedVid, closedBits, closedWords,
-                                        closedAsc);
+        for (int32_t word = 0; word < closedWords; ++word) closedBits[word] = 0;
+        for (NameId id = 1; id <= nameHighWater; ++id) {
+            int32_t firstRoot = rootCount;
+            for (NameId ancestor = id; ancestor != 0; ancestor = nameMap.parentOf(ancestor)) {
+                const int32_t* rank = rootOrder.find(ancestor);
+                if (rank != nullptr && *rank < firstRoot) firstRoot = *rank;
+            }
+            if (firstRoot == rootCount) continue;
+            closedBits[id >> 6] |= uint64_t{1} << (id & 63);
+            closedScopes.push_back(ClosedScope{id, firstRoot});
+        }
         const auto inClosedBit = [&](int32_t v) -> bool {
             // EXACT twin of the former closedIds.count(x): x can arrive
             // NEGATIVE (e.g. the low half of a GLOBAL mailIn id at the
@@ -4722,12 +5093,22 @@ namespace gl {
         // ---- 1. statement registry ----
         // Keyed on the bitmap — a stored row's validity is interned, so
         // bit membership of its validityId is exactly the forest predicate.
-        // Erase back to front to keep indices valid.
-        for (int32_t i = intEncodedStatements.size(); i-- > 0; ) {
-            if (inClosedBit(intEncodedStatements[i].validityId)) {
-                intEncodedStatements.erase(i);
+        // Preserve survivor order with one forward scan. Each retained row
+        // moves at most once; truncation releases the dead tail's pages after
+        // every source row has been read.
+        const auto compactStatements = [&](SharedExpressionList& rows) {
+            const int32_t count = rows.size();
+            int32_t kept = 0;
+            for (int32_t read = 0; read < count; ++read) {
+                const IntEncodedExpr& row = rows[read];
+                if (!inClosedBit(row.validityId)) {
+                    if (kept != read) rows.setAt(kept, row);
+                    ++kept;
+                }
             }
-        }
+            rows.truncate(kept);
+        };
+        compactStatements(intEncodedStatements);
 
         // ---- 2. local statement registry + Set + Delta ----
         // The set mirrors the local-statement vector (I-86); drop its closed
@@ -4735,24 +5116,22 @@ namespace gl {
         intLocalEncodedStatementsSet.eraseIf([&](int64_t k) {
             return inClosedBit(Codec<StatementKey>::decode(k).validity);
         });
-        for (int32_t i = intLocalEncodedStatements.size(); i-- > 0; ) {
-            if (inClosedBit(intLocalEncodedStatements[i].validityId)) {
-                intLocalEncodedStatements.erase(i);
-            }
-        }
-        for (int32_t i = intLocalEncodedStatementsDelta.size(); i-- > 0; ) {
-            if (inClosedBit(intLocalEncodedStatementsDelta[i].validityId)) {
-                intLocalEncodedStatementsDelta.erase(i);
-            }
-        }
+        compactStatements(intLocalEncodedStatements);
+        compactStatements(intLocalEncodedStatementsDelta);
 
         // ---- 3. toBeProved ----
         // A stored goal's validity is interned, so bitmap membership of
-        // the low 16 key bits is exactly the forest predicate (same
+        // the validity half of the packed key is exactly the forest predicate (same
         // argument as the intStatementLevelsMap sweep below).
         intToBeProved.eraseSetIf([&](const StatementKey& k) {
             return inClosedBit(k.validity);
         });
+        // The watch ledgers mirror the registries wiped here: their keys
+        // carry the scope id in the high half.
+        negationLedger.eraseSetIf([&](int64_t k) {
+            return inClosedBit(static_cast<NameId>(static_cast<uint64_t>(k) >> 32));
+        });
+        goalLedgerStale = true;   // derived from the goals wiped above
 
         // (Section 4 retired: the former wholeExpressions sweep — the
         // registered membership now lives in intKnownStatements, erased
@@ -4762,17 +5141,59 @@ namespace gl {
         // Safe to wipe because wipeSubtree now runs at end-of-burst
         // (drained by `performElemPhase3` immediately
         // after `sanitizeToBeProved`); the kernel's `sortedNew` loop
-        // assertions all finished earlier in the burst. Low 16 key bits
+        // assertions all finished earlier in the burst. The validity half of the packed key
         // carry the validityId, and a stored row's validity is interned, so
         // bitmap membership is exactly the forest predicate
         // (same argument as the intKnownStatements sweep below).
         intStatementLevelsMap.eraseSetIf([&](const StatementKey& k) {
             return inClosedBit(k.validity);
         });
+        // A successful branch's saved goal levels survive its own wipe, but
+        // leave when the cohort's parent scope is also closed.
+        lbMemory.closedOrGoalLevels.eraseSetIf([&](const StatementKey& k) {
+            return inClosedBit(nameMap.parentOf(k.validity));
+        });
+        lbMemory.orSupportFacts.eraseIf([&](const StatementKey& k) {
+            return inClosedBit(nameMap.parentOf(k.validity));
+        });
+        lbMemory.orSupportEqualities.eraseSetIf([&](const StatementKey& k) {
+            return inClosedBit(nameMap.parentOf(k.validity));
+        });
 
-        // ---- 6. intKnownStatements (packed (origId, validityId) — low 16 bits) ----
+        // ---- 6. intKnownStatements (packed (origId, validityId) — low 32 bits) ----
+        // Retire canonical views of closed scopes, including projected ancestor
+        // sources, while retaining the unchanged ancestor and sibling views.
+        orImplicationMatches.clear();
+        lbMemory.existenceLookups.clear();
+        lbMemory.canonicalUses.eraseScopes(inClosedBit);
+        auto& compositions = lbMemory.unaryComposition;
+        for (int32_t i = 0; i < compositions.sourceInfo.size(); ++i) {
+            if (compositions.sourceActive[i] && inClosedBit(compositions.sourceInfo[i].scope)) {
+                compositions.sourceActive.setAt(i, 0);
+                if (compositions.rebuild.empty()) compositions.rebuild.push_back(1);
+            }
+        }
+
+        for (int32_t id = 1; id <= orImplications.sources.count(); ++id) {
+            const int64_t key = orImplications.sources.keyAt(id);
+            if (inClosedBit(Codec<StatementKey>::decode(key).validity))
+                orImplications.retire(key);
+        }
+        orImplications.compactRetired(gArena);
+        orImplications.pendingSources.eraseIf([&](int64_t key) {
+            return inClosedBit(Codec<StatementKey>::decode(key).validity);
+        }, [](int64_t) {});
+        orImplications.pendingFacts.eraseIf([&](int64_t key) {
+            return inClosedBit(Codec<StatementKey>::decode(key).validity);
+        }, [](int64_t) {});
+        orImplications.pendingClasses.eraseIf([&](int64_t key) {
+            return inClosedBit(Codec<StatementKey>::decode(key).validity);
+        }, [](int64_t) {});
         intKnownStatements.eraseIf([&](const StatementKey& k) {
             return inClosedBit(k.validity);
+        });
+        existenceReplays.eraseIf([&](int64_t key) {
+            return inClosedBit(Codec<StatementKey>::decode(key).validity);
         });
 
         // ---- 7. equivalenceClassesMap (keyed by validity id) ----
@@ -4780,6 +5201,15 @@ namespace gl {
         // compacting erase on the cold blob map (Batch 3).
         equivalenceClassesMap.eraseBlobIf([&](NameId vId) {
             return inClosedBit(vId);
+        });
+        canonicalEquivalenceClassesMap.eraseBlobIf([&](NameId vId) {
+            return inClosedBit(vId);
+        });
+        lbMemory.canonicalMemberRepresentatives.eraseIf([&](int64_t key) {
+            return inClosedBit(Codec<StatementKey>::decode(key).validity);
+        });
+        lbMemory.canonicalClassChanges.eraseIf([&](int64_t key) {
+            return inClosedBit(Codec<StatementKey>::decode(key).validity);
         });
 
         // ---- 8. Packed-keyed sets ----
@@ -4793,17 +5223,19 @@ namespace gl {
         // lbStateInterner during the sweep, so both decodeView spans stay
         // valid across it (different-container rule).
         {
-            const StrSpan closedName = nameMap.decodeView(closedVid);
             const StrSpan boundaryTok(NameMap::BOUNDARY_STR,
                                       static_cast<int32_t>(NameMap::BOUNDARY_LEN));
             expandedImplications.eraseIf([&](const LbStatePairKey& k) {
                 const StrSpan v = lbStateInterner.decodeView(k.low);
-                if (equalSpans(v, closedName)) return true;
-                return v.len > closedName.len + boundaryTok.len
-                    && equalSpans(StrSpan(v.ptr, closedName.len), closedName)
-                    && equalSpans(StrSpan(v.ptr + closedName.len,
-                                          boundaryTok.len),
-                                  boundaryTok);
+                for (int32_t rootIndex = 0; rootIndex < rootCount; ++rootIndex) {
+                    const StrSpan closedName = nameMap.decodeView(closedRoots[rootIndex]);
+                    if (equalSpans(v, closedName)) return true;
+                    if (v.len > closedName.len + boundaryTok.len
+                        && equalSpans(StrSpan(v.ptr, closedName.len), closedName)
+                        && equalSpans(StrSpan(v.ptr + closedName.len, boundaryTok.len), boundaryTok))
+                        return true;
+                }
+                return false;
             });
         }
         // The carrier index: a carrier registered at a closed scope leaves
@@ -4821,6 +5253,30 @@ namespace gl {
         };
         filterPackedSet(integrationPrepared);
         filterPackedSet(integrationPreparedMarker);
+
+        // Integration ownership (I-284): tasks, gate
+        // nodes and the owner records of derivatives at a closed scope leave
+        // with it. A node's children sit at its scope or below, so no
+        // surviving record names an erased parent. Template keys carry the
+        // scope in their validity half, rule owners in their low half, scope
+        // owners are keyed by the scope itself.
+        {
+            const auto closedTemplate = [&](int64_t k) {
+                return inClosedBit(Codec<StatementKey>::decode(k).validity);
+            };
+            const auto closedLowHalf = [&](int64_t k) {
+                return inClosedBit(static_cast<int32_t>(static_cast<uint32_t>(k)));
+            };
+            lbMemory.integrationTasks.eraseIf(closedTemplate);
+            lbMemory.integrationPreparedOwners.eraseIf(closedTemplate);
+            lbMemory.algebraKeyOwners.eraseIf(closedTemplate);
+            lbMemory.admissionSetOwners.eraseIf(closedTemplate);
+            lbMemory.admissionTriggerOwners.eraseIf(closedTemplate);
+            lbMemory.finishedIntegrationRoots.eraseIf(closedTemplate);
+            lbMemory.integrationScopeOwners.eraseIf(closedLowHalf);
+            lbMemory.integrationRuleOwners.eraseIf(closedLowHalf);
+            lbMemory.integrationCopyOwners.eraseIf(closedLowHalf);
+        }
 
         // Packed twin of weakVariables — same low-32-bits validity
         // predicate as the intKnownStatements sweep in step 6.
@@ -4901,9 +5357,14 @@ namespace gl {
             // validity as rejectedMapOrdis — same closed-bit predicate
             // (D-267).
             hm.rejectedMapOrdis2.eraseBlobIf(coldScopeWipe);
+            // Parked implication subproofs of a wiped scope must not open in
+            // a dead scope — the key's validity half is the preparing scope
+            // (D-406).
+            hm.rejectedMapSubproof.eraseBlobIf(coldScopeWipe);
             hm.revisitInProgress.eraseIf(coldScopeWipe);
             hm.ordisRevisitInProgress.eraseIf(coldScopeWipe);
             hm.ordis2RevisitInProgress.eraseIf(coldScopeWipe);
+            hm.subproofRevisitInProgress.eraseIf(coldScopeWipe);
             hm.admissionSetIntegration.eraseIf(coldScopeWipe);
             hm.triggersForAdmissionSetIntegration.eraseIf(coldScopeWipe);
         };
@@ -4911,17 +5372,19 @@ namespace gl {
         wipeHashMem(localHashMemory);
         wipeHashMem(localHashMemoryDelta);
 
-        // ---- 11. Belt-and-suspenders filter inserts. Site H ancestor-scan
-        //          on subsequent addExprToMemoryBlock entry will block any
-        //          in-flight mail referencing the closed subtree.
-        //          Ascending id order (closedAsc is built ascending):
-        //          intValidityNamesToFilter is deload-enrolled (its KeysView
-        //          facet streams keys in id == mint order), so the mint
-        //          order here is deload-byte-observable and must be a pure
-        //          function of content, never hash-container iteration
-        //          history (D-190).
-        for (int32_t i = 0; i < closedAsc.size(); ++i)
-            intValidityNamesToFilter.mint(closedAsc[i]);
+        // Scope filters follow the original root order, then ascending name
+        // identifiers within each root. Overlaps belong to their first root;
+        // existing entries retain their positions through ordinary deduplication.
+        const auto insertionLess = [&](int32_t a, int32_t b) {
+            const ClosedScope left = closedScopes[a];
+            const ClosedScope right = closedScopes[b];
+            return left.firstRoot != right.firstRoot
+                ? left.firstRoot < right.firstRoot : left.id < right.id;
+        };
+        ChunkSortedOrdinals<decltype(insertionLess)> insertionOrder(
+            gArena, closedScopes.size(), 0, insertionLess);
+        for (int32_t index = 0; index < closedScopes.size(); ++index)
+            intValidityNamesToFilter.mint(closedScopes[insertionOrder.next()].id);
     }
 
     // ------------------------------------------------------------------
@@ -4933,6 +5396,14 @@ namespace gl {
         assert(overallHashMemory.encodedMap.empty()
             && "cloneFactsTemplate: template must carry no hash rules "
                "(facts load via the status-4 statement path)");
+        // Parked implication subproofs are not cloned (like the ordis parks);
+        // a facts template never prepares an integration, so it holds none.
+        assert(overallHashMemory.rejectedMapSubproof.empty()
+            && "cloneFactsTemplate: template must carry no parked implication subproofs");
+        // Nor any integration task, so the clone starts with empty ownership
+        // tables (I-284).
+        assert(lbMemory.integrationTasks.count() == 0
+            && "cloneFactsTemplate: template must carry no integration tasks");
 
         Memory* out = store.create<Memory>();
 
@@ -4945,6 +5416,33 @@ namespace gl {
         out->intLocalEncodedStatementsDelta = intLocalEncodedStatementsDelta;
         out->intStatementLevelsMap.copyFrom(intStatementLevelsMap);
         out->intKnownStatements.copyFrom(intKnownStatements);
+        out->orImplications.copyFrom(orImplications);
+        out->equivalenceClassesMap.copyFrom(equivalenceClassesMap);
+        out->canonicalEquivalenceClassesMap.copyFrom(canonicalEquivalenceClassesMap);
+        out->lbMemory.canonicalMemberRepresentatives.copyFrom(lbMemory.canonicalMemberRepresentatives);
+        out->lbMemory.canonicalClassChanges.copyFrom(lbMemory.canonicalClassChanges);
+        out->intWeakVariables.copyFrom(intWeakVariables);
+        for (int32_t i = 1; i <= existenceReplays.count(); ++i) {
+            const int64_t key = existenceReplays.keyAt(i);
+            const int32_t completed = *existenceReplays.find(key) & 3;
+            if (completed != 0) out->existenceReplays.insert(key, completed);
+        }
+        // A facts clone starts with empty mail and demand work. Preserve source
+        // context and completed constructions, while pending replay may be
+        // requested afresh by this clone's own demands.
+        out->lbMemory.templateStrings.copyFrom(lbMemory.templateStrings);
+        out->lbMemory.valueStrings.copyFrom(lbMemory.valueStrings);
+        out->lbMemory.originStrings.copyFrom(lbMemory.originStrings);
+        out->exprOriginMap.copyFrom(exprOriginMap);
+        const auto copySources = [](HashMemory& target, const HashMemory& source) {
+            target.rejectedMap.copyFrom(source.rejectedMap);
+            target.rejectedMapIntegration.copyFrom(source.rejectedMapIntegration);
+            target.varsInRejectedMapIntegrationKeys.copyFrom(source.varsInRejectedMapIntegrationKeys);
+        };
+        copySources(out->overallHashMemory, overallHashMemory);
+        copySources(out->localHashMemory, localHashMemory);
+        copySources(out->localHashMemoryDelta, localHashMemoryDelta);
+        copySources(out->workingMemory, workingMemory);
 
         // Name dictionary — independent copy so the clone mints the conjecture's
         // names without touching the shared template. The façade copies via
@@ -4952,6 +5450,11 @@ namespace gl {
         // manager (every id matches the template's), the id-form metadata
         // copies as plain containers.
         out->nameMap.copyFrom(nameMap);
+        // The negation ledger travels with the facts it mirrors (a clone's
+        // contradiction gate must see the template's negated facts).
+        out->negationLedger.copyFrom(negationLedger);
+        // `goalLedger` is derived from the goal registry, which a clone does
+        // not inherit; it stays stale and rebuilds on first probe.
 
         // Scalars the template carries from its load (everything else stays
         // Memory()-default).
@@ -4960,8 +5463,8 @@ namespace gl {
         out->startIntRepl = startIntRepl;
         out->startIntPi   = startIntPi;
 
-        // Everything else (overallHashMemory, mail, flags,
-        // equivalence / origin / intToBeProved) stays at its Memory() default:
+        // Hash rules, demands, mail, flags and goals
+        // stay at their Memory() defaults:
         // empty containers, isActive=true,
         // contradictionIndex=-1, primedForContradiction=false. intToBeProved is
         // now a persistent-pool member (its own fresh persistentArena), so the
@@ -5032,6 +5535,29 @@ namespace gl {
     /// @brief Set the LB's expression key, interning it. See the declaration.
     void Memory::setExprKey(const std::string& s) {
         exprKeyId = s.empty() ? 0 : skeletonInterner().intern(s);
+    }
+
+    /// @brief Zero-copy view of the LB's variable definition-set record.
+    ///        See the declaration.
+    ///
+    /// @details The `skeletonInterner()` bytes of `varDefSetsId`, or an empty
+    /// span when the LB holds no record.
+    ///
+    /// @return A span over the record, or an empty span.
+    /// @see setVarDefSets.
+    StrSpan Memory::varDefSetsView() const {
+        return varDefSetsId == 0 ? StrSpan(nullptr, 0)
+                                 : skeletonInterner().view(varDefSetsId);
+    }
+
+    /// @brief Record the LB's variable definition sets. See the declaration.
+    ///
+    /// @details Interns the record once; an empty record stores 0.
+    ///
+    /// @param pairs The `name:label;name:label` record.
+    /// @see varDefSetsView.
+    void Memory::setVarDefSets(StrSpan pairs) {
+        varDefSetsId = pairs.len == 0 ? 0 : skeletonInterner().intern(pairs);
     }
 
     /// @brief Build an LB's full chain string — every `exprKey` from the
@@ -5217,6 +5743,14 @@ namespace gl {
         lbMemory.localHashMemory.remainingArgsReverseIndex.clear();
         lbMemory.localHashMemoryDelta.remainingArgsReverseIndex.clear();
         lbMemory.workingMemory.remainingArgsReverseIndex.clear();
+        lbMemory.overallHashMemory.originalsHeadIndex.clear();
+        lbMemory.localHashMemory.originalsHeadIndex.clear();
+        lbMemory.localHashMemoryDelta.originalsHeadIndex.clear();
+        lbMemory.workingMemory.originalsHeadIndex.clear();
+        lbMemory.sharedNativeKeys.release();
+        orImplicationMatches.clear();
+        lbMemory.existenceLookups.clear();
+        lbMemory.canonicalUses.clear();
         // The release() calls escalate the dirty state (they are
         // mutators); the next reload re-establishes RAM == disk.
         lbMemory.dirty = DirtyState::Clean;
@@ -5260,7 +5794,7 @@ namespace gl {
         const bool haveRawBase = useExtent
             ? haveExtentSlab
             : (!deloadFiles.empty() && deloadKind == DeloadKind::Raw);
-        if (lbMemory.dirty == DirtyState::Clean && haveRawBase) {
+        if (lbMemory.dirty == DirtyState::Clean && !lbMemory.canonicalUses.hasRawChanges() && haveRawBase) {
             // Skip: the on-disk raw image already equals the in-memory content.
             deloadStats().evictSkippedClean.fetch_add(
                 1, std::memory_order_relaxed);
@@ -5330,6 +5864,7 @@ namespace gl {
         }
         // RAM == disk holds from here until the next mutation.
         lbMemory.dirty = DirtyState::Clean;
+        lbMemory.canonicalUses.markRawClean();
     }
 
     /// @brief Return the LB's blocks WITHOUT the container-release walk — the
@@ -5434,8 +5969,20 @@ namespace gl {
         pendingOrReleases.resetToFresh();
         orStarterPick.resetToFresh();
         processedOrLedger.resetToFresh();
+        negationLedger.resetToFresh();
+        goalLedger.resetToFresh();
+        goalLedgerStale = true;
+        pendingWatchArrivals.clear();
+        pendingWatchRechecks.clear();
+        pendingSubproofArrivals.clear();
+        pendingSubproofRechecks.clear();
+        pendingRootArrivals.clear();
+        pendingRootRechecks.clear();
+        assert(integrationTaskContext == 0
+            && "discharge: an integration task context is still active");
         orLiveBranches.resetToFresh();
         frozenOrBranches.resetToFresh();
+        recursionHeadWitnesses.resetToFresh();
         persistentArena.releaseAll();
         lbMemory.clearDischargeableContainers();
         lbMemory.reshuffle(scr);
@@ -5563,7 +6110,17 @@ namespace gl {
                 lbMemory.localHashMemory.remainingArgsReverseIndex.markUnbuilt();
                 lbMemory.localHashMemoryDelta.remainingArgsReverseIndex.markUnbuilt();
                 lbMemory.workingMemory.remainingArgsReverseIndex.markUnbuilt();
+                lbMemory.overallHashMemory.originalsHeadIndex.markUnbuilt();
+                lbMemory.localHashMemory.originalsHeadIndex.markUnbuilt();
+                lbMemory.localHashMemoryDelta.originalsHeadIndex.markUnbuilt();
+                lbMemory.workingMemory.originalsHeadIndex.markUnbuilt();
             } else {
+            // The head index is lazy: the canonical image carries no derived
+            // pages, so mark it stale and let the next consumer rebuild it.
+            lbMemory.overallHashMemory.originalsHeadIndex.markUnbuilt();
+            lbMemory.localHashMemory.originalsHeadIndex.markUnbuilt();
+            lbMemory.localHashMemoryDelta.originalsHeadIndex.markUnbuilt();
+            lbMemory.workingMemory.originalsHeadIndex.markUnbuilt();
             const unsigned revSlot =
                 (ExpressionAnalyzer::g_currentCoreId >= 0)
                     ? static_cast<unsigned>(ExpressionAnalyzer::g_currentCoreId)

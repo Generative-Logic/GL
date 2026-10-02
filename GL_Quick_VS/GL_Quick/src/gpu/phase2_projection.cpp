@@ -29,14 +29,29 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <thread>
+#include <type_traits>
 
 namespace gl::gpu {
+
+    /// @brief Temporary byte-key dictionary for one logical-block projection.
+    /// @details Owns only construction scratch. Map membership and value runs
+    /// remain in their separate projected tables; equal bytes share one offset.
+    struct Phase2ProjectionKeyStore {
+        LbArena arena{ &staticMemory() };
+        DirtyState dirty = DirtyState::Clean;
+        ColdHashMap<BytesKeyStore, uint32_t> offsets{ &arena, &dirty };
+    };
+
 
     /// @brief Return the audited fixed projection ceilings for one CUDA route.
     ///
@@ -59,9 +74,222 @@ namespace gl::gpu {
             capacity = kFullRunPhase2ProjectionCapacity;
             break;
         }
+        capacity.byteMapViews += 4 * capacity.logicalBlocks;
         assert(capacity.logicalBlocks == kMaxProjectedBlocksPerChunk);
         assert(capacity.statements > 0);
         return capacity;
+    }
+
+    /// @brief Partition construction work into waves safe for any worker assignment.
+    ///
+    /// @details
+    /// Each consecutive wave's unshared usage fits one construction shard in
+    /// every column. A worker may therefore claim the whole wave without
+    /// exceeding its reservation. Device chunks and logical-block order remain
+    /// unchanged; completed waves append to the same final projection.
+    ///
+    /// @param usages Per-block unshared projection bounds in canonical order.
+    /// @param count Number of blocks; zero describes an empty construction job.
+    /// @param capacity Fixed capacity of one construction shard.
+    /// @param ends Output exclusive end indices of consecutive waves.
+    /// @param endCapacity Number of available output entries, at least count.
+    /// @return Number of nonempty waves, or zero for an empty job.
+    /// @invariant Every individual block and every emitted wave fits the shard.
+    /// @see measurePhase2ProjectionUsage, Phase2ProjectionArena::adoptShards.
+    uint32_t planProjectionConstructionWaves(const Phase2ProjectionUsage* usages,
+        uint32_t count, const Phase2ProjectionCapacity& capacity,
+        uint32_t* ends, uint32_t endCapacity) {
+        assert(endCapacity >= count);
+        assert(count == 0 || (usages != nullptr && ends != nullptr));
+        constexpr uint64_t Phase2ProjectionUsage::* usageFields[] = {
+            &Phase2ProjectionUsage::logicalBlocks,
+            &Phase2ProjectionUsage::statements,
+            &Phase2ProjectionUsage::nameRecords,
+            &Phase2ProjectionUsage::nameBytes,
+            &Phase2ProjectionUsage::nameSlots,
+            &Phase2ProjectionUsage::ruleStringRecords,
+            &Phase2ProjectionUsage::ruleStringBytes,
+            &Phase2ProjectionUsage::byteMapViews,
+            &Phase2ProjectionUsage::byteMapEntries,
+            &Phase2ProjectionUsage::byteMapSlots,
+            &Phase2ProjectionUsage::byteKeyBytes,
+            &Phase2ProjectionUsage::blobRecords,
+            &Phase2ProjectionUsage::blobBytes,
+            &Phase2ProjectionUsage::reverseMapViews,
+            &Phase2ProjectionUsage::reverseMapEntries,
+            &Phase2ProjectionUsage::reverseMapSlots,
+            &Phase2ProjectionUsage::reverseKeyBytes,
+            &Phase2ProjectionUsage::reverseOwners,
+            &Phase2ProjectionUsage::podMapViews,
+            &Phase2ProjectionUsage::podMapEntries,
+            &Phase2ProjectionUsage::podMapSlots,
+            &Phase2ProjectionUsage::podRunValues,
+            &Phase2ProjectionUsage::mandatoryStatementKeys,
+            &Phase2ProjectionUsage::metadataBytes
+        };
+        constexpr uint32_t Phase2ProjectionCapacity::* capacityFields[] = {
+            &Phase2ProjectionCapacity::logicalBlocks,
+            &Phase2ProjectionCapacity::statements,
+            &Phase2ProjectionCapacity::nameRecords,
+            &Phase2ProjectionCapacity::nameBytes,
+            &Phase2ProjectionCapacity::nameSlots,
+            &Phase2ProjectionCapacity::ruleStringRecords,
+            &Phase2ProjectionCapacity::ruleStringBytes,
+            &Phase2ProjectionCapacity::byteMapViews,
+            &Phase2ProjectionCapacity::byteMapEntries,
+            &Phase2ProjectionCapacity::byteMapSlots,
+            &Phase2ProjectionCapacity::byteKeyBytes,
+            &Phase2ProjectionCapacity::blobRecords,
+            &Phase2ProjectionCapacity::blobBytes,
+            &Phase2ProjectionCapacity::reverseMapViews,
+            &Phase2ProjectionCapacity::reverseMapEntries,
+            &Phase2ProjectionCapacity::reverseMapSlots,
+            &Phase2ProjectionCapacity::reverseKeyBytes,
+            &Phase2ProjectionCapacity::reverseOwners,
+            &Phase2ProjectionCapacity::podMapViews,
+            &Phase2ProjectionCapacity::podMapEntries,
+            &Phase2ProjectionCapacity::podMapSlots,
+            &Phase2ProjectionCapacity::podRunValues,
+            &Phase2ProjectionCapacity::mandatoryStatementKeys,
+            &Phase2ProjectionCapacity::metadataBytes
+        };
+        static_assert(sizeof(Phase2ProjectionUsage) == 24 * sizeof(uint64_t));
+        static_assert(sizeof(Phase2ProjectionCapacity) == 24 * sizeof(uint32_t));
+        uint64_t totals[24]{};
+        uint32_t waves = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            assert(usages[i].logicalBlocks == 1);
+            bool fits = true;
+            for (uint32_t field = 0; field < 24; ++field) {
+                const uint64_t add = usages[i].*usageFields[field];
+                const uint64_t ceiling = capacity.*capacityFields[field];
+                assert(add <= ceiling && "one logical block exceeds its construction shard capacity");
+                if (totals[field] + add > ceiling) fits = false;
+            }
+            if (!fits) {
+                assert(i != 0 && (waves == 0 || ends[waves - 1] < i));
+                ends[waves++] = i;
+                for (uint64_t& total : totals) total = 0;
+            }
+            for (uint32_t field = 0; field < 24; ++field)
+                totals[field] += usages[i].*usageFields[field];
+        }
+        if (count != 0) ends[waves++] = count;
+        return waves;
+    }
+
+    /// @brief Measure shared key bytes and exact next-predicate table storage.
+    ///
+    /// @details Counts the byte union of the selected source maps and their
+    /// distinct immediate prefixes in private arena scratch. Prefix membership
+    /// and predicate transitions stay separate for each hash-memory kind. The
+    /// source stores are read-only and no proof identifier is minted.
+    ///
+    /// @param body Claimed resident logical block whose source maps are stable.
+    /// @param selectedHashMemories Nonzero four-bit request-memory selection.
+    /// @param buildPrefixFilter Include the four next-predicate table shapes.
+    /// @return Shared byteKeyBytes and the prefix-only entry, slot, blob-record
+    ///         and blob-byte counts; every other usage field is zero.
+    /// @invariant Equal bytes may share storage but never merge map membership.
+    /// @see measurePhase2ProjectionUsage, Phase2ProjectionArena::appendLogicalBlock
+    Phase2ProjectionUsage measurePhase2SharedKeyUsage(const Memory& body,
+        uint32_t selectedHashMemories, bool buildPrefixFilter) {
+        assert(selectedHashMemories != 0 && (selectedHashMemories & ~0x0fu) == 0);
+        LbArena arena(&staticMemory());
+        arena.setPurpose(PoolPurpose::GpuHost);
+        DirtyState dirty = DirtyState::Clean;
+        ColdHashSet<BytesKeyStore> keys(&arena, &dirty);
+        const HashMemory* const memories[4] = { &body.overallHashMemory,
+            &body.localHashMemory, &body.localHashMemoryDelta, &body.workingMemory };
+        const auto visitMap = [](const auto& map, const auto& visit) {
+            for (int32_t id = 1; id <= map.count(); ++id) visit(map.keyAt(id));
+        };
+        const auto visitSelected = [&](uint32_t memory, const auto& visit) {
+            if ((selectedHashMemories & (1u << memory)) != 0) {
+                visitMap(memories[memory]->normalizedEncodedKeys, visit);
+                visitMap(memories[memory]->normalizedEncodedSubkeys, visit);
+            }
+        };
+        const auto remember = [&](StrSpan key) { keys.mint(key); };
+        for (uint32_t memory = 0; memory < 4; ++memory) visitSelected(memory, remember);
+        visitMap(body.overallHashMemory.encodedMap, remember);
+        visitMap(body.overallHashMemory.remainingArgsNormalizedEncodedMap, remember);
+        Phase2ProjectionUsage usage{};
+        if (buildPrefixFilter) {
+            PagedVector<NameId> arities(&arena, &dirty);
+            const int32_t names = body.nameMap.nameCount();
+            for (int32_t id = 0; id <= names; ++id) arities.push_back(-1);
+            const auto wordAt = [](StrSpan key, int32_t word) {
+                assert(word >= 0 && (word + 1) * sizeof(NameId)
+                    <= static_cast<std::size_t>(key.len));
+                NameId value = 0;
+                std::memcpy(&value, key.ptr + word * sizeof(NameId), sizeof(NameId));
+                return value;
+            };
+            const auto recordArity = [&](StrSpan key) {
+                assert(key.len >= 4 * sizeof(NameId));
+                if (wordAt(key, 0) != 1) return;
+                const NameId length = wordAt(key, 1);
+                assert(length >= 2 && length % 2 == 0);
+                assert(key.len == (length + 2) * sizeof(NameId));
+                const NameId core = wordAt(key, 2);
+                assert(core > 0 && core <= names);
+                const NameId arity = (length - 2) / 2;
+                assert(arity <= ExecutionParameters::MAX_ARITY);
+                assert(arities[core] == -1 || arities[core] == arity);
+                arities.setAt(core, arity);
+            };
+            for (uint32_t memory = 0; memory < 4; ++memory)
+                visitSelected(memory, recordArity);
+            for (uint32_t memory = 0; memory < 4; ++memory) {
+                LbArena prefixArena(&staticMemory());
+                prefixArena.setPurpose(PoolPurpose::GpuHost);
+                DirtyState prefixDirty = DirtyState::Clean;
+                ColdHashSet<BytesKeyStore> prefixes(&prefixArena, &prefixDirty);
+                ColdHashSet<PodKeyStore<uint64_t>> transitions(&prefixArena, &prefixDirty);
+                const auto recordPrefix = [&](StrSpan key) {
+                    const NameId count = wordAt(key, 0);
+                    const NameId length = wordAt(key, 1);
+                    assert(count > 0 && count <= ExecutionParameters::MAX_EXPRESSIONS);
+                    assert(length >= 2 * count && length <= ExecutionParameters::MAX_KEY_SLOTS);
+                    assert(key.len == (length + 2) * sizeof(NameId));
+                    NameId prefixLength = 0;
+                    for (NameId premise = 0; premise < count - 1; ++premise) {
+                        assert(prefixLength + 2 <= length);
+                        const NameId core = wordAt(key, 2 + prefixLength);
+                        assert(core > 0 && core <= names && arities[core] >= 0);
+                        prefixLength += 2 + 2 * arities[core];
+                    }
+                    assert(prefixLength + 2 <= length);
+                    const NameId core = wordAt(key, 2 + prefixLength);
+                    const NameId polarity = wordAt(key, 3 + prefixLength);
+                    assert(core > 0 && core <= names && arities[core] >= 0);
+                    assert(polarity == 0 || polarity == 1);
+                    assert(prefixLength + 2 + 2 * arities[core] == length);
+                    NameId prefix[2 + ExecutionParameters::MAX_KEY_SLOTS];
+                    prefix[0] = count - 1;
+                    prefix[1] = prefixLength;
+                    std::memcpy(prefix + 2, key.ptr + 2 * sizeof(NameId),
+                        prefixLength * sizeof(NameId));
+                    const StrSpan bytes(reinterpret_cast<const char*>(prefix),
+                        static_cast<int32_t>((prefixLength + 2) * sizeof(NameId)));
+                    const int32_t id = prefixes.mint(bytes);
+                    keys.mint(bytes);
+                    transitions.mint((static_cast<uint64_t>(id) << 32)
+                        | static_cast<uint32_t>(core));
+                };
+                visitSelected(memory, recordPrefix);
+                const uint64_t count = static_cast<uint64_t>(prefixes.count());
+                uint64_t slots = count == 0 ? 0 : 2;
+                while (slots < count * 2) slots <<= 1;
+                usage.byteMapEntries += count;
+                usage.byteMapSlots += slots;
+                usage.blobRecords += count;
+                usage.blobBytes += static_cast<uint64_t>(transitions.count()) * 8;
+            }
+        }
+        usage.byteKeyBytes = static_cast<uint64_t>(keys.keyStore().logicalByteCount());
+        return usage;
     }
 
     /// @brief Bound one resident logical block's selected Phase 2 projection.
@@ -75,7 +303,7 @@ namespace gl::gpu {
     /// reach them after request growth. It counts canonical key/blob bytes from their resident cold
     /// records, fixed-load projection hash slots, interner bytes, membership
     /// rows, level/goal run values, mandatory-term statement keys, and scalar
-    /// metadata. It performs no allocation, mutation, proof decision, or lookup
+    /// metadata. It uses private arena scratch without source mutation, proof decisions, or lookup
     /// substitution; callers may reduce the returned integers in any order.
     ///
     /// @param body Resident logical block whose post-Phase-1 read image is measured.
@@ -83,6 +311,7 @@ namespace gl::gpu {
     ///                 registry used by Phase 2 evaluation.
     /// @param selectedHashMemories Bit `1 << DeviceHashMemoryKind` for every
     ///                 request memory consumed by this logical block's tasks.
+    /// @param buildPrefixFilter Include bounded derived next-predicate maps.
     /// @return Exact direct-column usage plus safe derived-index upper bounds.
     /// @invariant The result is a pure function of the resident read image. It
     ///            may bound deterministic transfer chunks but never changes a
@@ -90,7 +319,8 @@ namespace gl::gpu {
     Phase2ProjectionUsage measurePhase2ProjectionUsage(
         const Memory& body,
         const ExpressionAnalyzer& analyzer,
-        uint32_t selectedHashMemories) {
+        uint32_t selectedHashMemories,
+        bool buildPrefixFilter) {
         assert(selectedHashMemories != 0);
         assert((selectedHashMemories & ~0x0fu) == 0);
         Phase2ProjectionUsage usage{};
@@ -157,6 +387,7 @@ namespace gl::gpu {
             &body.workingMemory
         };
         for (uint32_t memoryIndex = 0; memoryIndex < 4; ++memoryIndex) {
+            if (buildPrefixFilter) ++usage.byteMapViews;
             if ((selectedHashMemories & (1u << memoryIndex)) == 0) {
                 usage.byteMapViews += 2;
                 continue;
@@ -170,13 +401,21 @@ namespace gl::gpu {
             body.overallHashMemory.remainingArgsNormalizedEncodedMap;
         measureByteBlobMap(remainingArgs);
 
+        const Phase2ProjectionUsage sharedKeys = measurePhase2SharedKeyUsage(
+            body, selectedHashMemories, buildPrefixFilter);
+        usage.byteKeyBytes = sharedKeys.byteKeyBytes;
+        usage.byteMapEntries += sharedKeys.byteMapEntries;
+        usage.byteMapSlots += sharedKeys.byteMapSlots;
+        usage.blobRecords += sharedKeys.blobRecords;
+        usage.blobBytes += sharedKeys.blobBytes;
+
         usage.reverseMapViews = 1;
         const int32_t reverseEdgeCount = remainingArgs.inner().blobCount();
         const int32_t reverseEdgeBytes = remainingArgs.inner().poolByteCount();
         assert(reverseEdgeCount >= 0 && reverseEdgeBytes >= 0);
         usage.reverseMapEntries += static_cast<uint64_t>(reverseEdgeCount);
         usage.reverseOwners += static_cast<uint64_t>(reverseEdgeCount);
-        usage.reverseKeyBytes += static_cast<uint64_t>(reverseEdgeBytes);
+        usage.reverseKeyBytes = 0; // Reverse keys reference their forward blobs.
         assert(usage.reverseMapEntries
             <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max()));
         usage.reverseMapSlots = slotsFor(
@@ -214,8 +453,6 @@ namespace gl::gpu {
         measurePodSet(body.intValidityNamesToFilter);
         measurePodSet(body.frozenOrBranches);
         measurePodRunMap(body.intToBeProved);
-        measurePodSet(body.canBeSentIds);
-        measurePodSet(body.canBeSentMarkerIds);
 
         usage.mandatoryStatementKeys = static_cast<uint64_t>(
             body.intLocalEncodedStatements.size())
@@ -251,10 +488,9 @@ namespace gl::gpu {
         bool counterExampleMode) {
         Phase2TaskProjectionUsage usage{};
         if (counterExampleMode) {
-            assert(stumpCount == 0);
             usage.tasks = 1;
             usage.batches = 1;
-            return usage;
+            return phase2TaskUsageWithStumps(usage, stumpCount, true);
         }
 
         if (!body.workingMemory.encodedMap.empty()
@@ -277,27 +513,107 @@ namespace gl::gpu {
         }
         if (!body.localHashMemoryDelta.encodedMap.empty())
             ++usage.batches;
-        if (usage.batches != 0) {
-            usage.tasks = 1;
-            usage.stumps = stumpCount;
+        if (usage.batches != 0) usage.tasks = 1;
+        return phase2TaskUsageWithStumps(usage, stumpCount, false);
+    }
+
+    /// @brief One executor part's task usage from its logical block's
+    ///        stump-free usage and the part's stump count.
+    ///
+    /// @param stumpFree The block's usage measured with a stump count of zero.
+    /// @param stumpCount Number of stumps owned by this executor part.
+    /// @param counterExampleMode Whether this is the unsplit counter-example route.
+    /// @return The part's task usage.
+    Phase2TaskProjectionUsage phase2TaskUsageWithStumps(
+        const Phase2TaskProjectionUsage& stumpFree,
+        uint32_t stumpCount,
+        bool counterExampleMode) {
+        assert(stumpFree.stumps == 0);
+        Phase2TaskProjectionUsage usage = stumpFree;
+        if (counterExampleMode) {
+            assert(stumpCount == 0);
+            return usage;
         }
+        if (usage.tasks != 0) usage.stumps = stumpCount;
         return usage;
     }
 
-    /// @brief Reserve every projection array to an immutable capacity ceiling.
+    /// @brief The hash memories one logical block's executable request batches
+    ///        read.
+    ///
+    /// @param body Resident logical block.
+    /// @param counterExampleMode Whether this is the unsplit counter-example route.
+    /// @return The selection mask; zero when the block has no executable batch.
+    uint32_t selectPhase2HashMemories(const Memory& body, bool counterExampleMode) {
+        const auto bit = [](DeviceHashMemoryKind memory) {
+            return 1u << static_cast<uint32_t>(memory);
+        };
+        if (counterExampleMode) return bit(DeviceHashMemoryKind::overall);
+        uint32_t selected = 0;
+        if (!body.workingMemory.encodedMap.empty()
+            && !body.intLocalEncodedStatements.empty())
+            selected |= bit(DeviceHashMemoryKind::working);
+        if (!body.intLocalEncodedStatementsDelta.empty()
+            || (!body.intExternalStatements.empty()
+                && !body.intLocalEncodedStatements.empty()))
+            selected |= bit(DeviceHashMemoryKind::overall);
+        if (!body.localHashMemory.encodedMap.empty()
+            && !body.intExternalStatements.empty())
+            selected |= bit(DeviceHashMemoryKind::local);
+        if (!body.localHashMemoryDelta.encodedMap.empty())
+            selected |= bit(DeviceHashMemoryKind::localDelta);
+        return selected;
+    }
+
+    /// @brief Field-wise sum of two projection capacities.
     ///
     /// @details
-    /// Asserts positive logical-block and name-record capacity, reserves all
-    /// semantic arrays plus decoded-rank scratch once, and leaves every used
-    /// length zero. Later appends assert before crossing any ceiling.
+    /// Lays construction-shard capacities end to end
+    /// (D-425). A sum that leaves `uint32_t` asserts.
     ///
-    /// @param fixedCapacity Element and byte ceilings for this arena lifetime.
-    /// @return A reusable empty arena with all storage reserved.
-    /// @invariant Vector capacities are at least their corresponding declared
-    ///            ceilings for the arena's entire lifetime.
-    Phase2ProjectionArena::Phase2ProjectionArena(
-        Phase2ProjectionCapacity fixedCapacity)
-        : capacity(fixedCapacity) {
+    /// @param left First capacity.
+    /// @param right Second capacity.
+    /// @return The field-wise sum.
+    Phase2ProjectionCapacity addProjectionCapacity(const Phase2ProjectionCapacity& left,
+        const Phase2ProjectionCapacity& right) {
+        const auto add = [](uint32_t a, uint32_t b) -> uint32_t {
+            assert(b <= std::numeric_limits<uint32_t>::max() - a);
+            return a + b;
+        };
+        Phase2ProjectionCapacity sum{};
+        sum.logicalBlocks = add(left.logicalBlocks, right.logicalBlocks);
+        sum.statements = add(left.statements, right.statements);
+        sum.nameRecords = add(left.nameRecords, right.nameRecords);
+        sum.nameBytes = add(left.nameBytes, right.nameBytes);
+        sum.nameSlots = add(left.nameSlots, right.nameSlots);
+        sum.ruleStringRecords = add(left.ruleStringRecords, right.ruleStringRecords);
+        sum.ruleStringBytes = add(left.ruleStringBytes, right.ruleStringBytes);
+        sum.byteMapViews = add(left.byteMapViews, right.byteMapViews);
+        sum.byteMapEntries = add(left.byteMapEntries, right.byteMapEntries);
+        sum.byteMapSlots = add(left.byteMapSlots, right.byteMapSlots);
+        sum.byteKeyBytes = add(left.byteKeyBytes, right.byteKeyBytes);
+        sum.blobRecords = add(left.blobRecords, right.blobRecords);
+        sum.blobBytes = add(left.blobBytes, right.blobBytes);
+        sum.reverseMapViews = add(left.reverseMapViews, right.reverseMapViews);
+        sum.reverseMapEntries = add(left.reverseMapEntries, right.reverseMapEntries);
+        sum.reverseMapSlots = add(left.reverseMapSlots, right.reverseMapSlots);
+        sum.reverseKeyBytes = add(left.reverseKeyBytes, right.reverseKeyBytes);
+        sum.reverseOwners = add(left.reverseOwners, right.reverseOwners);
+        sum.podMapViews = add(left.podMapViews, right.podMapViews);
+        sum.podMapEntries = add(left.podMapEntries, right.podMapEntries);
+        sum.podMapSlots = add(left.podMapSlots, right.podMapSlots);
+        sum.podRunValues = add(left.podRunValues, right.podRunValues);
+        sum.mandatoryStatementKeys = add(left.mandatoryStatementKeys, right.mandatoryStatementKeys);
+        sum.metadataBytes = add(left.metadataBytes, right.metadataBytes);
+        return sum;
+    }
+
+    /// @brief Assert that every field of `capacity` is positive.
+    ///
+    /// @param capacity Ceilings or storage sizes to check.
+    /// @return Nothing.
+    void Phase2ProjectionArena::assertPositiveCapacity(
+        const Phase2ProjectionCapacity& capacity) {
         assert(capacity.logicalBlocks > 0);
         assert(capacity.statements > 0);
         assert(capacity.nameRecords > 0);
@@ -322,36 +638,156 @@ namespace gl::gpu {
         assert(capacity.podRunValues > 0);
         assert(capacity.mandatoryStatementKeys > 0);
         assert(capacity.metadataBytes > 0);
-        logicalBlocks.reserve(capacity.logicalBlocks);
-        statements.reserve(capacity.statements);
-        nameRecords.reserve(capacity.nameRecords);
-        nameBytes.reserve(capacity.nameBytes);
-        nameSlots.reserve(capacity.nameSlots);
-        ruleStringRecords.reserve(capacity.ruleStringRecords);
-        ruleStringBytes.reserve(capacity.ruleStringBytes);
-        byteMapViews.reserve(capacity.byteMapViews);
-        byteMapEntries.reserve(capacity.byteMapEntries);
-        byteMapSlots.reserve(capacity.byteMapSlots);
-        byteKeyBytes.reserve(capacity.byteKeyBytes);
-        blobRecords.reserve(capacity.blobRecords);
-        blobBytes.reserve(capacity.blobBytes);
-        reverseMapViews.reserve(capacity.reverseMapViews);
-        reverseMapEntries.reserve(capacity.reverseMapEntries);
-        reverseMapSlots.reserve(capacity.reverseMapSlots);
-        reverseKeyBytes.reserve(capacity.reverseKeyBytes);
-        reverseOwners.reserve(capacity.reverseOwners);
-        podMapViews.reserve(capacity.podMapViews);
-        podMapEntries.reserve(capacity.podMapEntries);
-        podMapSlots.reserve(capacity.podMapSlots);
-        podRunValues.reserve(capacity.podRunValues);
-        mandatoryStatementKeys.reserve(capacity.mandatoryStatementKeys);
-        metadataBytes.reserve(capacity.metadataBytes);
+    }
+
+    /// @brief Reserve every column to `storage` (owning and backing arenas).
+    ///
+    /// @param storage Elements each column reserves.
+    /// @return Nothing.
+    void Phase2ProjectionArena::reserveColumns(const Phase2ProjectionCapacity& storage) {
+        logicalBlocks.reserve(storage.logicalBlocks);
+        statements.reserve(storage.statements);
+        sourceStatementIndices.reserve(storage.statements);
+        nameRecords.reserve(storage.nameRecords);
+        nameBytes.reserve(storage.nameBytes);
+        nameSlots.reserve(storage.nameSlots);
+        ruleStringRecords.reserve(storage.ruleStringRecords);
+        ruleStringBytes.reserve(storage.ruleStringBytes);
+        byteMapViews.reserve(storage.byteMapViews);
+        byteMapEntries.reserve(storage.byteMapEntries);
+        byteMapSlots.reserve(storage.byteMapSlots);
+        byteKeyBytes.reserve(storage.byteKeyBytes);
+        blobRecords.reserve(storage.blobRecords);
+        blobBytes.reserve(storage.blobBytes);
+        reverseMapViews.reserve(storage.reverseMapViews);
+        reverseMapEntries.reserve(storage.reverseMapEntries);
+        reverseMapSlots.reserve(storage.reverseMapSlots);
+        reverseKeyBytes.reserve(storage.reverseKeyBytes);
+        reverseOwners.reserve(storage.reverseOwners);
+        podMapViews.reserve(storage.podMapViews);
+        podMapEntries.reserve(storage.podMapEntries);
+        podMapSlots.reserve(storage.podMapSlots);
+        podRunValues.reserve(storage.podRunValues);
+        mandatoryStatementKeys.reserve(storage.mandatoryStatementKeys);
+        metadataBytes.reserve(storage.metadataBytes);
+    }
+
+    /// @brief Reserve the construction scratch for this arena's `capacity`
+    ///        (owning and slice arenas).
+    ///
+    /// @return Nothing.
+    void Phase2ProjectionArena::reserveScratch() {
         decodedRankScratch_.reserve(capacity.nameRecords);
+        usedAsPremiseScratch_.reserve(capacity.nameRecords);
         decodedRankWorkScratch_.reserve(capacity.nameRecords);
         decodedRankRangeScratch_.reserve(capacity.nameRecords);
         reverseRunScratch_.reserve(capacity.reverseMapEntries);
         sharedNameProjections_.reserve(capacity.logicalBlocks);
         sharedRuleStringProjections_.reserve(capacity.logicalBlocks);
+    }
+
+    /// @brief Reserve every projection array to an immutable capacity ceiling.
+    ///
+    /// @details
+    /// Asserts positive capacities, reserves all semantic columns plus the
+    /// construction scratch once, and leaves every used length zero. Later
+    /// appends assert before crossing any ceiling.
+    ///
+    /// @param fixedCapacity Element and byte ceilings for this arena lifetime.
+    /// @return A reusable empty arena with all storage reserved.
+    /// @invariant Column capacities are at least their corresponding declared
+    ///            ceilings for the arena's entire lifetime.
+    Phase2ProjectionArena::Phase2ProjectionArena(
+        Phase2ProjectionCapacity fixedCapacity)
+        : capacity(fixedCapacity) {
+        assertPositiveCapacity(capacity);
+        reserveColumns(capacity);
+        reserveScratch();
+    }
+
+    /// @brief Reserve the columns of a projection whose construction shards
+    ///        write straight into it.
+    ///
+    /// @details
+    /// Every column reserves `storage` elements while `capacity` stays the
+    /// ceiling the adopted totals must fit. No construction scratch: a backing
+    /// arena never appends logical blocks itself (D-425).
+    ///
+    /// @param fixedCapacity Ceilings of the adopted totals; every field positive.
+    /// @param storage Elements each column reserves; every field positive.
+    /// @return An empty backing arena.
+    Phase2ProjectionArena::Phase2ProjectionArena(
+        Phase2ProjectionCapacity fixedCapacity, const Phase2ProjectionCapacity& storage)
+        : capacity(fixedCapacity), role_(Role::Backing) {
+        assertPositiveCapacity(capacity);
+        assertPositiveCapacity(storage);
+        reserveColumns(storage);
+    }
+
+    /// @brief Reserve the host lookup image retained across streamed uploads.
+    ///
+    /// @details Only sealing inputs (including the rule copy per blob record)
+    /// and source ordinals have physical backing; separate bounded construction
+    /// windows produce the device-only columns.
+    /// @param fixedCapacity Complete chunk limits for retained columns.
+    /// @param mode Explicit retained-only constructor selection.
+    /// @return An empty retained image with no construction scratch.
+    Phase2ProjectionArena::Phase2ProjectionArena(
+        Phase2ProjectionCapacity fixedCapacity, SealingOnly mode)
+        : capacity(fixedCapacity), role_(Role::Sealing) {
+        (void)mode;
+        assertPositiveCapacity(capacity);
+        logicalBlocks.reserve(capacity.logicalBlocks);
+        sourceStatementIndices.reserve(capacity.statements);
+        nameRecords.reserve(capacity.nameRecords);
+        nameBytes.reserve(capacity.nameBytes);
+        ruleStringRecords.reserve(capacity.ruleStringRecords);
+        ruleStringBytes.reserve(capacity.ruleStringBytes);
+        blobRuleOwners.reserve(capacity.blobRecords);
+    }
+
+    /// @brief Build a construction shard as a slice of `backing`'s columns.
+    ///
+    /// @details
+    /// Every column views `sliceCapacity` elements of the matching `backing`
+    /// column from `sliceStart` on; construction scratch is reserved as for an
+    /// owning arena (D-425).
+    ///
+    /// @param sliceCapacity Ceilings of this shard; every field positive.
+    /// @param backing The backing arena whose storage this shard views.
+    /// @param sliceStart First element of this shard's slice in each column.
+    /// @return An empty slice arena.
+    Phase2ProjectionArena::Phase2ProjectionArena(Phase2ProjectionCapacity sliceCapacity,
+        Phase2ProjectionArena& backing, const Phase2ProjectionCapacity& sliceStart)
+        : capacity(sliceCapacity), role_(Role::Slice) {
+        assertPositiveCapacity(capacity);
+        assert(backing.role_ == Role::Backing && !backing.adopted_);
+        logicalBlocks.attachSlice(backing.logicalBlocks, sliceStart.logicalBlocks, capacity.logicalBlocks);
+        statements.attachSlice(backing.statements, sliceStart.statements, capacity.statements);
+        sourceStatementIndices.attachSlice(backing.sourceStatementIndices, sliceStart.statements, capacity.statements);
+        nameRecords.attachSlice(backing.nameRecords, sliceStart.nameRecords, capacity.nameRecords);
+        nameBytes.attachSlice(backing.nameBytes, sliceStart.nameBytes, capacity.nameBytes);
+        nameSlots.attachSlice(backing.nameSlots, sliceStart.nameSlots, capacity.nameSlots);
+        ruleStringRecords.attachSlice(backing.ruleStringRecords, sliceStart.ruleStringRecords, capacity.ruleStringRecords);
+        ruleStringBytes.attachSlice(backing.ruleStringBytes, sliceStart.ruleStringBytes, capacity.ruleStringBytes);
+        byteMapViews.attachSlice(backing.byteMapViews, sliceStart.byteMapViews, capacity.byteMapViews);
+        byteMapEntries.attachSlice(backing.byteMapEntries, sliceStart.byteMapEntries, capacity.byteMapEntries);
+        byteMapSlots.attachSlice(backing.byteMapSlots, sliceStart.byteMapSlots, capacity.byteMapSlots);
+        byteKeyBytes.attachSlice(backing.byteKeyBytes, sliceStart.byteKeyBytes, capacity.byteKeyBytes);
+        blobRecords.attachSlice(backing.blobRecords, sliceStart.blobRecords, capacity.blobRecords);
+        blobBytes.attachSlice(backing.blobBytes, sliceStart.blobBytes, capacity.blobBytes);
+        reverseMapViews.attachSlice(backing.reverseMapViews, sliceStart.reverseMapViews, capacity.reverseMapViews);
+        reverseMapEntries.attachSlice(backing.reverseMapEntries, sliceStart.reverseMapEntries, capacity.reverseMapEntries);
+        reverseMapSlots.attachSlice(backing.reverseMapSlots, sliceStart.reverseMapSlots, capacity.reverseMapSlots);
+        reverseKeyBytes.attachSlice(backing.reverseKeyBytes, sliceStart.reverseKeyBytes, capacity.reverseKeyBytes);
+        reverseOwners.attachSlice(backing.reverseOwners, sliceStart.reverseOwners, capacity.reverseOwners);
+        podMapViews.attachSlice(backing.podMapViews, sliceStart.podMapViews, capacity.podMapViews);
+        podMapEntries.attachSlice(backing.podMapEntries, sliceStart.podMapEntries, capacity.podMapEntries);
+        podMapSlots.attachSlice(backing.podMapSlots, sliceStart.podMapSlots, capacity.podMapSlots);
+        podRunValues.attachSlice(backing.podRunValues, sliceStart.podRunValues, capacity.podRunValues);
+        mandatoryStatementKeys.attachSlice(backing.mandatoryStatementKeys, sliceStart.mandatoryStatementKeys, capacity.mandatoryStatementKeys);
+        metadataBytes.attachSlice(backing.metadataBytes, sliceStart.metadataBytes, capacity.metadataBytes);
+        reserveScratch();
     }
 
     /// @brief Reset all used prefixes without releasing reserved storage.
@@ -368,6 +804,7 @@ namespace gl::gpu {
         timing = Phase2ProjectionTiming{};
         logicalBlocks.clear();
         statements.clear();
+        sourceStatementIndices.clear();
         nameRecords.clear();
         nameBytes.clear();
         nameSlots.clear();
@@ -390,44 +827,55 @@ namespace gl::gpu {
         podRunValues.clear();
         mandatoryStatementKeys.clear();
         metadataBytes.clear();
+        blobRuleOwners.clear();
         decodedRankScratch_.clear();
         decodedRankWorkScratch_.clear();
         decodedRankRangeScratch_.clear();
         reverseRunScratch_.clear();
         sharedNameProjections_.clear();
         sharedRuleStringProjections_.clear();
-        assert(logicalBlocks.capacity() >= capacity.logicalBlocks);
-        assert(statements.capacity() >= capacity.statements);
-        assert(nameRecords.capacity() >= capacity.nameRecords);
-        assert(nameBytes.capacity() >= capacity.nameBytes);
-        assert(nameSlots.capacity() >= capacity.nameSlots);
-        assert(ruleStringRecords.capacity() >= capacity.ruleStringRecords);
-        assert(ruleStringBytes.capacity() >= capacity.ruleStringBytes);
-        assert(byteMapViews.capacity() >= capacity.byteMapViews);
-        assert(byteMapEntries.capacity() >= capacity.byteMapEntries);
-        assert(byteMapSlots.capacity() >= capacity.byteMapSlots);
-        assert(byteKeyBytes.capacity() >= capacity.byteKeyBytes);
-        assert(blobRecords.capacity() >= capacity.blobRecords);
-        assert(blobBytes.capacity() >= capacity.blobBytes);
-        assert(reverseMapViews.capacity() >= capacity.reverseMapViews);
-        assert(reverseMapEntries.capacity() >= capacity.reverseMapEntries);
-        assert(reverseMapSlots.capacity() >= capacity.reverseMapSlots);
-        assert(reverseKeyBytes.capacity() >= capacity.reverseKeyBytes);
-        assert(reverseOwners.capacity() >= capacity.reverseOwners);
-        assert(podMapViews.capacity() >= capacity.podMapViews);
-        assert(podMapEntries.capacity() >= capacity.podMapEntries);
-        assert(podMapSlots.capacity() >= capacity.podMapSlots);
-        assert(podRunValues.capacity() >= capacity.podRunValues);
-        assert(mandatoryStatementKeys.capacity()
-            >= capacity.mandatoryStatementKeys);
-        assert(metadataBytes.capacity() >= capacity.metadataBytes);
-        assert(decodedRankScratch_.capacity() >= capacity.nameRecords);
-        assert(decodedRankWorkScratch_.capacity() >= capacity.nameRecords);
-        assert(decodedRankRangeScratch_.capacity() >= capacity.nameRecords);
-        assert(reverseRunScratch_.capacity() >= capacity.reverseMapEntries);
-        assert(sharedNameProjections_.capacity() >= capacity.logicalBlocks);
-        assert(sharedRuleStringProjections_.capacity()
-            >= capacity.logicalBlocks);
+        if (role_ == Role::Sealing) {
+            assert(logicalBlocks.capacity() >= capacity.logicalBlocks);
+            assert(sourceStatementIndices.capacity() >= capacity.statements);
+            assert(nameRecords.capacity() >= capacity.nameRecords);
+            assert(nameBytes.capacity() >= capacity.nameBytes);
+            assert(ruleStringRecords.capacity() >= capacity.ruleStringRecords);
+            assert(ruleStringBytes.capacity() >= capacity.ruleStringBytes);
+            assert(blobRuleOwners.capacity() >= capacity.blobRecords);
+        } else {
+            assert(logicalBlocks.capacity() >= capacity.logicalBlocks);
+            assert(statements.capacity() >= capacity.statements);
+            assert(nameRecords.capacity() >= capacity.nameRecords);
+            assert(nameBytes.capacity() >= capacity.nameBytes);
+            assert(nameSlots.capacity() >= capacity.nameSlots);
+            assert(ruleStringRecords.capacity() >= capacity.ruleStringRecords);
+            assert(ruleStringBytes.capacity() >= capacity.ruleStringBytes);
+            assert(byteMapViews.capacity() >= capacity.byteMapViews);
+            assert(byteMapEntries.capacity() >= capacity.byteMapEntries);
+            assert(byteMapSlots.capacity() >= capacity.byteMapSlots);
+            assert(byteKeyBytes.capacity() >= capacity.byteKeyBytes);
+            assert(blobRecords.capacity() >= capacity.blobRecords);
+            assert(blobBytes.capacity() >= capacity.blobBytes);
+            assert(reverseMapViews.capacity() >= capacity.reverseMapViews);
+            assert(reverseMapEntries.capacity() >= capacity.reverseMapEntries);
+            assert(reverseMapSlots.capacity() >= capacity.reverseMapSlots);
+            assert(reverseKeyBytes.capacity() >= capacity.reverseKeyBytes);
+            assert(reverseOwners.capacity() >= capacity.reverseOwners);
+            assert(podMapViews.capacity() >= capacity.podMapViews);
+            assert(podMapEntries.capacity() >= capacity.podMapEntries);
+            assert(podMapSlots.capacity() >= capacity.podMapSlots);
+            assert(podRunValues.capacity() >= capacity.podRunValues);
+            assert(mandatoryStatementKeys.capacity()
+                >= capacity.mandatoryStatementKeys);
+            assert(metadataBytes.capacity() >= capacity.metadataBytes);
+            assert(decodedRankScratch_.capacity() >= capacity.nameRecords);
+            assert(decodedRankWorkScratch_.capacity() >= capacity.nameRecords);
+            assert(decodedRankRangeScratch_.capacity() >= capacity.nameRecords);
+            assert(reverseRunScratch_.capacity() >= capacity.reverseMapEntries);
+            assert(sharedNameProjections_.capacity() >= capacity.logicalBlocks);
+            assert(sharedRuleStringProjections_.capacity()
+                >= capacity.logicalBlocks);
+        }
     }
 
     /// @brief Append one resident logical block as pointer-free device slices.
@@ -450,14 +898,17 @@ namespace gl::gpu {
     ///                 compiled-core categories read by evaluation.
     /// @param selectedHashMemories Bit `1 << DeviceHashMemoryKind` for every
     ///                 request memory consumed by this logical block's tasks.
+    /// @param buildPrefixFilter Build exact-prefix next-predicate maps for growth.
     /// @return Pointer-free descriptor also appended to `logicalBlocks`.
     /// @invariant The appended slices decode byte-identically to `body` and
     ///            preserve statement index order and local identifier values.
     DeviceLogicalBlockProjection Phase2ProjectionArena::appendLogicalBlock(
         const Memory& body,
         const ExpressionAnalyzer& analyzer,
-        uint32_t selectedHashMemories) {
+        uint32_t selectedHashMemories,
+        bool buildPrefixFilter) {
         const auto preflightStarted = std::chrono::steady_clock::now();
+        assert(role_ == Role::Owning || role_ == Role::Slice);
         assert(logicalBlocks.size() < capacity.logicalBlocks);
         assert(selectedHashMemories != 0);
         assert((selectedHashMemories & ~0x0fu) == 0);
@@ -500,8 +951,21 @@ namespace gl::gpu {
 
         const int32_t statementCountSigned = body.intEncodedStatementsCount();
         assert(statementCountSigned >= 0);
-        const std::size_t statementCount =
-            static_cast<std::size_t>(statementCountSigned);
+        const std::size_t coreSlots =
+            static_cast<std::size_t>(body.nameMap.nameCount()) + 1;
+        assert(coreSlots <= capacity.nameRecords);
+        usedAsPremiseScratch_.assign(coreSlots, 0);
+        forEachPremiseCore(body, [&](NameId core, int32_t polarity) {
+            usedAsPremiseScratch_[core] |= static_cast<uint8_t>(1u << polarity);
+        });
+        const auto usedAsPremise = [&](const IntEncodedExpr& row) {
+            assert(row.nameId > 0 && static_cast<std::size_t>(row.nameId) < coreSlots);
+            assert(row.negation == 0 || row.negation == 1);
+            return (usedAsPremiseScratch_[row.nameId] & (1u << row.negation)) != 0;
+        };
+        std::size_t statementCount = 0;
+        for (int32_t index = 0; index < statementCountSigned; ++index)
+            if (usedAsPremise(body.intEncodedStatements[index])) ++statementCount;
         assert(statements.size() + statementCount <= capacity.statements);
 
         const int32_t nameCountSigned = body.nameMap.nameCount();
@@ -511,18 +975,22 @@ namespace gl::gpu {
         const int64_t bodyNameBytes =
             body.nameMap.names->keyStore().logicalByteCount();
         assert(bodyNameBytes >= 0);
+        // Sharing compares against this arena's own projected copy of each
+        // earlier block's names, never the earlier block itself: that block
+        // was released after its projection and may be deloaded by now.
         const SharedNameProjection* sharedName = nullptr;
         for (const SharedNameProjection& candidate
              : sharedNameProjections_) {
-            assert(candidate.source != nullptr);
-            const Memory& source = *candidate.source;
-            if (source.nameMap.nameCount() != nameCountSigned) continue;
-            if (source.nameMap.names->keyStore().logicalByteCount()
-                != bodyNameBytes) continue;
+            if (candidate.recordCount != localNameRecordCount) continue;
+            if (static_cast<int64_t>(candidate.byteCount) != bodyNameBytes)
+                continue;
             bool equal = true;
             for (NameId id = 1; id <= nameCountSigned; ++id) {
-                if (source.nameMap.parentOf(id) != body.nameMap.parentOf(id)
-                    || !equalSpans(source.nameMap.decodeView(id),
+                const DeviceNameRecord& record = nameRecords[
+                    candidate.recordOffset + static_cast<uint32_t>(id)];
+                if (record.parentId != body.nameMap.parentOf(id)
+                    || !equalSpans(StrSpan(nameBytes.data() + record.byteOffset,
+                                       static_cast<int32_t>(record.byteLength)),
                                    body.nameMap.decodeView(id))) {
                     equal = false;
                     break;
@@ -567,7 +1035,24 @@ namespace gl::gpu {
         const auto preflightFinished = std::chrono::steady_clock::now();
 
         for (int32_t index = 0; index < statementCountSigned; ++index)
-            statements.push_back(body.intEncodedStatements[index]);
+            if (usedAsPremise(body.intEncodedStatements[index])) {
+                statements.push_back(body.intEncodedStatements[index]);
+                sourceStatementIndices.push_back(index);
+            }
+
+        // Validate the complete stable filtered slice, including its exact
+        // cardinality; excluded source rows do not consume device indices.
+        std::size_t retained = descriptor.statementOffset;
+        for (int32_t index = 0; index < statementCountSigned; ++index) {
+            const IntEncodedExpr& source = body.intEncodedStatements[index];
+            if (!usedAsPremise(source)) continue;
+            assert(retained < statements.size());
+            assert(std::memcmp(&statements[retained], &source, sizeof(source)) == 0);
+            ++retained;
+        }
+        assert(retained == statements.size());
+        assert(retained - descriptor.statementOffset == descriptor.statementCount);
+        assert(sourceStatementIndices.size() == statements.size());
 
         const auto statementsFinished = std::chrono::steady_clock::now();
 
@@ -718,7 +1203,6 @@ namespace gl::gpu {
 
         namesFinished = std::chrono::steady_clock::now();
         sharedNameProjections_.push_back(SharedNameProjection{
-            &body,
             descriptor.nameRecordOffset,
             descriptor.nameRecordCount,
             descriptor.nameByteOffset,
@@ -745,19 +1229,19 @@ namespace gl::gpu {
         const int64_t bodyRuleStringBytes =
             body.ruleInterner.table->keyStore().logicalByteCount();
         assert(bodyRuleStringBytes >= 0);
+        // Compared against this arena's projected copy, like the names.
         const SharedRuleStringProjection* sharedRuleStrings = nullptr;
         for (const SharedRuleStringProjection& candidate
              : sharedRuleStringProjections_) {
-            assert(candidate.source != nullptr);
-            const Memory& source = *candidate.source;
-            if (source.ruleInterner.internedCount()
-                != ruleStringCountSigned) continue;
-            assert(source.ruleInterner.table != nullptr);
-            if (source.ruleInterner.table->keyStore().logicalByteCount()
+            if (candidate.recordCount != localRuleStringRecordCount) continue;
+            if (static_cast<int64_t>(candidate.byteCount)
                 != bodyRuleStringBytes) continue;
             bool equal = true;
             for (int32_t id = 1; id <= ruleStringCountSigned; ++id) {
-                if (!equalSpans(source.ruleInterner.decodeView(id),
+                const DeviceRuleStringRecord& record = ruleStringRecords[
+                    candidate.recordOffset + static_cast<uint32_t>(id)];
+                if (!equalSpans(StrSpan(ruleStringBytes.data() + record.byteOffset,
+                                    static_cast<int32_t>(record.byteLength)),
                                 body.ruleInterner.decodeView(id))) {
                     equal = false;
                     break;
@@ -812,7 +1296,6 @@ namespace gl::gpu {
             == descriptor.ruleStringByteCount);
         ruleStringsFinished = std::chrono::steady_clock::now();
         sharedRuleStringProjections_.push_back(SharedRuleStringProjection{
-            &body,
             descriptor.ruleStringRecordOffset,
             descriptor.ruleStringRecordCount,
             descriptor.ruleStringByteOffset,
@@ -821,6 +1304,19 @@ namespace gl::gpu {
         else {
             ruleStringsFinished = std::chrono::steady_clock::now();
         }
+
+        Phase2ProjectionKeyStore sharedKeys;
+        sharedKeys.arena.setPurpose(PoolPurpose::GpuHost);
+        const auto appendSharedKey = [&](StrSpan key) -> uint32_t {
+            ColdHashMap<BytesKeyStore, uint32_t>::InsertHint hint;
+            const int32_t found = sharedKeys.offsets.lookupForInsert(key, hint);
+            if (found != 0) return sharedKeys.offsets.valueAt(found);
+            assert(key.len >= 0 && byteKeyBytes.size() + key.len <= capacity.byteKeyBytes);
+            const uint32_t offset = static_cast<uint32_t>(byteKeyBytes.size());
+            byteKeyBytes.insert(byteKeyBytes.end(), key.ptr, key.ptr + key.len);
+            sharedKeys.offsets.insertAt(key, offset, hint);
+            return offset;
+        };
 
         const auto insertByteMapSlot = [&](const DeviceByteMapView& view,
                                             uint32_t entryIndex) {
@@ -851,12 +1347,7 @@ namespace gl::gpu {
             for (int32_t id = 1; id <= countSigned; ++id) {
                 const StrSpan key = map.keyAt(id);
                 assert(key.len >= 0);
-                assert(byteKeyBytes.size() + static_cast<std::size_t>(key.len)
-                    <= capacity.byteKeyBytes);
-                const uint32_t keyOffset =
-                    static_cast<uint32_t>(byteKeyBytes.size());
-                byteKeyBytes.insert(
-                    byteKeyBytes.end(), key.ptr, key.ptr + key.len);
+                const uint32_t keyOffset = appendSharedKey(key);
                 byteMapEntries.push_back(DeviceByteMapEntry{
                     keyOffset, static_cast<uint32_t>(key.len),
                     static_cast<uint32_t>(blobRecords.size()), 0 });
@@ -885,12 +1376,7 @@ namespace gl::gpu {
             for (int32_t id = 1; id <= countSigned; ++id) {
                 const StrSpan key = map.keyAt(id);
                 assert(key.len >= 0);
-                assert(byteKeyBytes.size() + static_cast<std::size_t>(key.len)
-                    <= capacity.byteKeyBytes);
-                const uint32_t keyOffset =
-                    static_cast<uint32_t>(byteKeyBytes.size());
-                byteKeyBytes.insert(
-                    byteKeyBytes.end(), key.ptr, key.ptr + key.len);
+                const uint32_t keyOffset = appendSharedKey(key);
                 const int32_t runLengthSigned = map.runLen(id);
                 assert(runLengthSigned >= 0);
                 const uint32_t runLength =
@@ -981,6 +1467,14 @@ namespace gl::gpu {
             static_cast<uint32_t>(byteMapViews.size())
             - descriptor.byteMapViewOffset;
         assert(descriptor.byteMapViewCount == 10);
+        if (buildPrefixFilter) {
+            const auto started = std::chrono::steady_clock::now();
+            appendNextPredicateMaps(descriptor, sharedKeys);
+            timing.prefixFilterNanoseconds += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count());
+            descriptor.byteMapViewCount = 14;
+        }
 
         const auto byteMapsFinished = std::chrono::steady_clock::now();
 
@@ -1015,7 +1509,7 @@ namespace gl::gpu {
                 const DeviceReverseMapEntry& entry =
                     reverseMapEntries[static_cast<uint32_t>(entryIndex)];
                 if (entry.keyLength == length
-                    && std::memcmp(reverseKeyBytes.data() + entry.keyOffset,
+                    && std::memcmp(blobBytes.data() + entry.keyOffset,
                                    key, length) == 0) {
                     return entryIndex;
                 }
@@ -1036,12 +1530,9 @@ namespace gl::gpu {
                             static_cast<uint32_t>(-found - 1);
                         assert(reverseMapEntries.size()
                             < capacity.reverseMapEntries);
-                        assert(reverseKeyBytes.size() + blob.byteLength
-                            <= capacity.reverseKeyBytes);
-                        const uint32_t keyOffset =
-                            static_cast<uint32_t>(reverseKeyBytes.size());
-                        reverseKeyBytes.insert(reverseKeyBytes.end(),
-                            key, key + blob.byteLength);
+                        assert(blob.byteOffset <= blobBytes.size()
+                            && blob.byteLength <= blobBytes.size() - blob.byteOffset);
+                        const uint32_t keyOffset = blob.byteOffset;
                         const uint32_t entryIndex =
                             static_cast<uint32_t>(reverseMapEntries.size());
                         reverseMapEntries.push_back(DeviceReverseMapEntry{
@@ -1234,14 +1725,10 @@ namespace gl::gpu {
         appendPodSet(body.frozenOrBranches,
             DevicePodMapKind::frozenOrBranches);
         appendPodRunMap(body.intToBeProved, DevicePodMapKind::goals);
-        appendPodSet(body.canBeSentIds,
-            DevicePodMapKind::mailEligibleStatements);
-        appendPodSet(body.canBeSentMarkerIds,
-            DevicePodMapKind::mailEligibleMarkers);
         descriptor.podMapViewCount =
             static_cast<uint32_t>(podMapViews.size())
             - descriptor.podMapViewOffset;
-        assert(descriptor.podMapViewCount == 11);
+        assert(descriptor.podMapViewCount == 9);
 
         const auto podMapsFinished = std::chrono::steady_clock::now();
 
@@ -1291,6 +1778,7 @@ namespace gl::gpu {
         descriptor.primedForContradiction =
             body.primedForContradiction ? 1 : 0;
         descriptor.isPartOfRecursion = body.isPartOfRecursion ? 1 : 0;
+        descriptor.recursionAuxyImplId = body.recursionAuxyImplId;
         descriptor.contradictionIndex = body.contradictionIndex;
         descriptor.mainValidityId = NameMap::MAIN_ID;
         descriptor.level = body.level;
@@ -1319,6 +1807,8 @@ namespace gl::gpu {
             total += static_cast<uint64_t>(elapsed);
         };
         ++timing.logicalBlocks;
+        timing.sourceStatementRows += static_cast<uint64_t>(statementCountSigned);
+        timing.retainedStatementRows += descriptor.statementCount;
         addInterval(timing.preflightNanoseconds,
             preflightStarted, preflightFinished);
         addInterval(timing.statementNanoseconds,
@@ -1346,256 +1836,671 @@ namespace gl::gpu {
         return descriptor;
     }
 
-    /// @brief Append one independently built projection shard without allocation.
+    /// @brief Append exact-prefix next-predicate maps to the packed projection.
     ///
     /// @details
-    /// Copies all 24 used column prefixes from `source`, rebases every arena-wide
-    /// descriptor, record, view, slot, byte, owner, and run offset onto this
-    /// arena's existing prefixes, and accumulates the source construction timing.
-    /// Source block order is retained inside the appended descriptor range; a
-    /// caller may reorder those descriptors afterward without moving their slices.
-    /// Empty shards are a defined no-op. Both arenas retain their constructor
-    /// reservations and the source remains unchanged.
+    /// Singleton key lengths supply predicate arities. Each whole key and subkey
+    /// licenses its last signed predicate after its normalized prefix. Temporary
+    /// prefix and transition indexes use a private static-pool arena, with linked
+    /// runs avoiding repeated insertion into one contiguous value pool. Final
+    /// predicate runs use decoded-rank order and merge both signs of one core.
     ///
-    /// @param source Independently built fixed-capacity shard to append.
-    /// @return First logical-block index occupied by the appended shard.
-    /// @invariant Every rebased reference addresses the byte-identical copied
-    ///            source value and no destination vector reallocates.
-    uint32_t Phase2ProjectionArena::appendShard(
-        const Phase2ProjectionArena& source) {
-        const auto mergeStarted = std::chrono::steady_clock::now();
-        assert(this != &source);
+    /// @param block Descriptor whose ten source byte-map views are complete.
+    /// @param sharedKeys This block's key-to-offset construction dictionary.
+    /// @return Nothing; four bounded derived views are appended.
+    /// @invariant Source key bytes and every proof-state identifier stay unchanged.
+    /// @see measurePhase2ProjectionUsage, appendLogicalBlock.
+    void Phase2ProjectionArena::appendNextPredicateMaps(
+        const DeviceLogicalBlockProjection& block, Phase2ProjectionKeyStore& sharedKeys) {
+        assert(block.byteMapViewCount == 10);
+        const auto indexBytes = [&]() -> uint64_t {
+            return byteMapViews.size() * sizeof(DeviceByteMapView)
+                + byteMapEntries.size() * sizeof(DeviceByteMapEntry)
+                + byteMapSlots.size() * sizeof(int32_t) + byteKeyBytes.size()
+                + blobRecords.size() * sizeof(DeviceBlobRecord) + blobBytes.size();
+        };
+        const uint64_t beforeBytes = indexBytes();
+        decodedRankWorkScratch_.assign(block.nameRecordCount, -1);
+        const auto wordAt = [](const char* bytes, uint32_t word) {
+            NameId value = 0;
+            std::memcpy(&value, bytes + word * sizeof(NameId), sizeof(value));
+            return value;
+        };
+        const auto hashBytes = [](const char* bytes, uint32_t length) {
+            uint64_t hash = 14695981039346656037ull;
+            for (uint32_t i = 0; i < length; ++i) {
+                hash ^= static_cast<uint8_t>(bytes[i]);
+                hash *= 1099511628211ull;
+            }
+            return hash;
+        };
+        for (uint32_t kind = 0; kind < 8; ++kind) {
+            const DeviceByteMapView view = byteMapViews[block.byteMapViewOffset + kind];
+            for (uint32_t i = 0; i < view.entryCount; ++i) {
+                const DeviceByteMapEntry entry = byteMapEntries[view.entryOffset + i];
+                assert(entry.keyLength >= 4 * sizeof(NameId));
+                const char* bytes = byteKeyBytes.data() + entry.keyOffset;
+                if (wordAt(bytes, 0) != 1) continue;
+                const NameId length = wordAt(bytes, 1);
+                assert(length >= 2 && length % 2 == 0);
+                assert(entry.keyLength == (static_cast<uint32_t>(length) + 2) * sizeof(NameId));
+                const NameId core = wordAt(bytes, 2);
+                assert(core > 0 && static_cast<uint32_t>(core) < block.nameRecordCount);
+                const NameId arity = (length - 2) / 2;
+                assert(arity <= ExecutionParameters::MAX_ARITY);
+                NameId& known = decodedRankWorkScratch_[core];
+                assert(known == -1 || known == arity);
+                known = arity;
+            }
+        }
+        struct Transition {
+            int32_t next;
+            NameId predicate;
+            uint32_t mask;
+            int16_t bound[ExecutionParameters::MAX_ARITY];
+        };
+        for (uint32_t memory = 0; memory < 4; ++memory) {
+            LbArena scratch(&staticMemory());
+            scratch.setPurpose(PoolPurpose::GpuHost);  // pool attribution
+            DirtyState dirty = DirtyState::Clean;
+            ColdHashSet<BytesKeyStore> prefixes(&scratch, &dirty);
+            PagedVector<int32_t> heads(&scratch, &dirty);
+            PagedVector<Transition> transitions(&scratch, &dirty);
+            ColdHashMap<PodKeyStore<uint64_t>, int32_t> transitionIds(&scratch, &dirty);
+            for (uint32_t half = 0; half < 2; ++half) {
+                const DeviceByteMapView view = byteMapViews[
+                    block.byteMapViewOffset + 2 * memory + half];
+                for (uint32_t i = 0; i < view.entryCount; ++i) {
+                    const DeviceByteMapEntry entry = byteMapEntries[view.entryOffset + i];
+                    const char* bytes = byteKeyBytes.data() + entry.keyOffset;
+                    const NameId count = wordAt(bytes, 0);
+                    const NameId length = wordAt(bytes, 1);
+                    assert(count > 0 && count <= ExecutionParameters::MAX_EXPRESSIONS);
+                    assert(length >= 2 * count && length <= ExecutionParameters::MAX_KEY_SLOTS);
+                    assert(entry.keyLength == (static_cast<uint32_t>(length) + 2) * sizeof(NameId));
+                    uint32_t prefixLength = 0;
+                    NameId prefixVariables = 0;
+                    for (NameId premise = 0; premise < count - 1; ++premise) {
+                        assert(prefixLength + 2 <= static_cast<uint32_t>(length));
+                        const NameId core = wordAt(bytes, 2 + prefixLength);
+                        assert(core > 0 && static_cast<uint32_t>(core) < block.nameRecordCount);
+                        const NameId arity = decodedRankWorkScratch_[core];
+                        assert(arity >= 0 && "every normalized premise has a singleton subkey");
+                        for (NameId argument = 0; argument < arity; ++argument) {
+                            const NameId variable = wordAt(bytes,
+                                4 + prefixLength + 2 * static_cast<uint32_t>(argument));
+                            if (variable > prefixVariables) prefixVariables = variable;
+                        }
+                        prefixLength += 2 + 2 * static_cast<uint32_t>(arity);
+                    }
+                    assert(prefixLength + 2 <= static_cast<uint32_t>(length));
+                    const NameId core = wordAt(bytes, 2 + prefixLength);
+                    const NameId polarity = wordAt(bytes, 3 + prefixLength);
+                    assert(core > 0 && static_cast<uint32_t>(core) < block.nameRecordCount);
+                    assert(polarity == 0 || polarity == 1);
+                    const NameId arity = decodedRankWorkScratch_[core];
+                    assert(arity >= 0);
+                    assert(prefixLength + 2 + 2 * static_cast<uint32_t>(arity)
+                        == static_cast<uint32_t>(length));
+                    NameId nextArguments[ExecutionParameters::MAX_ARITY];
+                    for (NameId argument = 0; argument < arity; ++argument)
+                        nextArguments[argument] = wordAt(bytes,
+                            4 + prefixLength + 2 * static_cast<uint32_t>(argument));
+                    NameId key[2 + ExecutionParameters::MAX_KEY_SLOTS];
+                    key[0] = count - 1;
+                    key[1] = static_cast<NameId>(prefixLength);
+                    std::memcpy(key + 2, bytes + 2 * sizeof(NameId), prefixLength * sizeof(NameId));
+                    const int32_t prefix = prefixes.mint(StrSpan(
+                        reinterpret_cast<const char*>(key),
+                        static_cast<int32_t>((2 + prefixLength) * sizeof(NameId))));
+                    if (prefix > heads.size()) {
+                        assert(prefix == heads.size() + 1);
+                        heads.push_back(0);
+                    }
+                    const uint64_t identity = (static_cast<uint64_t>(prefix) << 32)
+                        | static_cast<uint32_t>(core);
+                    const int32_t existing = transitionIds.lookup(identity);
+                    if (existing != 0) {
+                        const int32_t index = transitionIds.valueAt(existing) - 1;
+                        Transition value = transitions[index];
+                        value.mask |= 1u << polarity;
+                        mergeNextPremiseBindings(value.bound, arity, nextArguments,
+                            prefixVariables, false);
+                        transitions.setAt(index, value);
+                    }
+                    else {
+                        Transition value{heads[prefix - 1], core, 1u << polarity, {}};
+                        mergeNextPremiseBindings(value.bound, arity, nextArguments,
+                            prefixVariables, true);
+                        transitions.push_back(value);
+                        const int32_t reference = transitions.size();
+                        heads.setAt(prefix - 1, reference);
+                        transitionIds.insert(identity, reference);
+                    }
+                }
+            }
+            DeviceByteMapView view{};
+            view.entryOffset = static_cast<uint32_t>(byteMapEntries.size());
+            view.entryCount = static_cast<uint32_t>(prefixes.count());
+            timing.prefixFilterKeys += view.entryCount;
+            timing.prefixFilterPredicates += static_cast<uint64_t>(transitions.size());
+            view.slotOffset = static_cast<uint32_t>(byteMapSlots.size());
+            view.kind = static_cast<DeviceByteMapKind>(10 + memory);
+            if (view.entryCount != 0) {
+                view.slotCount = 2;
+                while (static_cast<uint64_t>(view.slotCount) < 2ull * view.entryCount) {
+                    assert(view.slotCount <= (UINT32_MAX >> 1));
+                    view.slotCount <<= 1;
+                }
+            }
+            assert(byteMapViews.size() < capacity.byteMapViews);
+            assert(byteMapEntries.size() + view.entryCount <= capacity.byteMapEntries);
+            assert(byteMapSlots.size() + view.slotCount <= capacity.byteMapSlots);
+            byteMapSlots.resize(byteMapSlots.size() + view.slotCount, -1);
+            for (int32_t prefix = 1; prefix <= prefixes.count(); ++prefix) {
+                const StrSpan key = prefixes.keyAt(prefix);
+                assert(key.len >= 2 * static_cast<int32_t>(sizeof(NameId)));
+                ColdHashMap<BytesKeyStore, uint32_t>::InsertHint hint;
+                const int32_t found = sharedKeys.offsets.lookupForInsert(key, hint);
+                uint32_t keyOffset;
+                if (found != 0) {
+                    keyOffset = sharedKeys.offsets.valueAt(found);
+                }
+                else {
+                    assert(byteKeyBytes.size() + key.len <= capacity.byteKeyBytes);
+                    keyOffset = static_cast<uint32_t>(byteKeyBytes.size());
+                    byteKeyBytes.insert(byteKeyBytes.end(), key.ptr, key.ptr + key.len);
+                    sharedKeys.offsets.insertAt(key, keyOffset, hint);
+                }
+                decodedRankScratch_.clear();
+                for (int32_t reference = heads[prefix - 1]; reference != 0;
+                     reference = transitions[reference - 1].next) {
+                    assert(decodedRankScratch_.size() < capacity.nameRecords);
+                    decodedRankScratch_.push_back(reference - 1);
+                }
+                assert(!decodedRankScratch_.empty());
+                std::sort(decodedRankScratch_.begin(), decodedRankScratch_.end(),
+                    [&](NameId left, NameId right) {
+                        return nameRecords[block.nameRecordOffset + transitions[left].predicate].decodedLexRank
+                            < nameRecords[block.nameRecordOffset + transitions[right].predicate].decodedLexRank;
+                    });
+                const uint32_t valueBytes = static_cast<uint32_t>(decodedRankScratch_.size()) * 8;
+                assert(blobRecords.size() < capacity.blobRecords);
+                assert(blobBytes.size() + valueBytes <= capacity.blobBytes);
+                const uint32_t record = static_cast<uint32_t>(blobRecords.size());
+                const uint32_t valueOffset = static_cast<uint32_t>(blobBytes.size());
+                blobBytes.resize(blobBytes.size() + valueBytes);
+                uint32_t at = valueOffset;
+                for (NameId index : decodedRankScratch_) {
+                    const Transition value = transitions[index];
+                    int32_t gateSlots[2]{ -1, -1 };
+                    NameId gateVariables[2]{ 0, 0 };
+                    int32_t gates = 0;
+                    for (int32_t slot = 0; slot < ExecutionParameters::MAX_ARITY && gates < 2; ++slot) {
+                        if (value.bound[slot] <= 0) continue;
+                        gateSlots[gates] = slot;
+                        gateVariables[gates] = value.bound[slot];
+                        ++gates;
+                    }
+                    const uint32_t word = packNextPredicateWord(value.mask,
+                        gateSlots[0], gateVariables[0], gateSlots[1], gateVariables[1]);
+                    std::memcpy(blobBytes.data() + at, &value.predicate, 4);
+                    std::memcpy(blobBytes.data() + at + 4, &word, 4);
+                    at += 8;
+                }
+                blobRecords.push_back(DeviceBlobRecord{valueOffset, valueBytes});
+                byteMapEntries.push_back(DeviceByteMapEntry{
+                    keyOffset, static_cast<uint32_t>(key.len), record, 1});
+                uint32_t slot = static_cast<uint32_t>(hashBytes(
+                    byteKeyBytes.data() + keyOffset, static_cast<uint32_t>(key.len)))
+                    & (view.slotCount - 1);
+                while (byteMapSlots[view.slotOffset + slot] != -1)
+                    slot = (slot + 1) & (view.slotCount - 1);
+                byteMapSlots[view.slotOffset + slot] = static_cast<int32_t>(byteMapEntries.size() - 1);
+            }
+            byteMapViews.push_back(view);
+        }
+        timing.prefixFilterBytes += indexBytes() - beforeBytes;
+    }
 
+    /// @brief Translate a retained host statement ordinal to its device ordinal.
+    ///
+    /// @details
+    /// Binary search uses the strictly ascending source ordinals in the block's
+    /// slice. Shard concatenation preserves these local ordinals unchanged.
+    ///
+    /// @param blockIndex Logical-block descriptor index in this arena.
+    /// @param sourceIndex Original overall-list ordinal of a retained premise.
+    /// @return The corresponding block-local device statement ordinal.
+    /// @invariant The source statement survives the signed-core prefilter.
+    /// @see Phase2ProjectionArena::appendLogicalBlock.
+    NameId Phase2ProjectionArena::projectedStatementIndex(
+        uint32_t blockIndex, NameId sourceIndex) const {
+        assert(blockIndex < logicalBlocks.size());
+        const auto& block = logicalBlocks[blockIndex];
+        const auto begin = sourceStatementIndices.begin() + block.statementOffset;
+        const auto end = begin + block.statementCount;
+        const auto found = std::lower_bound(begin, end, sourceIndex);
+        assert(found != end && *found == sourceIndex
+            && "processor stump premise was excluded from the device projection");
+        return static_cast<NameId>(found - begin);
+    }
+
+
+    /// @brief Compute the column ends following one construction window.
+    ///
+    /// @details Reuses checked shard sizing without reading or changing payload.
+    /// @param bases Column ends before this window.
+    /// @return Column ends after this window.
+    Phase2ProjectionArena::ShardBases Phase2ProjectionArena::streamedEnd(
+        const ShardBases& bases) const { return followingShardBases(bases, *this); }
+
+    /// @brief Rebase a complete construction window for an append upload.
+    ///
+    /// @details Uses ordinary adoption's per-column transformation; no storage
+    /// is allocated or released and used lengths remain unchanged.
+    /// @param bases Assigned complete-image column offsets.
+    /// @return Nothing.
+    void Phase2ProjectionArena::rebaseForStream(const ShardBases& bases) {
+        assert(role_ != Role::Sealing);
+        for (uint32_t column = 0; column < kShardColumnCount; ++column)
+            rebaseColumn(column, 0, bases);
+    }
+
+    /// @brief Retain uploaded lookup data required for host-side sealing.
+    ///
+    /// @details Source ordinals support later task construction. Every copied
+    /// descriptor already addresses its complete-image column; the device owns
+    /// all remaining uploaded data independently of the construction window.
+    /// Of the blob column only the rule copy of each LMV is retained
+    /// (`blobRuleOwners`, read from the window's overall encoded-map runs; zero
+    /// for any other blob record), which names the fired rule of a marker
+    /// record (I-284).
+    /// @param source Rebased window whose synchronous upload has completed.
+    /// @param bases Assigned complete-image offsets of the window.
+    /// @return Nothing.
+    void Phase2ProjectionArena::appendSealingProjection(
+        const Phase2ProjectionArena& source, const ShardBases& bases) {
+        assert(role_ == Role::Sealing);
+        const auto append = [](auto& destination, const auto& input, uint32_t base) {
+            assert(destination.size() == base);
+            destination.insert(destination.end(), input.begin(), input.end());
+        };
+        append(logicalBlocks, source.logicalBlocks, bases.block);
+        append(sourceStatementIndices, source.sourceStatementIndices, bases.statement);
+        append(nameRecords, source.nameRecords, bases.nameRecord);
+        append(nameBytes, source.nameBytes, bases.nameByte);
+        append(ruleStringRecords, source.ruleStringRecords, bases.ruleRecord);
+        append(ruleStringBytes, source.ruleStringBytes, bases.ruleByte);
+        // The window's descriptors are rebased; subtracting the bases gives
+        // their positions in the window's own columns.
+        assert(blobRuleOwners.size() == bases.blobRecord);
+        const std::size_t firstRecord = blobRuleOwners.size();
+        blobRuleOwners.resize(firstRecord + source.blobRecords.size(), 0);
+        for (const DeviceByteMapView& view : source.byteMapViews) {
+            if (view.kind != DeviceByteMapKind::overallEncoded) continue;
+            assert(view.entryOffset >= bases.byteEntry);
+            const uint32_t entryBegin = view.entryOffset - bases.byteEntry;
+            assert(entryBegin + view.entryCount <= source.byteMapEntries.size());
+            for (uint32_t e = entryBegin; e < entryBegin + view.entryCount; ++e) {
+                const DeviceByteMapEntry& entry = source.byteMapEntries[e];
+                assert(entry.blobRecordOffset >= bases.blobRecord);
+                const uint32_t recordBegin = entry.blobRecordOffset - bases.blobRecord;
+                assert(recordBegin + entry.blobRecordCount <= source.blobRecords.size());
+                for (uint32_t r = recordBegin; r < recordBegin + entry.blobRecordCount; ++r) {
+                    const DeviceBlobRecord& blob = source.blobRecords[r];
+                    assert(blob.byteOffset >= bases.blobByte);
+                    const uint32_t local = blob.byteOffset - bases.blobByte;
+                    assert(local <= source.blobBytes.size()
+                        && blob.byteLength <= source.blobBytes.size() - local);
+                    const LmvBlobView lmv(source.blobBytes.data() + local,
+                        static_cast<int32_t>(blob.byteLength));
+                    blobRuleOwners[firstRecord + r] =
+                        packRuleOwner(lmv.originalImplicationId(), lmv.validityId());
+                }
+            }
+        }
+        addShardTiming(source);
+        timing.logicalBlocks = logicalBlocks.size();
+        assert(timing.mergeNanoseconds <= std::numeric_limits<uint64_t>::max()
+            - source.timing.mergeNanoseconds);
+        timing.mergeNanoseconds += source.timing.mergeNanoseconds;
+    }
+
+    /// @brief The destination column sizes before a shard is appended — the
+    ///        bases its rebased references add.
+    ///
+    /// @details
+    /// Reads the current size of every destination column, each asserted to fit
+    /// `uint32_t` (every projected offset is 32-bit).
+    ///
+    /// @return The bases of the next shard appended to this arena.
+    Phase2ProjectionArena::ShardBases Phase2ProjectionArena::currentShardBases() const {
         const auto checkedBase = [](std::size_t size) -> uint32_t {
             assert(size <= std::numeric_limits<uint32_t>::max());
             return static_cast<uint32_t>(size);
         };
-        const uint32_t blockBase = checkedBase(logicalBlocks.size());
-        const uint32_t statementBase = checkedBase(statements.size());
-        const uint32_t nameRecordBase = checkedBase(nameRecords.size());
-        const uint32_t nameByteBase = checkedBase(nameBytes.size());
-        const uint32_t nameSlotBase = checkedBase(nameSlots.size());
-        const uint32_t ruleRecordBase = checkedBase(ruleStringRecords.size());
-        const uint32_t ruleByteBase = checkedBase(ruleStringBytes.size());
-        const uint32_t byteViewBase = checkedBase(byteMapViews.size());
-        const uint32_t byteEntryBase = checkedBase(byteMapEntries.size());
-        const uint32_t byteSlotBase = checkedBase(byteMapSlots.size());
-        const uint32_t byteKeyBase = checkedBase(byteKeyBytes.size());
-        const uint32_t blobRecordBase = checkedBase(blobRecords.size());
-        const uint32_t blobByteBase = checkedBase(blobBytes.size());
-        const uint32_t reverseViewBase = checkedBase(reverseMapViews.size());
-        const uint32_t reverseEntryBase = checkedBase(reverseMapEntries.size());
-        const uint32_t reverseSlotBase = checkedBase(reverseMapSlots.size());
-        const uint32_t reverseKeyBase = checkedBase(reverseKeyBytes.size());
-        const uint32_t reverseOwnerBase = checkedBase(reverseOwners.size());
-        const uint32_t podViewBase = checkedBase(podMapViews.size());
-        const uint32_t podEntryBase = checkedBase(podMapEntries.size());
-        const uint32_t podSlotBase = checkedBase(podMapSlots.size());
-        const uint32_t podRunBase = checkedBase(podRunValues.size());
-        const uint32_t mandatoryKeyBase = checkedBase(
-            mandatoryStatementKeys.size());
-        const uint32_t metadataBase = checkedBase(metadataBytes.size());
+        ShardBases bases{};
+        bases.block = checkedBase(logicalBlocks.size());
+        bases.statement = checkedBase(statements.size());
+        bases.nameRecord = checkedBase(nameRecords.size());
+        bases.nameByte = checkedBase(nameBytes.size());
+        bases.nameSlot = checkedBase(nameSlots.size());
+        bases.ruleRecord = checkedBase(ruleStringRecords.size());
+        bases.ruleByte = checkedBase(ruleStringBytes.size());
+        bases.byteView = checkedBase(byteMapViews.size());
+        bases.byteEntry = checkedBase(byteMapEntries.size());
+        bases.byteSlot = checkedBase(byteMapSlots.size());
+        bases.byteKey = checkedBase(byteKeyBytes.size());
+        bases.blobRecord = checkedBase(blobRecords.size());
+        bases.blobByte = checkedBase(blobBytes.size());
+        bases.reverseView = checkedBase(reverseMapViews.size());
+        bases.reverseEntry = checkedBase(reverseMapEntries.size());
+        bases.reverseSlot = checkedBase(reverseMapSlots.size());
+        bases.reverseKey = checkedBase(reverseKeyBytes.size());
+        bases.reverseOwner = checkedBase(reverseOwners.size());
+        bases.podView = checkedBase(podMapViews.size());
+        bases.podEntry = checkedBase(podMapEntries.size());
+        bases.podSlot = checkedBase(podMapSlots.size());
+        bases.podRun = checkedBase(podRunValues.size());
+        bases.mandatoryKey = checkedBase(mandatoryStatementKeys.size());
+        bases.metadata = checkedBase(metadataBytes.size());
+        return bases;
+    }
 
-        assert(logicalBlocks.size() + source.logicalBlocks.size()
-            <= capacity.logicalBlocks);
-        assert(statements.size() + source.statements.size()
-            <= capacity.statements);
-        assert(nameRecords.size() + source.nameRecords.size()
-            <= capacity.nameRecords);
-        assert(nameBytes.size() + source.nameBytes.size() <= capacity.nameBytes);
-        assert(nameSlots.size() + source.nameSlots.size() <= capacity.nameSlots);
-        assert(ruleStringRecords.size() + source.ruleStringRecords.size()
+    /// @brief The bases of the shard that follows `source` when `source` is
+    ///        appended at `bases`.
+    ///
+    /// @details
+    /// Adds each of `source`'s column sizes to the matching base, asserting that
+    /// no sum leaves `uint32_t`. Chaining this from `currentShardBases` gives
+    /// every shard's bases before any shard is copied.
+    ///
+    /// @param bases Bases at which `source` is appended.
+    /// @param source The shard appended at `bases`.
+    /// @return The bases of the next shard.
+    Phase2ProjectionArena::ShardBases Phase2ProjectionArena::followingShardBases(
+        const ShardBases& bases, const Phase2ProjectionArena& source) {
+        const auto add = [](uint32_t base, std::size_t size) -> uint32_t {
+            assert(size <= std::numeric_limits<uint32_t>::max() - base);
+            return base + static_cast<uint32_t>(size);
+        };
+        ShardBases next{};
+        next.block = add(bases.block, source.logicalBlocks.size());
+        next.statement = add(bases.statement, source.statements.size());
+        next.nameRecord = add(bases.nameRecord, source.nameRecords.size());
+        next.nameByte = add(bases.nameByte, source.nameBytes.size());
+        next.nameSlot = add(bases.nameSlot, source.nameSlots.size());
+        next.ruleRecord = add(bases.ruleRecord, source.ruleStringRecords.size());
+        next.ruleByte = add(bases.ruleByte, source.ruleStringBytes.size());
+        next.byteView = add(bases.byteView, source.byteMapViews.size());
+        next.byteEntry = add(bases.byteEntry, source.byteMapEntries.size());
+        next.byteSlot = add(bases.byteSlot, source.byteMapSlots.size());
+        next.byteKey = add(bases.byteKey, source.byteKeyBytes.size());
+        next.blobRecord = add(bases.blobRecord, source.blobRecords.size());
+        next.blobByte = add(bases.blobByte, source.blobBytes.size());
+        next.reverseView = add(bases.reverseView, source.reverseMapViews.size());
+        next.reverseEntry = add(bases.reverseEntry, source.reverseMapEntries.size());
+        next.reverseSlot = add(bases.reverseSlot, source.reverseMapSlots.size());
+        next.reverseKey = add(bases.reverseKey, source.reverseKeyBytes.size());
+        next.reverseOwner = add(bases.reverseOwner, source.reverseOwners.size());
+        next.podView = add(bases.podView, source.podMapViews.size());
+        next.podEntry = add(bases.podEntry, source.podMapEntries.size());
+        next.podSlot = add(bases.podSlot, source.podMapSlots.size());
+        next.podRun = add(bases.podRun, source.podRunValues.size());
+        next.mandatoryKey = add(bases.mandatoryKey, source.mandatoryStatementKeys.size());
+        next.metadata = add(bases.metadata, source.metadataBytes.size());
+        return next;
+    }
+
+    /// @brief Assert that `source` adopted at `bases` fits every declared
+    ///        ceiling (`capacity`), the size the device buffer is built for.
+    ///
+    /// @param bases Bases at which `source` is adopted.
+    /// @param source The shard to adopt.
+    /// @return Nothing.
+    void Phase2ProjectionArena::assertShardFits(const ShardBases& bases,
+        const Phase2ProjectionArena& source) const {
+        assert(bases.block + source.logicalBlocks.size() <= capacity.logicalBlocks);
+        assert(bases.statement + source.statements.size() <= capacity.statements);
+        assert(bases.nameRecord + source.nameRecords.size() <= capacity.nameRecords);
+        assert(bases.nameByte + source.nameBytes.size() <= capacity.nameBytes);
+        assert(bases.nameSlot + source.nameSlots.size() <= capacity.nameSlots);
+        assert(bases.ruleRecord + source.ruleStringRecords.size()
             <= capacity.ruleStringRecords);
-        assert(ruleStringBytes.size() + source.ruleStringBytes.size()
+        assert(bases.ruleByte + source.ruleStringBytes.size()
             <= capacity.ruleStringBytes);
-        assert(byteMapViews.size() + source.byteMapViews.size()
-            <= capacity.byteMapViews);
-        assert(byteMapEntries.size() + source.byteMapEntries.size()
+        assert(bases.byteView + source.byteMapViews.size() <= capacity.byteMapViews);
+        assert(bases.byteEntry + source.byteMapEntries.size()
             <= capacity.byteMapEntries);
-        assert(byteMapSlots.size() + source.byteMapSlots.size()
-            <= capacity.byteMapSlots);
-        assert(byteKeyBytes.size() + source.byteKeyBytes.size()
-            <= capacity.byteKeyBytes);
-        assert(blobRecords.size() + source.blobRecords.size()
-            <= capacity.blobRecords);
-        assert(blobBytes.size() + source.blobBytes.size() <= capacity.blobBytes);
-        assert(reverseMapViews.size() + source.reverseMapViews.size()
+        assert(bases.byteSlot + source.byteMapSlots.size() <= capacity.byteMapSlots);
+        assert(bases.byteKey + source.byteKeyBytes.size() <= capacity.byteKeyBytes);
+        assert(bases.blobRecord + source.blobRecords.size() <= capacity.blobRecords);
+        assert(bases.blobByte + source.blobBytes.size() <= capacity.blobBytes);
+        assert(bases.reverseView + source.reverseMapViews.size()
             <= capacity.reverseMapViews);
-        assert(reverseMapEntries.size() + source.reverseMapEntries.size()
+        assert(bases.reverseEntry + source.reverseMapEntries.size()
             <= capacity.reverseMapEntries);
-        assert(reverseMapSlots.size() + source.reverseMapSlots.size()
+        assert(bases.reverseSlot + source.reverseMapSlots.size()
             <= capacity.reverseMapSlots);
-        assert(reverseKeyBytes.size() + source.reverseKeyBytes.size()
+        assert(bases.reverseKey + source.reverseKeyBytes.size()
             <= capacity.reverseKeyBytes);
-        assert(reverseOwners.size() + source.reverseOwners.size()
+        assert(bases.reverseOwner + source.reverseOwners.size()
             <= capacity.reverseOwners);
-        assert(podMapViews.size() + source.podMapViews.size()
-            <= capacity.podMapViews);
-        assert(podMapEntries.size() + source.podMapEntries.size()
-            <= capacity.podMapEntries);
-        assert(podMapSlots.size() + source.podMapSlots.size()
-            <= capacity.podMapSlots);
-        assert(podRunValues.size() + source.podRunValues.size()
-            <= capacity.podRunValues);
-        assert(mandatoryStatementKeys.size()
-                + source.mandatoryStatementKeys.size()
+        assert(bases.podView + source.podMapViews.size() <= capacity.podMapViews);
+        assert(bases.podEntry + source.podMapEntries.size() <= capacity.podMapEntries);
+        assert(bases.podSlot + source.podMapSlots.size() <= capacity.podMapSlots);
+        assert(bases.podRun + source.podRunValues.size() <= capacity.podRunValues);
+        assert(bases.mandatoryKey + source.mandatoryStatementKeys.size()
             <= capacity.mandatoryStatementKeys);
-        assert(metadataBytes.size() + source.metadataBytes.size()
-            <= capacity.metadataBytes);
+        assert(bases.metadata + source.metadataBytes.size() <= capacity.metadataBytes);
+    }
 
-        logicalBlocks.insert(logicalBlocks.end(),
-            source.logicalBlocks.begin(), source.logicalBlocks.end());
-        statements.insert(statements.end(),
-            source.statements.begin(), source.statements.end());
-        nameRecords.insert(nameRecords.end(),
-            source.nameRecords.begin(), source.nameRecords.end());
-        nameBytes.insert(nameBytes.end(),
-            source.nameBytes.begin(), source.nameBytes.end());
-        nameSlots.insert(nameSlots.end(),
-            source.nameSlots.begin(), source.nameSlots.end());
-        ruleStringRecords.insert(ruleStringRecords.end(),
-            source.ruleStringRecords.begin(), source.ruleStringRecords.end());
-        ruleStringBytes.insert(ruleStringBytes.end(),
-            source.ruleStringBytes.begin(), source.ruleStringBytes.end());
-        byteMapViews.insert(byteMapViews.end(),
-            source.byteMapViews.begin(), source.byteMapViews.end());
-        byteMapEntries.insert(byteMapEntries.end(),
-            source.byteMapEntries.begin(), source.byteMapEntries.end());
-        byteMapSlots.insert(byteMapSlots.end(),
-            source.byteMapSlots.begin(), source.byteMapSlots.end());
-        byteKeyBytes.insert(byteKeyBytes.end(),
-            source.byteKeyBytes.begin(), source.byteKeyBytes.end());
-        blobRecords.insert(blobRecords.end(),
-            source.blobRecords.begin(), source.blobRecords.end());
-        blobBytes.insert(blobBytes.end(),
-            source.blobBytes.begin(), source.blobBytes.end());
-        reverseMapViews.insert(reverseMapViews.end(),
-            source.reverseMapViews.begin(), source.reverseMapViews.end());
-        reverseMapEntries.insert(reverseMapEntries.end(),
-            source.reverseMapEntries.begin(), source.reverseMapEntries.end());
-        reverseMapSlots.insert(reverseMapSlots.end(),
-            source.reverseMapSlots.begin(), source.reverseMapSlots.end());
-        reverseKeyBytes.insert(reverseKeyBytes.end(),
-            source.reverseKeyBytes.begin(), source.reverseKeyBytes.end());
-        reverseOwners.insert(reverseOwners.end(),
-            source.reverseOwners.begin(), source.reverseOwners.end());
-        podMapViews.insert(podMapViews.end(),
-            source.podMapViews.begin(), source.podMapViews.end());
-        podMapEntries.insert(podMapEntries.end(),
-            source.podMapEntries.begin(), source.podMapEntries.end());
-        podMapSlots.insert(podMapSlots.end(),
-            source.podMapSlots.begin(), source.podMapSlots.end());
-        podRunValues.insert(podRunValues.end(),
-            source.podRunValues.begin(), source.podRunValues.end());
-        mandatoryStatementKeys.insert(mandatoryStatementKeys.end(),
-            source.mandatoryStatementKeys.begin(),
-            source.mandatoryStatementKeys.end());
-        metadataBytes.insert(metadataBytes.end(),
-            source.metadataBytes.begin(), source.metadataBytes.end());
+    /// @brief Move one column of `shard` to the end of this arena's column and
+    ///        rebase the moved references by `referenceBases`.
+    ///
+    /// @details
+    /// The per-column core of `adoptShards`: column `column`
+    /// (0 .. `kShardColumnCount` - 1) is the only destination column written, and
+    /// every rebase reads only the two bases, so different columns may be adopted
+    /// by different threads. The column must end at its base in `bases` when this
+    /// is called (shards are adopted in order).
+    ///
+    /// @param column Column ordinal.
+    /// @param shard The slice shard whose column is moved; the column ends empty.
+    /// @param bases Positions in this arena at which `shard` is placed.
+    /// @param referenceBases Offsets the moved references add: `bases` plus this
+    ///        arena's complete-image stream bases.
+    /// @return Nothing.
+    /// @invariant Every rebased reference addresses the byte-identical moved
+    ///            value.
+    void Phase2ProjectionArena::adoptShardColumn(uint32_t column,
+        Phase2ProjectionArena& shard, const ShardBases& bases,
+        const ShardBases& referenceBases) {
+        const auto place = [](auto& destination, auto& source, uint32_t base) {
+            assert(destination.size() == base);
+            destination.appendMoved(source);
+        };
+        uint32_t begin = 0;
+        switch (column) {
+        case 0: begin = bases.block; place(logicalBlocks, shard.logicalBlocks, begin); break;
+        case 1: begin = bases.statement; place(statements, shard.statements, begin); break;
+        case 2: begin = bases.statement; place(sourceStatementIndices, shard.sourceStatementIndices, begin); break;
+        case 3: begin = bases.nameRecord; place(nameRecords, shard.nameRecords, begin); break;
+        case 4: begin = bases.nameByte; place(nameBytes, shard.nameBytes, begin); break;
+        case 5: begin = bases.nameSlot; place(nameSlots, shard.nameSlots, begin); break;
+        case 6: begin = bases.ruleRecord; place(ruleStringRecords, shard.ruleStringRecords, begin); break;
+        case 7: begin = bases.ruleByte; place(ruleStringBytes, shard.ruleStringBytes, begin); break;
+        case 8: begin = bases.byteView; place(byteMapViews, shard.byteMapViews, begin); break;
+        case 9: begin = bases.byteEntry; place(byteMapEntries, shard.byteMapEntries, begin); break;
+        case 10: begin = bases.byteSlot; place(byteMapSlots, shard.byteMapSlots, begin); break;
+        case 11: begin = bases.byteKey; place(byteKeyBytes, shard.byteKeyBytes, begin); break;
+        case 12: begin = bases.blobRecord; place(blobRecords, shard.blobRecords, begin); break;
+        case 13: begin = bases.blobByte; place(blobBytes, shard.blobBytes, begin); break;
+        case 14: begin = bases.reverseView; place(reverseMapViews, shard.reverseMapViews, begin); break;
+        case 15: begin = bases.reverseEntry; place(reverseMapEntries, shard.reverseMapEntries, begin); break;
+        case 16: begin = bases.reverseSlot; place(reverseMapSlots, shard.reverseMapSlots, begin); break;
+        case 17: begin = bases.reverseKey; place(reverseKeyBytes, shard.reverseKeyBytes, begin); break;
+        case 18: begin = bases.reverseOwner; place(reverseOwners, shard.reverseOwners, begin); break;
+        case 19: begin = bases.podView; place(podMapViews, shard.podMapViews, begin); break;
+        case 20: begin = bases.podEntry; place(podMapEntries, shard.podMapEntries, begin); break;
+        case 21: begin = bases.podSlot; place(podMapSlots, shard.podMapSlots, begin); break;
+        case 22: begin = bases.podRun; place(podRunValues, shard.podRunValues, begin); break;
+        case 23: begin = bases.mandatoryKey; place(mandatoryStatementKeys, shard.mandatoryStatementKeys, begin); break;
+        case 24: begin = bases.metadata; place(metadataBytes, shard.metadataBytes, begin); break;
+        default: assert(false && "unknown projection column");
+        }
+        rebaseColumn(column, begin, referenceBases);
+    }
 
+    /// @brief Rebase references in one newly placed host column range.
+    ///
+    /// @details Both placement paths use this exact offset conversion. Payload
+    /// values and identifiers local to a logical block are unchanged.
+    /// @param column Host column ordinal.
+    /// @param begin First newly placed row in that column.
+    /// @param bases Assigned bases of every referenced device column.
+    /// @return Nothing.
+    void Phase2ProjectionArena::rebaseColumn(uint32_t column, uint32_t begin,
+        const ShardBases& bases) {
         const auto checkedAdd = [](uint32_t value, uint32_t base) -> uint32_t {
             assert(value <= std::numeric_limits<uint32_t>::max() - base);
             return value + base;
         };
-        for (uint32_t index = blockBase;
-             index < logicalBlocks.size(); ++index) {
-            DeviceLogicalBlockProjection& descriptor = logicalBlocks[index];
-            descriptor.statementOffset = checkedAdd(
-                descriptor.statementOffset, statementBase);
-            descriptor.nameRecordOffset = checkedAdd(
-                descriptor.nameRecordOffset, nameRecordBase);
-            descriptor.nameByteOffset = checkedAdd(
-                descriptor.nameByteOffset, nameByteBase);
-            descriptor.nameSlotOffset = checkedAdd(
-                descriptor.nameSlotOffset, nameSlotBase);
-            descriptor.ruleStringRecordOffset = checkedAdd(
-                descriptor.ruleStringRecordOffset, ruleRecordBase);
-            descriptor.ruleStringByteOffset = checkedAdd(
-                descriptor.ruleStringByteOffset, ruleByteBase);
-            descriptor.byteMapViewOffset = checkedAdd(
-                descriptor.byteMapViewOffset, byteViewBase);
-            descriptor.reverseMapViewOffset = checkedAdd(
-                descriptor.reverseMapViewOffset, reverseViewBase);
-            descriptor.podMapViewOffset = checkedAdd(
-                descriptor.podMapViewOffset, podViewBase);
-            descriptor.localKeyOffset = checkedAdd(
-                descriptor.localKeyOffset, mandatoryKeyBase);
-            descriptor.deltaKeyOffset = checkedAdd(
-                descriptor.deltaKeyOffset, mandatoryKeyBase);
-            descriptor.externalKeyOffset = checkedAdd(
-                descriptor.externalKeyOffset, mandatoryKeyBase);
-            descriptor.metadataOffset = checkedAdd(
-                descriptor.metadataOffset, metadataBase);
-            descriptor.anchorNameOffset = checkedAdd(
-                descriptor.anchorNameOffset, metadataBase);
+        const auto shiftSlots = [](auto& slots, uint32_t begin,
+            uint32_t entryBase) {
+            for (std::size_t index = begin; index < slots.size(); ++index)
+                if (slots[index] >= 0) slots[index] += static_cast<int32_t>(entryBase);
+        };
+        switch (column) {
+        case 0:
+            for (std::size_t index = begin; index < logicalBlocks.size(); ++index) {
+                DeviceLogicalBlockProjection& descriptor = logicalBlocks[index];
+                descriptor.statementOffset = checkedAdd(
+                    descriptor.statementOffset, bases.statement);
+                descriptor.nameRecordOffset = checkedAdd(
+                    descriptor.nameRecordOffset, bases.nameRecord);
+                descriptor.nameByteOffset = checkedAdd(
+                    descriptor.nameByteOffset, bases.nameByte);
+                descriptor.nameSlotOffset = checkedAdd(
+                    descriptor.nameSlotOffset, bases.nameSlot);
+                descriptor.ruleStringRecordOffset = checkedAdd(
+                    descriptor.ruleStringRecordOffset, bases.ruleRecord);
+                descriptor.ruleStringByteOffset = checkedAdd(
+                    descriptor.ruleStringByteOffset, bases.ruleByte);
+                descriptor.byteMapViewOffset = checkedAdd(
+                    descriptor.byteMapViewOffset, bases.byteView);
+                descriptor.reverseMapViewOffset = checkedAdd(
+                    descriptor.reverseMapViewOffset, bases.reverseView);
+                descriptor.podMapViewOffset = checkedAdd(
+                    descriptor.podMapViewOffset, bases.podView);
+                descriptor.localKeyOffset = checkedAdd(
+                    descriptor.localKeyOffset, bases.mandatoryKey);
+                descriptor.deltaKeyOffset = checkedAdd(
+                    descriptor.deltaKeyOffset, bases.mandatoryKey);
+                descriptor.externalKeyOffset = checkedAdd(
+                    descriptor.externalKeyOffset, bases.mandatoryKey);
+                descriptor.metadataOffset = checkedAdd(
+                    descriptor.metadataOffset, bases.metadata);
+                descriptor.anchorNameOffset = checkedAdd(
+                    descriptor.anchorNameOffset, bases.metadata);
+            }
+            break;
+        case 1: break;
+        case 2:
+            break;
+        case 3:
+            for (std::size_t index = begin; index < nameRecords.size(); ++index)
+                nameRecords[index].byteOffset = checkedAdd(
+                    nameRecords[index].byteOffset, bases.nameByte);
+            break;
+        case 4: break;
+        case 5:
+            shiftSlots(nameSlots, begin, bases.nameRecord);
+            break;
+        case 6:
+            for (std::size_t index = begin; index < ruleStringRecords.size(); ++index)
+                ruleStringRecords[index].byteOffset = checkedAdd(
+                    ruleStringRecords[index].byteOffset, bases.ruleByte);
+            break;
+        case 7: break;
+        case 8:
+            for (std::size_t index = begin; index < byteMapViews.size(); ++index) {
+                byteMapViews[index].entryOffset = checkedAdd(
+                    byteMapViews[index].entryOffset, bases.byteEntry);
+                byteMapViews[index].slotOffset = checkedAdd(
+                    byteMapViews[index].slotOffset, bases.byteSlot);
+            }
+            break;
+        case 9:
+            for (std::size_t index = begin; index < byteMapEntries.size(); ++index) {
+                byteMapEntries[index].keyOffset = checkedAdd(
+                    byteMapEntries[index].keyOffset, bases.byteKey);
+                byteMapEntries[index].blobRecordOffset = checkedAdd(
+                    byteMapEntries[index].blobRecordOffset, bases.blobRecord);
+            }
+            break;
+        case 10:
+            shiftSlots(byteMapSlots, begin, bases.byteEntry);
+            break;
+        case 11: break;
+        case 12:
+            for (std::size_t index = begin; index < blobRecords.size(); ++index)
+                blobRecords[index].byteOffset = checkedAdd(
+                    blobRecords[index].byteOffset, bases.blobByte);
+            break;
+        case 13: break;
+        case 14:
+            for (std::size_t index = begin; index < reverseMapViews.size(); ++index) {
+                reverseMapViews[index].entryOffset = checkedAdd(
+                    reverseMapViews[index].entryOffset, bases.reverseEntry);
+                reverseMapViews[index].slotOffset = checkedAdd(
+                    reverseMapViews[index].slotOffset, bases.reverseSlot);
+            }
+            break;
+        case 15:
+            for (std::size_t index = begin; index < reverseMapEntries.size(); ++index) {
+                reverseMapEntries[index].keyOffset = checkedAdd(
+                    reverseMapEntries[index].keyOffset, bases.blobByte);
+                reverseMapEntries[index].ownerOffset = checkedAdd(
+                    reverseMapEntries[index].ownerOffset, bases.reverseOwner);
+            }
+            break;
+        case 16:
+            shiftSlots(reverseMapSlots, begin, bases.reverseEntry);
+            break;
+        case 17: break;
+        case 18: break;
+        case 19:
+            for (std::size_t index = begin; index < podMapViews.size(); ++index) {
+                podMapViews[index].entryOffset = checkedAdd(
+                    podMapViews[index].entryOffset, bases.podEntry);
+                podMapViews[index].slotOffset = checkedAdd(
+                    podMapViews[index].slotOffset, bases.podSlot);
+            }
+            break;
+        case 20:
+            for (std::size_t index = begin; index < podMapEntries.size(); ++index)
+                podMapEntries[index].runOffset = checkedAdd(
+                    podMapEntries[index].runOffset, bases.podRun);
+            break;
+        case 21:
+            shiftSlots(podMapSlots, begin, bases.podEntry);
+            break;
+        case 22: break;
+        case 23:
+            break;
+        case 24: break;
+        default:
+            assert(false && "Phase2ProjectionArena::rebaseColumn: unknown column");
         }
-        for (uint32_t index = nameRecordBase;
-             index < nameRecords.size(); ++index)
-            nameRecords[index].byteOffset = checkedAdd(
-                nameRecords[index].byteOffset, nameByteBase);
-        for (uint32_t index = nameSlotBase; index < nameSlots.size(); ++index)
-            if (nameSlots[index] >= 0)
-                nameSlots[index] += static_cast<int32_t>(nameRecordBase);
-        for (uint32_t index = ruleRecordBase;
-             index < ruleStringRecords.size(); ++index)
-            ruleStringRecords[index].byteOffset = checkedAdd(
-                ruleStringRecords[index].byteOffset, ruleByteBase);
-        for (uint32_t index = byteViewBase;
-             index < byteMapViews.size(); ++index) {
-            byteMapViews[index].entryOffset = checkedAdd(
-                byteMapViews[index].entryOffset, byteEntryBase);
-            byteMapViews[index].slotOffset = checkedAdd(
-                byteMapViews[index].slotOffset, byteSlotBase);
-        }
-        for (uint32_t index = byteEntryBase;
-             index < byteMapEntries.size(); ++index) {
-            byteMapEntries[index].keyOffset = checkedAdd(
-                byteMapEntries[index].keyOffset, byteKeyBase);
-            byteMapEntries[index].blobRecordOffset = checkedAdd(
-                byteMapEntries[index].blobRecordOffset, blobRecordBase);
-        }
-        for (uint32_t index = byteSlotBase;
-             index < byteMapSlots.size(); ++index)
-            if (byteMapSlots[index] >= 0)
-                byteMapSlots[index] += static_cast<int32_t>(byteEntryBase);
-        for (uint32_t index = blobRecordBase;
-             index < blobRecords.size(); ++index)
-            blobRecords[index].byteOffset = checkedAdd(
-                blobRecords[index].byteOffset, blobByteBase);
-        for (uint32_t index = reverseViewBase;
-             index < reverseMapViews.size(); ++index) {
-            reverseMapViews[index].entryOffset = checkedAdd(
-                reverseMapViews[index].entryOffset, reverseEntryBase);
-            reverseMapViews[index].slotOffset = checkedAdd(
-                reverseMapViews[index].slotOffset, reverseSlotBase);
-        }
-        for (uint32_t index = reverseEntryBase;
-             index < reverseMapEntries.size(); ++index) {
-            reverseMapEntries[index].keyOffset = checkedAdd(
-                reverseMapEntries[index].keyOffset, reverseKeyBase);
-            reverseMapEntries[index].ownerOffset = checkedAdd(
-                reverseMapEntries[index].ownerOffset, reverseOwnerBase);
-        }
-        for (uint32_t index = reverseSlotBase;
-             index < reverseMapSlots.size(); ++index)
-            if (reverseMapSlots[index] >= 0)
-                reverseMapSlots[index] += static_cast<int32_t>(reverseEntryBase);
-        for (uint32_t index = podViewBase;
-             index < podMapViews.size(); ++index) {
-            podMapViews[index].entryOffset = checkedAdd(
-                podMapViews[index].entryOffset, podEntryBase);
-            podMapViews[index].slotOffset = checkedAdd(
-                podMapViews[index].slotOffset, podSlotBase);
-        }
-        for (uint32_t index = podEntryBase;
-             index < podMapEntries.size(); ++index)
-            podMapEntries[index].runOffset = checkedAdd(
-                podMapEntries[index].runOffset, podRunBase);
-        for (uint32_t index = podSlotBase;
-             index < podMapSlots.size(); ++index)
-            if (podMapSlots[index] >= 0)
-                podMapSlots[index] += static_cast<int32_t>(podEntryBase);
+    }
 
+    /// @brief Add a shard's construction timing to this arena's totals.
+    ///
+    /// @param source The appended shard.
+    /// @return Nothing.
+    void Phase2ProjectionArena::addShardTiming(const Phase2ProjectionArena& source) {
         const auto addCounter = [](uint64_t& destination, uint64_t value) {
             assert(destination <= std::numeric_limits<uint64_t>::max() - value);
             destination += value;
@@ -1617,20 +2522,201 @@ namespace gl::gpu {
             source.timing.ruleStringNanoseconds);
         addCounter(timing.byteMapNanoseconds,
             source.timing.byteMapNanoseconds);
+        addCounter(timing.prefixFilterNanoseconds, source.timing.prefixFilterNanoseconds);
+        addCounter(timing.prefixFilterKeys, source.timing.prefixFilterKeys);
+        addCounter(timing.prefixFilterPredicates, source.timing.prefixFilterPredicates);
+        addCounter(timing.prefixFilterBytes, source.timing.prefixFilterBytes);
         addCounter(timing.reverseMapNanoseconds,
             source.timing.reverseMapNanoseconds);
         addCounter(timing.podMapNanoseconds,
             source.timing.podMapNanoseconds);
         addCounter(timing.finalNanoseconds,
             source.timing.finalNanoseconds);
-        timing.logicalBlocks = logicalBlocks.size();
+        addCounter(timing.sourceStatementRows, source.timing.sourceStatementRows);
+        addCounter(timing.retainedStatementRows, source.timing.retainedStatementRows);
+    }
 
+    /// @brief Take in the rows this backing arena's slice shards built, in place,
+    ///        with every reference at its complete-image offset.
+    ///
+    /// @details
+    /// Computes every shard's bases up front (`currentShardBases`, then
+    /// `followingShardBases` shard by shard), asserts the totals fit `capacity`,
+    /// adds `streamBases` to obtain each shard's reference bases, and lets the
+    /// persistent `workers` take whole columns: a column moves each shard's used
+    /// prefix to the end of this arena's column and rebases the moved references,
+    /// shard by shard in order (`adoptShardColumn`). Moving stays inside the
+    /// backing storage, so the projection exists once
+    /// (D-425); adding the stream bases here
+    /// replaces a separate rebase pass over a streamed window
+    /// (D-447). The result is byte-identical
+    /// to building every block in one arena and rebasing it by `streamBases`; the
+    /// timing totals match and the merge time is counted once.
+    ///
+    /// @param shards This arena's slice shards in slice order.
+    /// @param count Number of shards; at most `kMaxAppendedShards`.
+    /// @param firstBlocks Output: first logical-block index of each shard.
+    /// @param streamBases Complete-image offset of this arena's first row in every
+    ///        column; each sum with a placed base is checked to fit `uint32_t`.
+    /// @param workers Persistent threads that run the column tasks.
+    /// @return Nothing.
+    /// @invariant Every rebased reference addresses the byte-identical moved
+    ///            value at its complete-image position, and no column reallocates.
+    void Phase2ProjectionArena::adoptShards(Phase2ProjectionArena* const* shards,
+        uint32_t count, uint32_t* firstBlocks, const ShardBases& streamBases,
+        Phase2ProjectionWorkers& workers) {
+        const auto mergeStarted = std::chrono::steady_clock::now();
+        assert(shards != nullptr && firstBlocks != nullptr);
+        assert(role_ == Role::Backing && !adopted_);
+        assert(count <= kMaxAppendedShards);
+        adopted_ = true;
+        const auto streamed = [&streamBases](const ShardBases& placed) {
+            const auto add = [](uint32_t position, uint32_t stream) -> uint32_t {
+                assert(position <= std::numeric_limits<uint32_t>::max() - stream
+                    && "streamed adoption offset leaves uint32_t");
+                return position + stream;
+            };
+            ShardBases reference{};
+            reference.block = add(placed.block, streamBases.block);
+            reference.statement = add(placed.statement, streamBases.statement);
+            reference.nameRecord = add(placed.nameRecord, streamBases.nameRecord);
+            reference.nameByte = add(placed.nameByte, streamBases.nameByte);
+            reference.nameSlot = add(placed.nameSlot, streamBases.nameSlot);
+            reference.ruleRecord = add(placed.ruleRecord, streamBases.ruleRecord);
+            reference.ruleByte = add(placed.ruleByte, streamBases.ruleByte);
+            reference.byteView = add(placed.byteView, streamBases.byteView);
+            reference.byteEntry = add(placed.byteEntry, streamBases.byteEntry);
+            reference.byteSlot = add(placed.byteSlot, streamBases.byteSlot);
+            reference.byteKey = add(placed.byteKey, streamBases.byteKey);
+            reference.blobRecord = add(placed.blobRecord, streamBases.blobRecord);
+            reference.blobByte = add(placed.blobByte, streamBases.blobByte);
+            reference.reverseView = add(placed.reverseView, streamBases.reverseView);
+            reference.reverseEntry = add(placed.reverseEntry, streamBases.reverseEntry);
+            reference.reverseSlot = add(placed.reverseSlot, streamBases.reverseSlot);
+            reference.reverseKey = add(placed.reverseKey, streamBases.reverseKey);
+            reference.reverseOwner = add(placed.reverseOwner, streamBases.reverseOwner);
+            reference.podView = add(placed.podView, streamBases.podView);
+            reference.podEntry = add(placed.podEntry, streamBases.podEntry);
+            reference.podSlot = add(placed.podSlot, streamBases.podSlot);
+            reference.podRun = add(placed.podRun, streamBases.podRun);
+            reference.mandatoryKey = add(placed.mandatoryKey, streamBases.mandatoryKey);
+            reference.metadata = add(placed.metadata, streamBases.metadata);
+            return reference;
+        };
+        std::array<ShardBases, kMaxAppendedShards> bases{};
+        std::array<ShardBases, kMaxAppendedShards> referenceBases{};
+        ShardBases next = currentShardBases();
+        for (uint32_t shard = 0; shard < count; ++shard) {
+            assert(shards[shard] != nullptr && shards[shard]->role_ == Role::Slice);
+            bases[shard] = next;
+            referenceBases[shard] = streamed(next);
+            assertShardFits(next, *shards[shard]);
+            firstBlocks[shard] = next.block;
+            next = followingShardBases(next, *shards[shard]);
+        }
+        auto columnJob = [&](uint32_t column) {
+            for (uint32_t shard = 0; shard < count; ++shard)
+                adoptShardColumn(column, *shards[shard], bases[shard], referenceBases[shard]);
+        };
+        workers.run(kShardColumnCount, columnJob);
+        for (uint32_t shard = 0; shard < count; ++shard) addShardTiming(*shards[shard]);
+        timing.logicalBlocks = logicalBlocks.size();
         const int64_t elapsed = std::chrono::duration_cast<
             std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - mergeStarted).count();
         assert(elapsed >= 0);
-        addCounter(timing.mergeNanoseconds, static_cast<uint64_t>(elapsed));
-        return blockBase;
+        assert(timing.mergeNanoseconds
+            <= std::numeric_limits<uint64_t>::max() - static_cast<uint64_t>(elapsed));
+        timing.mergeNanoseconds += static_cast<uint64_t>(elapsed);
+    }
+
+    /// @brief Start the persistent threads.
+    ///
+    /// @details
+    /// The threads wait for the first job. Nothing else is allocated later:
+    /// jobs reuse the same threads, mutex and condition variables.
+    ///
+    /// @param threadCount Number of threads; positive.
+    /// @return Idle workers.
+    Phase2ProjectionWorkers::Phase2ProjectionWorkers(uint32_t threadCount) {
+        assert(threadCount > 0);
+        threads_.reserve(threadCount);
+        for (uint32_t index = 0; index < threadCount; ++index)
+            threads_.emplace_back([this] { work(); });
+    }
+
+    /// @brief Stop and join every thread.
+    ///
+    /// @details
+    /// Runs only between jobs (`run` returns after its job), so no task is in
+    /// flight; each thread observes the stop request and exits.
+    ///
+    /// @return Nothing.
+    Phase2ProjectionWorkers::~Phase2ProjectionWorkers() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            assert(workingThreads_ == 0 && !stopping_);
+            stopping_ = true;
+        }
+        start_.notify_all();
+        for (std::thread& thread : threads_) thread.join();
+    }
+
+    /// @brief Publish one job to the threads and wait for its last task.
+    ///
+    /// @details
+    /// Under the mutex stores the job, resets the task counter and the count of
+    /// threads still working, advances the generation that wakes every thread,
+    /// then waits until each thread has finished claiming tasks.
+    ///
+    /// @param taskCount Number of task indices.
+    /// @param invoke Type-erased call of the job.
+    /// @param job The caller's job object.
+    /// @return Nothing.
+    /// @invariant No other job is in flight and the workers are not stopping.
+    void Phase2ProjectionWorkers::dispatch(uint32_t taskCount,
+        void (*invoke)(void*, uint32_t), void* job) {
+        assert(invoke != nullptr && job != nullptr);
+        std::unique_lock<std::mutex> lock(mutex_);
+        assert(workingThreads_ == 0 && !stopping_
+            && "projection workers run one job at a time");
+        invoke_ = invoke;
+        job_ = job;
+        taskCount_ = taskCount;
+        nextTask_.store(0, std::memory_order_relaxed);
+        workingThreads_ = static_cast<uint32_t>(threads_.size());
+        ++generation_;
+        start_.notify_all();
+        finished_.wait(lock, [this] { return workingThreads_ == 0; });
+    }
+
+    /// @brief Thread body: wait for a new generation, claim its tasks, report.
+    ///
+    /// @details
+    /// Each thread runs claimed tasks until the counter passes `taskCount`, then
+    /// decrements the count of working threads; the last one wakes the
+    /// dispatcher. A stop request with no new generation ends the thread.
+    ///
+    /// @return Nothing.
+    void Phase2ProjectionWorkers::work() {
+        uint64_t seen = 0;
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (true) {
+            start_.wait(lock, [this, &seen] { return stopping_ || generation_ != seen; });
+            if (generation_ == seen) return;
+            seen = generation_;
+            void (*const invoke)(void*, uint32_t) = invoke_;
+            void* const job = job_;
+            const uint32_t taskCount = taskCount_;
+            lock.unlock();
+            for (uint32_t task = nextTask_.fetch_add(1, std::memory_order_relaxed);
+                 task < taskCount;
+                 task = nextTask_.fetch_add(1, std::memory_order_relaxed))
+                invoke(job, task);
+            lock.lock();
+            assert(workingThreads_ > 0);
+            if (--workingThreads_ == 0) finished_.notify_one();
+        }
     }
 
     /// @brief Reserve every task-projection array to a fixed ceiling.
@@ -1822,9 +2908,8 @@ namespace gl::gpu {
         assert(capacity.maximumExaminedRowsPerCall > 0);
         assert(capacity.calls
             <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
-        assert(capacity.calls <= (1u << (64u - kDeviceFilterCallShift)));
         assert(capacity.maximumExaminedRowsPerCall
-            <= (1u << kDeviceFilterStatementIndexBits));
+            <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
         assert(capacity.calls <= std::numeric_limits<uint32_t>::max() / 2u);
         calls.reserve(capacity.calls);
         classes.reserve(capacity.calls);
@@ -1864,7 +2949,7 @@ namespace gl::gpu {
     ///
     /// @details
     /// Validates every enumeration and scalar field, accounts the complete input
-    /// slice, interns the exact five-field descriptor with fixed open addressing,
+    /// slice, interns the exact six-field descriptor with fixed open addressing,
     /// and appends its class index beside the processor-order call. No statement
     /// or map bytes are copied because CUDA reads the resident projection.
     ///
@@ -1873,6 +2958,7 @@ namespace gl::gpu {
     /// @param maximumIterationNumberVariable Inclusive iteration ceiling.
     /// @param alsoAcceptFullKeys Bivalent processor whole-key widening flag.
     /// @param statementCount Full resident statement slice examined by the call.
+    /// @param maximumFilteredStatements Positive eligible-row limit fitting the position codes.
     /// @return Pointer-free descriptor also appended to `calls`.
     /// @invariant Call order exactly matches the processor schedule; class order
     ///            is first occurrence; neither row total exceeds fixed ceilings.
@@ -1881,7 +2967,10 @@ namespace gl::gpu {
         DeviceHashMemoryKind memory,
         int32_t maximumIterationNumberVariable,
         uint32_t alsoAcceptFullKeys,
-        uint32_t statementCount) {
+        uint32_t statementCount,
+        uint32_t maximumFilteredStatements) {
+        assert(maximumFilteredStatements > 0
+            && maximumFilteredStatements <= ExecutionParameters::MAX_FILTERED_POSITION_CODE);
         assert(calls.size() < capacity.calls);
         assert(static_cast<uint32_t>(memory)
             <= static_cast<uint32_t>(DeviceHashMemoryKind::working));
@@ -1896,6 +2985,7 @@ namespace gl::gpu {
         call.maximumIterationNumberVariable = maximumIterationNumberVariable;
         call.alsoAcceptFullKeys = alsoAcceptFullKeys;
         call.statementCount = statementCount;
+        call.maximumFilteredStatements = maximumFilteredStatements;
 
         uint64_t signature = 1469598103934665603ull;
         const auto mix = [&signature](uint32_t value) {
@@ -1907,6 +2997,7 @@ namespace gl::gpu {
         mix(static_cast<uint32_t>(call.maximumIterationNumberVariable));
         mix(call.alsoAcceptFullKeys);
         mix(call.statementCount);
+        mix(call.maximumFilteredStatements);
         assert(!classSlots.empty());
         assert((classSlots.size() & (classSlots.size() - 1)) == 0);
         const uint32_t slotMask =
@@ -1937,7 +3028,8 @@ namespace gl::gpu {
                 && candidate.maximumIterationNumberVariable
                     == call.maximumIterationNumberVariable
                 && candidate.alsoAcceptFullKeys == call.alsoAcceptFullKeys
-                && candidate.statementCount == call.statementCount) {
+                && candidate.statementCount == call.statementCount
+                && candidate.maximumFilteredStatements == call.maximumFilteredStatements) {
                 classIndex = static_cast<uint32_t>(existing);
                 assert(classMultiplicities[classIndex]
                     < std::numeric_limits<uint32_t>::max());

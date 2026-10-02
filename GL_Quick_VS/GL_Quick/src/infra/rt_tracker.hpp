@@ -236,7 +236,28 @@ namespace gl {
             /// Test accessor; the production caller never reads this.
             const std::string& chainFilename() const { return chain_filename_; }
 
+            /// @brief Whether a selected audit chain names this tracker's block.
+            ///
+            /// @details
+            /// `GL_RT_AUDIT_CHAIN` selects one block for the per-call section
+            /// audit without the hashburst dump or any temporary matcher. The
+            /// selection is the block's complete chain in either printed
+            /// orientation: root to leaf with ` -> ` separators (the audit's own
+            /// `chain=` field) or leaf to root with ` <- ` separators ending in
+            /// `(root)` (the `[RT-LB]` rows of `.rt/burst_phases.log`). Only an
+            /// exact match of every element selects (full chain, Rule 12); an
+            /// empty selection selects nothing.
+            ///
+            /// @param chainHuman The tracker's root-to-leaf chain (`chainHuman()`).
+            /// @param selected The selection text, possibly empty.
+            /// @return True exactly when @p selected names the same chain.
+            /// @see chainHuman, RTTracker::~RTTracker (the `.debug/rt_audit.log` writer).
+            static bool auditChainSelects(const std::string& chainHuman,
+                                          const std::string& selected);
+
         private:
+            bool audit_target_{false};
+            bool chain_audit_{false};
             friend class RTScope;
             friend class RTScopeHere;
 

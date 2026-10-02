@@ -385,6 +385,11 @@ namespace gl {
                           const std::filesystem::path& directory,
                           const std::vector<DeloadColumn*>& extraColumns) {
             assert(!files.empty());
+            // A canonical image replaces logical contents. Derived identities
+            // from an earlier resident image cannot refer to the replacement.
+            lb.canonicalUses.clear();
+            lb.existenceLookups.clear();
+            lb.orImplicationMatches.clear();
             const auto loadStart = std::chrono::steady_clock::now();
             int64_t totalPayloadBytes = 0;
 

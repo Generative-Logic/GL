@@ -41,6 +41,12 @@
     <ClCompile Include="src\compiler.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\project_paths.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\compilation_state.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\prover.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -64,6 +70,9 @@
     </ClCompile>
     <ClCompile Include="src\infra\hashburst_dump.cpp">
       <Filter>Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\address_space.cpp">
+      <Filter>Memory_Infra</Filter>
     </ClCompile>
     <ClCompile Include="src\memory_infra\global_memory_manager.cpp">
       <Filter>Memory_Infra</Filter>
@@ -92,7 +101,16 @@
     <ClCompile Include="src\infra\rt_tracker.cpp">
       <Filter>Infra</Filter>
     </ClCompile>
+    <ClCompile Include="src\infra\heap_profile.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\infra\heap_profile_hooks.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
     <ClCompile Include="src\infra\mem_tracker.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\infra\memory_census.cpp">
       <Filter>Infra</Filter>
     </ClCompile>
     <ClCompile Include="src\gpu\phase2_projection.cpp">
@@ -107,13 +125,22 @@
     <ClCompile Include="src\tests\test_harness.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests\test_heap_profile.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_mem_tracker.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_memory_playbook.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_memory.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_compiler.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_compilation_state.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_filter.cpp">
@@ -162,6 +189,12 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_lb_split.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_address_space.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_heap_allocator.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_static_memory.cpp">
@@ -224,6 +257,9 @@
     <ClCompile Include="src\tests\test_rebuild_in_place.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests\test_integration_root.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_request_gates.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
@@ -236,6 +272,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\compiler.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\project_paths.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compilation_state.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\memory.hpp">
@@ -254,6 +296,12 @@
       <Filter>Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_infra\dirty_state.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\address_space.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\heap_allocator.hpp">
       <Filter>Memory_Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_infra\global_memory_manager.hpp">
@@ -325,7 +373,13 @@
     <ClInclude Include="src\infra\rt_tracker.hpp">
       <Filter>Infra</Filter>
     </ClInclude>
+    <ClInclude Include="src\infra\heap_profile.hpp">
+      <Filter>Infra</Filter>
+    </ClInclude>
     <ClInclude Include="src\infra\mem_tracker.hpp">
+      <Filter>Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\infra\memory_census.hpp">
       <Filter>Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\parameters.hpp">
@@ -349,8 +403,19 @@
     <ClInclude Include="src\gpu\phase2_projection.hpp">
       <Filter>GPU</Filter>
     </ClInclude>
+    <ClInclude Include="src\gpu\phase2_usage.hpp">
+      <Filter>GPU</Filter>
+    </ClInclude>
     <ClInclude Include="src\gpu\phase2_sealing.hpp">
       <Filter>GPU</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\tests\test_unary_composition.cpp"><Filter>Tests</Filter></ClCompile>
+    <ClInclude Include="src\memory_infra\unary_composition.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\unary_composition.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\memory_infra\unary_composition_store.hpp"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

@@ -416,7 +416,7 @@
       "actions": 3247,
       "chapters": 143,
       "methods": {
-        "direct": 22,
+        "single chapter proof": 22,
         "induction": 39,
         "or theorem": 4
       },
@@ -860,7 +860,7 @@
     {
       "evidence": {
         "cites_source_index": 25,
-        "source_file": "58_direct_proof.txt",
+        "source_file": "58_single_chapter_proof.txt",
         "source_line": 2
       },
       "reason": "Excluded because of the GL circular-theorem-dependency bug; do not export, repair, reinterpret, or assume this theorem.",
@@ -869,7 +869,7 @@
     {
       "evidence": {
         "cites_source_index": 24,
-        "source_file": "59_direct_proof.txt",
+        "source_file": "59_single_chapter_proof.txt",
         "source_line": 2
       },
       "reason": "Excluded because of the GL circular-theorem-dependency bug; do not export, repair, reinterpret, or assume this theorem.",
@@ -893,8 +893,8 @@
       "chapters": [
         {
           "number": 7,
-          "role": "direct_proof",
-          "source_file": "7_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "7_single_chapter_proof.txt",
           "source_sha256": "DBE5A04CEED300CFD0934E80FE2F2D3C0FF5A17143EAABE444DF2938E3530E06",
           "steps": [
             {
@@ -2442,7 +2442,7 @@
       "external_dependencies": [],
       "id": "peano_source_003",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 3",
       "source_index": 3,
       "source_tags": [
@@ -2560,8 +2560,8 @@
       "chapters": [
         {
           "number": 14,
-          "role": "direct_proof",
-          "source_file": "14_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "14_single_chapter_proof.txt",
           "source_sha256": "D9278B29BEA6DBB4154801FDEAE985DF4E5BF436B0791D9DC11D9F8AB4B69DD2",
           "steps": [
             {
@@ -4063,7 +4063,7 @@
       "external_dependencies": [],
       "id": "peano_source_006",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 6",
       "source_index": 6,
       "source_tags": [
@@ -4180,8 +4180,8 @@
       "chapters": [
         {
           "number": 27,
-          "role": "direct_proof",
-          "source_file": "27_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "27_single_chapter_proof.txt",
           "source_sha256": "A1783BBC3BA3CFDDD37B77F9C91A31D5293612A00F334FCBA77443E19666E0D3",
           "steps": [
             {
@@ -5723,7 +5723,7 @@
       "external_dependencies": [],
       "id": "peano_source_011",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 11",
       "source_index": 11,
       "source_tags": [
@@ -5841,8 +5841,8 @@
       "chapters": [
         {
           "number": 53,
-          "role": "direct_proof",
-          "source_file": "53_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "53_single_chapter_proof.txt",
           "source_sha256": "2C2EB356DFE1DDF285050A1B73FA23E461F4AB663C82CA83A3443237DE26114C",
           "steps": [
             {
@@ -7349,7 +7349,7 @@
       "external_dependencies": [],
       "id": "peano_source_021",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 21",
       "source_index": 21,
       "source_tags": [
@@ -7467,8 +7467,8 @@
       "chapters": [
         {
           "number": 60,
-          "role": "direct_proof",
-          "source_file": "60_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "60_single_chapter_proof.txt",
           "source_sha256": "F480AE121323038D38726E5F5FDC26ECDAEF91FE5315E3948B2369B4AD817AC2",
           "steps": [
             {
@@ -9018,7 +9018,7 @@
       "external_dependencies": [],
       "id": "peano_source_026",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 26",
       "source_index": 26,
       "source_tags": [
@@ -13369,8 +13369,8 @@
       "chapters": [
         {
           "number": 67,
-          "role": "direct_proof",
-          "source_file": "67_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "67_single_chapter_proof.txt",
           "source_sha256": "34061D42CAA989B9590845704202C011B1FA96E21561053FEFF9D7BDD291F029",
           "steps": [
             {
@@ -14806,7 +14806,7 @@
       "external_dependencies": [],
       "id": "peano_source_029",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 29",
       "source_index": 29,
       "source_tags": [
@@ -14927,8 +14927,8 @@
       "chapters": [
         {
           "number": 68,
-          "role": "direct_proof",
-          "source_file": "68_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "68_single_chapter_proof.txt",
           "source_sha256": "2D9D514987B02E8CDA3B72D5D362114E8BD7416D22E41A9DF5E83ED355E0D2DF",
           "steps": [
             {
@@ -16265,7 +16265,7 @@
       "external_dependencies": [],
       "id": "peano_source_030",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 30",
       "source_index": 30,
       "source_tags": [
@@ -16377,8 +16377,8 @@
       "chapters": [
         {
           "number": 71,
-          "role": "direct_proof",
-          "source_file": "71_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "71_single_chapter_proof.txt",
           "source_sha256": "53D439EF85402A272C69B46E3AAB0EED6A795586D7A70F6957E372102CCF8D16",
           "steps": [
             {
@@ -17790,7 +17790,7 @@
       "external_dependencies": [],
       "id": "peano_source_033",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 33",
       "source_index": 33,
       "source_tags": [
@@ -17885,8 +17885,8 @@
       "chapters": [
         {
           "number": 72,
-          "role": "direct_proof",
-          "source_file": "72_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "72_single_chapter_proof.txt",
           "source_sha256": "7E723B0F65BADAE1D299A97AD1E13C408E2FBDDC63343B9AA9FC6716727F9079",
           "steps": [
             {
@@ -20040,7 +20040,7 @@
       "external_dependencies": [],
       "id": "peano_source_034",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 34",
       "source_index": 34,
       "source_tags": [
@@ -26951,8 +26951,8 @@
       "chapters": [
         {
           "number": 92,
-          "role": "direct_proof",
-          "source_file": "92_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "92_single_chapter_proof.txt",
           "source_sha256": "3319080B12143FC8ED4AD0F91E98DBE6AF956AD4FB7D9E76D4FD8C7F618AC168",
           "steps": [
             {
@@ -27794,7 +27794,7 @@
       "external_dependencies": [],
       "id": "peano_source_042",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 42",
       "source_index": 42,
       "source_tags": [
@@ -27886,8 +27886,8 @@
       "chapters": [
         {
           "number": 96,
-          "role": "direct_proof",
-          "source_file": "96_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "96_single_chapter_proof.txt",
           "source_sha256": "FBFF3E273D3907AFA09039BF800BD46FCE5373C6F437360651C525CF99FB7375",
           "steps": [
             {
@@ -28765,7 +28765,7 @@
       "external_dependencies": [],
       "id": "peano_source_044",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 44",
       "source_index": 44,
       "source_tags": [
@@ -32743,8 +32743,8 @@
       "chapters": [
         {
           "number": 125,
-          "role": "direct_proof",
-          "source_file": "125_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "125_single_chapter_proof.txt",
           "source_sha256": "9D4CB426446213D830E05D5113761EE160585AB1DAC5694CBE603925C8C44C10",
           "steps": [
             {
@@ -33754,7 +33754,7 @@
       "external_dependencies": [],
       "id": "peano_source_057",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 57",
       "source_index": 57,
       "source_tags": [
@@ -35285,8 +35285,8 @@
       "chapters": [
         {
           "number": 144,
-          "role": "direct_proof",
-          "source_file": "144_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "144_single_chapter_proof.txt",
           "source_sha256": "24BC321EB60F503D3E735F262BEF09FCB604766F9240A09207C69E3F9C9BFA66",
           "steps": [
             {
@@ -36222,7 +36222,7 @@
       "external_dependencies": [],
       "id": "peano_source_066",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 66",
       "source_index": 66,
       "source_tags": [
@@ -78664,8 +78664,8 @@
       "chapters": [
         {
           "number": 76,
-          "role": "direct_proof",
-          "source_file": "76_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "76_single_chapter_proof.txt",
           "source_sha256": "8DE89BFE4228F01DC03257C2821C3C9B0C28FCF1AD154F010825B2B88255C4CC",
           "steps": [
             {
@@ -81499,7 +81499,7 @@
       "external_dependencies": [],
       "id": "peano_source_036",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 36",
       "source_index": 36,
       "source_tags": [
@@ -113176,8 +113176,8 @@
       "chapters": [
         {
           "number": 100,
-          "role": "direct_proof",
-          "source_file": "100_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "100_single_chapter_proof.txt",
           "source_sha256": "D4B0164A3E980B2DCFB33E30F553D3B27462F26C6D4309513F4AEB80B2870BBB",
           "steps": [
             {
@@ -115755,7 +115755,7 @@
       "external_dependencies": [],
       "id": "peano_source_046",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 46",
       "source_index": 46,
       "source_tags": [
@@ -115909,8 +115909,8 @@
       "chapters": [
         {
           "number": 101,
-          "role": "direct_proof",
-          "source_file": "101_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "101_single_chapter_proof.txt",
           "source_sha256": "8CCF14B13BB5CBB7A803D61D565E1C3EF484B7AAE65C4608E57403CC008FD695",
           "steps": [
             {
@@ -118730,7 +118730,7 @@
       "external_dependencies": [],
       "id": "peano_source_047",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 47",
       "source_index": 47,
       "source_tags": [
@@ -149575,8 +149575,8 @@
       "chapters": [
         {
           "number": 141,
-          "role": "direct_proof",
-          "source_file": "141_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "141_single_chapter_proof.txt",
           "source_sha256": "F8C5CD6E3A067A285B734298C16D441E324507282F84DCAF20C4F94E49D888D2",
           "steps": [
             {
@@ -150067,7 +150067,7 @@
       "external_dependencies": [],
       "id": "peano_source_063",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 63",
       "source_index": 63,
       "source_tags": [
@@ -292343,8 +292343,8 @@
       "chapters": [
         {
           "number": 6,
-          "role": "direct_proof",
-          "source_file": "6_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "6_single_chapter_proof.txt",
           "source_sha256": "6D605CCA05C34280BA6362D13F7680775EDAEF5A281F37F7A13C6FC4C705CD63",
           "steps": [
             {
@@ -295772,7 +295772,7 @@
       "external_dependencies": [],
       "id": "peano_source_002",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 2",
       "source_index": 2,
       "source_tags": [
@@ -316877,8 +316877,8 @@
       "chapters": [
         {
           "number": 124,
-          "role": "direct_proof",
-          "source_file": "124_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "124_single_chapter_proof.txt",
           "source_sha256": "E4C674C60C08B980784D01A5471D1A759A6E34C4C7D2F69D6A8A5E8CDB74CBBF",
           "steps": [
             {
@@ -320691,7 +320691,7 @@
       "external_dependencies": [],
       "id": "peano_source_056",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 56",
       "source_index": 56,
       "source_tags": [
@@ -328691,8 +328691,8 @@
       "chapters": [
         {
           "number": 43,
-          "role": "direct_proof",
-          "source_file": "43_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "43_single_chapter_proof.txt",
           "source_sha256": "02432EF9880759B8A0E5B0756163629225CB66D323F1CEDA28C7F67248484686",
           "steps": [
             {
@@ -332300,7 +332300,7 @@
       "external_dependencies": [],
       "id": "peano_source_017",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 17",
       "source_index": 17,
       "source_tags": [
@@ -332555,8 +332555,8 @@
       "chapters": [
         {
           "number": 54,
-          "role": "direct_proof",
-          "source_file": "54_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "54_single_chapter_proof.txt",
           "source_sha256": "72728746444E5FFDB19E81EF53C2DB4D6F1BF22874BEFFC92C338739C1983B53",
           "steps": [
             {
@@ -333439,7 +333439,7 @@
       "external_dependencies": [],
       "id": "peano_source_022",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 22",
       "source_index": 22,
       "source_tags": [
@@ -333718,8 +333718,8 @@
       "chapters": [
         {
           "number": 123,
-          "role": "direct_proof",
-          "source_file": "123_direct_proof.txt",
+          "role": "single_chapter_proof",
+          "source_file": "123_single_chapter_proof.txt",
           "source_sha256": "A86F8B68FE25750C4E065A26F60E7291E2ECB11AF19E5E812007197C44D8DDE4",
           "steps": [
             {
@@ -334080,7 +334080,7 @@
       "external_dependencies": [],
       "id": "peano_source_055",
       "induction_variable": null,
-      "method": "direct",
+      "method": "single chapter proof",
       "name": "Peano source 55",
       "source_index": 55,
       "source_tags": [

@@ -404,8 +404,8 @@ struct ConfigurationParameters {
     ///        bijection-table size.
     int max_size_mapping_def_set = 0;
 
-    /// @brief Cap on argument count for any candidate; consulted by
-    ///        `countArgumentsFilter`.
+    /// @brief Cap on combinable arguments before anchor connection;
+    ///        consulted by the conjecture worker drivers.
     int max_number_args_expr = 0;
 
     /// @brief Filter-cascade gate: reject when operator-block count
@@ -1438,8 +1438,16 @@ private:
     ///        `prohibitedHeadsGoodInt`.
     bool prohibitedHeadsGood(const std::string& conjecture) const;
 
-    /// @brief Reject if the total argument count of `conjecture`
-    ///        exceeds `parameters.max_number_args_expr`.
+    /// @brief Reject repeated `(1)`-typed digit arguments within an atom.
+    ///
+    /// @details Set and operation parameters may repeat after anchor connection.
+    /// Incubator atoms permit repeated digit values except in equality. The
+    /// configured slot type determines eligibility, independently of findDigitArgs.
+    ///
+    /// @param conjecture Candidate implication chain or atom; empty text has no arguments.
+    /// @return True when every checked atom satisfies digit-argument uniqueness.
+    /// @invariant Equality with identical operands remains excluded in every mode.
+    /// @see controlEquality; I-257.
     bool countArgumentsFilter(const std::string& conjecture) const;
 
     /// @brief Reject when `conjecture` matches any compiled regex
@@ -1489,8 +1497,8 @@ private:
     /// with `stoi(a) > stoi(b)` so that the symmetric pair has
     /// only one orientation in the output set. Forwards to
     /// `countArgumentsFilter` (the AND-combine at the bottom),
-    /// which provides the I-8 enforcement via its no-duplicate-
-    /// args rule — `(=[x, x])` is rejected because the two args
+    /// which provides the I-8 enforcement via its digit-argument
+    /// uniqueness rule — `(=[x, x])` is rejected because the two args
     /// are identical, not because `controlEquality` itself spots
     /// the trivial form. See SwDD chapter `02_conjecturer.md`
     /// section *controlEquality* for the D-21 -> D-23 history.

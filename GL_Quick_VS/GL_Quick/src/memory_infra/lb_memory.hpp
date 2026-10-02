@@ -31,11 +31,17 @@
 #include "typed_cold_map.hpp"
 #include "hash_memory.hpp"
 #include "int_encoded_expr.hpp"
+#include "shared_expression_list.hpp"
 #include "mail_types.hpp"
 #include "cold_mail.hpp"
 #include "changed_classes_buffer.hpp"
 #include "eq_class_name_caches.hpp"
 #include "deloadable_mail_out.hpp"
+#include "or_implications.hpp"
+#include "or_implication_match_index.hpp"
+#include "existence_lookup_indexes.hpp"
+#include "canonical_use_index.hpp"
+#include "unary_composition_store.hpp"
 
 #include <cstdint>
 
@@ -54,6 +60,48 @@ namespace gl {
     struct ValidityNode {
         NameId parentId;
         NameId ownSubId;
+    };
+
+    /// @brief One integration task: a `prepareIntegration` expression at its
+    ///        scope, with the root task it was prepared on behalf of.
+    ///
+    /// @details
+    /// The task table of the finished-task wipe (I-284)
+    /// holds one record per node key — the packed `(template, scope)` key of a
+    /// task's `integrationPreparedMarker` text, of the negated compound a
+    /// contradiction task opens, or of an opening gate (a Case A subproof, a
+    /// Case OR split, a Case B rule installation) registered as a node below
+    /// its task. A task prepared while no task is active is a root (`root`
+    /// equals its own key, `parent` is zero); every other node inherits its
+    /// parent's root verbatim and names it as `parent`. The root never changes
+    /// after creation: class changes rewrite instruction texts, never this
+    /// record. Trivially copyable, streamed verbatim on deload.
+    ///
+    /// `flags` bit 0 (`kShared`) marks a node whose derivative was reached by
+    /// a second requester (another root or an independent trigger); a shared
+    /// node strictly below a finished root survives with everything below it.
+    /// Bits 1 and 2 classify a root for the finish test: `kExactRoot` — no
+    /// marker, finished when the expression is known; `kOutputRoot` — one
+    /// marker at the operator's declared output slot `outputSlot`, finished
+    /// when any value is known there. A root with neither bit never finishes.
+    /// Bit 3 (`kRetired`) marks a node removed with its finished root: its
+    /// derivatives are gone and no new derivative is made on its behalf.
+    ///
+    /// @see LbMemory::integrationTasks, ExpressionAnalyzer::prepareIntegration.
+    struct IntegrationTaskRec {
+        /// @brief `flags` bit: a second requester reached a derivative.
+        static constexpr uint32_t kShared = 1u << 0;
+        /// @brief `flags` bit: a root without a marker.
+        static constexpr uint32_t kExactRoot = 1u << 1;
+        /// @brief `flags` bit: a root with one marker at a declared output slot.
+        static constexpr uint32_t kOutputRoot = 1u << 2;
+        /// @brief `flags` bit: the node was removed with its finished root.
+        static constexpr uint32_t kRetired = 1u << 3;
+
+        int64_t root;
+        int64_t parent;
+        uint32_t flags;
+        int32_t outputSlot;
     };
 
     // The blob-map equivalenceClassesMap stores EquivalenceClass records keyed by
@@ -116,8 +164,7 @@ namespace gl {
             ValidityNodes = 18,
             IntValidityNamesToFilter = 19,
             IntAxedVariables = 20,
-            CanBeSentIds = 21,
-            CanBeSentMarkerIds = 22,
+            // 21 and 22 are retired mail-permission container tags.
             PendingWipeScopes = 23,
             OrDisjunctCountKeys = 24,
             OrDisjunctCountValues = 25,
@@ -260,6 +307,54 @@ namespace gl {
             // with its LAST carrier. Dischargeable like the carrier index.
             ExpansionCarrierCountKeys = 820,
             ExpansionCarrierCountValues = 821,
+            UsedAsPremiseCorePairs = 822,
+            // Tag 823 is retired: the unsigned retained-usage set (goals,
+            // negations, seeds) has no stream — those rows are watched
+            // through the persistent ledgers, never multiplied.
+            AppliedPremiseCorePairs = 824,
+            // Tag 825 is retired; suppressed statement identities have no stream.
+            ClosedOrGoalLevelsKeys = 826,
+            ClosedOrGoalLevelsRunStarts = 827,
+            ClosedOrGoalLevelsValues = 828,
+            OrImplicationsBase = 829,
+            ExistenceReplaysKeys = 837,
+            ExistenceReplaysValues = 838,
+            CanonicalEquivalenceClassesKeys = 839,
+            CanonicalEquivalenceClassesRunStarts = 840,
+            CanonicalEquivalenceClassesBlobStarts = 841,
+            CanonicalEquivalenceClassesBlobPool = 842,
+            CanonicalMemberRepresentativesKeys = 843,
+            CanonicalMemberRepresentativesValues = 844,
+            CanonicalClassChangesKeys = 845,
+            CanonicalClassChangesValues = 846,
+            UnaryCompositionBase = 847,
+            UnaryCompositionEnd = 868,
+            // Tags 869 through 871 are retired and must not be reassigned.
+            OrSupportFactsKeys = 872,
+            OrSupportFactsValues = 873,
+            OrSupportEqualitiesKeys = 874,
+            OrSupportEqualitiesRunStarts = 875,
+            OrSupportEqualitiesValues = 876,
+            // Finished-task wipe (tags 877..893): the integration task table,
+            // the owner maps from derivatives to the task that created them,
+            // and the finished roots. Dischargeable side tables.
+            IntegrationTasksKeys = 877,
+            IntegrationTasksValues = 878,
+            IntegrationPreparedOwnersKeys = 879,
+            IntegrationPreparedOwnersValues = 880,
+            IntegrationScopeOwnersKeys = 881,
+            IntegrationScopeOwnersValues = 882,
+            IntegrationRuleOwnersKeys = 883,
+            IntegrationRuleOwnersValues = 884,
+            IntegrationCopyOwnersKeys = 885,
+            IntegrationCopyOwnersValues = 886,
+            AlgebraKeyOwnersKeys = 887,
+            AlgebraKeyOwnersValues = 888,
+            AdmissionSetOwnersKeys = 889,
+            AdmissionSetOwnersValues = 890,
+            AdmissionTriggerOwnersKeys = 891,
+            AdmissionTriggerOwnersValues = 892,
+            FinishedIntegrationRoots = 893,
             // Append new tags here - never renumber, reorder, or reuse.
             // Tags 4..18 survive discharge (survivesDischarge): the cold STRING
             // tags (4..17) plus the NameMap validity-node forest (18). Tag 28
@@ -279,10 +374,11 @@ namespace gl {
         ///               production; a private instance in unit tests).
         explicit LbMemory(GlobalMemoryManager* global)
             : manager(global),
-              intEncodedStatements(&manager, &dirty),
-              intLocalEncodedStatements(&manager, &dirty),
-              intLocalEncodedStatementsDelta(&manager, &dirty),
-              intExternalStatements(&manager, &dirty),
+              sharedExpressions(&manager),
+              intEncodedStatements(&manager, &dirty, &sharedExpressions),
+              intLocalEncodedStatements(&manager, &dirty, &sharedExpressions),
+              intLocalEncodedStatementsDelta(&manager, &dirty, &sharedExpressions),
+              intExternalStatements(&manager, &dirty, &sharedExpressions),
               templateStrings(&manager, &dirty),
               templateStringsLengths(&templateStrings),
               templateStringsBytes(&templateStrings),
@@ -309,10 +405,6 @@ namespace gl {
               intValidityNamesToFilterKeys(&intValidityNamesToFilter),
               intAxedVariables(&manager, &dirty),
               intAxedVariablesKeys(&intAxedVariables),
-              canBeSentIds(&manager, &dirty),
-              canBeSentIdsKeys(&canBeSentIds),
-              canBeSentMarkerIds(&manager, &dirty),
-              canBeSentMarkerIdsKeys(&canBeSentMarkerIds),
               pendingWipeScopes(&manager, &dirty),
               pendingWipeScopesKeys(&pendingWipeScopes),
               orDisjunctCount(&manager, &dirty),
@@ -356,6 +448,7 @@ namespace gl {
               exprOriginMapRunStarts(&exprOriginMap.inner()),
               exprOriginMapBlobStarts(&exprOriginMap.inner()),
               exprOriginMapBlobPool(&exprOriginMap.inner()),
+              sharedNativeKeys(&manager, &dirty),
               overallHashMemory(&manager, &dirty),
               localHashMemory(&manager, &dirty),
               localHashMemoryDelta(&manager, &dirty),
@@ -387,10 +480,44 @@ namespace gl {
               compactExpansionsBlobPool(&compactExpansions.inner()),
               expansionCarrierCount(&manager, &dirty),
               expansionCarrierCountKeys(&expansionCarrierCount),
-              expansionCarrierCountValues(&expansionCarrierCount) {}
+              expansionCarrierCountValues(&expansionCarrierCount) {
+            // Pool attribution: every block this aggregate draws is logic-block
+            // state (observability only; the arena holds no block yet).
+            manager.setPurpose(PoolPurpose::LbState);
+            overallHashMemory.bindSharedBytes(sharedNativeKeys);
+            localHashMemory.bindSharedBytes(sharedNativeKeys);
+            localHashMemoryDelta.bindSharedBytes(sharedNativeKeys);
+            workingMemory.bindSharedBytes(sharedNativeKeys);
+            // The arena's directories use this object's direct storage (see
+            // kPageTableDirectEntries).
+            manager.attachDirectoryStorage(pageTableDirect_, kPageTableDirectEntries,
+                                           pageBlockDirect_, kPageBlockDirectEntries);
+        }
 
         LbMemory(const LbMemory&) = delete;
         LbMemory& operator=(const LbMemory&) = delete;
+
+        /// @brief Direct entries of the arena's page table (vid -> page), held
+        ///        in this object instead of a spilled pool block.
+        ///
+        /// @details
+        /// A logic block's `Memory` shell takes one `LbStore` slot of an
+        /// LB-pool block with room to spare; `pageTableDirect_` and
+        /// `pageBlockDirect_` use that room, so the directories of a logic
+        /// block with up to this many pages need no pool block of their own.
+        /// Sized so the shell still fits one 256 KiB LB-pool block with about
+        /// 12 KiB spare; `LbStore` asserts if `Memory` outgrows the block, and
+        /// these capacities are then the ones to shrink. The arrays are
+        /// declared before `manager` so they outlive its directories, and are
+        /// never read past the directory's size, so they are not initialized.
+        static constexpr int32_t kPageTableDirectEntries = 12288;
+
+        /// @brief Direct entries of the arena's carved-block list (see
+        ///        `kPageTableDirectEntries`).
+        static constexpr int32_t kPageBlockDirectEntries = 512;
+
+        char* pageTableDirect_[kPageTableDirectEntries];
+        char* pageBlockDirect_[kPageBlockDirectEntries];
 
         LbArena manager;
         // Content-change state shared by every statified container (set by
@@ -401,10 +528,11 @@ namespace gl {
         // Reset to Clean after a dump and after a reload (both points where
         // RAM == disk by construction).
         DirtyState dirty = DirtyState::Clean;
-        PagedVector<IntEncodedExpr> intEncodedStatements;
-        PagedVector<IntEncodedExpr> intLocalEncodedStatements;
-        PagedVector<IntEncodedExpr> intLocalEncodedStatementsDelta;
-        PagedVector<IntEncodedExpr> intExternalStatements;
+        SharedExpressionStore sharedExpressions;
+        SharedExpressionList intEncodedStatements;
+        SharedExpressionList intLocalEncodedStatements;
+        SharedExpressionList intLocalEncodedStatementsDelta;
+        SharedExpressionList intExternalStatements;
         // The interner cold string tables (strings campaign); each is
         // serialized through its two facets, never directly. The lb-state
         // table additionally survives destroyGrid (its façade never calls
@@ -449,10 +577,6 @@ namespace gl {
         ColdHashSet<PodKeyStore<NameId>>::KeysView intValidityNamesToFilterKeys;
         ColdHashSet<PodKeyStore<NameId>> intAxedVariables;
         ColdHashSet<PodKeyStore<NameId>>::KeysView intAxedVariablesKeys;
-        ColdHashSet<PodKeyStore<NameId>> canBeSentIds;
-        ColdHashSet<PodKeyStore<NameId>>::KeysView canBeSentIdsKeys;
-        ColdHashSet<PodKeyStore<NameId>> canBeSentMarkerIds;
-        ColdHashSet<PodKeyStore<NameId>>::KeysView canBeSentMarkerIdsKeys;
         ColdHashSet<PodKeyStore<NameId>> pendingWipeScopes;
         ColdHashSet<PodKeyStore<NameId>>::KeysView pendingWipeScopesKeys;
         // Batch 1 write-once int->int maps (D-170):
@@ -545,6 +669,9 @@ namespace gl {
         // persistent (overall / local) + two transient (localHashMemoryDelta /
         // workingMemory, emptied per burst by resetToFresh). visitContainers
         // enumerates each at bases 51 / 151 / 251 / 351; all survive discharge.
+        // Derived immutable payload owner. Canonical streams remain per map;
+        // clients destruct first and raw eviction preserves all shared pages.
+        SharedBytePool sharedNativeKeys;
         HashMemory overallHashMemory;
         HashMemory localHashMemory;
         HashMemory localHashMemoryDelta;
@@ -655,8 +782,6 @@ namespace gl {
             visit(ContainerTag::IntValidityNamesToFilter,
                   intValidityNamesToFilterKeys);
             visit(ContainerTag::IntAxedVariables, intAxedVariablesKeys);
-            visit(ContainerTag::CanBeSentIds, canBeSentIdsKeys);
-            visit(ContainerTag::CanBeSentMarkerIds, canBeSentMarkerIdsKeys);
             visit(ContainerTag::PendingWipeScopes, pendingWipeScopesKeys);
             visit(ContainerTag::OrDisjunctCountKeys, orDisjunctCountKeys);
             visit(ContainerTag::OrDisjunctCountValues, orDisjunctCountValues);
@@ -759,7 +884,145 @@ namespace gl {
             visit(ContainerTag::CompactExpansionsBlobPool, compactExpansionsBlobPool);
             visit(ContainerTag::ExpansionCarrierCountKeys, expansionCarrierCountKeys);
             visit(ContainerTag::ExpansionCarrierCountValues, expansionCarrierCountValues);
+            visit(ContainerTag::UsedAsPremiseCorePairs, usedAsPremiseCorePairsKeys);
+            visit(ContainerTag::AppliedPremiseCorePairs, appliedPremiseCorePairsKeys);
+            visit(ContainerTag::ClosedOrGoalLevelsKeys, closedOrGoalLevelsKeys);
+            visit(ContainerTag::ClosedOrGoalLevelsRunStarts, closedOrGoalLevelsRunStarts);
+            visit(ContainerTag::ClosedOrGoalLevelsValues, closedOrGoalLevelsValues);
+            orImplications.visitContainers(
+                static_cast<uint32_t>(ContainerTag::OrImplicationsBase),
+                [&](uint32_t tag, auto& column) {
+                    visit(static_cast<ContainerTag>(tag), column);
+                });
+            visit(ContainerTag::ExistenceReplaysKeys, existenceReplaysKeys);
+            visit(ContainerTag::ExistenceReplaysValues, existenceReplaysValues);
+            visit(ContainerTag::CanonicalEquivalenceClassesKeys, canonicalEquivalenceClassesKeys);
+            visit(ContainerTag::CanonicalEquivalenceClassesRunStarts, canonicalEquivalenceClassesRunStarts);
+            visit(ContainerTag::CanonicalEquivalenceClassesBlobStarts, canonicalEquivalenceClassesBlobStarts);
+            visit(ContainerTag::CanonicalEquivalenceClassesBlobPool, canonicalEquivalenceClassesBlobPool);
+            visit(ContainerTag::CanonicalMemberRepresentativesKeys, canonicalMemberRepresentativesKeys);
+            visit(ContainerTag::CanonicalMemberRepresentativesValues, canonicalMemberRepresentativesValues);
+            visit(ContainerTag::CanonicalClassChangesKeys, canonicalClassChangesKeys);
+            visit(ContainerTag::CanonicalClassChangesValues, canonicalClassChangesValues);
+            unaryComposition.visitContainers(static_cast<uint32_t>(ContainerTag::UnaryCompositionBase),
+                [&](uint32_t tag, auto& column) { visit(static_cast<ContainerTag>(tag), column); });
+
+            visit(ContainerTag::OrSupportFactsKeys, orSupportFactsKeys);
+            visit(ContainerTag::OrSupportFactsValues, orSupportFactsValues);
+            visit(ContainerTag::OrSupportEqualitiesKeys, orSupportEqualitiesKeys);
+            visit(ContainerTag::OrSupportEqualitiesRunStarts, orSupportEqualitiesRunStarts);
+            visit(ContainerTag::OrSupportEqualitiesValues, orSupportEqualitiesValues);
+            visit(ContainerTag::IntegrationTasksKeys, integrationTasksKeys);
+            visit(ContainerTag::IntegrationTasksValues, integrationTasksValues);
+            visit(ContainerTag::IntegrationPreparedOwnersKeys, integrationPreparedOwnersKeys);
+            visit(ContainerTag::IntegrationPreparedOwnersValues, integrationPreparedOwnersValues);
+            visit(ContainerTag::IntegrationScopeOwnersKeys, integrationScopeOwnersKeys);
+            visit(ContainerTag::IntegrationScopeOwnersValues, integrationScopeOwnersValues);
+            visit(ContainerTag::IntegrationRuleOwnersKeys, integrationRuleOwnersKeys);
+            visit(ContainerTag::IntegrationRuleOwnersValues, integrationRuleOwnersValues);
+            visit(ContainerTag::IntegrationCopyOwnersKeys, integrationCopyOwnersKeys);
+            visit(ContainerTag::IntegrationCopyOwnersValues, integrationCopyOwnersValues);
+            visit(ContainerTag::AlgebraKeyOwnersKeys, algebraKeyOwnersKeys);
+            visit(ContainerTag::AlgebraKeyOwnersValues, algebraKeyOwnersValues);
+            visit(ContainerTag::AdmissionSetOwnersKeys, admissionSetOwnersKeys);
+            visit(ContainerTag::AdmissionSetOwnersValues, admissionSetOwnersValues);
+            visit(ContainerTag::AdmissionTriggerOwnersKeys, admissionTriggerOwnersKeys);
+            visit(ContainerTag::AdmissionTriggerOwnersValues, admissionTriggerOwnersValues);
+            visit(ContainerTag::FinishedIntegrationRoots, finishedIntegrationRootsKeys);
         }
+
+        // Current signed premise eligibility (the only multiplication and
+        // GPU-upload criterion) and completed class coverage.
+        ColdHashSet<PodKeyStore<int64_t>> usedAsPremiseCorePairs{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView usedAsPremiseCorePairsKeys{ &usedAsPremiseCorePairs };
+        ColdHashSet<PodKeyStore<int64_t>> appliedPremiseCorePairs{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView appliedPremiseCorePairsKeys{ &appliedPremiseCorePairs };
+
+        // Derivation levels of current chain goals booked before a successful
+        // OR branch wipe. The key uses NameMap expression and branch-scope ids.
+        // This convergence-only state deloads normally and clears at discharge.
+        TypedColdSetMap<StatementKey, int> closedOrGoalLevels{ &manager, &dirty };
+        TypedColdSetMap<StatementKey, int>::KeysView closedOrGoalLevelsKeys{ &closedOrGoalLevels.inner() };
+        TypedColdSetMap<StatementKey, int>::RunStartsView closedOrGoalLevelsRunStarts{ &closedOrGoalLevels.inner() };
+        TypedColdSetMap<StatementKey, int>::RunValuesView closedOrGoalLevelsValues{ &closedOrGoalLevels.inner() };
+
+        // One canonical source store per block; its eight facets occupy
+        // tags 829 through 836 and are discharged with active proof work.
+        OrImplications orImplications{ &manager, &dirty };
+        OrImplicationMatchIndex orImplicationMatches{ &manager };
+        ExistenceLookupIndexes existenceLookups{ &manager };
+        CanonicalUseIndexes canonicalUses{ &manager };
+        UnaryCompositionStore unaryComposition{ &manager, &dirty };
+
+        // A target/branch contribution cites its actual fact and the positive
+        // equalities used in that branch. These are bookkeeping, not statements.
+        // The paired level run lives in closedOrGoalLevels and survives freezing.
+        TypedColdMap<StatementKey, int64_t> orSupportFacts{ &manager, &dirty };
+        TypedColdMap<StatementKey, int64_t>::KeysView orSupportFactsKeys{ &orSupportFacts.inner() };
+        TypedColdMap<StatementKey, int64_t>::ValuesView orSupportFactsValues{ &orSupportFacts.inner() };
+        TypedColdSetMap<StatementKey, int64_t> orSupportEqualities{ &manager, &dirty };
+        TypedColdSetMap<StatementKey, int64_t>::KeysView orSupportEqualitiesKeys{ &orSupportEqualities.inner() };
+        TypedColdSetMap<StatementKey, int64_t>::RunStartsView orSupportEqualitiesRunStarts{ &orSupportEqualities.inner() };
+        TypedColdSetMap<StatementKey, int64_t>::RunValuesView orSupportEqualitiesValues{ &orSupportEqualities.inner() };
+
+        // Complete scope-visible classes, used only for canonical identities.
+        TypedColdBlobMap<NameId, EquivalenceClass> canonicalEquivalenceClassesMap{ &manager, &dirty };
+        TypedColdBlobMap<NameId, EquivalenceClass>::KeysView canonicalEquivalenceClassesKeys{ &canonicalEquivalenceClassesMap.inner() };
+        TypedColdBlobMap<NameId, EquivalenceClass>::RunStartsView canonicalEquivalenceClassesRunStarts{ &canonicalEquivalenceClassesMap.inner() };
+        TypedColdBlobMap<NameId, EquivalenceClass>::BlobStartsView canonicalEquivalenceClassesBlobStarts{ &canonicalEquivalenceClassesMap.inner() };
+        TypedColdBlobMap<NameId, EquivalenceClass>::BlobPoolView canonicalEquivalenceClassesBlobPool{ &canonicalEquivalenceClassesMap.inner() };
+
+        // Previous target-scope normal/special representatives and pending
+        // canonical changes, keyed by (member, scope), independently of application.
+        TypedColdMap<int64_t, int64_t> canonicalMemberRepresentatives{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView canonicalMemberRepresentativesKeys{ &canonicalMemberRepresentatives.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView canonicalMemberRepresentativesValues{ &canonicalMemberRepresentatives.inner() };
+        TypedColdMap<int64_t, int32_t> canonicalClassChanges{ &manager, &dirty };
+        TypedColdMap<int64_t, int32_t>::KeysView canonicalClassChangesKeys{ &canonicalClassChanges.inner() };
+        TypedColdMap<int64_t, int32_t>::ValuesView canonicalClassChangesValues{ &canonicalClassChanges.inner() };
+
+        // Source/scope receipts: completed construction bits 0..1 and queued bits 2..3.
+        TypedColdMap<int64_t, int32_t> existenceReplays{ &manager, &dirty };
+        TypedColdMap<int64_t, int32_t>::KeysView existenceReplaysKeys{ &existenceReplays.inner() };
+        TypedColdMap<int64_t, int32_t>::ValuesView existenceReplaysValues{ &existenceReplays.inner() };
+
+        // Finished-task wipe (I-284). The task table keyed
+        // by task key (packed template/scope key of the task text) -> root,
+        // parent task and flags. The owner maps name the task that created a
+        // derivative: an `integrationPrepared` gate key, a scope id, a rule
+        // (`packRuleOwner` of the installed implication and scope), a
+        // multiplication copy (the owner every LMV of the copy carries), an
+        // algebra `admissionMap` key, an `admissionSetIntegration` key, a
+        // `triggersForAdmissionSetIntegration` key. Owner zero means an
+        // independent derivative. `finishedIntegrationRoots` holds every root
+        // found finished. All dischargeable; `wipeSubtrees` erases the entries
+        // whose scope half is closed.
+        TypedColdMap<int64_t, IntegrationTaskRec> integrationTasks{ &manager, &dirty };
+        TypedColdMap<int64_t, IntegrationTaskRec>::KeysView integrationTasksKeys{ &integrationTasks.inner() };
+        TypedColdMap<int64_t, IntegrationTaskRec>::ValuesView integrationTasksValues{ &integrationTasks.inner() };
+        TypedColdMap<int64_t, int64_t> integrationPreparedOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView integrationPreparedOwnersKeys{ &integrationPreparedOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView integrationPreparedOwnersValues{ &integrationPreparedOwners.inner() };
+        TypedColdMap<int64_t, int64_t> integrationScopeOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView integrationScopeOwnersKeys{ &integrationScopeOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView integrationScopeOwnersValues{ &integrationScopeOwners.inner() };
+        TypedColdMap<int64_t, int64_t> integrationRuleOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView integrationRuleOwnersKeys{ &integrationRuleOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView integrationRuleOwnersValues{ &integrationRuleOwners.inner() };
+        TypedColdMap<int64_t, int64_t> integrationCopyOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView integrationCopyOwnersKeys{ &integrationCopyOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView integrationCopyOwnersValues{ &integrationCopyOwners.inner() };
+        TypedColdMap<int64_t, int64_t> algebraKeyOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView algebraKeyOwnersKeys{ &algebraKeyOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView algebraKeyOwnersValues{ &algebraKeyOwners.inner() };
+        TypedColdMap<int64_t, int64_t> admissionSetOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView admissionSetOwnersKeys{ &admissionSetOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView admissionSetOwnersValues{ &admissionSetOwners.inner() };
+        TypedColdMap<int64_t, int64_t> admissionTriggerOwners{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView admissionTriggerOwnersKeys{ &admissionTriggerOwners.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView admissionTriggerOwnersValues{ &admissionTriggerOwners.inner() };
+        ColdHashSet<PodKeyStore<int64_t>> finishedIntegrationRoots{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView finishedIntegrationRootsKeys{ &finishedIntegrationRoots };
 
         /// @brief Enumerate the statified containers in tag order
         ///        (read-only).
@@ -794,8 +1057,6 @@ namespace gl {
             visit(ContainerTag::IntValidityNamesToFilter,
                   intValidityNamesToFilterKeys);
             visit(ContainerTag::IntAxedVariables, intAxedVariablesKeys);
-            visit(ContainerTag::CanBeSentIds, canBeSentIdsKeys);
-            visit(ContainerTag::CanBeSentMarkerIds, canBeSentMarkerIdsKeys);
             visit(ContainerTag::PendingWipeScopes, pendingWipeScopesKeys);
             visit(ContainerTag::OrDisjunctCountKeys, orDisjunctCountKeys);
             visit(ContainerTag::OrDisjunctCountValues, orDisjunctCountValues);
@@ -898,6 +1159,51 @@ namespace gl {
             visit(ContainerTag::CompactExpansionsBlobPool, compactExpansionsBlobPool);
             visit(ContainerTag::ExpansionCarrierCountKeys, expansionCarrierCountKeys);
             visit(ContainerTag::ExpansionCarrierCountValues, expansionCarrierCountValues);
+            visit(ContainerTag::UsedAsPremiseCorePairs, usedAsPremiseCorePairsKeys);
+            visit(ContainerTag::AppliedPremiseCorePairs, appliedPremiseCorePairsKeys);
+            visit(ContainerTag::ClosedOrGoalLevelsKeys, closedOrGoalLevelsKeys);
+            visit(ContainerTag::ClosedOrGoalLevelsRunStarts, closedOrGoalLevelsRunStarts);
+            visit(ContainerTag::ClosedOrGoalLevelsValues, closedOrGoalLevelsValues);
+            orImplications.visitContainers(
+                static_cast<uint32_t>(ContainerTag::OrImplicationsBase),
+                [&](uint32_t tag, const auto& column) {
+                    visit(static_cast<ContainerTag>(tag), column);
+                });
+            visit(ContainerTag::ExistenceReplaysKeys, existenceReplaysKeys);
+            visit(ContainerTag::ExistenceReplaysValues, existenceReplaysValues);
+            visit(ContainerTag::CanonicalEquivalenceClassesKeys, canonicalEquivalenceClassesKeys);
+            visit(ContainerTag::CanonicalEquivalenceClassesRunStarts, canonicalEquivalenceClassesRunStarts);
+            visit(ContainerTag::CanonicalEquivalenceClassesBlobStarts, canonicalEquivalenceClassesBlobStarts);
+            visit(ContainerTag::CanonicalEquivalenceClassesBlobPool, canonicalEquivalenceClassesBlobPool);
+            visit(ContainerTag::CanonicalMemberRepresentativesKeys, canonicalMemberRepresentativesKeys);
+            visit(ContainerTag::CanonicalMemberRepresentativesValues, canonicalMemberRepresentativesValues);
+            visit(ContainerTag::CanonicalClassChangesKeys, canonicalClassChangesKeys);
+            visit(ContainerTag::CanonicalClassChangesValues, canonicalClassChangesValues);
+            unaryComposition.visitContainers(static_cast<uint32_t>(ContainerTag::UnaryCompositionBase),
+                [&](uint32_t tag, auto& column) { visit(static_cast<ContainerTag>(tag), column); });
+
+            visit(ContainerTag::OrSupportFactsKeys, orSupportFactsKeys);
+            visit(ContainerTag::OrSupportFactsValues, orSupportFactsValues);
+            visit(ContainerTag::OrSupportEqualitiesKeys, orSupportEqualitiesKeys);
+            visit(ContainerTag::OrSupportEqualitiesRunStarts, orSupportEqualitiesRunStarts);
+            visit(ContainerTag::OrSupportEqualitiesValues, orSupportEqualitiesValues);
+            visit(ContainerTag::IntegrationTasksKeys, integrationTasksKeys);
+            visit(ContainerTag::IntegrationTasksValues, integrationTasksValues);
+            visit(ContainerTag::IntegrationPreparedOwnersKeys, integrationPreparedOwnersKeys);
+            visit(ContainerTag::IntegrationPreparedOwnersValues, integrationPreparedOwnersValues);
+            visit(ContainerTag::IntegrationScopeOwnersKeys, integrationScopeOwnersKeys);
+            visit(ContainerTag::IntegrationScopeOwnersValues, integrationScopeOwnersValues);
+            visit(ContainerTag::IntegrationRuleOwnersKeys, integrationRuleOwnersKeys);
+            visit(ContainerTag::IntegrationRuleOwnersValues, integrationRuleOwnersValues);
+            visit(ContainerTag::IntegrationCopyOwnersKeys, integrationCopyOwnersKeys);
+            visit(ContainerTag::IntegrationCopyOwnersValues, integrationCopyOwnersValues);
+            visit(ContainerTag::AlgebraKeyOwnersKeys, algebraKeyOwnersKeys);
+            visit(ContainerTag::AlgebraKeyOwnersValues, algebraKeyOwnersValues);
+            visit(ContainerTag::AdmissionSetOwnersKeys, admissionSetOwnersKeys);
+            visit(ContainerTag::AdmissionSetOwnersValues, admissionSetOwnersValues);
+            visit(ContainerTag::AdmissionTriggerOwnersKeys, admissionTriggerOwnersKeys);
+            visit(ContainerTag::AdmissionTriggerOwnersValues, admissionTriggerOwnersValues);
+            visit(ContainerTag::FinishedIntegrationRoots, finishedIntegrationRootsKeys);
         }
 
         /// @brief Whether a tag's content survives discharge (rides the
@@ -966,66 +1272,108 @@ namespace gl {
         /// The emptied storage becomes arena holes the copying compaction
         /// reclaims.
         void clearDischargeableContainers() {
+            orImplicationMatches.clear();
+            existenceLookups.clear();
+            canonicalUses.clear();
             visitContainers([](ContainerTag tag, auto& container) {
                 if (survivesDischarge(tag)) return;
                 container.clear();
             });
         }
 
-        /// @brief Total live byte footprint across every container — the
-        ///        steward's fragmentation gate compares it to
-        ///        `manager.usedBytes()` to size the reclaimable holes.
+        /// @brief Visit every term of `liveBytes` with its container name —
+        ///        the per-container physical footprint the memory measurement
+        ///        reports.
         ///
         /// @details
-        /// Sums each container's `liveBytes()` (elements/strings + their index
-        /// structures). `manager.usedBytes() - liveBytes()` is the arena's
-        /// dead space the copying compaction would reclaim. Deterministic
-        /// (logical counts only).
+        /// The single list of `liveBytes` terms: each call passes the owning
+        /// member's name (a string literal) and the bytes that member pins —
+        /// its held pages, index pages included, for a paged container, or the
+        /// logical estimate `liveBytes` has always used for the few count-based
+        /// terms. `liveBytes` sums exactly these calls, so the two can never
+        /// drift. Read-only; legal whether or not the arena is resident (every
+        /// term reads scalar bookkeeping only).
+        ///
+        /// @tparam Visitor Callable `(const char* name, int64_t bytes)`.
+        /// @param visit The visitor, called once per term in a fixed order.
+        template <typename Visitor>
+        void visitLiveBytes(Visitor&& visit) const {
+            visit("sharedExpressions", sharedExpressions.liveBytes());
+            visit("intEncodedStatements", static_cast<int64_t>(intEncodedStatements.liveBytes()));
+            visit("intLocalEncodedStatements", static_cast<int64_t>(intLocalEncodedStatements.liveBytes()));
+            visit("intLocalEncodedStatementsDelta", static_cast<int64_t>(intLocalEncodedStatementsDelta.liveBytes()));
+            visit("intExternalStatements", static_cast<int64_t>(intExternalStatements.liveBytes()));
+            visit("templateStrings", static_cast<int64_t>(templateStrings.liveBytes()));
+            visit("valueStrings", static_cast<int64_t>(valueStrings.liveBytes()));
+            visit("originStrings", static_cast<int64_t>(originStrings.liveBytes()));
+            visit("ruleStrings", static_cast<int64_t>(ruleStrings.liveBytes()));
+            visit("lbStateStrings", static_cast<int64_t>(lbStateStrings.liveBytes()));
+            visit("nameStrings", static_cast<int64_t>(nameStrings.liveBytes()));
+            visit("subStrings", static_cast<int64_t>(subStrings.liveBytes()));
+            visit("validityNodes", static_cast<int64_t>(validityNodes.liveBytes()));
+            visit("intValidityNamesToFilter", static_cast<int64_t>(intValidityNamesToFilter.liveBytes()));
+            visit("intAxedVariables", static_cast<int64_t>(intAxedVariables.liveBytes()));
+            visit("pendingWipeScopes", static_cast<int64_t>(pendingWipeScopes.liveBytes()));
+            visit("orDisjunctCount", static_cast<int64_t>(orDisjunctCount.liveBytes()));
+            visit("integrationStartIntMap", static_cast<int64_t>(integrationStartIntMap.liveBytes()));
+            visit("intLocalEncodedStatementsSet", static_cast<int64_t>(intLocalEncodedStatementsSet.liveBytes()));
+            visit("usedAsPremiseCorePairs", static_cast<int64_t>(usedAsPremiseCorePairs.liveBytes()));
+            visit("appliedPremiseCorePairs", static_cast<int64_t>(appliedPremiseCorePairs.liveBytes()));
+            visit("intWeakVariables", static_cast<int64_t>(intWeakVariables.liveBytes()));
+            visit("integrationPrepared", static_cast<int64_t>(integrationPrepared.liveBytes()));
+            visit("integrationPreparedMarker", static_cast<int64_t>(integrationPreparedMarker.liveBytes()));
+            visit("expandedImplications", static_cast<int64_t>(expandedImplications.liveBytes()));
+            visit("compactExpansions", static_cast<int64_t>(compactExpansions.liveBytes()));
+            visit("expansionCarrierCount", static_cast<int64_t>(expansionCarrierCount.liveBytes()));
+            visit("intKnownStatements", static_cast<int64_t>(intKnownStatements.liveBytes()));
+            visit("equivalenceClassesMap", static_cast<int64_t>(equivalenceClassesMap.liveBytes()));
+            visit("canonicalEquivalenceClassesMap", static_cast<int64_t>(canonicalEquivalenceClassesMap.liveBytes()));
+            visit("canonicalMemberRepresentatives", static_cast<int64_t>(canonicalMemberRepresentatives.count() * (sizeof(int64_t) + sizeof(int64_t))));
+            visit("canonicalClassChanges", static_cast<int64_t>(canonicalClassChanges.count() * (sizeof(int64_t) + sizeof(int32_t))));
+            visit("exprOriginMap", static_cast<int64_t>(exprOriginMap.liveBytes()));
+            visit("sharedNativeKeys", sharedNativeKeys.liveBytes());
+            visit("overallHashMemory", static_cast<int64_t>(overallHashMemory.liveBytes()));
+            visit("localHashMemory", static_cast<int64_t>(localHashMemory.liveBytes()));
+            visit("localHashMemoryDelta", static_cast<int64_t>(localHashMemoryDelta.liveBytes()));
+            visit("workingMemory", static_cast<int64_t>(workingMemory.liveBytes()));
+            visit("sameInternalMail", static_cast<int64_t>(sameInternalMail.liveBytes()));
+            visit("nextInternalMail", static_cast<int64_t>(nextInternalMail.liveBytes()));
+            visit("changedClassesThisStep", static_cast<int64_t>(changedClassesThisStep.liveBytes()));
+            visit("eqClassNameCaches", static_cast<int64_t>(eqClassNameCaches.liveBytes()));
+            visit("mailOut", static_cast<int64_t>(mailOut.liveBytes()));
+            visit("orPendingBranches", static_cast<int64_t>(orPendingBranches.liveBytes()));
+            visit("orPendingLevels", static_cast<int64_t>(orPendingLevels.liveBytes()));
+            visit("pendingRelayIter", static_cast<int64_t>(pendingRelayIter.liveBytes()));
+            visit("pendingRelayLevels", static_cast<int64_t>(pendingRelayLevels.liveBytes()));
+            visit("orImplications", static_cast<int64_t>(orImplications.liveBytes()));
+            visit("existenceReplays", static_cast<int64_t>(existenceReplays.count() * (sizeof(int64_t) + sizeof(int32_t))));
+            visit("orImplicationMatches", static_cast<int64_t>(orImplicationMatches.liveBytes()));
+            visit("existenceLookups", static_cast<int64_t>(existenceLookups.liveBytes()));
+            visit("canonicalUses", static_cast<int64_t>(canonicalUses.liveBytes()));
+            visit("unaryComposition", static_cast<int64_t>(unaryComposition.liveBytes()));
+            visit("orSupportFacts", static_cast<int64_t>(orSupportFacts.count() * (sizeof(int64_t) * 2)));
+            visit("orSupportEqualities", static_cast<int64_t>(orSupportEqualities.liveBytes()));
+            visit("integrationTasks", static_cast<int64_t>(integrationTasks.liveBytes()));
+            visit("integrationOwners", static_cast<int64_t>(integrationPreparedOwners.liveBytes()
+                + integrationScopeOwners.liveBytes() + integrationRuleOwners.liveBytes()
+                + integrationCopyOwners.liveBytes() + algebraKeyOwners.liveBytes()
+                + admissionSetOwners.liveBytes() + admissionTriggerOwners.liveBytes()));
+            visit("finishedIntegrationRoots", static_cast<int64_t>(finishedIntegrationRoots.liveBytes()));
+        }
+
+        /// @brief Total live byte footprint across the named container census.
+        ///
+        /// @details
+        /// Sums every term `visitLiveBytes` reports: elements, strings, their
+        /// index structures and shared native-key storage counted once.
+        /// The total includes reusable record slots and derived indexes; the steward's
+        /// separate compaction gate reads page-tier fragmentation.
         ///
         /// @return Live bytes summed over all statified containers.
         int64_t liveBytes() const {
-            return intEncodedStatements.liveBytes()
-                 + intLocalEncodedStatements.liveBytes()
-                 + intLocalEncodedStatementsDelta.liveBytes()
-                 + intExternalStatements.liveBytes()
-                 + templateStrings.liveBytes()
-                 + valueStrings.liveBytes()
-                 + originStrings.liveBytes()
-                 + ruleStrings.liveBytes()
-                 + lbStateStrings.liveBytes()
-                 + nameStrings.liveBytes()
-                 + subStrings.liveBytes()
-                 + validityNodes.liveBytes()
-                 + intValidityNamesToFilter.liveBytes()
-                 + intAxedVariables.liveBytes()
-                 + canBeSentIds.liveBytes()
-                 + canBeSentMarkerIds.liveBytes()
-                 + pendingWipeScopes.liveBytes()
-                 + orDisjunctCount.liveBytes()
-                 + integrationStartIntMap.liveBytes()
-                 + intLocalEncodedStatementsSet.liveBytes()
-                 + intWeakVariables.liveBytes()
-                 + integrationPrepared.liveBytes()
-                 + integrationPreparedMarker.liveBytes()
-                 + expandedImplications.liveBytes()
-                 + compactExpansions.liveBytes()
-                 + expansionCarrierCount.liveBytes()
-                 + intKnownStatements.liveBytes()
-                 + equivalenceClassesMap.liveBytes()
-                 + exprOriginMap.liveBytes()
-                 + overallHashMemory.liveBytes()
-                 + localHashMemory.liveBytes()
-                 + localHashMemoryDelta.liveBytes()
-                 + workingMemory.liveBytes()
-                 + sameInternalMail.liveBytes()
-                 + nextInternalMail.liveBytes()
-                 + changedClassesThisStep.liveBytes()
-                 + eqClassNameCaches.liveBytes()
-                 + mailOut.liveBytes()
-                 + orPendingBranches.liveBytes()
-                 + orPendingLevels.liveBytes()
-                 + pendingRelayIter.liveBytes()
-                 + pendingRelayLevels.liveBytes();
+            int64_t total = 0;
+            visitLiveBytes([&total](const char*, int64_t bytes) { total += bytes; });
+            return total;
         }
 
         /// @brief Compaction: pack the LB's live pages onto the contiguous

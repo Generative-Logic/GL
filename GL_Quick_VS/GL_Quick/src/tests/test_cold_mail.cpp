@@ -156,6 +156,14 @@ TEST(cold_mail, disintegration_signals_pack_unpack_overwrite_read) {
     ASSERT_EQ(it, 4);
     cm.getDisintegrationSignal(pk(99, 16), dnd, aod, it);
     ASSERT_EQ(it, -1);                                       // miss
+    bool rh = false, continuation = false;
+    cm.setDisintegrationSignal(pk(1, 16), true, false, 5, true, true);
+    cm.setDisintegrationSignal(pk(1, 16), false, true, 2);
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it, &rh, &continuation);
+    ASSERT_TRUE(!dnd && aod && !rh && continuation);
+    ASSERT_EQ(it, 1);
+    cm.getDisintegrationSignal(pk(99, 16), dnd, aod, it, &rh, &continuation);
+    ASSERT_TRUE(!continuation);
 }
 
 // The out-param overload of getDisintegrationSignal is bit-identical to the
@@ -257,4 +265,44 @@ TEST(cold_mail, filter_origins_scope_sweep) {
     const int32_t keptId = cm.origins_.lookup(pk(5, 20));
     ASSERT_TRUE(keptId != 0);
     ASSERT_EQ(static_cast<int>(cm.origins_.recordsAt(keptId).size()), 1);
+}
+
+TEST(cold_mail, disintegration_signals_recursion_head_bit) {
+    gl::GlobalMemoryManager g;
+    g.init(kColdMailCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdMail cm(&lb, &d);
+
+    // Bit 2 rides beside the two bools; the iteration half is unaffected.
+    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/false, /*aod=*/true, 3, /*rh=*/true);
+    cm.setDisintegrationSignal(pk(2, 16), /*dnd=*/true, /*aod=*/false, 7);          // default rh=false
+    bool dnd = true, aod = false, rh = false;
+    int32_t it = -99;
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it, &rh);
+    ASSERT_TRUE(!dnd && aod && rh);
+    ASSERT_EQ(it, 3);
+    cm.getDisintegrationSignal(pk(2, 16), dnd, aod, it, &rh);
+    ASSERT_TRUE(dnd && !aod && !rh);
+    ASSERT_EQ(it, 7);
+
+    // Last-write for the bit (like dnd/aod); min-merge for the iteration.
+    cm.setDisintegrationSignal(pk(1, 16), false, true, 5, /*rh=*/false);
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it, &rh);
+    ASSERT_FALSE(rh);
+    ASSERT_EQ(it, 3);
+    cm.setDisintegrationSignal(pk(1, 16), false, true, 1, /*rh=*/true);
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it, &rh);
+    ASSERT_TRUE(rh);
+    ASSERT_EQ(it, 1);
+
+    // Miss: every field at its default, the bit included.
+    rh = true;
+    cm.getDisintegrationSignal(pk(99, 16), dnd, aod, it, &rh);
+    ASSERT_TRUE(!dnd && !aod && !rh);
+    ASSERT_EQ(it, -1);
+
+    // The pair oracle still reads the two bools only.
+    const std::pair<bool, bool> pr = cm.getDisintegrationSignal(pk(1, 16));
+    ASSERT_TRUE(pr.first == false && pr.second == true);
 }

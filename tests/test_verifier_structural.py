@@ -42,7 +42,180 @@ from tests.test_harness import (  # noqa: E402
 from verifier import (  # noqa: E402
     check_disintegration, check_expansion, check_recursion,
     check_anchor_handling, check_compilation,
+    _counterexample_children, _negated_or_children,
 )
+
+
+@register
+def test_negated_and_expansion_preserves_binary_grouping():
+    elements = ['(in[u_1,u_2])', '!(=[u_1,u_2])', '(in[u_2,u_2])',
+                '(=[u_1,u_1])', '(in[u_2,u_1])']
+    cases = [
+        (2, '!(&(in[a,N])!(=[a,N]))'),
+        (3, '!(&(&(in[a,N])!(=[a,N]))(in[N,N]))'),
+        (5, '!(&(&(&(&(in[a,N])!(=[a,N]))(in[N,N]))(=[a,a]))(in[N,a]))'),
+    ]
+    for count, compound in cases:
+        entry = {'category': 'and', 'signature': '(bundle[u_1,u_2])',
+                 'elements': elements[:count]}
+        state = make_state_minimal()
+        state.current_gl_binary = {'bundle': entry}
+        state.gl_binaries = {'Test': state.current_gl_binary}
+        compact = '!(bundle[a,N])'
+        for scope in ['main', 'main_boundary_branch']:
+            source = make_proof_line(compact, scope, 'premise')
+            row = make_proof_line(compound, scope, 'expansion', compact, scope)
+            assert_pass(check_expansion, row, [source, row], state)
+            if count > 2:
+                flat = '!(&' + ''.join(elements[:count]).replace('u_1', 'a').replace('u_2', 'N') + ')'
+                bad = make_proof_line(flat, scope, 'expansion', compact, scope)
+                assert_failure(check_expansion, bad, [source, bad], state)
+
+
+@register
+def test_negated_interval_expansion_requires_exact_constituents_and_scope():
+    entry = {'category': 'and', 'signature': '(interval[u_1,u_2,u_3,u_4,u_5])',
+             'elements': ['(implication26[u_5,u_1,u_2,u_3])',
+                          '(implication27[u_5,u_1,u_2,u_4])',
+                          '(implication28[u_1,u_2,u_3,u_4,u_5])',
+                          '(in[u_3,u_1])', '(in[u_4,u_1])']}
+    state = make_state_minimal()
+    state.current_gl_binary = {'interval': entry}
+    state.gl_binaries = {'Test': state.current_gl_binary}
+    compact = '!(interval[N,+,i0,v2,V2])'
+    compound = ('!(&(&(&(&(implication26[V2,N,+,i0])'
+                '(implication27[V2,N,+,v2]))(implication28[N,+,i0,v2,V2]))'
+                '(in[i0,N]))(in[v2,N]))')
+    source = make_proof_line(compact, 'main', 'premise')
+    row = make_proof_line(compound, 'main', 'expansion', compact, 'main')
+    assert_pass(check_expansion, row, [source, row], state)
+    missing = ('!(&(&(&(implication26[V2,N,+,i0])'
+               '(implication27[V2,N,+,v2]))(implication28[N,+,i0,v2,V2]))(in[i0,N]))')
+    for expression in [missing, compound[1:],
+                       compound.replace('(in[v2,N])', '!(in[v2,N])'),
+                       compound.replace('(in[v2,N])', '(in[i0,N])'),
+                       compound.replace('(in[v2,N])', '(in[v1,N])'),
+                       compound.replace('implication27', 'implication26')]:
+        bad = make_proof_line(expression, 'main', 'expansion', compact, 'main')
+        assert_failure(check_expansion, bad, [source, bad], state)
+    bad_scope = make_proof_line(compound, 'main_boundary_child', 'expansion', compact, 'main')
+    assert_failure(check_expansion, bad_scope, [source, bad_scope], state)
+    assert_failure(check_expansion, row, [row], state)
+
+
+@register
+def test_negated_and_expansion_rejects_short_definitions():
+    for elements, compound in [([], '!(&)'), (['(in[u_1,u_2])'], '!(in[a,N])')]:
+        entry = {'category': 'and', 'signature': '(bundle[u_1,u_2])', 'elements': elements}
+        state = make_state_minimal()
+        state.current_gl_binary = {'bundle': entry}
+        state.gl_binaries = {'Test': state.current_gl_binary}
+        compact = '!(bundle[a,N])'
+        source = make_proof_line(compact, 'main', 'premise')
+        row = make_proof_line(compound, 'main', 'expansion', compact, 'main')
+        assert_failure(check_expansion, row, [source, row], state)
+
+
+@register
+def test_one_witness_counterexample_expansion_and_projection():
+    entry = {'category': 'implication', 'signature': '(implication96[u_1,u_2])',
+             'elements': ['(in[1,u_1])', '(in2[1,u_2,u_2])', '(=[1,u_2])']}
+    compact = '!(implication96[N,a])'
+    compound = '!(>[w](in[w,N])(>[](in2[w,a,a])(=[w,a])))'
+    children = ['(in[w,N])', '(in2[w,a,a])', '!(=[w,a])']
+    assert _counterexample_children(compact, compound, entry) == children
+    state = make_state_minimal()
+    state.current_gl_binary = {'implication96': entry}
+    state.gl_binaries = {'Test': state.current_gl_binary}
+    source = make_proof_line(compact, 'main', 'premise')
+    expanded = make_proof_line(compound, 'main', 'expansion', compact, 'main')
+    projections = [make_proof_line(child, 'main', 'disintegration', compound, 'main')
+                   for child in children]
+    chapter = [source, expanded, *projections]
+    assert_pass(check_expansion, expanded, chapter, state)
+    for row in projections:
+        assert_pass(check_disintegration, row, chapter, state)
+    for bad in ['(in[z,N])', '(in[w,a])', '(=[w,a])', '(in2[w,a,N])']:
+        row = make_proof_line(bad, 'main', 'disintegration', compound, 'main')
+        assert_failure(check_disintegration, row, [*chapter, row], state)
+    sibling = make_proof_line('(in[z,N])', 'main', 'disintegration', compound, 'main')
+    assert_failure(check_disintegration, projections[0], [*chapter, sibling], state)
+    for bad in [compound[1:], compound.replace('[w]', '[w,z]'),
+                compound.replace('(=[w,a])', '!(=[w,a])'),
+                compound.replace('(in2[w,a,a])', '(in2[z,a,a])'),
+                compound.replace('[w]', '[]'), compound.replace('w', 'a')]:
+        row = make_proof_line(bad, 'main', 'expansion', compact, 'main')
+        assert_failure(check_expansion, row, [source, row], state)
+    assert _counterexample_children(compact[1:], compound, entry) is None
+    multiple = dict(entry, elements=['(in[1,u_1])', '(in[2,u_1])', '(=[1,2])'])
+    assert _counterexample_children(compact, compound, multiple) is None
+
+
+@register
+def test_counterexample_later_binder_negative_head_and_scope():
+    entry = {'category': 'implication', 'signature': '(implication97[u_1,u_2])',
+             'elements': ['(in[u_2,u_1])', '(in[1,u_1])', '!(=[1,u_2])']}
+    compact = '!(implication97[N,a])'
+    compound = '!(>[](in[a,N])(>[w](in[w,N])!(=[w,a])))'
+    assert _counterexample_children(compact, compound, entry) == [
+        '(in[a,N])', '(in[w,N])', '(=[w,a])']
+    state = make_state_minimal()
+    state.current_gl_binary = {'implication97': entry}
+    state.gl_binaries = {'Test': state.current_gl_binary}
+    source_scope = 'main_boundary_left'
+    expanded = make_proof_line(compound, source_scope, 'expansion', compact, source_scope)
+    good = make_proof_line('(=[w,a])', source_scope + '_boundary_child',
+                           'disintegration', compound, source_scope)
+    assert_pass(check_disintegration, good, [expanded, good], state)
+    bad = make_proof_line('(=[w,a])', 'main_boundary_right',
+                          'disintegration', compound, source_scope)
+    assert_failure(check_disintegration, bad, [expanded, bad], state)
+
+
+@register
+def test_negated_or_expands_into_literal_complements_without_witnesses():
+    entry = {'category': 'or', 'signature': '(or97[u_1,u_2,u_3])',
+             'elements': ['(=[u_1,u_2])', '!(in[u_1,u_3])', '(=[u_1,u_2])']}
+    compact = '!(or97[a,b,N])'
+    compound = '(&(&!(=[a,b])(in[a,N]))!(=[a,b]))'
+    children = ['!(=[a,b])', '(in[a,N])', '!(=[a,b])']
+    assert _negated_or_children(compact, entry) == children
+    assert _negated_or_children(compact[1:], entry) is None
+    assert _negated_or_children('!(or97[a,b])', entry) is None
+    assert _negated_or_children(compact, dict(entry, category='and')) is None
+    state = make_state_minimal()
+    state.current_gl_binary = {'or97': entry}
+    state.gl_binaries = {'Test': state.current_gl_binary}
+    source = make_proof_line(compact, 'main', 'premise')
+    expanded = make_proof_line(compound, 'main', 'expansion', compact, 'main')
+    assert_pass(check_expansion, expanded, [source, expanded], state)
+    for child in children:
+        row = make_proof_line(child, 'main', 'disintegration', compound, 'main')
+        assert_pass(check_disintegration, row, [source, expanded, row], state)
+    for bad in ['(=[a,b])', '!(in[a,N])', '!(=[a,c])', '(in[b,N])']:
+        row = make_proof_line(bad, 'main', 'disintegration', compound, 'main')
+        assert_failure(check_disintegration, row, [source, expanded, row], state)
+    wrong = make_proof_line(compound.replace('(in[a,N])', '!(in[a,N])'),
+                            'main', 'expansion', compact, 'main')
+    assert_failure(check_expansion, wrong, [source, wrong], state)
+
+
+@register
+def test_negated_or_projection_keeps_source_scope_and_nested_compacts():
+    entry = {'category': 'or', 'signature': '(or98[u_1,u_2])',
+             'elements': ['(or97[u_1,u_2,u_1])', '(=[u_1,u_2])']}
+    compact = '!(or98[a,b])'
+    compound = '(&!(or97[a,b,a])!(=[a,b]))'
+    state = make_state_minimal()
+    state.current_gl_binary = {'or98': entry}
+    state.gl_binaries = {'Test': state.current_gl_binary}
+    expanded = make_proof_line(compound, 'main_boundary_left', 'expansion',
+                               compact, 'main_boundary_left')
+    for scope, accepted in [('main_boundary_left_boundary_child', True),
+                            ('main_boundary_right', False)]:
+        row = make_proof_line('!(or97[a,b,a])', scope, 'disintegration',
+                              compound, 'main_boundary_left')
+        assert check_disintegration(row, [expanded, row], state) == accepted
 
 
 # ===========================================================================
@@ -77,6 +250,88 @@ def test_disintegration_ns_mismatch():
         "(&[a,b])", "main_boundary_orint_X_((=[c,d]))",
     )
     assert_failure(check_disintegration, line, [line], state)
+
+
+def _state_with_andtest1():
+    """Peano state plus a synthetic two-element AND compact ``andtest1``."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["andtest1"] = {
+        "category": "and",
+        "signature": "(andtest1[u_1,u_2])",
+        "elements": ["(in[u_1,N])", "(eq[u_1,u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
+@register
+def test_disintegration_compound_at_ancestor_scope_accepted():
+    """D-341: the compound lives at ``main``, the
+    product at a strict descendant (an or branch) -> accepted. The
+    expansion row stays at the compound's own scope."""
+    state = _state_with_andtest1()
+    branch = "main_boundary_ordis_(or0[a,b])_((=[c,d]))"
+    disint_line = make_proof_line(
+        "(in[a,N])", branch, "disintegration",
+        "(some_compound[a,b])", "main",
+    )
+    expansion_line = make_proof_line(
+        "(some_compound[a,b])", "main", "expansion",
+        "(andtest1[a,b])", "main",
+    )
+    assert_pass(check_disintegration, disint_line,
+                [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_sibling_scope_compound_rejected():
+    """A compound at a SIBLING scope of the product's scope is neither the
+    scope itself nor an ancestor -> rejected."""
+    state = _state_with_andtest1()
+    disint_line = make_proof_line(
+        "(in[a,N])", "main_boundary_ordis_(or0[a,b])_((=[c,d]))",
+        "disintegration",
+        "(some_compound[a,b])", "main_boundary_ordis_(or0[a,b])_((<[c,d]))",
+    )
+    expansion_line = make_proof_line(
+        "(some_compound[a,b])", "main_boundary_ordis_(or0[a,b])_((<[c,d]))",
+        "expansion",
+        "(andtest1[a,b])", "main_boundary_ordis_(or0[a,b])_((<[c,d]))",
+    )
+    assert_failure(check_disintegration, disint_line,
+                   [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_existence_siblings_at_product_scope():
+    """Existence category across scopes: the two sibling rows sit at the
+    product's (descendant) scope and cite the compound at ``main``; both
+    pass, and the sibling count is taken at the product's scope."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["exist1"] = {
+        "category": "existence",
+        "signature": "(exist1[u_1])",
+        "elements": ["(in[w1,N])", "(eq[u_1,w1])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    branch = "main_boundary_ordis_(or0[a,b])_((=[c,d]))"
+    compound = "!(>[1](in[w1,N])!(eq[a,w1]))"
+    left = make_proof_line(
+        "(in[w1,N])", branch, "disintegration", compound, "main",
+    )
+    right = make_proof_line(
+        "(eq[a,w1])", branch, "disintegration", compound, "main",
+    )
+    expansion_line = make_proof_line(
+        compound, "main", "expansion", "(exist1[a])", "main",
+    )
+    chapter = [left, right, expansion_line]
+    assert_pass(check_disintegration, left, chapter, state)
+    assert_pass(check_disintegration, right, chapter, state)
 
 
 @register
@@ -786,8 +1041,8 @@ def test_recursion_chapter_type_unknown():
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
                         thm=("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-                             "(in[v1,N]))", "direct", "v1"),
-                        chapter_type="direct")   # neither check_zero nor _induction_condition
+                             "(in[v1,N]))", "single chapter proof", "v1"),
+                        chapter_type="single_chapter_proof")   # neither check_zero nor _induction_condition
     line = make_proof_line("(=[v1,i0])", "main", "recursion")
     assert_failure(check_recursion, line, [line], state)
 
