@@ -54,9 +54,9 @@ A single GL run is entered via `python main.py`, which is a thin wrapper around 
                               │
                               ▼
               ┌──────────────────────────────────────┐
-              │  3.  Prover phase                    │   prover.cpp + memory.hpp
+              │  3.  Prover phase                    │   prover.cpp + logical_block/
               │      definition compilation +         │   compiler.cpp (setup)
-              │      batched LB execution            │   ExpressionAnalyzer state
+              │      batched LB execution            │   Prover state
               │      (warm-up + main iterations)     │   files/theorems/theorems.txt
               └──────────────────────────────────────┘
                               │
@@ -68,7 +68,7 @@ A single GL run is entered via `python main.py`, which is a thin wrapper around 
                               │
                               ▼
               ┌──────────────────────────────────────┐
-              │  5.  Raw proof graph emission        │   visualizer.cpp
+              │  5.  Raw proof graph emission        │   proof/proof_reconstructor.cpp
               │      per-theorem chapter txt         │   files/raw_proof_graph/*.txt
               └──────────────────────────────────────┘
                               │
@@ -195,9 +195,12 @@ C++ (under `GL_Quick_VS/GL_Quick/src/`, each carries the dual-license header):
 | `run_modes.cpp` | Thin C++ orchestrator — `fullRun(anchor_id)` runs prover → compressor → raw graph. |
 | `parameters.hpp` | `ProverParameters`, `ExecutionParameters`. |
 | `compiler.cpp/.hpp` | MPL → compiled `CoreExpressionConfig`, anchors, `makeAnchorSignature`. |
-| `memory.hpp` | Per-LB proof state — `Memory`, `LogicalEntity`, `Mail` (routing channels `mailIn`/`mailOut` plus integration-revival via `Memory::sameIterationInternalMail`, [D-19](40_decisions.md#d-19); [D-53](40_decisions.md#d-53) unification 2026-05-07, renumbered from main's D-46), `HashMemory` (incl. `rejectedMapIntegration` + `varsInRejectedMapIntegrationKeys` cache), `EquivalenceClass`, `EncodedExpression`. |
-| `prover.cpp/.hpp` | Main proof engine. All `ExpressionAnalyzer` state. |
-| `visualizer.cpp` | `generateRawProofGraph`, `buildStack`, `findEnds`, `exportCompiledExpressionsJSON`. |
+| `memory.hpp`, `memory_infra/hash_memory.hpp` | Private logical-block and hash state; named operation owners and diagnostic/serialization readers retain the existing physical storage and deload layout. |
+| `prover.cpp/.hpp` | Small private-state coordinator; phase orchestration and retained batch lifetimes. |
+| `compiler/` | Parsing, normalization, definition/reuse ownership, structural and rule-family compilation, persistence and type analysis. |
+| `logical_block/`, `inference/` | Focused statement, scope, equivalence, case, admission, rejected-source and hash algorithms. |
+| `proof/` | Grid construction, phase-two execution, barriers, publication, reconstruction and graph writing. |
+| `proof/proof_reconstructor.cpp`, `proof/proof_graph_writer.cpp` | Proof reconstruction and chapter export; compiled-definition persistence belongs to `compiler/compilation_persistence.cpp`. |
 | `conjecturer.cpp/.hpp` | C++ conjecture generator (replaces the retired Python `create_expressions.py`). |
 | `compressor.cpp/.hpp` | Post-proof redundancy elimination. `Compressor::run`, `isDerivable`. |
 
@@ -275,7 +278,7 @@ When you (future agent) hit a specific question, this table points you at the ri
 
 ### Not exercised by tests
 
-- **Multi-batch runs past two batches.** The `run_modes.full_run` loop is designed for arbitrarily many batches, but in practice only Incubator → Peano → Gauss is routinely exercised. A 4-batch run would be a first-time integration.
+- **Multi-batch runs past two batches.** The `run_modes.full_run` loop is designed for arbitrarily many batches; the routine main sequence is Peano → Gauss → FTA (one `AnchorFTA` batch with weak and strong induction, see [`10_pipeline/04_prover.md`](10_pipeline/04_prover.md#full-and-shortcut-fta-input-identity)). `tests/test_external_conjectures.py` pins the batch order with the native and finalization steps mocked; no unit test runs two real batches end to end.
 - **Non-`main` namespace handling in the verifier.** The verifier has 27 hardcoded `line.namespace == "main"` checks. Any future proof graph that legitimately uses non-`main` namespaces outside the already-enumerated cases would silently fail all those checkers. (Related: [`10_pipeline/08_verifier.md`](10_pipeline/08_verifier.md) weaknesses subsection.)
 
 

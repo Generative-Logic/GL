@@ -29,6 +29,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 
 namespace gl {
 
@@ -385,6 +386,20 @@ namespace gl {
                 assert(root_[b] == nullptr
                     && "PtrDirectory unused root slot is non-null");
 #endif
+        }
+
+
+        /// @brief Observe the directory's inline and spilled allocation ranges.
+        /// @details Only spilled blocks add pool storage; attached arrays retain their owner.
+        /// @return Nothing.
+        void observeResidentRanges() const {
+            peak_snapshot::note(this,sizeof(*this),3);
+            for (int32_t i=0;i<numBlocks_;++i) {
+                peak_snapshot::note(root_[i],static_cast<std::size_t>(global_->blockBytes()),1);
+                const int32_t used=std::max<int32_t>(0,std::min<int32_t>(entriesPerBlock_,
+                    size_-cap_-i*entriesPerBlock_));
+                peak_snapshot::note(root_[i],static_cast<std::size_t>(used)*sizeof(char*),3);
+            }
         }
 
     private:

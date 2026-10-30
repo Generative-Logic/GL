@@ -20,7 +20,7 @@ Read this chapter before writing or editing MPL, including MPL strings inside co
 
 Schematic translation: `premises => (P and Q)` becomes `premises => P` and `premises => Q`. The conjunction is a mathematical summary of the two results, not a final integration goal. An equivalence to be proved likewise supplies its two directions as separate conjectures.
 
-The supplied-input path does not do this authoring step for you: [`run_modes.py`](../../run_modes.py), `_prepare_batch_conjectures`, copies each supplied row into the batch input. [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::analyzeExpressions`, registers each conjecture; [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp), `ce::disintegrateImplication`, peels the premise chain and returns its single terminal head. Supply the separate rows explicitly.
+The supplied-input path does not do this authoring step for you: [`run_modes.py`](../../run_modes.py), `_prepare_batch_conjectures`, copies each supplied row into the batch input. [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `Prover::analyzeExpressions`, registers each conjecture; [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp), `ce::disintegrateImplication`, peels the premise chain and returns its single terminal head. Supply the separate rows explicitly.
 
 ### Worked example: D2
 
@@ -51,7 +51,7 @@ Do not silently strengthen a conjecture by adding a convenient hypothesis. D2's 
 
 **An operator has at most one output slot.** `output_args` names the single argument position the admission and integration machinery treats as the operator's result — the marker slot for premise-completion demands and for integration preparation. Nothing is built for a second one. A relation with two results, such as Euclidean division's quotient and remainder, is not one operator with two outputs: write one predicate per result and bind the other result as a witness (`remainder.mpl` exposes `r` and binds `q`; `quotient.mpl` exposes `q` and binds `r`). The seven-argument, two-output `euclideanDivision` attempt of 2026-09-11 added output-slot marker preparations to every block that unfolds `remainder` and crashed the D1 contradiction block ([D-372](40_decisions.md#d-372), `ledger/d2_quotient_uniqueness_ledger.md`).
 
-An existential conclusion can require several properties of the same witnesses. Preserve that shared scope: for E6, [`nontrivialFactor.mpl`](../../files/definitions/nontrivialFactor.mpl) exposes factor `a` and binds factor `b` internally, requiring `a*b=n`, `2<=a<n` and `2<=b<n` together. The supplied theorem existentially quantifies `a`. This preserves the complete two-factor statement with one output slot; splitting the properties into independent existence claims would not preserve their common witnesses.
+An existential conclusion can require several properties of the same witnesses. Preserve that shared scope: for E6, [`nontrivialFactor.mpl`](../../files/definitions/nontrivialFactor.mpl) exposes factor `a` and binds factor `b` internally, requiring `a*b=n`, `2<=a<n` and `2<=b<n` together. The supplied theorem existentially quantifies `a`. This preserves the complete two-factor statement with one output slot; splitting the properties into independent existence claims would not preserve their common witnesses. Writing the properties as a raw conjunction inside the supplied existence instead currently crashes the FTA batch's admission pass (open bug, [definition-compilation weaknesses](10_pipeline/01_mpl_definitions.md#known-tracked)); I4 therefore states its factorization through the predicate [`hasPrimeFactorization.mpl`](../../files/definitions/hasPrimeFactorization.mpl), a typed existence over the bundle [`primeFactorSeq.mpl`](../../files/definitions/primeFactorSeq.mpl) (the `hasMinimum` pattern), so the supplied row's head is a single predicate with no existence.
 
 **A new public predicate replaces a spontaneous existence with the same body everywhere.** The compiler mints a numbered `existence<N>` for each inner existence of a definition; registering a public predicate whose body equals one of them makes the public name win in every definition that contains that body ([D-349](40_decisions.md#d-349)). `euclideanDivision` was byte for byte the inner ∃t of `remainder`, so every `remainder` unfolding in every block, D1's included, changed shape. Before adding a predicate that mirrors part of an existing definition, check the compiled registry (`compiledExpressions` in the sacred dump, or the `GL_binary_*.json` files) for the spontaneous entity it would replace.
 
@@ -77,7 +77,46 @@ Every implication has one bound-variable list, one premise and one body: schemat
 
 A theorem binds all its variables, including every referenced anchor slot. Bind a new variable at a scope enclosing all of its uses. Do not reuse a name for an unrelated witness or leave it free accidentally. Definition parameters are different: the declared external parameters remain free in the definition body; locally quantified witnesses are bound. Never copy internal `u_`, `it_`, `int_`, `repl_lev_` or validity-scope names into a new conjecture as user variables.
 
-Keep the selected premise order deliberate. [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::addTheoremToMemory`, builds one child logic block for each premise in that order. The final premise's block owns the goal; ancestor premises reach it through the existing mail rules. Reordering logically equivalent hypotheses can change the proof search and the target's full parent chain.
+Keep the selected premise order deliberate. [`proof/proof_grid_builder.hpp`](../../GL_Quick_VS/GL_Quick/src/proof/proof_grid_builder.hpp), `ProofGridBuilder::addTheoremToMemory`, builds one child logic block for each premise in that order. The final premise's block owns the goal; ancestor premises reach it through the existing mail rules. Reordering logically equivalent hypotheses can change the proof search and the target's full parent chain.
+
+### Keep premise chains short; a long chain signals a missing definition
+
+**No supplied row should approach the batch's premise-permutation bound (`sizeAllPermutationsAna`, FTA 8).** [`inference/hash_rule_installer.cpp`](../../GL_Quick_VS/GL_Quick/src/inference/hash_rule_installer.cpp), `HashRuleInstaller::addToHashMemory`, installs no head record for a rule copy with more premises than that table holds, so such a theorem can never fire as a rule. The first G2 draft (2026-10-06) supplied two helper rows with nine arithmetic premises each; the full run crashed in the FTA batch two bursts after proving them, on the `premisePatternsOfCopy` assertion "a premise of an installed copy was never encoded" (cause not trap-confirmed). A run of premises that names every intermediate product and sum of a definition's body means that a definition is missing or unused: fold the repeated pattern into a predicate. G2's helpers spelled out both orientations of the Bezout equation; the predicate `bezEq` reduced each row to five premises and states `bez1`'s cases, so the cases and the helpers share one form.
+
+### Neutralize an introduced index in another expression
+
+**A quantifier list alone is not enough. An introduced index must be constrained (neutralized) by another expression.** Writing `>[i,p]` before `(in2[i,p,P])` syntactically binds the names, but does not satisfy this authoring rule for the index. Do not confuse absence of free variables, configured port types, or typing that could later be deduced from a sequence with an explicit constraining expression.
+
+For the premise "p belongs to sequence P", use `(inSequence[N,p,P])` and keep the index inside its typed existence. The definition in [`inSequence.mpl`](../../files/definitions/inSequence.mpl) is:
+
+```text
+!(>[i]
+    (in[i,N])
+    !(in2[i,p,P])
+)
+```
+
+Here `in[i,N]` constrains the index used by `in2[i,p,P]`. The existential binder keeps `i` local to the definition; its occurrence in the separate `in[i,N]` expression supplies the required constraint. `N`, `p` and `P` are the external parameters. If the index itself is part of the intended theorem, expose it only together with another expression constraining it.
+
+**F8 example, symbolic schema.** P is a sequence on `[i0,n]`, q is its Fold product, and p belongs to P; therefore p divides q. This is the symbolic form of supplied row 106, with the index absent from the theorem's parameters:
+
+```mpl-schema
+(>[N,i0,s,+,*,i1,i2,id]
+    (AnchorFTA[N,i0,s,+,*,i1,i2,id])
+    (>[n,P]
+        (sequence[N,+,i0,n,P])
+        (>[q]
+            (fold[N,s,+,*,P,i0,n,q])
+            (>[p]
+                (inSequence[N,p,P])
+                (preorder[N,*,p,q])
+            )
+        )
+    )
+)
+```
+
+`preorder[N,*,p,q]` means divisibility because its operation is multiplication. The Fold premise represents an existing product; this statement does not assert general product existence.
 
 Check types from predicate ports, not from spelling or a successful text parse. If a free mathematical variable has no typing supplied by the chosen relations or context, express the required typing hypothesis. Do not add redundant typing premises without checking the intended statement and the conjecture conventions.
 
@@ -91,6 +130,10 @@ Negation is a prefix: schematic `!(P[x])`, not `(!(P[x]))`. The schematic OR `P 
 
 A typed universal has schematic form `(>[x](in[x,N])(P[x]))`. A typed existential has schematic form `!(>[x](in[x,N])!(P[x]))`. With several existential variables, preserve the entire quantified scope under the outer negation. Do not put an existential witness into the theorem's outer universal binder, which changes existence into a claim about every value.
 
+**Compiled existences use one referenced witness per implication binder.** Nest single-variable bindings under the same outer negation when an existence has several witnesses; keep their common body and original quantifier scope. A grouped outer binder such as schematic `!(>[x,y](P[x,y])!(Q[x,y]))` reaches the single-witness assertion in [`compiler/expression_parser.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler/expression_parser.cpp), `ExpressionParser::renameLastRemoved`. This is a compilation constraint on existences; ordinary universally quantified implications may bind several variables.
+
+**Known compiler bug (open): a universal with a nested premise inside a supplied row's existence or conjunction crashes the compile.** The form is valid MPL and is to be supported (maintainer, 2026-10-18); the fix is deferred. Written directly in a conjecture, schematic `!(>[p](P[p])!(&(Q[p])(>[d](R[d])(>[](S[d])(T[p,d])))))` makes the compiler negate the universal: its witness `d` is renamed, and the toggled remainder `!(>[](S[d])(T[p,d]))` reaches the existence branch of [`compiler/structural_compiler.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler/structural_compiler.cpp), `StructuralCompiler::compileExpression`, with an empty binder, so the single-witness assertion in `ExpressionParser::renameLastRemoved` fires. The FTA2 I2 draft of 2026-10-18 crashed this way (`ledger/fta_i2_ledger.md`; tracked in the [definition-compilation weaknesses](10_pipeline/01_mpl_definitions.md#known-tracked)). Definitions with the same nesting (`prime`, `ordered`) compile. Until the fix lands, keep such a universal inside a predicate's definition, as I1 does through `hasMinimum` and `minimum`, and prefer existing predicates before adding one.
+
 Use the source-level definition or configured public predicate. Numbered `or<N>`, `existence<N>` and `implication<N>` names belong to the current compiler registry; never guess or hard-code a newly numbered predicate when authoring fresh MPL. Decode an existing artifact against its matching saved registry when investigating it.
 
 ### Set-definition implications can produce existence statements
@@ -99,11 +142,12 @@ Use the source-level definition or configured public predicate. Numbered `or<N>`
 
 The schematic transformation is `H => (D(X) => Q(X))` into `H => exists X: D(X) and Q(X)`. Its MPL existential tail is `!(>[X](D[X])!(Q[X]))`. The definition and property share the same witness. Here `H` denotes the remaining premise chain, and `D` and `Q` are explanatory placeholders.
 
-The exact gates are in [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp), `ArgumentAnalyzer::isSetDefinition`, and [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::reformulateTheorem`:
+The exact gates are in [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp), `ArgumentAnalyzer::isSetDefinition`, and [`proof/theorem_publisher.hpp`](../../GL_Quick_VS/GL_Quick/src/proof/theorem_publisher.hpp), `TheoremPublisher::reformulateTheorem`:
 
 - The definition has two converse implications, `membership => body` and `body => membership`, joined by binary conjunction. Membership may be `in`, `in2`, or `in3`; its set or relation argument has a powerset type. The defining body must not contain that argument. `compileCoreExpressionMap` records the recognized argument in `LogicalEntity::definedSet`.
 - Reformulation requires disintegration to be enabled. It moves the candidate definition to the end of the premise chain while preserving the other premises' relative order.
 - The defined object must be the sole candidate argument occurring at least twice across premises and head while absent from every other premise. The existential binder contains exactly that object; the remaining premises retain their bindings.
+- The definition premise must bind the defined object alone. A variable that only the definition premise mentions, such as an appended value bound together with the defined sequence in `(>[a,Q](appendToSequence[n,a,P,Q])…)`, would lose its binder in the generated statement, so no reformulation is formed ([I-4](30_invariants.md#i-4), [D-462](40_decisions.md#d-462)). The implication itself is still proved and broadcast.
 - The emitted existence keeps both the definition and the original head, including the head's polarity. Its provenance cites the proved implication. Check the resulting `reformulated statement` and its proof; merely writing a definition does not certify a conjecture.
 
 **Gauss example: restrict an interval.** These are verbatim source and result expressions from the processed theorem list, with the result decoded using the matching Gauss registry. The source proves that restricting `[0,s(v1)]` to values at most `v1` gives `[0,v1]`:

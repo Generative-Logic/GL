@@ -421,3 +421,153 @@ TEST(lb_arena, offsets_are_position_independent) {
 
 // The page-tier scratch surface (allocBytes / mark / rewind / reset on a
 // cold-bound arena) is covered by test_scratch_arena.cpp; HOT mode is gone.
+
+// ---- Sub-page tier (D-464) ---------------------------
+
+namespace {
+    // 4 MiB pool / 256 KiB block / 2 KiB page: the production page size, five
+    // sub-page classes (64 .. 1,024 bytes).
+    const gl::StaticMemoryConfig kSubPageCfg{ 4 << 20, 1 << 18, 2048 };
+}
+
+TEST(lb_arena, sub_page_classes_follow_the_page_size) {
+    const int32_t pages[] = { 64, 256, 2048, 8192 };
+    const int32_t classes[] = { 0, 2, 5, 7 };
+    for (int32_t i = 0; i < 4; ++i) {
+        gl::GlobalMemoryManager m;
+        m.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 14, pages[i] });
+        gl::LbArena a(&m);
+        ASSERT_FALSE(a.subPagesEnabled());
+        a.enableSubPages();
+        ASSERT_TRUE(a.subPagesEnabled());
+        ASSERT_EQ(a.subPageClassCount(), classes[i]);
+    }
+    ASSERT_EQ(gl::LbArena::subPageBytes(0), 64);
+    ASSERT_EQ(gl::LbArena::subPageBytes(4), 1024);
+}
+
+TEST(lb_arena, sub_page_slots_carve_reuse_poison_and_audit) {
+    gl::GlobalMemoryManager m;
+    m.init(kSubPageCfg);
+    gl::LbArena a(&m);
+    a.enableSubPages();
+    // The first slot of a class carves one page; the next slots ascend in it.
+    std::vector<gl::LbArena::SubPage> slots;
+    for (int32_t k = 0; k < 32; ++k) slots.push_back(a.allocSubPage(0));
+    ASSERT_EQ(a.subPageSlabs(0), 1);
+    ASSERT_EQ(a.liveSubPages(0), 32);
+    ASSERT_EQ(a.livePages(), 1);
+    for (int32_t k = 0; k < 32; ++k) {
+        ASSERT_EQ(slots[k].vid, slots[0].vid);
+        ASSERT_EQ(slots[k].offset, k * 64);
+        std::memset(a.pageAt(slots[k].vid) + slots[k].offset, k, 64);
+    }
+    // A full class carves the next page.
+    const gl::LbArena::SubPage next = a.allocSubPage(0);
+    ASSERT_NE(next.vid, slots[0].vid);
+    ASSERT_EQ(next.offset, 0);
+    ASSERT_EQ(a.subPageSlabs(0), 2);
+    // Another class never shares a page with class 0.
+    const gl::LbArena::SubPage large = a.allocSubPage(4);
+    ASSERT_NE(large.vid, slots[0].vid);
+    ASSERT_NE(large.vid, next.vid);
+    ASSERT_EQ(a.subPageSlabs(4), 1);
+    // A freed slot is poisoned up to its link and comes back last in, first
+    // out; its neighbours keep their bytes.
+    a.freeSubPage(slots[5], 0);
+    a.freeSubPage(slots[9], 0);
+    const char* freed = a.pageAt(slots[5].vid) + slots[5].offset;
+    for (int32_t b = 0; b < 56; ++b)
+        ASSERT_EQ(static_cast<unsigned char>(freed[b]), gl::kArenaPoisonByte);
+    ASSERT_EQ(static_cast<int32_t>(a.pageAt(slots[6].vid)[slots[6].offset]), 6);
+    a.assertInvariants();
+    const gl::LbArena::SubPage again1 = a.allocSubPage(0);
+    const gl::LbArena::SubPage again2 = a.allocSubPage(0);
+    ASSERT_EQ(again1.offset, slots[9].offset);
+    ASSERT_EQ(again2.offset, slots[5].offset);
+    ASSERT_EQ(a.liveSubPages(0), 33);
+    a.assertInvariants();
+    // releaseAll returns the carved pages and empties every list.
+    a.releaseAll();
+    ASSERT_EQ(a.liveSubPages(0), 0);
+    ASSERT_EQ(a.subPageSlabs(0), 0);
+    ASSERT_EQ(a.subPageSlabs(4), 0);
+    ASSERT_EQ(m.blocksInUse(), static_cast<int64_t>(0));
+    const gl::LbArena::SubPage fresh = a.allocSubPage(0);
+    ASSERT_EQ(fresh.offset, 0);
+    ASSERT_EQ(a.subPageSlabs(0), 1);
+}
+
+TEST(lb_arena, sub_page_lists_survive_compaction) {
+    gl::GlobalMemoryManager m;
+    m.init(kSubPageCfg);
+    gl::GlobalMemoryManager mScr;
+    mScr.init(kSubPageCfg);
+    gl::LbArena a(&m);
+    gl::LbArena scratch(&mScr);
+    a.enableSubPages();
+    const int32_t ppb = m.blockBytes() / m.pageBytes();   // 128 pages per block
+    std::vector<int32_t> pages;
+    for (int32_t i = 0; i < ppb * 2; ++i) pages.push_back(a.allocPage());
+    std::vector<gl::LbArena::SubPage> slots;
+    for (int32_t k = 0; k < 20; ++k) {                     // 16 slots per page
+        slots.push_back(a.allocSubPage(1));
+        std::memset(a.pageAt(slots.back().vid) + slots.back().offset, 'a' + k, 128);
+    }
+    for (int32_t i = 0; i < ppb * 2; i += 2) a.freePage(pages[i]);
+    a.freeSubPage(slots[3], 1);
+    const int64_t reclaimed = a.compactPages(scratch);
+    ASSERT_TRUE(reclaimed > 0);
+    for (int32_t k = 0; k < 20; ++k) {
+        if (k == 3) continue;
+        const char* slot = a.pageAt(slots[k].vid) + slots[k].offset;
+        ASSERT_EQ(slot[0], static_cast<char>('a' + k));
+        ASSERT_EQ(slot[127], static_cast<char>('a' + k));
+    }
+    const gl::LbArena::SubPage reused = a.allocSubPage(1);
+    ASSERT_EQ(reused.vid, slots[3].vid);
+    ASSERT_EQ(reused.offset, slots[3].offset);
+    a.assertInvariants();
+}
+
+TEST(lb_arena, sub_page_pages_without_live_slots_return_at_compaction) {
+    gl::GlobalMemoryManager m;
+    m.init(kSubPageCfg);
+    gl::GlobalMemoryManager mScr;
+    mScr.init(kSubPageCfg);
+    gl::LbArena a(&m);
+    gl::LbArena scratch(&mScr);
+    a.enableSubPages();
+    // Class 3 (512 bytes): four slots per page; three pages.
+    std::vector<gl::LbArena::SubPage> slots;
+    for (int32_t k = 0; k < 12; ++k) slots.push_back(a.allocSubPage(3));
+    ASSERT_EQ(a.subPageSlabs(3), 3);
+    // Empty the middle page completely and one slot of the last page.
+    for (int32_t k = 4; k < 8; ++k) a.freeSubPage(slots[k], 3);
+    a.freeSubPage(slots[9], 3);
+    std::memset(a.pageAt(slots[0].vid) + slots[0].offset, 'q', 512);
+    a.compactPages(scratch);
+    ASSERT_EQ(a.subPageSlabs(3), 2);
+    ASSERT_EQ(a.livePages(), 2);
+    ASSERT_EQ(a.liveSubPages(3), 7);
+    ASSERT_EQ(a.pageAt(slots[0].vid)[slots[0].offset + 511], 'q');
+    a.assertInvariants();
+    // The remaining free slot is the last page's; the next one carves a page.
+    const gl::LbArena::SubPage reused = a.allocSubPage(3);
+    ASSERT_EQ(reused.vid, slots[9].vid);
+    ASSERT_EQ(reused.offset, slots[9].offset);
+    const gl::LbArena::SubPage carved = a.allocSubPage(3);
+    ASSERT_EQ(carved.offset, 0);
+    ASSERT_EQ(a.subPageSlabs(3), 3);
+    // Once every slot is free, compaction returns every block.
+    a.freeSubPage(reused, 3);
+    a.freeSubPage(carved, 3);
+    for (int32_t k = 0; k < 12; ++k)
+        if (k < 4 || k == 8 || k == 10 || k == 11) a.freeSubPage(slots[k], 3);
+    ASSERT_EQ(a.liveSubPages(3), 0);
+    a.compactPages(scratch);
+    ASSERT_EQ(a.subPageSlabs(3), 0);
+    ASSERT_EQ(a.livePages(), 0);
+    ASSERT_EQ(a.blocksHeld(), static_cast<int64_t>(0));
+    a.assertInvariants();
+}

@@ -35,10 +35,22 @@ def build_implication_composition_plan(
     Conclusion arguments and free source parameters are rigid. Endpoint ports
     constrain the common renaming; contradictory constraints assert.
     No premise is proved backwards and no uncited rule is consulted.
-    @param conclusion Claimed implication retaining every ordered producer premise.
+
+    The conclusion may list the producer premises in another order: the
+    compiler identifies rules up to the order of their premises, so a
+    composed rule can be stored with a permutation of the producer chain.
+    Each producer premise is paired with one conclusion premise of the same
+    sign, operator and arity; the pairings are tried in lexicographic order
+    (the identity first) and the first one under which all ports unify is
+    returned as `premise_order`. Every conclusion premise is still checked
+    against its own binder scope, so a permutation never uses a variable
+    before its binder.
+    @param conclusion Claimed implication retaining every producer premise.
     @param first Producer implication.
     @param second Consumer implication.
-    @return Explicit source instantiations and their common intermediate formula.
+    @return Explicit source instantiations, their common intermediate formula
+            and `premise_order`: for each producer premise, the index of the
+            conclusion premise it is paired with.
     @invariant Both complete source binders map bijectively onto the conclusion binder.
     """
     assert isinstance(conclusion, Implication)
@@ -68,7 +80,6 @@ def build_implication_composition_plan(
     source_fixed = [{argument for item in iter_atoms(rule) for argument in item.arguments} - set(bound_runs[i])
                     for i, rule in enumerate(rules[:2])]
     assert not set(bound_runs[2]).intersection(source_fixed[0] | source_fixed[1]), 'composition captures fixed parameters'
-    parents: dict[tuple[int, str], tuple[int, str]] = {}
 
     def atom(expression: Expression) -> tuple[bool, Atom]:
         """@brief Read a signed flat atom.
@@ -80,49 +91,6 @@ def build_implication_composition_plan(
         payload = expression.inner if negative else expression
         assert isinstance(payload, Atom), 'composition requires flat signed chain members'
         return negative, payload
-
-    def term(side: int, name: str) -> tuple[int, str]:
-        """@brief Separate bound source variables from rigid target arguments.
-        @details Free parameters retain exact spelling across both source rules.
-        @param side Rule position: producer, consumer or conclusion.
-        @param name Argument token.
-        @return Unification identity.
-        """
-        key = (side, name) if side < 2 and name in bound_runs[side] else (-1, name)
-        parents.setdefault(key, key)
-        return key
-
-    def root(key: tuple[int, str]) -> tuple[int, str]:
-        """@brief Find the representative of a unification class.
-        @details The finite parent forest has no cycles.
-        @param key Existing argument identity.
-        @return Its current representative.
-        """
-        while parents[key] != key:
-            key = parents[key]
-        return key
-
-    def unify(left: Expression, left_side: int, right: Expression, right_side: int) -> None:
-        """@brief Unify corresponding atom ports while retaining rigid parameters.
-        @details Two distinct rigid arguments or signed operators cannot unify.
-        @param left Left expression.
-        @param left_side Left binder namespace.
-        @param right Right expression.
-        @param right_side Right binder namespace.
-        @return None.
-        """
-        left_sign, left_atom = atom(left)
-        right_sign, right_atom = atom(right)
-        assert (left_sign, left_atom.head, len(left_atom.arguments)) == (
-            right_sign, right_atom.head, len(right_atom.arguments)), 'composition atom mismatch'
-        for a, b in zip(left_atom.arguments, right_atom.arguments):
-            a, b = root(term(left_side, a)), root(term(right_side, b))
-            if a == b:
-                continue
-            assert not (a[0] == b[0] == -1), 'composition changes a rigid argument'
-            if a[0] != -1 and (b[0] == -1 or b < a):
-                a, b = b, a
-            parents[b] = a
 
     _, producer_head = atom(heads[0])
     _, consumer_premise = atom(premise_runs[1][0])
@@ -142,25 +110,133 @@ def build_implication_composition_plan(
     assert set(forward) == first_bound and set(backward) == second_bound, (
         'composition intermediate does not match the complete binder sets')
 
-    for original, result in zip(premise_runs[0], premise_runs[2], strict=True):
-        unify(original, 0, result, 2)
-    unify(heads[1], 1, heads[2], 2)
-    unify(heads[0], 0, premise_runs[1][0], 1)
-    substitutions = []
-    for side, rule in enumerate((first, second)):
-        mapping = {}
-        for variable in bound_runs[side]:
-            value = root(term(side, variable))
-            assert value[0] == -1, 'composition binder has no endpoint-supported argument'
-            mapping[variable] = value[1]
-        assert set(mapping.values()) == set(bound_runs[2]), (
-            'composition does not preserve the conclusion binder set')
-        substitutions.append(mapping)
-    intermediate = map_arguments(heads[0], lambda name: substitutions[0].get(name, name))
-    assert intermediate == map_arguments(premise_runs[1][0], lambda name: substitutions[1].get(name, name))
-    return {'source_arguments': [[substitutions[i][v] for v in bound_runs[i]]
-                                 for i in range(2)],
-            'source_binder_groups': [[[substitutions[i][v] for v in group] for group in binder_groups[i]]
+    def signature(expression: Expression) -> tuple[bool, str, int]:
+        """@brief Sign, operator and arity of a chain member.
+        @details Only premises with equal signatures can be paired.
+        @param expression The signed atom.
+        @return Its signature.
+        """
+        negative, payload = atom(expression)
+        return negative, payload.head, len(payload.arguments)
+
+    producer_signatures = [signature(premise) for premise in premise_runs[0]]
+    conclusion_signatures = [signature(premise) for premise in premise_runs[2]]
+
+    def solve(order: tuple[int, ...]) -> tuple[list[dict[str, str]] | None, str]:
+        """@brief Unify both sources with the conclusion under one premise pairing.
+        @details Builds a fresh unification forest: producer premise `i` against
+        conclusion premise `order[i]`, the consumer head against the conclusion
+        head, the producer head against the consumer premise. Bound source
+        variables unify freely; two distinct rigid arguments do not.
+        @param order For each producer premise, the paired conclusion premise.
+        @return The two source substitutions and an empty message, or no
+                substitutions and the reason the pairing fails.
+        """
+        parents: dict[tuple[int, str], tuple[int, str]] = {}
+
+        def term(side: int, name: str) -> tuple[int, str]:
+            """@brief Separate bound source variables from rigid target arguments.
+            @details Free parameters retain exact spelling across both source rules.
+            @param side Rule position: producer, consumer or conclusion.
+            @param name Argument token.
+            @return Unification identity.
+            """
+            key = (side, name) if side < 2 and name in bound_runs[side] else (-1, name)
+            parents.setdefault(key, key)
+            return key
+
+        def root(key: tuple[int, str]) -> tuple[int, str]:
+            """@brief Find the representative of a unification class.
+            @details The finite parent forest has no cycles.
+            @param key Existing argument identity.
+            @return Its current representative.
+            """
+            while parents[key] != key:
+                key = parents[key]
+            return key
+
+        def unify(left: Expression, left_side: int, right: Expression, right_side: int) -> str:
+            """@brief Unify corresponding atom ports while retaining rigid parameters.
+            @details Two distinct rigid arguments or signed operators cannot unify.
+            @param left Left expression.
+            @param left_side Left binder namespace.
+            @param right Right expression.
+            @param right_side Right binder namespace.
+            @return An empty string, or the reason the atoms do not unify.
+            """
+            left_sign, left_atom = atom(left)
+            right_sign, right_atom = atom(right)
+            if (left_sign, left_atom.head, len(left_atom.arguments)) != (
+                    right_sign, right_atom.head, len(right_atom.arguments)):
+                return 'composition atom mismatch'
+            for a, b in zip(left_atom.arguments, right_atom.arguments):
+                a, b = root(term(left_side, a)), root(term(right_side, b))
+                if a == b:
+                    continue
+                if a[0] == b[0] == -1:
+                    return 'composition changes a rigid argument'
+                if a[0] != -1 and (b[0] == -1 or b < a):
+                    a, b = b, a
+                parents[b] = a
+            return ''
+
+        steps = [(original, 0, premise_runs[2][order[index]], 2)
+                 for index, original in enumerate(premise_runs[0])]
+        steps += [(heads[1], 1, heads[2], 2), (heads[0], 0, premise_runs[1][0], 1)]
+        for step in steps:
+            failure = unify(*step)
+            if failure:
+                return None, failure
+        substitutions = []
+        for side in range(2):
+            mapping = {}
+            for variable in bound_runs[side]:
+                value = root(term(side, variable))
+                if value[0] != -1:
+                    return None, 'composition binder has no endpoint-supported argument'
+                mapping[variable] = value[1]
+            if set(mapping.values()) != set(bound_runs[2]):
+                return None, 'composition does not preserve the conclusion binder set'
+            substitutions.append(mapping)
+        if map_arguments(heads[0], lambda name: substitutions[0].get(name, name)) != map_arguments(
+                premise_runs[1][0], lambda name: substitutions[1].get(name, name)):
+            return None, 'composition intermediate mismatch'
+        return substitutions, ''
+
+    def pairings(index: int, used: list[bool], chosen: list[int]):
+        """@brief Enumerate signature-compatible premise pairings.
+        @details Depth first over the producer premises, each taking an unused
+        conclusion premise of the same signature in increasing index order, so
+        the pairings come in lexicographic order and the identity first.
+        @param index Next producer premise.
+        @param used Conclusion premises already paired.
+        @param chosen Pairing built so far.
+        @return Generator of complete pairings.
+        """
+        if index == len(producer_signatures):
+            yield tuple(chosen)
+            return
+        for candidate, taken in enumerate(used):
+            if taken or conclusion_signatures[candidate] != producer_signatures[index]:
+                continue
+            used[candidate] = True
+            chosen.append(candidate)
+            yield from pairings(index + 1, used, chosen)
+            chosen.pop()
+            used[candidate] = False
+
+    first_failure = ''
+    for order in pairings(0, [False] * len(conclusion_signatures), []):
+        substitutions, failure = solve(order)
+        if substitutions is None:
+            first_failure = first_failure or failure
+            continue
+        intermediate = map_arguments(heads[0], lambda name: substitutions[0].get(name, name))
+        return {'source_arguments': [[substitutions[i][v] for v in bound_runs[i]]
                                      for i in range(2)],
-            'result_binder_groups': binder_groups[2],
-            'intermediate': to_mpl(intermediate)}
+                'source_binder_groups': [[[substitutions[i][v] for v in group] for group in binder_groups[i]]
+                                         for i in range(2)],
+                'result_binder_groups': binder_groups[2],
+                'intermediate': to_mpl(intermediate),
+                'premise_order': list(order)}
+    raise AssertionError(first_failure or 'composition atom mismatch')

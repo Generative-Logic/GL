@@ -53,7 +53,7 @@ Same `gl_quick.exe` binary, same prover, but with these flag changes via `Config
 | `background_theorems_folder` | may point to a main theorems folder to provide context | same | `files/theorems` |
 | `compressor` | skipped (output is intentionally huge — every harvested fact is needed downstream by the main batch's CE filter; compression would lose information) | skipped | runs after prover (see [`05_compressor.md`](05_compressor.md)) |
 
-Defined at [`parameters.hpp–63`](../../GL_Quick_VS/GL_Quick/src/parameters.hpp):
+Defined at [`parameters.hpp–63`](../../../GL_Quick_VS/GL_Quick/src/parameters.hpp):
 
 ```cpp
 bool try_contradiction = false;
@@ -73,9 +73,9 @@ Set to `true` for incubator batches because the incubator is the facts' producer
 
 ### `incubator_mode`
 
-Used to be the master flag. As of 2026-04-29 it no longer gates Pass B (that's `!ban_disintegration` — see [I-7](../30_invariants.md#i-7)) and no longer gates `multiplyImplication` (that's `allow_multiplication`). What it still governs: the `head-in-wholeExpressions` check path inside `addTheoremToMemory`, the compressor skip in `run_modes::fullRun`, the operator-head reformulation in integration ([`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp)), the relaxed-tempArgs assert at [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp), and several conjecturer behaviors (repeat-arg uniqueness, op-head reformulation, OR-generation suppression).
+Used to be the master flag. As of 2026-04-29 it no longer gates Pass B (that's `!ban_disintegration` — see [I-7](../30_invariants.md#i-7)) and no longer gates `multiplyImplication` (that's `allow_multiplication`). What it still governs: the `head-in-wholeExpressions` check path inside `addTheoremToMemory`, the compressor skip in `run_modes::fullRun`, the operator-head reformulation in integration ([`proof/proof_grid_builder.cpp`](../../../GL_Quick_VS/GL_Quick/src/proof/proof_grid_builder.cpp)), the relaxed-tempArgs assert at [`memory_infra/lb_arena.hpp`](../../../GL_Quick_VS/GL_Quick/src/memory_infra/lb_arena.hpp), and several conjecturer behaviors (repeat-arg uniqueness, op-head reformulation, OR-generation suppression).
 
-`ban_disintegration` now governs every disintegration-shaped path in the prover: Pass B at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), back-reformulation at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), hypothetical disintegration at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), and necessity-for-equality-hypo at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp). The collapse from a brief two-flag split (`ban_disintegration` + `allow_disintegration`) is documented in [D-28](../40_decisions.md#d-28).
+`ban_disintegration` now governs every disintegration-shaped path in the prover: Pass B at [`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp), back-reformulation at [`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp), hypothetical disintegration at [`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp), and necessity-for-equality-hypo at [`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp). The collapse from a brief two-flag split (`ban_disintegration` + `allow_disintegration`) is documented in [D-28](../40_decisions.md#d-28).
 
 ### Mail topology — incubator-derived rules reach only the anchor LB
 
@@ -183,7 +183,7 @@ The main pipeline's `files/theorems/` is never written by the incubator. This is
 
 When the orchestrator iterates `tags = ["Peano", "Gauss"]` and reaches the second tag's incubator stage, `run_modes.py` seeds the next-tag incubator's `externally_provided_theorems.txt` from the prior-tag main batch's compiled proved-set. Source: `files/theorems/compiled_theorems.txt` (compact form, keeps `existence2` / `or0` heads — see [D-40](../40_decisions.md#d-40)). The C++ `--mirror-externals` step (`run_modes.py:_rebuild_compressed_externals`) then runs over that seed to produce `compressed_external_theorems.txt`, which `process_proof_graphs.py` writes out as the verifier registry's `external_theorems.txt`. The compact-form rules cited by chapter rows match this registry by alpha-canonical lookup.
 
-The expanded-form file (`theorems.txt`, written by `prover.cpp`'s `expandToBaseForm`) is kept for any cross-batch consumer that needs operator-dictionary-free input. Compact-form propagation is supported because `GL_binary_shared.json` (`run_modes.py:_seed_per_batch_binary` + `_merge_into_shared`) carries the spontaneous-category compact dictionary across batches. Non-spontaneous compact heads (anchor / atomic) are not in the shared binary; if a future stage proves theorems whose compact heads fall outside `_SPONTANEOUS_CATEGORIES` and need cross-batch propagation, the shared binary's coverage must expand or the seed source must revert.
+The expanded-form file (`theorems.txt`, written by `compiler/definition_expansion.cpp`'s `expandToBaseForm`) is kept for any cross-batch consumer that needs operator-dictionary-free input. Compact-form propagation is supported because `GL_binary_shared.json` (`run_modes.py:_seed_per_batch_binary` + `_merge_into_shared`) carries the spontaneous-category compact dictionary across batches. Non-spontaneous compact heads (anchor / atomic) are not in the shared binary; if a future stage proves theorems whose compact heads fall outside `_SPONTANEOUS_CATEGORIES` and need cross-batch propagation, the shared binary's coverage must expand or the seed source must revert.
 
 ### Cross-batch state propagation — what crosses, what doesn't
 
@@ -221,6 +221,8 @@ Incubator-only transformation. An operator-equality theorem of the form `(=[+[a,
 
 The main pipeline's `main.py` calls `run_modes.py` / `full_run`, which orchestrates each configured incubator group before its corresponding main batch through `_run_batch`. There is no separate `incubator_run` entry point.
 
+After each incubator group, `full_run` writes only the incubator's processed theorem list (`process_proof_graphs.create_processed_theorem_list`), which `convert_incubator_theorems` turns into the simple-fact files of the following main batch. The incubator book itself (chapters, arrangement) is processed once, in finalization, by a child process beside the main processing ([D-537](../40_decisions.md#d-537)).
+
 ---
 
 ## Weaknesses
@@ -249,7 +251,7 @@ The main pipeline's `main.py` calls `run_modes.py` / `full_run`, which orchestra
 - **OPEN-19 — RESOLVED.** The j-copy strategy in [`incubator_to_simple_facts.py`](../../incubator_to_simple_facts.py) has two rules:
  1. **Anchor-matching coverage**: always emit j0/j1 variants for every fact, up to `max_j=2`. This ensures the CE filter's hash-request generator can match anchor-related rules regardless of which j-copy slot the anchor pins.
  2. **Repetition-break**: when a fact has repeated i-value arguments (e.g. `(in3[i4,i4,i0,+])`), emit j-copy variants that break the repetition (e.g. `(in3[i4,j4,i0,+])`). This enables rules that require two different-looking arguments to match — without distinct copies, the hash engine would never fire them on the fact table. Matches the note about the CE-mode request generator needing distinct fact entries.
-- **OPEN-20 — RESOLVED.** `compressed_out_theorems.txt` holds **eliminated external theorems** — theorems from `compressed_external_theorems.txt` that the compressor determined were redundant and eliminated from the external-theorem pool. Written at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp); appended to at [`run_modes.cpp`](../../GL_Quick_VS/GL_Quick/src/run_modes.cpp) via *"Append eliminated externals to compressed_out_theorems.txt"*. Purpose: audit trail — "what did the compressor remove?" Referenced by [`run_modes.py`](../../run_modes.py) (Python orchestrator). Main pipeline has no equivalent because its `compressed_external_theorems.txt` is rebuilt each run rather than accumulated.
+- **OPEN-20 — RESOLVED.** `compressed_out_theorems.txt` holds **eliminated external theorems** — theorems from `compressed_external_theorems.txt` that the compressor determined were redundant and eliminated from the external-theorem pool. Written at [`compressor.cpp`](../../../GL_Quick_VS/GL_Quick/src/compressor.cpp); appended to at [`run_modes.cpp`](../../../GL_Quick_VS/GL_Quick/src/run_modes.cpp) via *"Append eliminated externals to compressed_out_theorems.txt"*. Purpose: audit trail — "what did the compressor remove?" Referenced by [`run_modes.py`](../../run_modes.py) (Python orchestrator). Main pipeline has no equivalent because its `compressed_external_theorems.txt` is rebuilt each run rather than accumulated.
 
 ---
 

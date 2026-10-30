@@ -114,7 +114,8 @@ from verifier import (  # noqa: E402
     check_or_branch_assumption, check_vacuous_truth, check_or_theorem,
     check_defset_consistency,
     load_gl_binaries, load_output_indices, load_input_indices,
-    load_definition_sets, build_resolved_defsets_per_tag,
+    load_configured_cores, load_definition_sets,
+    build_resolved_defsets_per_tag,
     disintegrate_implication_full,
 )
 
@@ -159,6 +160,7 @@ def _build_state_prototype() -> VerifierState:
     proto.gl_binaries = load_gl_binaries(binaries_dir)
     proto.output_indices = load_output_indices(config_dir)
     proto.input_indices = load_input_indices(config_dir)
+    proto.configured_cores = load_configured_cores(config_dir)
     proto.definition_sets = load_definition_sets(config_dir)
     proto.resolved_defsets_per_tag, proto.resolved_defsets_atomic_only = \
         build_resolved_defsets_per_tag(proto.definition_sets, proto.gl_binaries)
@@ -204,6 +206,7 @@ def make_state_with_binaries(tags: Sequence[str] = ("Peano",)) -> VerifierState:
     state.gl_binaries = dict(proto.gl_binaries)
     state.output_indices = proto.output_indices
     state.input_indices = proto.input_indices
+    state.configured_cores = proto.configured_cores
     state.definition_sets = proto.definition_sets
     state.resolved_defsets_per_tag = dict(proto.resolved_defsets_per_tag)
     state.resolved_defsets_atomic_only = proto.resolved_defsets_atomic_only

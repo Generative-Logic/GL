@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import compilation_state as compiler
 
@@ -83,6 +84,33 @@ class CompilationStateTests(unittest.TestCase):
         compiler.seed_state(self.root, "FTA")
         self.assertEqual(compiler.read_state(self.directory, "FTA"), self.state)
 
+    def test_retired_application_needs_its_complete_prefix(self):
+        replacements = {"and1": {"target": "pair", "arguments": [2, 1]}}
+        self.assertTrue(compiler.names_retired_operator("!(and1[a,b])", replacements))
+        self.assertFalse(compiler.names_retired_operator("(and10[a,b])\t(>[and1](p[and1])(q[]))", replacements))
+        self.assertFalse(compiler.names_retired_operator("(and1[a,b])", {}))
+
+    def test_texts_without_retired_applications_skip_the_pattern_scan(self):
+        unrelated = "(in[1,u_1])\t(preorder[a,b,c,d])\t(>[existence16](p[existence16])(q[]))"
+        refusing = mock.Mock(sub=mock.Mock(side_effect=AssertionError("pattern scanned")))
+        with mock.patch.object(compiler, "ATOM", refusing):
+            self.assertIs(compiler.rewrite_references(unrelated, self.replacements), unrelated)
+        self.assertEqual(compiler.rewrite_references("(existence16[a,b,c,d])", self.replacements),
+                         "(preorder[a,d,b,c])")
+
+    def test_registry_entries_without_retired_names_are_carried_over_uncopied(self):
+        holder = {"category": "and", "signature": "(holder[u_1,u_2,u_3,u_4])",
+                  "elements": ["(existence16[u_1,u_3,u_4,u_2])"]}
+        old = {"existence16": self.numbered, "preorder": self.named, "holder": holder, **self.atoms}
+        before = deepcopy(old)
+        migrated = compiler.rewrite_registry(old, self.source, self.replacements)
+        self.assertIs(migrated["preorder"], old["preorder"])
+        self.assertIs(migrated["in"], old["in"])
+        self.assertIsNot(migrated["holder"], old["holder"])
+        self.assertEqual(migrated["holder"]["elements"], ["(preorder[u_1,u_2,u_3,u_4])"])
+        self.assertEqual(old, before)
+        self.assertNotIn("existence16", migrated)
+
     def test_registry_removes_numbered_definition_and_imports_public_dependencies(self):
         old = {"existence16": self.numbered,
                "holder": {"category": "and", "signature": "(holder[u_1,u_2,u_3,u_4])",
@@ -98,6 +126,24 @@ class CompilationStateTests(unittest.TestCase):
             compiler.rewrite_registry(old, {}, self.replacements)
         migrated_empty = compiler.rewrite_registry({}, self.source, self.replacements)
         self.assertTrue({"preorder", "in", "in3"} <= migrated_empty.keys())
+
+    def test_integration_compacts_migrate_and_import_their_dependency_closure(self):
+        rule = {"category": "implication", "arity": 4, "signature": "(rule1[u_1,u_2,u_3,u_4])",
+                "elements": ["(preorder[u_1,u_3,u_4,u_2])", "(holder[u_1,u_2,u_3,u_4])"]}
+        holder = {"category": "and", "arity": 4, "signature": "(holder[u_1,u_2,u_3,u_4])",
+                  "elements": ["(in3[u_1,u_2,u_3,u_4])"],
+                  "integration_implications": [
+                      {"compact": "(existence16[u_1,u_2,u_3,u_4])", "kind": "one_level", "cites": -1},
+                      {"compact": "(rule1[u_1,u_2,u_3,u_4])", "kind": "flat", "cites": -1}]}
+        migrated = compiler.rewrite_registry({"holder": holder}, {**self.source, "rule1": rule},
+                                             self.replacements)
+        records = migrated["holder"]["integration_implications"]
+        self.assertEqual(records[0], {"compact": "(preorder[u_1,u_4,u_2,u_3])", "kind": "one_level", "cites": -1})
+        self.assertEqual(records[1], {"compact": "(rule1[u_1,u_2,u_3,u_4])", "kind": "flat", "cites": -1})
+        self.assertIn("rule1", migrated)
+        self.assertIn("preorder", migrated)
+        self.assertNotIn("existence16", migrated)
+        self.assertEqual(holder["integration_implications"][0]["compact"], "(existence16[u_1,u_2,u_3,u_4])")
 
     def test_auxiliary_references_migrate_and_import_their_dependency_closure(self):
         old_atom = "!(existence16[a,b,c,d])"

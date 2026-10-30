@@ -48,7 +48,8 @@ from verifier import (  # noqa: E402
     check_compilation,
     check_task_formulation, check_equality1, check_equality2,
     check_symmetry_of_equality, check_symmetry_of_inequality,
-    check_recursion, check_theorem_tag,
+    check_recursion, check_theorem_tag, _strong_induction_hypothesis,
+    _twin_induction_partner, disintegrate_implication_full,
     check_anchor_handling,
     check_variable_copy, check_externally_provided_theorem,
     check_incubator_back_reformulation, check_equalize_variable,
@@ -206,6 +207,45 @@ def test_pos_variable_copy_isolated():
     line = make_proof_line("(=[a,a_copy])", "main", "variable copy")
     # No other chapter rows mention a_copy -> no trace needed.
     assert_pass(check_variable_copy, line, [line], state)
+
+
+@register
+def test_pos_variable_copy_twin_predecessor_alias():
+    """A twin weak step block names its partner's predecessor rec2
+    (D-581): the copy passes, a use of rec2 traces
+    back to it, and a second declaration of the same source is no conflict."""
+    state = make_state_with_binaries(("Peano",))
+    case = "main_boundary_ordis_(or1[1,v12,s,i0])_((inSequence[1,v12,s]))"
+    copy_line = make_proof_line("(=[v7,rec2])", case, "variable copy")
+    source_line = make_proof_line("(in2[v7,v12,s])", case, "task formulation")
+    use_line = make_proof_line(
+        "(in2[rec2,v12,s])", case, "equality1",
+        "(in2[v7,v12,s])", case,
+        "(=[v7,rec2])", case,
+    )
+    again = make_proof_line("(=[v7,rec2])", "main", "variable copy")
+    chapter = [copy_line, source_line, use_line, again]
+    assert_pass(check_variable_copy, copy_line, chapter, state)
+    assert_pass(check_variable_copy, again, chapter, state)
+
+
+@register
+def test_pos_variable_copy_twin_alias_in_an_integration_goal():
+    """The second twin goal is filed with rec2 (D-589):
+    the walk of a row the integration derives from that goal ends at the
+    goal, which is filed without a derivation."""
+    state = make_state_with_binaries(("Peano",))
+    case = "main_boundary_ordis_(or1[1,v12,s,i0])_((inSequence[1,v12,s]))"
+    copy_line = make_proof_line("(=[v7,rec2])", case, "variable copy")
+    goal = "(fold[N,s,+,*,V8,i0,rec2,v15])_integration_goal"
+    expansion = ("(>[](interval[N,+,i0,rec2,V11])"
+                 "(existence2[V11,N,i0,V8,rec2,v15,s,*]))_integration_goal")
+    expansion_line = make_proof_line(expansion, case, "expansion for integration", goal, case)
+    reformulation_line = make_proof_line(
+        "(implication129[N,+,i0,rec2,V11,V8,v15,s,*])", case,
+        "reformulation for integration >[]", expansion, case)
+    chapter = [copy_line, expansion_line, reformulation_line]
+    assert_pass(check_variable_copy, copy_line, chapter, state)
 
 
 @register
@@ -698,6 +738,94 @@ def test_pos_recursion_check_induction_condition_typing_anchor():
     assert_pass(check_recursion, line, [line], state)
 
 
+# The processed G3 theorem (coprime(a,b) -> bez1(a,b) with typing premises)
+# and the strong hypothesis its step chapter asserts on b (v2): the theorem
+# at every m < b, bound by in3[m,y,b,+] and !(=[m,b]); a (v1) universal.
+_G3_PROCESSED = (
+    "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    "(>[v1](in[v1,N])(>[v2](in[v2,N])"
+    "(>[](coprime[N,i0,s,*,v1,v2])(bez1[N,+,*,i1,v1,v2])))))")
+_G3_STRONG_HYPOTHESIS = (
+    "(>[w1,w2](in3[w1,w2,v2,+])(>[]!(=[w1,v2])(>[w3](in[w3,N])"
+    "(>[](in[w1,N])(>[](coprime[N,i0,s,*,w3,w1])(bez1[N,+,*,i1,w3,w1]))))))")
+
+
+@register
+def test_pos_recursion_strong_induction_hypothesis():
+    """A strong-induction step chapter's hypothesis row: the theorem at a
+    fresh m below the induction variable, every other variable universal."""
+    state = make_state_with_binaries(("Peano",))
+    set_chapter_context(state, thm=(_G3_PROCESSED, "strong induction", "v2"),
+                        chapter_type="check_induction_condition")
+    seed = make_proof_line("(in2[rec,v2,s])", "main", "recursion")
+    line = make_proof_line(_G3_STRONG_HYPOTHESIS, "main", "recursion")
+    assert_pass(check_recursion, seed, [seed, line], state)
+    assert_pass(check_recursion, line, [seed, line], state)
+
+
+# FTA2's full I5 (two prime factorizations of one n are equal; lengths v1
+# and v4 may differ), processed form: twin primeFactorSeq premises, v4 the
+# partner of v1 (D-587).
+_FULL_I5_PROCESSED = (
+    "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    "(>[v1,v2,v3](primeFactorSeq[N,s,+,*,i0,i1,i2,v1,v2,v3])"
+    "(>[v4,v5](primeFactorSeq[N,s,+,*,i0,i1,i2,v4,v5,v3])(=[v2,v5]))))")
+
+# Injectivity of s: twin in2 premises, v3 the partner of v1.
+_S_INJECTIVE_PROCESSED = (
+    "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    "(>[v1,v2](in2[v1,v2,s])(>[v3](in2[v3,v2,s])(=[v1,v3]))))")
+
+
+@register
+def test_pos_twin_induction_partner_full_i5():
+    """Exchanging the twin premises of the full I5 gives the same lemma after
+    normalization (the equality head read unordered): v4 is v1's partner."""
+    premises, head = disintegrate_implication_full(_FULL_I5_PROCESSED)
+    assert _twin_induction_partner(list(premises), head, "v1", {"v1", "v4"}) == "v4"
+
+
+@register
+def test_pos_recursion_twin_weak_hypothesis_leaves_partner_free():
+    """The weak step chapter of a twin conjecture asserts the hypothesis at
+    rec with the partner v3 universal (bound at its first premise)."""
+    state = make_state_with_binaries(("FTA",))
+    set_chapter_context(state, thm=(_S_INJECTIVE_PROCESSED, "induction", "v1"),
+                        chapter_type="check_induction_condition")
+    seed = make_proof_line("(in2[rec,v1,s])", "main", "recursion")
+    line = make_proof_line(
+        "(>[w1](in2[rec,w1,s])(>[w2](in2[w2,w1,s])(=[rec,w2])))",
+        "main", "recursion")
+    assert_pass(check_recursion, line, [seed, line], state)
+
+
+@register
+def test_pos_recursion_twin_partner_in_one_premise_is_bound():
+    """The twin partner v4 occurs in its own premise only (v2 and v5 are
+    fixed): the weak hypothesis binds it there, as the prover binds every
+    name it does not fix (D-587)."""
+    state = make_state_with_binaries(("FTA",))
+    theorem = ("(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+               "(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v4,v5,v3,+])(=[v2,v5]))))")
+    set_chapter_context(state, thm=(theorem, "induction", "v1"),
+                        chapter_type="check_induction_condition")
+    seed = make_proof_line("(in2[rec,v1,s])", "main", "recursion")
+    line = make_proof_line(
+        "(>[w1](in3[rec,v2,w1,+])(>[w2](in3[w2,v5,w1,+])(=[v2,v5])))",
+        "main", "recursion")
+    assert_pass(check_recursion, line, [seed, line], state)
+
+
+@register
+def test_pos_strong_induction_hypothesis_text():
+    """_strong_induction_hypothesis names fresh v-names past the theorem's
+    numbered names and binds each non-fixed name at its first premise."""
+    expected = (
+        "(>[v3,v4](in3[v3,v4,v2,+])(>[]!(=[v3,v2])(>[v1](in[v1,N])"
+        "(>[](in[v3,N])(>[](coprime[N,i0,s,*,v1,v3])(bez1[N,+,*,i1,v1,v3]))))))")
+    assert _strong_induction_hypothesis(_G3_PROCESSED, "v2") == expected
+
+
 # ===========================================================================
 #  Chapter-level: theorem goal reached (well-formed single-chapter proof)
 # ===========================================================================
@@ -725,7 +853,8 @@ def test_pos_meta_well_formed_chapter_passes_all():
         make_proof_line("(in[v1,N])", "main", "task formulation"),
     ]
     for meta in ("theorem goal reached", "origin",
-                 "definition set consistency", "origin chain termination"):
+                 "definition set consistency", "bound variable uniqueness",
+                 "origin chain termination"):
         assert_chapter_meta_pass(
             chapter, meta,
             chapter_thm=chapter_thm, chapter_type="single_chapter_proof",

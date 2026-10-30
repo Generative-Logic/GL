@@ -47,7 +47,9 @@ struct WitnessAdmissionMetrics {
 
 /// @brief One expansion-local witness slot and its admission state.
 /// @details The parent is an earlier slot, or zero for a top-level existence.
-/// Permanent text is retained only within this expansion's scratch frame.
+/// `parentElement` is the index of the parent existence's element whose
+/// expansion contains this slot, or -1 when it is not recorded (a top-level
+/// slot). Permanent text is retained only within this expansion's scratch frame.
 struct TemporaryWitnessSlot {
     TemporaryWitnessKind kind;
     int generation;
@@ -58,6 +60,7 @@ struct TemporaryWitnessSlot {
     int32_t sourceId;
     int32_t subtreeEnd;
     int32_t integrationDepth;
+    int32_t parentElement;
 };
 
 /// @brief Own reusable witness placeholders for one disintegration expansion.
@@ -102,12 +105,16 @@ public:
     /// @param structuralPosition Stable source traversal position.
     /// @param source Instantiated source existence, when supplied by disintegration.
     /// @param integrationDepth Shared outer-expansion integration assignment.
+    /// @param parentElement Index of the parent existence's element whose
+    ///        expansion contains the slot, or -1 when not recorded.
     /// @return The new one-based slot identifier.
     int32_t append(TemporaryWitnessKind kind, int generation,
                    int32_t parent, int32_t structuralPosition,
-                   StrSpan source = StrSpan(), int32_t integrationDepth = 0) {
+                   StrSpan source = StrSpan(), int32_t integrationDepth = 0,
+                   int32_t parentElement = -1) {
         assert(generation >= 0 && structuralPosition >= 0 && integrationDepth >= 0);
         assert(parent >= 0 && parent <= slots_.size());
+        assert(parentElement >= -1 && (parent != 0 || parentElement == -1));
         assert(slots_.size() < INT_MAX);
         const int32_t id = slots_.size() + 1;
         char bytes[96];
@@ -119,7 +126,7 @@ public:
         tokenSlots_.insert(tokenId, id);
         slots_.push_back(TemporaryWitnessSlot{
             kind, generation, parent, structuralPosition, tokenId, 0,
-            source.empty() ? 0 : strings_.mint(source), id + 1, integrationDepth});
+            source.empty() ? 0 : strings_.mint(source), id + 1, integrationDepth, parentElement});
         return id;
     }
 
@@ -219,6 +226,31 @@ public:
             slots_.setAt(id - 1, value);
             ++nextPermanent;
         }
+        return strings_.keyAt(value.permanentId);
+    }
+
+    /// @brief Give a slot a permanent name minted earlier, without drawing a
+    ///        new one (D-481).
+    ///
+    /// @details
+    /// A passed integration trial admits at its parent scope the witnesses it
+    /// minted when it opened, under the same names. The promotion expands the
+    /// source again and hands each listed slot its recorded name here instead
+    /// of `materialize`; the LB's permanent counter is untouched, because the
+    /// name was counted when it was first minted.
+    ///
+    /// @param id   One-based slot identifier; its enclosing slot already has a
+    ///             permanent name, it has none yet.
+    /// @param name The recorded permanent name (non-empty).
+    /// @return The permanent name, valid until this store is mutated or destroyed.
+    /// @see materialize, DisintegrationProcessor::disintegrateExpr2.
+    StrSpan materializeAs(int32_t id, StrSpan name) {
+        TemporaryWitnessSlot value = slot(id);
+        assert(name.len > 0 && "materializeAs: a recorded name is non-empty");
+        assert(value.parent == 0 || slot(value.parent).permanentId != 0);
+        assert(value.permanentId == 0 && "materializeAs: a slot is named once");
+        value.permanentId = strings_.mint(name);
+        slots_.setAt(id - 1, value);
         return strings_.keyAt(value.permanentId);
     }
 };

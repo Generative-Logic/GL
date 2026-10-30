@@ -45,6 +45,8 @@
 #include <new>
 
 namespace gl {
+    struct Memory;
+
 
 
     /// @brief One element of a request *Instruction*: a typed (category, signature, arity)
@@ -79,6 +81,101 @@ namespace gl {
         std::string reverseRule;
     };
 
+    /// @brief One shot of an existence's disintegration package
+    ///        (I-333).
+    ///
+    /// @details
+    /// A universal of the existence's unfolding fired once on products of
+    /// the same unfolding. Every text is spelled over the existence's own
+    /// `u_` tokens, its bound variables as the placeholders
+    /// `u_pi_lev_0_<n>` of `LogicalEntity::shotPlaceholders`. The head is
+    /// never expanded at compile time.
+    struct DisintegrationShot {
+        /// The compact instance of the fired universal, as it occurs in the
+        /// unfolding.
+        std::string universal;
+        /// The products its premises took, in premise order.
+        std::vector<std::string> premises;
+        /// The shot head.
+        std::string head;
+        /// The binder whose witness the head attaches to.
+        int32_t binder = 0;
+    };
+
+    /// @brief The rule shape of one compiled integration implication.
+    /// @details `OneLevel`: the entity's elements imply the entity, an
+    /// existence witness bound. `Occupied`: the same rule with the witness as
+    /// the compact's last argument (a witness fixed by a marker replay).
+    /// `Flat`: a deeper variant of the entity as integration root (D-352).
+    /// `OrIntroduction`: a disjunct implies an OR premise of a root rule
+    /// (D-492). `DisjunctFlat`: the flat rule of an existence disjunct of such
+    /// an OR premise, the disjunct as head.
+    enum class IntegrationRuleKind : uint8_t {
+        OneLevel = 0,
+        Occupied = 1,
+        Flat = 2,
+        OrIntroduction = 3,
+        DisjunctFlat = 4
+    };
+
+    /// @brief One compiled integration implication of a logical entity.
+    /// @details `compact` is an ordinary implication entity of the registry,
+    /// instantiated over the owner's own `u_` tokens; an `Occupied` compact
+    /// carries one more token, `u_<arity+1>`, for the witness. `cites` is the
+    /// index, in the same list, of the rule whose premise holds the OR premise
+    /// an `OrIntroduction` introduces, and -1 for every other kind.
+    struct IntegrationImplication {
+        std::string compact;
+        IntegrationRuleKind kind = IntegrationRuleKind::OneLevel;
+        int32_t cites = -1;
+
+        bool operator==(const IntegrationImplication& o) const {
+            return compact == o.compact && kind == o.kind && cites == o.cites;
+        }
+    };
+
+    /// @brief The GL-binary spelling of an integration rule kind.
+    ///
+    /// @details
+    /// The GL binary stores each integration implication's kind as one of the
+    /// five lowercase names below; `integrationRuleKindFromName` is the exact
+    /// inverse. The names never change once written: a binary is regenerated
+    /// by every full run, but the verifier and the export read the same names.
+    ///
+    /// @param kind The kind.
+    /// @return Its binary name, a static string.
+    /// @see integrationRuleKindFromName, IntegrationImplication.
+    inline const char* integrationRuleKindName(IntegrationRuleKind kind) {
+        switch (kind) {
+        case IntegrationRuleKind::OneLevel: return "one_level";
+        case IntegrationRuleKind::Occupied: return "occupied";
+        case IntegrationRuleKind::Flat: return "flat";
+        case IntegrationRuleKind::OrIntroduction: return "or_introduction";
+        case IntegrationRuleKind::DisjunctFlat: return "disjunct_flat";
+        }
+        assert(false && "integrationRuleKindName: unknown integration rule kind");
+        return "";
+    }
+
+    /// @brief The integration rule kind a GL-binary name denotes.
+    ///
+    /// @details
+    /// The exact inverse of `integrationRuleKindName`; any other name is a
+    /// corrupt binary and asserts (Rule 19).
+    ///
+    /// @param name The binary name.
+    /// @return The kind it names.
+    /// @see integrationRuleKindName.
+    inline IntegrationRuleKind integrationRuleKindFromName(const std::string& name) {
+        for (const IntegrationRuleKind kind : { IntegrationRuleKind::OneLevel, IntegrationRuleKind::Occupied,
+                 IntegrationRuleKind::Flat, IntegrationRuleKind::OrIntroduction,
+                 IntegrationRuleKind::DisjunctFlat }) {
+            if (name == integrationRuleKindName(kind)) return kind;
+        }
+        assert(false && "integrationRuleKindFromName: unknown integration rule kind name");
+        return IntegrationRuleKind::OneLevel;
+    }
+
     struct LogicalEntity {
         // Member Variables
         std::string category = "Uncategorized";
@@ -102,21 +199,42 @@ namespace gl {
         ///        `right → !left`.
         ///
         /// @details
-        /// Populated for or- and existence-category entities — the K-rules
-        /// by `ExpressionAnalyzer::compileOrKRules` at the or's mint, the
-        /// subset-exclusion rules by `compileOrSubsetExclusions` at the
-        /// reduced-or closure seam (`preMintReducedOrs`), the existence pair
-        /// by `compileExistenceImplications` at the existence's mint; empty
-        /// for every other category. Each entry is an ordinary implication
+        /// The disintegration set: deployed when an instance of the entity
+        /// is disintegrated. Populated for or- and existence-category
+        /// entities — the K-rules by `OrRuleCompiler::compileOrKRules` at the
+        /// or's mint, the subset-exclusion rules by
+        /// `compileOrSubsetExclusions` at the reduced-or closure seam
+        /// (`preMintReducedOrs`), the existence pair by
+        /// `compileExistenceImplications` at the existence's mint; empty for
+        /// every other category. Each entry is an ordinary implication
         /// entity of the same registry, e.g. `(implication153[u_1,u_3,u_2])`:
         /// its argument order is the projection from the implication's
         /// signature positions onto the owner's tokens, so an instance
         /// substitutes `u_p` → its argument `p` positionally (repeated
         /// arguments are legal). Derived from `elements`, hence not part of
-        /// `operator<` / `operator==`. The GL-binary writer omits the key
-        /// when the list is empty; an or or existence loaded without it is
-        /// completed at the next `preMintReducedOrs` seam.
+        /// `operator<` / `operator==`. The GL-binary writer always writes the
+        /// key for an or or existence (an empty list included) and the
+        /// loader reads it verbatim and asserts it present.
         std::vector<std::string> implications = {};
+
+        /// @brief The integration set: the entity's integration rules as
+        ///        compact implications, deployed when an instance of the
+        ///        entity is integrated.
+        ///
+        /// @details
+        /// Populated for and- and existence-category entities by
+        /// `IntegrationRuleCompiler::compileIntegrationImplications` at the
+        /// entity's creation, in the order `prepareIntegration` installs
+        /// them: the one-level rule, for an existence its occupied form, the
+        /// introductions and disjunct rules of each OR premise of the
+        /// one-level rule, then every flat variant followed by the
+        /// introductions and disjunct rules of its new OR premises. Witnesses
+        /// of the entity's own definition tree are bound inside each compact.
+        /// Derived from `elements`, hence not part of `operator<` /
+        /// `operator==`. The GL-binary writer always writes the key for an
+        /// and or existence and the loader reads it verbatim and asserts it
+        /// present.
+        std::vector<IntegrationImplication> integrationImplications = {};
 
         /// @brief Auxiliary derivations, separate from defining elements.
         /// @details Prepared before parallel disintegration and serialized with the
@@ -144,6 +262,21 @@ namespace gl {
         std::vector<std::string> composedSupportingImplications;
         bool supportingImplicationsPrepared = false;
         bool supportingImplicationAuxiliary = false;
+
+        /// @brief The disintegration package of an existence: its internal
+        ///        universals fired once on its products
+        ///        (I-333).
+        /// @details Prepared at the single-threaded seams before any burst
+        /// (`SupportingRuleCompiler::compileDisintegrationPackages`), derived
+        /// from `elements` and the registry, never written to the GL binary.
+        /// Binder `b` binds placeholder `shotPlaceholders[b]`; its template
+        /// `shotBinders[b]` is the signature of the existence of the
+        /// unfolding that binds it (binder 0: this entity). Empty for every
+        /// other category.
+        std::vector<std::string> shotBinders;
+        std::vector<std::string> shotPlaceholders;
+        std::vector<DisintegrationShot> shots;
+        bool shotsPrepared = false;
 
         // 1. Default Constructor
         LogicalEntity() = default;
@@ -184,14 +317,14 @@ namespace gl {
     ///        expression name, with a transparent comparator.
     ///
     /// @details
-    /// This is the storage type of `ExpressionAnalyzer::compiledExpressions`
+    /// This is the storage type of `CompiledDefinitionRegistry::entries()`
     /// — the compiled-definition layer, an OPEN heap violation still to
     /// statify (NOT a sanctioned heap island, NOT a user-approved
     /// carve-out), tracked by `I-137`. The comparator is
     /// `std::less<>` (transparent) rather than the default
     /// `std::less<std::string>` so that a heterogeneous `find(std::string_view)`
     /// probe compiles without materializing a `std::string` key — the
-    /// zero-allocation read the `ExpressionAnalyzer::compiledEntity` accessor
+    /// zero-allocation read the `CompiledDefinitionRegistry::compiledEntity` accessor
     /// relies on.
     ///
     /// **Byte-order contract.** `std::less<>` compares two stored
@@ -210,7 +343,7 @@ namespace gl {
     /// @invariant `I-137` — the zero-allocation read fence over the
     ///            still-heap compiled-definition layer (an OPEN violation
     ///            to statify, not a sanctioned carve-out).
-    /// @see `ExpressionAnalyzer::compiledEntity` — the reader accessor.
+    /// @see `CompiledDefinitionRegistry::compiledEntity` — the reader accessor.
     /// @see `ce::CoreExpressionMap` — the sibling transparent map.
     using CompiledExpressionMap = std::map<std::string, LogicalEntity, std::less<>>;
 
@@ -222,12 +355,18 @@ namespace gl {
     /// The vocabulary is closed: `ruleJustificationFromString` asserts on a
     /// string outside it — a new install site must extend this enum AND the
     /// name table, never pass through silently (Rule 19). The underlying
-    /// value is storage only; the only semantic comparison is equality
-    /// (the `integration` gate in `checkLocalEncodedMemoryStatic`).
+    /// value is storage only; the only semantic comparisons are equality
+    /// (the `integration` and `goalDemand` gates in
+    /// `checkLocalEncodedMemoryStatic` and its CUDA twin). `goalDemand`
+    /// marks the two goal-driven variant kinds
+    /// (D-574): the near-miss demand variant
+    /// of a goal's flat integration rule and the marked-head implication its
+    /// rule search installs; both are exempt from the purity gate.
     enum class RuleJustification : uint8_t {
         none,           // ""  (marker LMVs — no head, nothing fires)
         implication,    // "implication"
         integration,    // "integration"
+        goalDemand,     // "goal demand"
         COUNT           // sentinel — table size only
     };
 
@@ -241,6 +380,7 @@ namespace gl {
             "",
             "implication",
             "integration",
+            "goal demand",
         };
         static_assert(sizeof(NAMES) / sizeof(NAMES[0])
             == static_cast<std::size_t>(RuleJustification::COUNT),
@@ -420,6 +560,48 @@ namespace gl {
     };
 
 
+    /// @brief Admission-value flag bit 0: the value is recursion-owned.
+    ///
+    /// @details
+    /// Bit 0 of an admission value's flag byte (`AdmissionMapValue::flag`,
+    /// `AdmissionValueBlobView::flagByte`). A recursion-owned value serves
+    /// only disintegrations whose original has numbers as its only arguments
+    /// (I-285), and a witness it admits becomes a product of recursion — the
+    /// marker purity gate's input. Set by the step block's induction
+    /// hypothesis install and by the goal door's demand
+    /// (`AdmissionMemory::updateAdmissionMap3`).
+    ///
+    /// @see kAdmissionInductionHypothesisFlag, AdmissionValueBlobView::flagByte.
+    static constexpr uint8_t kAdmissionRecursionFlag = 1;
+
+    /// @brief Admission-value flag bit 1: the value is the induction
+    ///        hypothesis's chain — "admitted by induction hypothesis".
+    ///
+    /// @details
+    /// Set only where the step block installs its induction hypothesis (weak
+    /// or strong) and carried by every advanced copy of that chain. Only a
+    /// witness admission through such a value opens an induction scope
+    /// (D-519). A value carrying it is also
+    /// recursion-owned, so the valid flag bytes are 0, 1 and 3.
+    ///
+    /// @see kAdmissionRecursionFlag, AdmissionValueBlobView::inductionHypothesis.
+    static constexpr uint8_t kAdmissionInductionHypothesisFlag = 2;
+
+    /// @brief Whether an admission value flag byte is well formed.
+    ///
+    /// @details
+    /// The byte is a combination of `kAdmissionRecursionFlag` and
+    /// `kAdmissionInductionHypothesisFlag`; the hypothesis bit implies the
+    /// recursion bit, so exactly 0, 1 and 3 are well formed.
+    ///
+    /// @param flags The flag byte.
+    /// @return True iff @p flags is 0, 1 or 3.
+    /// @see kAdmissionRecursionFlag, kAdmissionInductionHypothesisFlag.
+    inline bool isValidAdmissionFlagByte(uint8_t flags) {
+        return flags == 0 || flags == kAdmissionRecursionFlag
+            || flags == (kAdmissionRecursionFlag | kAdmissionInductionHypothesisFlag);
+    }
+
     /// @brief One entry in the *admission map* — pre-computed parameters that bound how
     /// far a hash-engine rule may be applied at a given expression / validity pair.
     ///
@@ -466,6 +648,10 @@ namespace gl {
         // value is a regular key ("untagged wins" is emergent — both
         // records coexist in the canonical run).
         bool ordisOnly;
+        // True when this value is the induction hypothesis's chain — flag
+        // bit `kAdmissionInductionHypothesisFlag`; implies `flag`
+        // (D-519).
+        bool inductionHypothesis;
 
         // Default constructor
         AdmissionMapValue()
@@ -474,7 +660,8 @@ namespace gl {
             standardMaxAdmissionDepth(0),
             standardMaxSecondaryNumber(0),
             flag(false),
-            ordisOnly(false) {
+            ordisOnly(false),
+            inductionHypothesis(false) {
         }
 
         // Full constructor (id-form inputs)
@@ -483,13 +670,17 @@ namespace gl {
             int standardMaxAdmissionDepth_,
             int standardMaxSecondaryNumber_,
             bool flag_,
-            bool ordisOnly_ = false)
+            bool ordisOnly_ = false,
+            bool inductionHypothesis_ = false)
             : key(std::move(key_)),
             remainingArgs(std::move(remainingArgs_)),
             standardMaxAdmissionDepth(standardMaxAdmissionDepth_),
             standardMaxSecondaryNumber(standardMaxSecondaryNumber_),
             flag(flag_),
-            ordisOnly(ordisOnly_) {
+            ordisOnly(ordisOnly_),
+            inductionHypothesis(inductionHypothesis_) {
+            assert((!inductionHypothesis || flag)
+                && "AdmissionMapValue: an induction hypothesis value is recursion-owned");
         }
     };
 
@@ -803,7 +994,8 @@ namespace gl {
         bool isRemove() const { return kind == Kind::Remove; }
 
         /// @brief The container tags of the visited set.
-        enum Tag : char { WholeKey = 'w', Subkey = 's', Edge = 'e', Chain = 'c' };
+        enum Tag : char { WholeKey = 'w', Subkey = 's', Edge = 'e', Chain = 'c',
+                          PremisePattern = 'p' };
 
         /// @brief Whether this is the removal's first visit of an entry by
         ///        this owner — records the visit.
@@ -837,13 +1029,37 @@ namespace gl {
     ///        derivation (status 0/1) goes to `overallHashMemory` +
     ///        `localHashMemory` + `localHashMemoryDelta`, an EXTERNAL
     ///        (mail-recovered, status 3) rule to `overallHashMemory` +
-    ///        `workingMemory`.
+    ///        `workingMemory`; an INTEGRATION rule (an integration compact's
+    ///        expansion) to the local triple through the integration route
+    ///        (justification `integration`).
     ///
     /// @details The two transient instances (`localHashMemoryDelta`,
     ///          `workingMemory`) are emptied per burst, so a later removal
     ///          probes them for the rule instead of trusting the kind; the
-    ///          kind decides the persistent pair.
-    enum class RuleInstallKind : uint8_t { Local = 0, External = 1 };
+    ///          kind decides the persistent pair and, for an integration
+    ///          rule, the removal route
+    ///          (D-503). `IntegrationFlat` is an integration rule installed
+    ///          as a root goal's flat variant: the same route, plus the
+    ///          near-miss demand variants of its premises, which its removal
+    ///          and its canonical re-installation carry the same way
+    ///          (D-574).
+    enum class RuleInstallKind : uint8_t { Local = 0, External = 1, Integration = 2, IntegrationFlat = 3 };
+
+    /// @brief Whether an install kind is one of the two integration kinds.
+    ///
+    /// @details
+    /// `Integration` and `IntegrationFlat` share the integration route
+    /// (justification `integration`, the local triple of instances); only the
+    /// flat kind adds the near-miss demand variants. Every reader that asks
+    /// "is this carrier an integration expansion" asks it here.
+    ///
+    /// @param kind A carrier record's install kind.
+    /// @return `true` iff @p kind is `Integration` or `IntegrationFlat`.
+    /// @invariant Pure.
+    /// @see RuleInstallKind, CompactRuleProcessor::carrierKinds.
+    inline bool isIntegrationInstallKind(RuleInstallKind kind) {
+        return kind == RuleInstallKind::Integration || kind == RuleInstallKind::IntegrationFlat;
+    }
 
     /// @brief One record of the carrier index `Memory::compactExpansions`:
     ///        an expanded implication the carrier statement (a compact
@@ -1084,8 +1300,6 @@ namespace gl {
     struct AdmissionKeyAlgebraRecord {
         SealedExpressionWithValidity key;
         StagedAdmissionValue value;
-        // Task owning the fired rule (I-284); 0 = none.
-        int64_t ownerTask = 0;
     };
 
     /// @brief One staged ordis2 demand — a rule that matched everything
@@ -1111,6 +1325,11 @@ namespace gl {
         SealedString validityName;
         int32_t sourceImplId = 0;
         SealedSpan<int> levels;
+        // The demand came from a near-miss variant of a goal's flat
+        // integration rule: `drainAdmissionKeysOrdis2` hands it to the
+        // goal-driven rule search instead of the OR-demand map
+        // (D-574).
+        bool goalNearMiss = false;
     };
 
     /// @brief One deferred integration-template registration — the inputs to a
@@ -1141,9 +1360,6 @@ namespace gl {
         SealedString expression;
         SealedSpan<SealedString> unchangeableArgsSorted;
         SealedString validityName;
-        // Task owning the fired rule; the replayed preparation runs on its
-        // behalf (I-284). 0 = an independent firing.
-        int64_t ownerTask = 0;
     };
 
     /// @brief One captured rule-firing from a hashburst — the deposit side of
@@ -1161,7 +1377,7 @@ namespace gl {
     /// selection, the per-head `disintegrationSignals` last-write, and the
     /// firing-order drains would all differ per partition. Instead each firing
     /// now produces a `FiringRecord`; after the pass
-    /// `ExpressionAnalyzer::applyFiringRecords` sorts the records by a canonical
+    /// `HashRuleEvaluator::applyFiringRecords` sorts the records by a canonical
     /// content key and applies their deposits, so the resulting container state
     /// is a function of the firing SET, not the firing ORDER — the property the
     /// LB split relies on.
@@ -1216,17 +1432,6 @@ namespace gl {
         // consumers preserve the set's lexicographic semantics.
         SealedSpan<SealedString> markerArgsSorted;
         StagedAdmissionValue admv;
-        // The fired rule copy (`packRuleOwner` of the LMV's original
-        // implication and scope), set on head AND marker firings;
-        // `applyFiringRecords` names its owning task
-        // (I-284): a marker record's run replays on
-        // behalf of its tasks, a head record owned by a task deposits its
-        // statement with the integrated mark (D-444).
-        // Not part of the canonical content order: a run of marker records
-        // equal in content emits its tasks in task-content order, and the
-        // head mark OR-merges, so neither depends on the order inside a run.
-        int64_t ruleCopyOwner = 0;
-
         // --- ordis2-demand firing (an OWN kind: isMarker stays false,
         //     isOrdis2Demand == true; no marker anywhere in the ordis2
         //     machinery — D-267) ---
@@ -1237,7 +1442,112 @@ namespace gl {
         // empty on this kind.
         bool isOrdis2Demand = false;
         int32_t demandSourceImplId = 0;
+        // A demand fired by a near-miss variant of a goal's flat
+        // integration rule (justification `goalDemand`): the ground missing
+        // premise goes to the goal-driven rule search, never to the OR-demand
+        // map (D-574). Meaningful only with
+        // isOrdis2Demand.
+        bool isGoalNearMiss = false;
     };
+
+    /// @brief The two forbidden sets of an integration instruction copy that
+    ///        is bound to one original premise
+    ///        (D-579).
+    ///
+    /// @details
+    /// When one weak induction hypothesis install prepares N identical
+    /// integration goals, every instruction of that preparation is filed N
+    /// times, one copy per goal, and copy i is bound to the original premise
+    /// its hypothesis premise came from. The copy carries the variables and
+    /// the forced-witness levels that belong only to the group's other
+    /// premises (`premiseForbiddenSets`), and it refuses an arriving
+    /// expression whose top-level arguments name one of them
+    /// (`argumentsHitForbiddenSets`).
+    ///
+    /// Each set is a bit set over small non-negative integers
+    /// (`forbiddenSetBit`): bit v of `variables` stands for the decimal
+    /// variable v, bit L of `levels` for the logic-block level L of a
+    /// `force_lev_<L>_<n>` witness. Both sets empty is the unsplit
+    /// instruction every other preparation files. The sets are raw integers:
+    /// nothing is minted for them.
+    ///
+    /// `premiseLevel` is the block level of the copy's own original premise
+    /// (the ancestor logic block whose key the copy is bound to), 0 for an
+    /// unsplit instruction. It names the premise of the int scope a first
+    /// fill of the copy opens (D-578).
+    ///
+    /// @see compareForbiddenSets, forbiddenSetWord, forbiddenSetFromWords.
+    struct IntegrationForbiddenSets {
+        uint64_t variables = 0;
+        uint64_t levels = 0;
+        int32_t premiseLevel = 0;
+    };
+
+    /// @brief Three-way order of two forbidden-set pairs: variables first,
+    ///        then levels, each as an unsigned integer, then the premise
+    ///        level.
+    ///
+    /// @details
+    /// The forbidden sets are part of an integration instruction's identity
+    /// (D-579): the N copies of one
+    /// instruction differ only in them, so every instruction order and
+    /// equality (`Instruction::operator<`, `DecodedInstructionLess`,
+    /// `ArenaIntegrationMap::compareEntries`) compares them after the path
+    /// list. The sets are raw integers, so the numeric order is
+    /// deterministic and independent of any interner. The premise level
+    /// (D-578) follows from the sets within one
+    /// group, so it orders last.
+    ///
+    /// @param a First pair.
+    /// @param b Second pair.
+    /// @return Negative, zero or positive as @p a orders before, equal to or
+    ///         after @p b.
+    /// @see IntegrationForbiddenSets.
+    inline int compareForbiddenSets(const IntegrationForbiddenSets& a, const IntegrationForbiddenSets& b) {
+        if (a.variables != b.variables) return a.variables < b.variables ? -1 : 1;
+        if (a.levels != b.levels) return a.levels < b.levels ? -1 : 1;
+        if (a.premiseLevel != b.premiseLevel) return a.premiseLevel < b.premiseLevel ? -1 : 1;
+        return 0;
+    }
+
+    /// @brief One 32-bit half of a forbidden set, as stored in the int32
+    ///        record streams.
+    ///
+    /// @details
+    /// The cold `Codec<IntegrationEntry>` record and the flattened
+    /// instruction runs of `ArenaIntegrationMap` are int32 streams, so each
+    /// 64-bit forbidden set travels as two words, the low half first
+    /// (D-579). `forbiddenSetFromWords`
+    /// reassembles them.
+    ///
+    /// @param set  The 64-bit set.
+    /// @param high False for bits 0..31, true for bits 32..63.
+    /// @return The half, bit-cast to int32.
+    /// @see forbiddenSetFromWords.
+    inline int32_t forbiddenSetWord(uint64_t set, bool high) {
+        return static_cast<int32_t>(static_cast<uint32_t>(high ? (set >> 32) : (set & 0xFFFFFFFFu)));
+    }
+
+    /// @brief Reassemble a 64-bit forbidden set from its two stored words.
+    ///
+    /// @details
+    /// The inverse of `forbiddenSetWord`: the low word holds bits 0..31,
+    /// the high word bits 32..63, each read as an unsigned 32-bit pattern
+    /// (D-579).
+    ///
+    /// @param low  The low word.
+    /// @param high The high word.
+    /// @return The 64-bit set.
+    /// @see forbiddenSetWord.
+    inline uint64_t forbiddenSetFromWords(int32_t low, int32_t high) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(high)) << 32)
+            | static_cast<uint64_t>(static_cast<uint32_t>(low));
+    }
+
+    /// The promoted mark of an int-scope goal group's record in
+    /// `LbMemory::intScopeGroups`, above every premise-level bit
+    /// (D-578).
+    constexpr int64_t kIntScopeGroupPromoted = int64_t{1} << 62;
 
     /// @brief A typed sequence of `LogicalEntity` items plus a marked goal — one
     /// integration-side request shape.
@@ -1261,30 +1571,41 @@ namespace gl {
         // Members
         std::vector<LogicalEntity> data;
         std::string markedGoal;
+        // The path list `[name,...]` (D-529); empty
+        // outside induction step blocks.
+        std::string pathVariables;
+        // The forbidden sets of a copy bound to one premise; empty on every
+        // unsplit instruction (D-579).
+        IntegrationForbiddenSets forbidden;
 
         // 1. Default Constructor
         Instruction()
-            : data(), markedGoal() {
+            : data(), markedGoal(), pathVariables(), forbidden() {
         }
 
         // 2. Parameterized Constructor
         Instruction(std::vector<LogicalEntity> insts, std::string goal)
-            : data(std::move(insts)), markedGoal(std::move(goal)) {
+            : data(std::move(insts)), markedGoal(std::move(goal)), pathVariables(), forbidden() {
         }
 
         // 3. Operator < (Required for std::map key)
-        // Uses lexicographical comparison: first compares instructions, then markedGoal.
+        // Uses lexicographical comparison: first compares instructions, then
+        // markedGoal, then the path list, then the forbidden sets.
         bool operator<(const Instruction& rhs) const {
             if (data != rhs.data) {
                 return data < rhs.data;
                 // This works because std::vector and LogicalEntity already implement operator<
             }
-            return markedGoal < rhs.markedGoal;
+            if (markedGoal != rhs.markedGoal) return markedGoal < rhs.markedGoal;
+            if (pathVariables != rhs.pathVariables) return pathVariables < rhs.pathVariables;
+            return compareForbiddenSets(forbidden, rhs.forbidden) < 0;
         }
 
         // 4. Equality Operator
         bool operator==(const Instruction& rhs) const {
-            return data == rhs.data && markedGoal == rhs.markedGoal;
+            return data == rhs.data && markedGoal == rhs.markedGoal
+                && pathVariables == rhs.pathVariables
+                && compareForbiddenSets(forbidden, rhs.forbidden) == 0;
         }
     };
 
@@ -1373,8 +1694,9 @@ namespace gl {
             nodes = nd;
         }
 
-        /// @brief Reset the paged node forest to empty — the `destroyGrid`
-        ///        lockstep (slot-0 + "main" re-seed lazily on the next encode).
+        /// @brief Reset the paged node forest to empty (slot-0 + "main" re-seed
+        ///        lazily on the next encode). Test-only: production NameMaps
+        ///        live and die with their LB shell.
         void initMetadata() {
             assert(nodes != nullptr && "NameMap metadata used unbound");
             nodes->clear();
@@ -1418,8 +1740,9 @@ namespace gl {
             nodes->push_back(ValidityNode{0, 0});    // "main" (id 1): root, no payload
         }
 
-        /// @brief Wholesale reset in lockstep with `destroyGrid` — every
-        ///        id re-binds afterwards; "main" stays id 1.
+        /// @brief Wholesale reset — every id re-binds afterwards; "main" stays
+        ///        id 1. Test-only: production NameMaps live and die with their
+        ///        LB shell (`destroyGrid` destroys the shells).
         void resetToFresh() {
             assert(names != nullptr && "NameMap used unbound");
             names->resetToFresh();
@@ -1626,7 +1949,7 @@ namespace gl {
         /// order — byte-identical ids and mint order to the former
         /// heap-`std::string` body. It is out-of-line because it reaches the
         /// scratch registry (`scratchArenas()`) and the worker-slot id
-        /// (`ExpressionAnalyzer::g_currentCoreId`), neither of which an inline
+        /// (`WorkerContext::coreId()`), neither of which an inline
         /// header body can see. The `decodeView(parentId)` span is copied into
         /// the scratch buffer before any mint, so the later `names` mint cannot
         /// dangle it (I-3).
@@ -2625,7 +2948,7 @@ namespace gl {
     /// deliberately: interning them in the `NameMap` would mint mid-run,
     /// shifting every later statement id — which changes the hashburst
     /// dump's `nameMap` table and raw-id sections byte-for-byte and
-    /// pressures the 32000-id ceiling
+    /// pressures the `MAX_NAME_IDS` tripwire
     /// ([D-132](../../docs/agentic_swdd/40_decisions.md#d-132)).
     ///
     /// The packed admission/rejected key is
@@ -2903,6 +3226,26 @@ namespace gl {
             return table->view(id);
         }
 
+        /// @brief Decode into an explicit caller-owned scratch lifetime.
+        /// @details Supports full and prefix-packed bytes without a borrowed cache.
+        /// @param id Stable value identifier.
+        /// @param scratch Arena owned and rewound by the caller.
+        /// @return Copied decoded bytes valid through the caller's scratch scope.
+        StrSpan copyView(int32_t id, ScratchArena& scratch) const {
+            assert(table != nullptr && "ValueInterner used unbound");
+            return table->keyStore().copyView(id, scratch);
+        }
+
+        /// @brief Compare decoded values without exposing borrowed full strings.
+        /// @details Prefix segment traversal preserves ordinary byte-lexical order.
+        /// @param a First stable identifier.
+        /// @param b Second stable identifier.
+        /// @return Decoded comparison result.
+        int compare(int32_t a, int32_t b) const {
+            assert(table != nullptr && "ValueInterner used unbound");
+            return table->keyStore().compareKeys(a, b);
+        }
+
         /// @brief Number of interned values (ids run 1..count).
         ///
         /// @return The backing table's string count.
@@ -2939,7 +3282,106 @@ namespace gl {
         // Zero-copy span compare — identical ordering to the former
         // decoded-reference compare, with no allocation per comparison
         // (this primitive sits under every decoded-order container).
-        return compareSpans(vi.decodeView(a), vi.decodeView(b)) < 0;
+        return vi.compare(a, b) < 0;
+    }
+
+    /// @brief Decoded-string compare of two instruction path-list ids, where
+    ///        id 0 stands for the empty list.
+    ///
+    /// @details
+    /// An instruction's path list (D-529) is stored as a
+    /// value-interner id of its bracketed text, or 0 when the list is empty —
+    /// the empty list is never interned, so instructions outside induction
+    /// step blocks mint nothing for it. The empty list orders first, exactly
+    /// like the empty string under `std::string::operator<`; two non-empty
+    /// lists compare as their decoded texts (`valueIdLess`).
+    ///
+    /// @param a  First path-list id (0 = empty).
+    /// @param b  Second path-list id (0 = empty).
+    /// @param vi The owning LB's value interner (read-only).
+    /// @return `true` iff the decoded @p a precedes the decoded @p b.
+    /// @see valueIdLess, DecodedInstructionLess, ArenaIntegrationMap::compareEntries.
+    inline bool pathVariablesLess(int32_t a, int32_t b, const ValueInterner& vi) {
+        if (a == b) return false;
+        if (a == 0) return true;
+        if (b == 0) return false;
+        return valueIdLess(a, b, vi);
+    }
+
+    /// @brief Build the text of an instruction path list from its names.
+    ///
+    /// @details
+    /// An integration instruction's path list (D-529)
+    /// is stored as one bracketed text `[name,name,...]`: the names sorted
+    /// byte-lexicographically (`compareSpans`) and free of duplicates, so two
+    /// lists with the same members have the same text and the same interned
+    /// id. The bracket form makes every name a substitution token, so the
+    /// equivalence-class rewrite (`replaceKeysScratch`) and the canonical-use
+    /// index (`forEachSubstitutionToken`) treat the names exactly like the
+    /// arguments of an expression. No input name may be empty or contain a
+    /// bracket or comma. An empty input is the empty list and yields the
+    /// empty `ScratchString`.
+    ///
+    /// @param arena String-tier scratch arena receiving the text (09c §4).
+    /// @param names The names; spans valid through the call; sorted in place.
+    /// @param n     Number of names (at most `MAX_PATH_VARIABLES`).
+    /// @return The list text on @p arena, or empty for no names.
+    /// @invariant Heap-free; the text is a pure function of the name set.
+    /// @see extendPathListScratch, WorkInstruction::setPathVariables.
+    inline ScratchString buildPathListScratch(ScratchArena& arena, StrSpan* names, int32_t n) {
+        assert(n >= 0 && n <= ExecutionParameters::MAX_PATH_VARIABLES
+            && "buildPathListScratch: name count exceeds MAX_PATH_VARIABLES");
+        if (n == 0) return ScratchString();
+        std::sort(names, names + n,
+            [](const StrSpan& a, const StrSpan& b) { return compareSpans(a, b) < 0; });
+        int32_t total = 2;
+        int32_t kept = 0;
+        for (int32_t i = 0; i < n; ++i) {
+            assert(names[i].len > 0 && "buildPathListScratch: an empty name");
+            for (int32_t c = 0; c < names[i].len; ++c)
+                assert(names[i].ptr[c] != '[' && names[i].ptr[c] != ']' && names[i].ptr[c] != ','
+                    && "buildPathListScratch: a name with a bracket or comma");
+            if (i > 0 && equalSpans(names[i], names[i - 1])) continue;
+            total += names[i].len + (kept > 0 ? 1 : 0);
+            ++kept;
+        }
+        char* bytes = arena.allocBytes(total);
+        int32_t at = 0;
+        bytes[at++] = '[';
+        for (int32_t i = 0; i < n; ++i) {
+            if (i > 0 && equalSpans(names[i], names[i - 1])) continue;
+            if (at > 1) bytes[at++] = ',';
+            std::memcpy(bytes + at, names[i].ptr, static_cast<std::size_t>(names[i].len));
+            at += names[i].len;
+        }
+        bytes[at++] = ']';
+        assert(at == total && "buildPathListScratch: fill length != computed length");
+        return ScratchString::wrap(arena, bytes, total);
+    }
+
+    /// @brief The path list of an instruction continuation: a list plus one
+    ///        name.
+    ///
+    /// @details
+    /// When a value fills an instruction's marker, the continuation's path
+    /// list is the parent list with that value added
+    /// (D-529). Parses @p list (empty = the empty
+    /// list), adds @p name and rebuilds the canonical text through
+    /// `buildPathListScratch`; a name already present leaves the list as is.
+    ///
+    /// @param arena String-tier scratch arena receiving the text.
+    /// @param list  The parent list text, or an empty span.
+    /// @param name  The name to add (non-empty, no bracket or comma).
+    /// @return The extended list text on @p arena.
+    /// @invariant Heap-free.
+    /// @see buildPathListScratch.
+    inline ScratchString extendPathListScratch(ScratchArena& arena, StrSpan list, StrSpan name) {
+        StrSpan names[ExecutionParameters::MAX_PATH_VARIABLES];
+        int32_t n = list.empty() ? 0 : getArgsSpans(list, names, ExecutionParameters::MAX_PATH_VARIABLES);
+        assert(n < ExecutionParameters::MAX_PATH_VARIABLES
+            && "extendPathListScratch: name count exceeds MAX_PATH_VARIABLES");
+        names[n++] = name;
+        return buildPathListScratch(arena, names, n);
     }
 
     /// @brief Decoded lexicographic compare of two value-id vectors —
@@ -2962,7 +3404,7 @@ namespace gl {
         const std::size_t n = a.size() < b.size() ? a.size() : b.size();
         for (std::size_t i = 0; i < n; ++i) {
             if (a[i] == b[i]) continue;
-            return compareSpans(vi.decodeView(a[i]), vi.decodeView(b[i])) < 0;
+            return vi.compare(a[i], b[i]) < 0;
         }
         return a.size() < b.size();
     }
@@ -3088,7 +3530,7 @@ namespace gl {
     {
         std::vector<std::string> out;
         out.reserve(ids.size());
-        for (const int32_t id : ids) out.push_back(vi.decodeView(id).toStdString());
+        for (const int32_t id : ids) out.push_back(vi.decode(id));
         return out;
     }
 
@@ -3101,7 +3543,7 @@ namespace gl {
         const ValueInterner& vi)
     {
         std::set<std::string> out;
-        for (const int32_t id : ids) out.insert(vi.decodeView(id).toStdString());
+        for (const int32_t id : ids) out.insert(vi.decode(id));
         return out;
     }
 
@@ -3169,6 +3611,12 @@ namespace gl {
         implicationComposition,              // "implication composition"
         implicationGrouping,                 // "implication grouping"
         contraposition,                      // "contraposition"
+        inductionScope,                      // "induction scope" — raw-graph only:
+                                             // a goal reached inside an induction
+                                             // scope, deposited at the scope's root
+        intScope,                            // "int scope" — raw-graph only: a
+                                             // statement of a finished int scope,
+                                             // promoted to the scope's parent
         COUNT                                // sentinel — table size only
     };
 
@@ -3219,6 +3667,8 @@ namespace gl {
             "implication composition",
             "implication grouping",
             "contraposition",
+            "induction scope",
+            "int scope",
         };
         static_assert(sizeof(NAMES) / sizeof(NAMES[0])
             == static_cast<std::size_t>(OriginTag::COUNT),
@@ -3408,8 +3858,8 @@ namespace gl {
         const int32_t exprId =
             static_cast<int32_t>(static_cast<uint64_t>(pk) >> 32);
         const int32_t validityId = static_cast<int32_t>(pk & 0xFFFFFFFFLL);
-        return std::make_pair(oi.decodeView(exprId).toStdString(),
-                              oi.decodeView(validityId).toStdString());
+        return std::make_pair(oi.decode(exprId),
+                              oi.decode(validityId));
     }
 
     /// @brief Zero-copy twin of `decodeOriginKey` — split a packed origin key
@@ -3441,6 +3891,23 @@ namespace gl {
         const int32_t validityId = static_cast<int32_t>(pk & 0xFFFFFFFFLL);
         exprOut = oi.decodeView(exprId);
         validityOut = oi.decodeView(validityId);
+    }
+
+    /// @brief Decode both origin-key halves into caller-owned scratch bytes.
+    /// @details Both outputs coexist until the caller's rewind. The caller keeps
+    /// the scope alive through every use, including any later interner mint.
+    /// @param pk Packed expression and validity identifiers.
+    /// @param oi Owning origin interner.
+    /// @param exprOut Decoded expression output.
+    /// @param validityOut Decoded validity output.
+    /// @param scratch Caller-owned string arena.
+    /// @return Nothing.
+    inline void decodeOriginKeyCopy(int64_t pk, const ValueInterner& oi,
+        StrSpan& exprOut, StrSpan& validityOut, ScratchArena& scratch) {
+        const int32_t expression = static_cast<int32_t>(static_cast<uint64_t>(pk) >> 32);
+        const int32_t validity = static_cast<int32_t>(pk & 0xFFFFFFFFLL);
+        exprOut = oi.copyView(expression, scratch);
+        validityOut = oi.copyView(validity, scratch);
     }
 
     // IdOrigin / IdOriginMap are defined in memory_infra/int_encoded_expr.hpp
@@ -3652,14 +4119,13 @@ namespace gl {
         out.first = originTagName(origin.first);
         out.second.reserve(origin.second.size());
         for (const int64_t pk : origin.second) {
-            StrSpan eSpan, vSpan;
-            decodeOriginKeyView(pk, oi, eSpan, vSpan);
-            out.second.emplace_back(eSpan.toStdString(), vSpan.toStdString());
+            const auto decoded = decodeOriginKey(pk, oi);
+            out.second.emplace_back(decoded.first, decoded.second);
         }
         return out;
     }
 
-    /// @brief Id-form twin of `ExpressionAnalyzer::addOrigin` — append a
+    /// @brief Id-form twin of `ProofHistory::addOrigin` — append a
     ///        history line; at the cap the existing rows win.
     ///
     /// @details Replicates the string form exactly: below the cap, append
@@ -3741,7 +4207,7 @@ namespace gl {
         // displaced (I-216).
     }
 
-    /// @brief Id-form twin of `ExpressionAnalyzer::overwriteOrigins` —
+    /// @brief Id-form twin of `Prover::overwriteOrigins` —
     ///        merge `right`'s history lines into `left` up to the cap.
     ///
     /// @details Per key: append `right`'s records in their vector order,
@@ -3796,9 +4262,7 @@ namespace gl {
             for (const IdOrigin& origin : kv.second) {
                 lines.push_back(decodeOrigin(origin, oi));
             }
-            StrSpan eSpan, vSpan;
-            decodeOriginKeyView(kv.first, oi, eSpan, vSpan);
-            rows.emplace_back(std::make_pair(eSpan.toStdString(), vSpan.toStdString()),
+            rows.emplace_back(decodeOriginKey(kv.first, oi),
                 std::move(lines));
         }
         std::sort(rows.begin(), rows.end(),
@@ -3953,6 +4417,29 @@ namespace gl {
     inline StrSpan mailIdView(const ColdStringTable& t, int32_t id) {
         return t.view(id);
     }
+
+    /// @brief Compare two mail identifiers through their exact decoded bytes.
+    /// @details Non-value interners retain their stable contiguous view contract.
+    /// @tparam Interner Name or global mail identifier space.
+    /// @param interner Owning identifier space.
+    /// @param a First identifier.
+    /// @param b Second identifier.
+    /// @return Decoded lexical comparison.
+    template<class Interner>
+    inline int mailIdCompare(const Interner& interner, int32_t a, int32_t b) {
+        return compareSpans(mailIdView(interner, a), mailIdView(interner, b));
+    }
+
+    /// @brief Compare mail values including prefix-packed origin identifiers.
+    /// @details Reads suffix segments directly without borrowed reconstructed buffers.
+    /// @param interner Owning value identifier space.
+    /// @param a First identifier.
+    /// @param b Second identifier.
+    /// @return Decoded lexical comparison.
+    inline int mailIdCompare(const ValueInterner& interner, int32_t a, int32_t b) {
+        return interner.compare(a, b);
+    }
+
 
     /// @brief Zero-copy view over one `IntMailOrigin` blob record — tag byte +
     ///        the contiguous packed dependency-key run, parsed against the
@@ -4150,9 +4637,9 @@ namespace gl {
             const int32_t validA = static_cast<int32_t>(da & 0xFFFFFFFFLL);
             const int32_t exprB = static_cast<int32_t>(static_cast<uint64_t>(db) >> 32);
             const int32_t validB = static_cast<int32_t>(db & 0xFFFFFFFFLL);
-            const int ec = compareSpans(mailIdView(oi, exprA), mailIdView(oi, exprB));
+            const int ec = mailIdCompare(oi, exprA, exprB);
             if (ec != 0) return ec < 0;
-            const int vc = compareSpans(mailIdView(oi, validA), mailIdView(oi, validB));
+            const int vc = mailIdCompare(oi, validA, validB);
             if (vc != 0) return vc < 0;
         }
         return a.depN < b.depN;
@@ -4191,9 +4678,9 @@ namespace gl {
         const int32_t validA = static_cast<int32_t>(keyA & 0xFFFFFFFFLL);
         const int32_t exprB = static_cast<int32_t>(static_cast<uint64_t>(keyB) >> 32);
         const int32_t validB = static_cast<int32_t>(keyB & 0xFFFFFFFFLL);
-        const int ec = compareSpans(mailIdView(oi, exprA), mailIdView(oi, exprB));
+        const int ec = mailIdCompare(oi, exprA, exprB);
         if (ec != 0) return ec < 0;
-        return compareSpans(mailIdView(oi, validA), mailIdView(oi, validB)) < 0;
+        return mailIdCompare(oi, validA, validB) < 0;
     }
 
     /// @brief Decoded-order comparator over two `IntMailStatementKey` byte keys —
@@ -4238,9 +4725,9 @@ namespace gl {
         std::memcpy(&oB, bKey.ptr + 0, sizeof(int32_t));
         std::memcpy(&vB, bKey.ptr + 4, sizeof(int32_t));
         std::memcpy(&cB, bKey.ptr + 8, sizeof(int32_t));
-        const int oc = compareSpans(mailIdView(interner, oA), mailIdView(interner, oB));
+        const int oc = mailIdCompare(interner, oA, oB);
         if (oc != 0) return oc < 0;
-        const int vc = compareSpans(mailIdView(interner, vA), mailIdView(interner, vB));
+        const int vc = mailIdCompare(interner, vA, vB);
         if (vc != 0) return vc < 0;
         const int32_t n = cA < cB ? cA : cB;
         for (int32_t i = 0; i < n; ++i) {
@@ -4257,8 +4744,9 @@ namespace gl {
     ///
     /// @details Replicates the historical string `operator<` field order —
     /// `(key, remainingArgs, standardMaxAdmissionDepth,
-    /// standardMaxSecondaryNumber, flag, ordisOnly)` — on decoded strings via
-    /// valueIdVectorLess; never raw id order
+    /// standardMaxSecondaryNumber, flag, inductionHypothesis, ordisOnly)` — on
+    /// decoded strings via valueIdVectorLess (`flag` then `inductionHypothesis`
+    /// orders exactly as the serialized flag byte 0 < 1 < 3); never raw id order
     /// ([I-84](../../docs/agentic_swdd/30_invariants.md#i-84)). The
     /// comparator holds the owning LB's value interner; sets are
     /// constructed through admissionValuesAt so the pointer is always
@@ -4277,6 +4765,8 @@ namespace gl {
                 return a.standardMaxSecondaryNumber < b.standardMaxSecondaryNumber;
             }
             if (a.flag != b.flag) return a.flag < b.flag;
+            if (a.inductionHypothesis != b.inductionHypothesis)
+                return a.inductionHypothesis < b.inductionHypothesis;
             return a.ordisOnly < b.ordisOnly;
         }
     };
@@ -4492,6 +4982,37 @@ namespace gl {
         return interner.encode(StrSpan(bytes, static_cast<int32_t>(sizeof(bytes))));
     }
 
+    /// @brief Negation of the disjunct an `_ordis_` case asserts.
+    ///
+    /// @details
+    /// A case scope's payload wraps its disjunct in one pair of parentheses,
+    /// `((D))`; the case asserts `(D)`. The case is refuted by the negation:
+    /// a leading `!` is sliced off, otherwise one `!` is prepended on
+    /// @p arena. The refutation probe of a case scope, the retirement record
+    /// of a refuted case, and the history and levels of a reduced-count
+    /// convergence name the refutation through this one function.
+    ///
+    /// @param payload The case scope's disjunct payload `((D))`.
+    /// @param arena   String scratch receiving a prepended negation; the
+    ///                caller keeps a live scope across every use of the result.
+    /// @return The negation text: a slice of @p payload, or bytes on @p arena.
+    /// @invariant @p payload is wrapped in parentheses (asserted); nothing is
+    ///            interned.
+    /// @see refutedOrBranchAtOrAbove, drainDeadOrBranches, ordisMerge.
+    inline StrSpan negateOrCaseAssumption(StrSpan payload, ScratchArena& arena) {
+        assert(payload.len >= 2 && payload.ptr[0] == '('
+            && payload.ptr[payload.len - 1] == ')'
+            && "ordis case payload must be a wrapped (disjunct)");
+        const StrSpan assumption(payload.ptr + 1, payload.len - 2);
+        if (assumption.len > 0 && assumption.ptr[0] == '!')
+            return StrSpan(assumption.ptr + 1, assumption.len - 1);
+        char* buffer = arena.allocBytes(assumption.len + 1);
+        buffer[0] = '!';
+        std::memcpy(buffer + 1, assumption.ptr,
+                    static_cast<std::size_t>(assumption.len));
+        return StrSpan(buffer, assumption.len + 1);
+    }
+
     /// @brief Non-minting twin of `mintOrCohortId` — recover an existing
     ///        OR-disintegration cohort id, or 0 when no such cohort was
     ///        ever minted.
@@ -4588,11 +5109,16 @@ namespace gl {
     struct IntInstruction {
         std::vector<IntLogicalEntity> data;
         int32_t markedGoal;
-        // Task that created the instruction (I-284); not
-        // part of the instruction's identity.
-        int64_t ownerTask;
+        /// @brief Value-interner id of the instruction's path list
+        ///        `[name,...]` (sorted, duplicate-free, canonical), or 0 for
+        ///        the empty list (D-529).
+        int32_t pathVariables;
+        /// @brief The forbidden sets of a copy bound to one premise; empty on
+        ///        every unsplit instruction
+        ///        (D-579).
+        IntegrationForbiddenSets forbidden;
 
-        IntInstruction() : data(), markedGoal(0), ownerTask(0) {}
+        IntInstruction() : data(), markedGoal(0), pathVariables(0), forbidden() {}
     };
 
     /// @brief Encode a working LogicalEntity into the stored id form.
@@ -4637,6 +5163,8 @@ namespace gl {
         out.data.reserve(instr.data.size());
         for (const LogicalEntity& le : instr.data) out.data.push_back(encodeLogicalEntity(le, vi));
         out.markedGoal = vi.encode(instr.markedGoal);
+        out.pathVariables = instr.pathVariables.empty() ? 0 : vi.encode(instr.pathVariables);
+        out.forbidden = instr.forbidden;
         return out;
     }
 
@@ -4650,6 +5178,8 @@ namespace gl {
         out.data.reserve(ii.data.size());
         for (const IntLogicalEntity& ile : ii.data) out.data.push_back(decodeLogicalEntity(ile, vi));
         out.markedGoal = vi.decode(ii.markedGoal);
+        if (ii.pathVariables != 0) out.pathVariables = vi.decode(ii.pathVariables);
+        out.forbidden = ii.forbidden;
         return out;
     }
 
@@ -4715,7 +5245,8 @@ namespace gl {
         PagedVector<WorkLogicalEntity> data;       ///< entity records (page tier)
         PagedVector<int32_t> elemCol;              ///< flattened element-id runs (page tier)
         int32_t markedGoalId = 0;                  ///< interner id of markedGoal (0 = unset)
-        int64_t ownerTask = 0;                     ///< creating task key (0 = none); not identity
+        int32_t pathVariablesId = 0;               ///< interner id of the path list (0 = empty)
+        IntegrationForbiddenSets forbidden;        ///< forbidden sets of a premise-bound copy (empty = unsplit)
 
         /// @brief Bind to a per-slot scratch arena; all three containers ride its
         ///        PAGE tier.
@@ -4750,6 +5281,30 @@ namespace gl {
         /// @brief Record the instruction's marked goal.
         /// @param goal The goal expression bytes.
         void setMarkedGoal(const StrSpan& goal) { markedGoalId = strings.mint(goal); }
+
+        /// @brief Record the instruction's path list (D-529).
+        ///
+        /// @details The list is the bracketed text `[name,...]` of the
+        /// integration goal's non-anchor fixed arguments and every value that
+        /// filled a marker on the way to this instruction, sorted and
+        /// duplicate-free; an empty span clears it (the empty list).
+        ///
+        /// @param list The list bytes, or an empty span.
+        /// @return Void.
+        void setPathVariables(const StrSpan& list) {
+            pathVariablesId = list.empty() ? 0 : strings.mint(list);
+        }
+
+        /// @brief Decode the path list (empty span for the empty list).
+        ///
+        /// @details The span points into this instruction's own string
+        /// store; the empty list was never minted and reads as an empty span
+        /// (D-529).
+        ///
+        /// @return The list span; empty when no list was recorded.
+        StrSpan pathVariables() const {
+            return pathVariablesId == 0 ? StrSpan() : strings.keyAt(pathVariablesId);
+        }
 
         /// @brief Number of entities. @return The entity count.
         int32_t entityCount() const { return data.size(); }
@@ -4815,7 +5370,7 @@ namespace gl {
     /// materializes this view once into its own container scratch arena.
     ///
     /// @invariant Parent views and replacement spans outlive their child view.
-    /// @see WorkInstruction, ExpressionAnalyzer::disintegrateExprCoreView.
+    /// @see WorkInstruction, DisintegrationProcessor::disintegrateExprCoreView.
     class DisintInstructionView {
         WorkInstruction* concrete_;
         const DisintInstructionView* parent_;
@@ -4913,14 +5468,6 @@ namespace gl {
             return concrete_ ? concrete_->markedGoal() : parent_->markedGoal();
         }
 
-        /// @brief Read the instruction's unchanged creating task.
-        /// @details Witness-path instruction copies preserve this field verbatim,
-        /// like the marked goal (I-284).
-        /// @return The creating task key, or zero when none is recorded.
-        int64_t ownerTask() const {
-            return concrete_ ? concrete_->ownerTask : parent_->ownerTask();
-        }
-
         /// @brief Obtain concrete storage for an instruction consumer.
         /// @details Root views reuse their caller-owned table. A child copies its
         /// effective fields once in original entity/element order; later writes
@@ -4938,7 +5485,6 @@ namespace gl {
                     definedSet(entity), arity(entity), start);
             }
             owned_.setMarkedGoal(markedGoal());
-            owned_.ownerTask = ownerTask();
             concrete_ = &owned_;
             return *concrete_;
         }
@@ -4982,7 +5528,8 @@ namespace gl {
             out.data.push_back(std::move(ile));
         }
         out.markedGoal = vi.encode(wi.markedGoal());
-        out.ownerTask = wi.ownerTask;
+        out.pathVariables = wi.pathVariablesId == 0 ? 0 : vi.encode(wi.pathVariables());
+        out.forbidden = wi.forbidden;
         return out;
     }
 
@@ -5013,7 +5560,8 @@ namespace gl {
                             vi.decodeView(ile.definedSet), ile.arity, start);
         }
         wi.setMarkedGoal(vi.decodeView(ii.markedGoal));
-        wi.ownerTask = ii.ownerTask;
+        if (ii.pathVariables != 0) wi.setPathVariables(vi.decodeView(ii.pathVariables));
+        wi.forbidden = ii.forbidden;
     }
 
     /// @brief WorkInstruction twin of the heap `cleanInstruction` — the
@@ -5028,7 +5576,8 @@ namespace gl {
     /// and drop it; if it is a container (`"existence"` / `"and"`), drop each of its
     /// elements that is no longer referenced by another surviving container,
     /// recursing on that element's signature. The surviving entities are committed
-    /// to @p dst in their original order and @p dst inherits @p src's marked goal.
+    /// to @p dst in their order and @p dst inherits @p src's marked goal, path
+    /// list and forbidden sets (D-579).
     ///
     /// Heap-free: a stack `removed[]` flag array tracks the dropped entities and
     /// every comparison is a span compare (`equalSpans`) over @p src's arena bytes —
@@ -5087,7 +5636,8 @@ namespace gl {
         eraseMatching(expression, eraseMatching);
 
         dst.setMarkedGoal(src.markedGoal());
-        dst.ownerTask = src.ownerTask;
+        dst.setPathVariables(src.pathVariables());
+        dst.forbidden = src.forbidden;
         for (int32_t i = 0; i < n; ++i) {
             if (removed[i]) continue;
             const int32_t em = dst.elemMark();
@@ -5122,7 +5672,7 @@ namespace gl {
     /// @brief Stateful decoded-order comparator for stored instructions.
     ///
     /// @details Replicates the historical orders exactly:
-    /// `Instruction::(data, markedGoal)` with
+    /// `Instruction::(data, markedGoal, pathVariables, forbidden)` with
     /// `LogicalEntity::(category, signature, elements, arity, definedSet)`
     /// per element and vector size as the lexicographic tiebreak — on
     /// decoded strings, never raw id order
@@ -5154,7 +5704,10 @@ namespace gl {
                 if (c != 0) return c < 0;
             }
             if (a.data.size() != b.data.size()) return a.data.size() < b.data.size();
-            return valueIdLess(a.markedGoal, b.markedGoal, *vi);
+            if (a.markedGoal != b.markedGoal) return valueIdLess(a.markedGoal, b.markedGoal, *vi);
+            if (a.pathVariables != b.pathVariables)
+                return pathVariablesLess(a.pathVariables, b.pathVariables, *vi);
+            return compareForbiddenSets(a.forbidden, b.forbidden) < 0;
         }
     };
 
@@ -5487,8 +6040,8 @@ namespace gl {
     /// chain and is read back after the pool join
     /// ([I-135](../../docs/agentic_swdd/30_invariants.md#i-135)).
     ///
-    /// @see `ExpressionAnalyzer::produceExpressionStumps` — the producer.
-    /// @see `ExpressionAnalyzer::generateEncodedRequestsStatic` — the consumer.
+    /// @see `HashRequestGenerator::produceExpressionStumps` — the producer.
+    /// @see `HashRequestGenerator::generateEncodedRequestsStatic` — the consumer.
     struct ExpressionStump {
         NameId allIdx[ExecutionParameters::MAX_EXPRESSIONS];
         NameId count;
@@ -5522,8 +6075,8 @@ namespace gl {
     ///
     /// @invariant `(count == 0) == (stumps == nullptr)`.
     /// @invariant `count > 0` implies `total >= 1` and `0 <= ordinal < total`.
-    /// @see `ExpressionAnalyzer::produceExpressionStumps`,
-    ///      `ExpressionAnalyzer::generateEncodedRequestsStatic`.
+    /// @see `HashRequestGenerator::produceExpressionStumps`,
+    ///      `HashRequestGenerator::generateEncodedRequestsStatic`.
     struct SplitStumpRef {
         const ExpressionStump* stumps = nullptr;
         NameId count = 0;
@@ -5841,38 +6394,6 @@ namespace gl {
         StatementFlags f = registry.inner().valueAt(id);
         f.fullyDisintegrated = f.fullyDisintegrated || fullyDisintegrated;
         registry.inner().setValueAt(id, f);
-    }
-
-    /// @brief Mark a known statement row as integration-produced.
-    ///
-    /// @details
-    /// Sets `StatementFlags::integrated` on the row keyed by
-    /// `(originalId, validityId)` through the reviewed in-place update door,
-    /// so the finished-task wipe may count the row as a finished integration
-    /// (D-444). The flag is monotone: an already marked
-    /// row is left untouched and an absent row is not created — a statement
-    /// the door refused or wiped has no row to mark. Non-minting.
-    ///
-    /// @param registry   The packed-key statement registry
-    ///                   (`Memory::intKnownStatements`).
-    /// @param originalId Minted NameMap id of the expression.
-    /// @param validityId Minted NameMap id of the scope.
-    /// @return True iff the call set the flag (the row exists and was not
-    ///         marked before); false for an absent or already marked row.
-    /// @see StatementFlags, upsertStatementKey.
-    inline bool markStatementIntegrated(
-        TypedColdMap<StatementKey, StatementFlags>& registry,
-        NameId originalId, NameId validityId) {
-        assert(originalId != 0 && validityId != 0
-            && "markStatementIntegrated: ids must be minted");
-        const int32_t id = registry.inner().lookup(
-            packStatementKey(originalId, validityId));
-        if (id == 0) return false;
-        StatementFlags f = registry.inner().valueAt(id);
-        if (f.integrated) return false;
-        f.integrated = true;
-        registry.inner().setValueAt(id, f);
-        return true;
     }
 
     /// @brief Non-minting flags fetch from the packed-key statement registry.
@@ -6792,8 +7313,8 @@ namespace gl {
     ///            `encodeExpression(key[i], "main", nm)` evaluated at the first
     ///            call; later calls neither encode nor mint.
     /// @see `encodeExpression(const StrSpan&, const StrSpan&, NameMap&)`,
-    ///      `ExpressionAnalyzer::addToHashMemory`,
-    ///      `ExpressionAnalyzer::installAdmissionMarkerVariants`.
+    ///      `HashRuleInstaller::addToHashMemory`,
+    ///      `AdmissionMarkerBuilder::installAdmissionMarkerVariants`.
     struct KeyEncodeMemo {
         /// @brief Capacity: the admission key cap plus the marker slot.
         static constexpr int32_t kCap =
@@ -6989,10 +7510,10 @@ namespace gl {
     /// by the still-heap caller's `OwnerSet`, is grown; no function-local
     /// `std::vector` is materialized. It is defined out-of-line (memory.cpp)
     /// because it reaches the scratch registry (`genScratchArenas()`) and the
-    /// worker-slot id (`ExpressionAnalyzer::g_currentCoreId`), neither of which
+    /// worker-slot id (`WorkerContext::coreId()`), neither of which
     /// an inline header body can see — the `encodePush(StrSpan)` precedent.
     /// Single-threaded install site (mergeOwnerRecord, I-83), so the arena
-    /// reach via `g_currentCoreId` (workers publish it; -1 -> reserved last
+    /// reach via `WorkerContext::coreId()` (workers publish it; -1 -> reserved last
     /// slot) is valid.
     ///
     /// @param os      The owner set to record into.
@@ -7182,6 +7703,7 @@ namespace gl {
             bool orSource = false;
             int32_t iteration = -1;
             int32_t integrationDepth = -1;
+            bool forced = false;
         };
         std::map<ExpressionWithValidity, DisintegrationFlags> disintegrationSignals;
 
@@ -7242,9 +7764,7 @@ namespace gl {
         out.reserve(static_cast<size_t>(n));
         for (int32_t id = 1; id <= n; ++id) {
             const int64_t key = cm.origins_.decodeKey(id);
-            StrSpan eSpan, vSpan;
-            decodeOriginKeyView(key, oi, eSpan, vSpan);
-            std::pair<std::string, std::string> ev(eSpan.toStdString(), vSpan.toStdString());
+            const auto ev = decodeOriginKey(key, oi);
             const std::vector<IntMailOrigin> recs = cm.origins_.recordsAt(id);
             std::vector<OriginLine> lines;
             lines.reserve(recs.size());
@@ -7294,6 +7814,7 @@ namespace gl {
             flags.orSource = (packed & 8) != 0;
             flags.iteration = ColdMail::unpackIteration(packed);
             flags.integrationDepth = ColdMail::unpackIntegrationDepth(packed);
+            flags.forced = ColdMail::unpackForced(packed);
             out.emplace_back(
                 ExpressionWithValidity(
                     std::string(nm.decode(origId)),
@@ -7853,9 +8374,10 @@ namespace gl {
     /// @param iteration    The firing's witness-generation stamp; -1 = none.
     /// @param rh           `recursionHead` (default false).
     /// @param orSource     Residual OR-source continuation (default false).
-    /// @param integrated   The statement is the head of an integration
-    ///                     rule's firing (default false;
-    ///                     D-444).
+    /// @param forced       The statement is the assumption of a case branch
+    ///                     whose OR came from a conjecture premise; the absorb
+    ///                     disintegrates it with `force_` witnesses (default
+    ///                     false, D-527).
     /// @invariant Same span-lifetime rule as the sibling span doors
     ///            (`insertInternalStatement`): the two encodes mint, so the
     ///            spans must alias buffers the mint paths do not relocate
@@ -7866,10 +8388,10 @@ namespace gl {
     inline void setInternalDisintegrationSignal(ColdMail& cm, NameMap& nm,
         const StrSpan& original, const StrSpan& validityName,
         bool dnd, bool aod, int32_t iteration, bool rh = false, bool orSource = false,
-        bool integrated = false) {
+        bool forced = false) {
         cm.setDisintegrationSignal(
             packOriginKey(nm.encode(original), nm.encode(validityName)),
-            dnd, aod, iteration, rh, orSource, -1, integrated);
+            dnd, aod, iteration, rh, orSource, -1, forced);
     }
 
     /// @brief Cached semantic class of a bare variable name.
@@ -8291,7 +8813,7 @@ namespace gl {
     ///            (I-134); single-record runs asserted.
     /// @see scanSpecialTokens — the retained regex oracle;
     ///      serializeSpecialTokenScan, SpecialTokenScanView,
-    ///      `prover.hpp::filterIterations` — the consumer funnel.
+    ///      `memory.hpp::filterIterations` — the consumer funnel.
     inline SpecialTokenScanView EqClassNameCaches::tokensViewOf(NameId exprId,
         const NameMap& nm, ScratchArena& peekArena) {
         assert(exprId > 0);
@@ -9137,8 +9659,9 @@ namespace gl {
     /// (former `get<0>`) and `statements` (former `get<1>`). The redundant
     /// `startInt` (former `get<2>`) is dropped (delivered by the live
     /// `memoryBlock.startInt` mutation) and the bool (former `get<3>`) moves to
-    /// `disintegrateExpr2`'s return value. Relay compacts and admitted OR source
-    /// intents have separate channels on the same caller-owned scratch arena.
+    /// `disintegrateExpr2`'s return value. Relay compacts, admitted OR source
+    /// intents and ORs reached by unfolding a conjecture premise have separate
+    /// channels on the same caller-owned scratch arena.
     ///
     /// @invariant Lives within a single `disintegrateExpr2` call; non-copyable.
     /// @see DisintPairChannel, disintegrateExpr2.
@@ -9150,11 +9673,31 @@ namespace gl {
         ///        (status-0/1) callers, ignored elsewhere.
         DisintPairChannel relayCompacts;
         DisintPairChannel orSources;
+        /// @brief ORs published at the deposit scope that were reached by
+        ///        unfolding a conjecture premise; the door stages those at
+        ///        main for the flag-6 unconditional-ordis mail
+        ///        (D-528).
+        DisintPairChannel unconditionalOrdis;
+        /// @brief The induction hypothesis's missing expressions in the
+        ///        induction scopes this disintegration's eats opened: a
+        ///        ground premise text, its scope and, as the source, the text
+        ///        of the hypothesis rule. The statement door files them as OR
+        ///        demands after the products are in, so a premise the eat
+        ///        itself publishes is no demand
+        ///        (D-575).
+        DisintPairChannel hypothesisDemands;
+        /// @brief The forced witnesses of a strong step block whose
+        ///        definition set is `(1)`, with the scope that minted them.
+        ///        The statement door files each one's successor demand after
+        ///        the products are in
+        ///        (D-571).
+        DisintPairChannel successorDemands;
 
-        /// @brief Bind all four channels to @p a.
+        /// @brief Bind all seven channels to @p a.
         /// @param a The per-slot scratch arena; outlives this holder.
         explicit DisintProducts(LbArena* a)
-            : implications(a), statements(a), relayCompacts(a), orSources(a) {}
+            : implications(a), statements(a), relayCompacts(a), orSources(a),
+              unconditionalOrdis(a), hypothesisDemands(a), successorDemands(a) {}
         DisintProducts(const DisintProducts&) = delete;
         DisintProducts& operator=(const DisintProducts&) = delete;
     };
@@ -10536,7 +11079,7 @@ namespace gl {
     /// @invariant After the flush the key's run is byte-identical to the run
     ///            the same sequence of `appendLmvIdsRecord` calls produces.
     /// @see appendLmvIdsRecord, serializeLmvIdsBlob,
-    ///      ExpressionAnalyzer::flushRuleIndexStaging.
+    ///      HashRuleIndex::flushRuleIndexStaging.
     inline void stageLmvIdsRecord(
         RuleIndexStagingSection& section,
         int32_t numberExpressions, const NameId* nkData, int32_t nkLen,
@@ -11133,8 +11676,8 @@ namespace gl {
     /// The merge mints NOTHING — it operates on already-interned `int64`
     /// dependency keys shared by class and body — so the produced cold blobs (and
     /// the id-ordered deload stream) are byte-identical to `assignRun(key, newRun)`.
-    /// `exprOriginMap` is verifier-walked process documentation (Rule 16); its
-    /// content is unchanged.
+    /// `exprOriginMap` is the block's proof history (Rule 16); its content is
+    /// unchanged.
     ///
     /// @param exprOriginMap The per-LB cold origin blob map (written in place).
     /// @param key           The packed `(exprId, validityId)` origin key.
@@ -11460,6 +12003,345 @@ namespace gl {
         addOriginId(map, key, static_cast<uint8_t>(tag), d, n, maxOrigins);
     }
 
+    /// @brief History lines of one bulk origin merge, staged and written into
+    ///        the cold origin map at the end of the merge, by one in-place
+    ///        rebuild when that is cheaper than the one-by-one splices.
+    ///
+    /// @details
+    /// `addOriginId` appends each accepted line with a splice that moves the
+    /// pool, blob-start and run-start tails behind the key's run. A mail
+    /// absorb's bulk origin merge adds lines to keys spread over the map, and
+    /// nothing reads the map between those additions except each addition's
+    /// own duplicate and cap check. The batch therefore applies `addOriginId`'s
+    /// policy (below the per-key cap a line not yet in the key's run is
+    /// appended; at the cap the existing lines win, I-216) against the stored
+    /// run plus the lines staged for the same key and keeps the accepted lines
+    /// on the page tier of a gen-scratch arena. `apply` then writes them by one
+    /// of two exact paths, chosen by `rebuildPays`: one
+    /// `HashMap::assignAllRunsGenerated` (stored lines verbatim, then the
+    /// accepted lines in staging order, new keys minted afterwards in the order
+    /// they were first accepted), or the same splices the one-by-one writes
+    /// make, in the same order. The rebuild visits every key of the map once,
+    /// so it pays only for a merge whose splices would move more than that
+    /// costs. Either way key ids, runs and canonical bytes equal those of the
+    /// same `addOriginId` calls made one by one. Each key may be staged by one
+    /// consecutive group of additions only (asserted when its group opens):
+    /// the bulk merge visits every key in one row. Single-threaded per logic
+    /// block (I-83).
+    ///
+    /// @invariant Between the first addition and `apply` nothing else reads
+    ///            or writes the map.
+    /// @see addOriginId, addOriginEncoded, HashMap::assignAllRunsGenerated,
+    ///      the mail absorb of `standardProcessing` (`SP_ABSORB_ORIGINS_INT/EXT`),
+    ///      D-497.
+    class OriginAbsorbBatch {
+    public:
+        /// @brief Bind an empty batch to the origin map it will write and to a
+        ///        gen-scratch arena.
+        ///
+        /// @details
+        /// Nothing is allocated until the first accepted line. The arena must
+        /// be a per-slot `genScratchArenas()` arena (page tier) that outlives
+        /// the batch; it also serves the rebuild's scratch columns.
+        ///
+        /// @param map   The cold origin map.
+        /// @param arena The gen-scratch arena.
+        OriginAbsorbBatch(TypedColdBlobMap<int64_t, IdOrigin>& map, ScratchArena& arena)
+            : map_(map), arena_(arena), entries_(&arena, &dirty_),
+              lineLens_(&arena, &dirty_), lineBytes_(&arena, &dirty_),
+              stagedKeys_(&arena, &dirty_) {}
+        OriginAbsorbBatch(const OriginAbsorbBatch&) = delete;
+        OriginAbsorbBatch& operator=(const OriginAbsorbBatch&) = delete;
+
+        /// @brief Stage one `(tag, deps)` history line of one key — the batch
+        ///        twin of the POD `addOriginId`.
+        ///
+        /// @details
+        /// Serializes the line once (`serializeOriginTo`), then compares it with
+        /// every stored line of the key (`peekRecordBytes`) and every line
+        /// already staged for it; a duplicate is the no-op insert. Below the
+        /// cap (stored plus staged lines) the line is staged; at the cap it is
+        /// dropped and nothing is displaced. A key gets its staging entry with
+        /// its first accepted line, so a key whose lines are all rejected stays
+        /// untouched, as in the one-by-one writes. A key whose group of lines
+        /// was already closed by another key is a broken staging contract
+        /// (asserted).
+        ///
+        /// @param key        Packed (expressionId, validityId) key.
+        /// @param tag        The history-line tag byte.
+        /// @param deps       Pointer to `depN` dependency packed keys,
+        ///                   positional order.
+        /// @param depN       The dependency count.
+        /// @param maxOrigins Cap; caller picks the compressor or standard
+        ///                   parameter.
+        /// @return Nothing.
+        void add(int64_t key, uint8_t tag, const int64_t* deps, int32_t depN,
+                 int maxOrigins) {
+            char newBlob[ExecutionParameters::kMaxOriginBlobBytes];
+            const int32_t newLen = serializeOriginTo(
+                newBlob, ExecutionParameters::kMaxOriginBlobBytes, tag, deps, depN);
+            const int32_t last = entries_.size() - 1;
+            const bool current = last >= 0 && entries_[last].key == key;
+            const int32_t id = current ? entries_[last].id : map_.lookup(key);
+            const int32_t stored = id != 0 ? map_.runLen(id) : 0;
+            char blobBuf[ExecutionParameters::kMaxOriginBlobBytes];
+            for (int32_t j = 0; j < stored; ++j) {
+                int32_t bl = 0;
+                const char* bp = map_.peekRecordBytes(id, j, bl, blobBuf,
+                    ExecutionParameters::kMaxOriginBlobBytes);
+                if (bl == newLen
+                    && std::memcmp(bp, newBlob, static_cast<std::size_t>(bl)) == 0)
+                    return;  // duplicate of a stored line
+            }
+            int32_t staged = 0;
+            if (current) {
+                const Entry e = entries_[last];
+                int32_t at = e.firstByte;
+                for (int32_t k = 0; k < e.lineCount; ++k) {
+                    const int32_t len = lineLens_[e.firstLine + k];
+                    if (len == newLen) {
+                        lineBytes_.copyRunTo(at, len, blobBuf);
+                        if (std::memcmp(blobBuf, newBlob,
+                                        static_cast<std::size_t>(len)) == 0)
+                            return;  // duplicate of a staged line
+                    }
+                    at += len;
+                }
+                staged = e.lineCount;
+            }
+            // At the cap the existing lines win: the newcomer is dropped,
+            // nothing is displaced (I-216).
+            if (stored + staged >= maxOrigins) return;
+            if (!current) {
+                const int32_t before = stagedKeys_.count();
+                stagedKeys_.mint(key);
+                assert(stagedKeys_.count() == before + 1
+                    && "OriginAbsorbBatch::add: a key staged by two separate groups of lines");
+                entries_.push_back(Entry{ key, id, lineLens_.size(), 0,
+                                          lineBytes_.size() });
+            }
+            Entry e = entries_[entries_.size() - 1];
+            ++e.lineCount;
+            entries_.setAt(entries_.size() - 1, e);
+            lineLens_.push_back(newLen);
+            lineBytes_.appendRun(newBlob, newLen);
+        }
+
+        /// @brief Stage one span-keyed history line — the batch twin of the
+        ///        span-antecedent cold `addOriginEncoded`.
+        ///
+        /// @details
+        /// Mints the origin key, then the dependency keys positionally, into
+        /// @p oi exactly as `addOriginEncoded` does (key first), and stages
+        /// the line through @ref add. The interner mints are not deferred, so
+        /// interner ids equal those of the one-by-one writes.
+        ///
+        /// @param oi           The owning LB's origin interner (mint side).
+        /// @param original     Span over the key expression bytes.
+        /// @param validityName Span over the key validity (scope) bytes.
+        /// @param tag          The history-line tag.
+        /// @param deps         Pointer to `depN` antecedent spans, positional
+        ///                     order.
+        /// @param depN         The antecedent count.
+        /// @param maxOrigins   Cap, exactly as at the one-by-one sites.
+        /// @return Nothing.
+        /// @invariant The spans must alias buffers OTHER than @p oi's own byte
+        ///            store (I-3).
+        void addEncoded(ValueInterner& oi, const StrSpan& original,
+                        const StrSpan& validityName, OriginTag tag,
+                        const OriginDep* deps, int depN, int maxOrigins) {
+            const int64_t key = mintOriginKey(oi, original, validityName);
+            int64_t d[ExecutionParameters::kMaxOriginDeps];
+            const int32_t n = mintOriginDepsInto(deps, depN, oi, d,
+                ExecutionParameters::kMaxOriginDeps);
+            add(key, static_cast<uint8_t>(tag), d, n, maxOrigins);
+        }
+
+        /// @brief Decide whether one rebuild costs less than the one-by-one
+        ///        splices for the staged lines.
+        ///
+        /// @details
+        /// A splice for a line of a stored key moves the pool bytes, blob
+        /// starts and run starts behind the key; their sizes are estimated
+        /// from the key's position (the map's bytes and blobs spread evenly
+        /// over its keys). A line of a new key is appended at the end on both
+        /// paths and is not counted. The rebuild calls its emitter once per
+        /// key and moves everything behind the first touched key once. Costs
+        /// are in picoseconds with constants measured on FTA's largest origin
+        /// maps (D-497); the
+        /// decision is a pure function of the map's sizes and the staged
+        /// entries, so it is deterministic, and both paths write the same
+        /// bytes. A batch that touches no stored key never rebuilds.
+        ///
+        /// @return True when the rebuild is estimated cheaper.
+        bool rebuildPays() const {
+            constexpr int64_t kSplicePsPerByte = 43;
+            constexpr int64_t kSplicePsPerBlob = 281;
+            constexpr int64_t kSplicePsPerKey = 155;
+            constexpr int64_t kSplicePsFixed = 300000;
+            constexpr int64_t kRebuildPsPerKey = 67500;
+            constexpr int64_t kRebuildPsPerByte = 920;
+            const int64_t keys = map_.count();
+            const int64_t bytes = map_.inner().poolByteCount();
+            const int64_t blobs = map_.inner().blobCount();
+            int64_t splices = 0;
+            int64_t newKeys = 0;
+            int32_t firstId = 0;
+            for (int32_t i = 0; i < entries_.size(); ++i) {
+                const Entry e = entries_[i];
+                if (e.id == 0) { ++newKeys; continue; }
+                const int64_t keysBehind = keys - e.id;
+                const int64_t bytesBehind = bytes * keysBehind / keys;
+                const int64_t blobsBehind = blobs * keysBehind / keys;
+                splices += e.lineCount * (kSplicePsPerByte * bytesBehind
+                    + kSplicePsPerBlob * blobsBehind + kSplicePsPerKey * keysBehind
+                    + kSplicePsFixed);
+                if (firstId == 0 || e.id < firstId) firstId = e.id;
+            }
+            if (firstId == 0) return false;
+            const int64_t bytesBehindFirst = bytes * (keys - firstId + 1) / keys;
+            const int64_t rebuild = kRebuildPsPerKey * (keys + newKeys)
+                + kRebuildPsPerByte * bytesBehindFirst;
+            return rebuild < splices;
+        }
+
+        /// @brief Write every staged line by one in-place rebuild.
+        ///
+        /// @details
+        /// Plans the rebuild like the rule-index staging flush: every staged
+        /// key that is already stored is marked at its id (two entries on one
+        /// id are a broken staging contract, asserted), every new key receives
+        /// the next id in staging order. One `HashMap::assignAllRunsGenerated`
+        /// then carries every unmarked key over unchanged and emits each marked
+        /// key's stored lines followed by its staged lines; the new keys are
+        /// minted afterwards in id order (a mint before the rebuild would put
+        /// the run-start column and the key store out of step). Leaves the
+        /// staged lines in place; @ref apply empties the batch.
+        ///
+        /// @return Nothing.
+        /// @invariant The map's keys, runs and canonical bytes equal those the
+        ///            same `addOriginId` calls make one by one.
+        void writeByRebuild() {
+            const int32_t entryN = entries_.size();
+            const int32_t oldCount = map_.count();
+            DirtyState planDirty = DirtyState::Clean;
+            PagedVector<int32_t> ordOfId(&arena_, &planDirty);
+            for (int32_t i = 0; i < oldCount; ++i) ordOfId.push_back(0);
+            int32_t newN = 0;
+            for (int32_t ord = 1; ord <= entryN; ++ord) {
+                const int32_t id = entries_[ord - 1].id;
+                if (id != 0) {
+                    assert(ordOfId[id - 1] == 0
+                        && "OriginAbsorbBatch::writeByRebuild: two staging entries resolve to one key");
+                    ordOfId.setAt(id - 1, ord);
+                } else {
+                    ordOfId.push_back(ord);
+                    ++newN;
+                }
+            }
+            char lineBuf[ExecutionParameters::kMaxOriginBlobBytes];
+            map_.inner().assignAllRunsGenerated(oldCount + newN,
+                [&](int32_t id, auto&& sink) {
+                    const int32_t ord = ordOfId[id - 1];
+                    if (ord == 0) {
+                        assert(id <= oldCount);
+                        sink.unchanged(id);
+                        return;
+                    }
+                    const Entry e = entries_[ord - 1];
+                    if (id <= oldCount) {
+                        map_.inner().forEachBlobContiguous(id, arena_,
+                            [&](const char* bp, int32_t bl) { sink.blob(bp, bl); });
+                    }
+                    int32_t at = e.firstByte;
+                    for (int32_t k = 0; k < e.lineCount; ++k) {
+                        const int32_t len = lineLens_[e.firstLine + k];
+                        lineBytes_.copyRunTo(at, len, lineBuf);
+                        sink.blob(lineBuf, len);
+                        at += len;
+                    }
+                }, arena_);
+            for (int32_t i = 0; i < newN; ++i) {
+                const int32_t ord = ordOfId[oldCount + i];
+                const int32_t minted = map_.inner().mint(entries_[ord - 1].key);
+                assert(minted == oldCount + i + 1
+                    && "OriginAbsorbBatch::writeByRebuild: a new key minted out of sequence");
+            }
+            assert(map_.count() == oldCount + newN
+                && "OriginAbsorbBatch::writeByRebuild: key count diverged from the plan");
+        }
+
+        /// @brief Write every staged line by the splices the one-by-one writes
+        ///        make, in their order.
+        ///
+        /// @details
+        /// Walks the entries in staging order and each entry's lines in order:
+        /// a stored key's line is spliced at its run end
+        /// (`HashMap::appendBlobToRun`), a new key's first line opens its run
+        /// and mints it (`HashMap::assignRun`), its later lines are spliced.
+        /// This is exactly the write sequence of the one-by-one `addOriginId`
+        /// calls, whose duplicate and cap decisions the staging already made.
+        /// Leaves the staged lines in place; @ref apply empties the batch.
+        ///
+        /// @return Nothing.
+        /// @invariant The map's keys, runs and canonical bytes equal those the
+        ///            same `addOriginId` calls make one by one.
+        void writeOneByOne() {
+            char lineBuf[ExecutionParameters::kMaxOriginBlobBytes];
+            for (int32_t i = 0; i < entries_.size(); ++i) {
+                const Entry e = entries_[i];
+                int32_t id = e.id;
+                int32_t at = e.firstByte;
+                for (int32_t k = 0; k < e.lineCount; ++k) {
+                    int32_t len = lineLens_[e.firstLine + k];
+                    lineBytes_.copyRunTo(at, len, lineBuf);
+                    if (id != 0) map_.inner().appendBlobToRun(id, lineBuf, len);
+                    else id = map_.inner().assignRun(e.key, lineBuf, &len, 1);
+                    at += len;
+                }
+            }
+        }
+
+        /// @brief Write every staged line into the origin map, then empty the
+        ///        batch.
+        ///
+        /// @details
+        /// Chooses the path by @ref rebuildPays: @ref writeByRebuild or
+        /// @ref writeOneByOne, which write the same bytes. An empty batch
+        /// changes nothing.
+        ///
+        /// @return Nothing.
+        /// @invariant The map's keys, runs and canonical bytes equal those the
+        ///            same `addOriginId` calls make one by one.
+        void apply() {
+            if (entries_.size() == 0) return;
+            if (rebuildPays()) writeByRebuild();
+            else writeOneByOne();
+            entries_.clear();
+            lineLens_.clear();
+            lineBytes_.clear();
+            stagedKeys_.resetToFresh();
+        }
+
+    private:
+        /// One staged key: its stored id (0 = new) and its run of accepted
+        /// lines in `lineLens_` / `lineBytes_`.
+        struct Entry {
+            int64_t key;
+            int32_t id;
+            int32_t firstLine;
+            int32_t lineCount;
+            int32_t firstByte;
+        };
+        TypedColdBlobMap<int64_t, IdOrigin>& map_;
+        ScratchArena& arena_;
+        DirtyState dirty_ = DirtyState::Clean;
+        PagedVector<Entry> entries_;
+        PagedVector<int32_t> lineLens_;
+        PagedVector<char> lineBytes_;
+        ColdHashSet<PodKeyStore<int64_t>> stagedKeys_;
+    };
+
     /// @brief Cold twin of `decodeOriginMapSorted` — decode the cold origin map
     ///        into key-sorted string rows.
     ///
@@ -11490,9 +12372,7 @@ namespace gl {
             for (const IdOrigin& origin : recs) {
                 lines.push_back(decodeOrigin(origin, oi));
             }
-            StrSpan eSpan, vSpan;
-            decodeOriginKeyView(key, oi, eSpan, vSpan);
-            rows.emplace_back(std::make_pair(eSpan.toStdString(), vSpan.toStdString()),
+            rows.emplace_back(decodeOriginKey(key, oi),
                 std::move(lines));
         }
         std::sort(rows.begin(), rows.end(),
@@ -12326,7 +13206,10 @@ namespace gl {
             };
             put(static_cast<int32_t>(v.standardMaxAdmissionDepth));
             put(static_cast<int32_t>(v.standardMaxSecondaryNumber));
-            put(static_cast<uint8_t>(v.flag ? 1 : 0));
+            assert((!v.inductionHypothesis || v.flag)
+                && "Codec<AdmissionMapValue>: an induction hypothesis value is recursion-owned");
+            put(static_cast<uint8_t>((v.flag ? kAdmissionRecursionFlag : 0)
+                | (v.inductionHypothesis ? kAdmissionInductionHypothesisFlag : 0)));
             put(static_cast<uint8_t>(v.ordisOnly ? 1 : 0));
             put(static_cast<int32_t>(v.key.size()));
             for (const int32_t id : v.key) put(id);
@@ -12352,7 +13235,11 @@ namespace gl {
             };
             int32_t depth = 0; get(depth); v.standardMaxAdmissionDepth = depth;
             int32_t sec = 0; get(sec); v.standardMaxSecondaryNumber = sec;
-            uint8_t flag = 0; get(flag); v.flag = (flag != 0);
+            uint8_t flag = 0; get(flag);
+            assert(isValidAdmissionFlagByte(flag)
+                && "Codec<AdmissionMapValue>: malformed flag byte");
+            v.flag = (flag & kAdmissionRecursionFlag) != 0;
+            v.inductionHypothesis = (flag & kAdmissionInductionHypothesisFlag) != 0;
             uint8_t ordis = 0; get(ordis); v.ordisOnly = (ordis != 0);
             int32_t kc = 0; get(kc);
             v.key.resize(static_cast<std::size_t>(kc));
@@ -12417,6 +13304,8 @@ namespace gl {
             const int32_t rc = remCount();
             assert(rc >= 0 && len == 18 + 4 * (kc + rc)
                 && "AdmissionValueBlobView: blob length does not match the layout");
+            assert(isValidAdmissionFlagByte(flagByte())
+                && "AdmissionValueBlobView: malformed flag byte");
         }
 
         /// @brief Read one int32 field at a byte offset (unaligned-safe).
@@ -12439,12 +13328,28 @@ namespace gl {
         /// @return The int32 at offset 4.
         int32_t sec() const { return readI32(4); }
 
-        /// @brief The record's `flag` byte (0 or 1).
+        /// @brief The record's `flag` byte: bit 0 recursion-owned
+        ///        (`kAdmissionRecursionFlag`), bit 1 induction hypothesis
+        ///        (`kAdmissionInductionHypothesisFlag`) — 0, 1 or 3.
         /// @return The uint8 at offset 8.
         uint8_t flagByte() const {
             uint8_t v;
             std::memcpy(&v, p + 8, sizeof(v));
             return v;
+        }
+
+        /// @brief Whether the value is the induction hypothesis's chain.
+        ///
+        /// @details
+        /// Reads bit `kAdmissionInductionHypothesisFlag` of the flag byte. Only
+        /// such a value opens an induction scope when it admits a witness
+        /// (D-519); a recursion-owned value without the
+        /// bit (a goal-door demand) admits as before.
+        ///
+        /// @return True iff the hypothesis bit is set.
+        /// @see flagByte, kAdmissionInductionHypothesisFlag.
+        bool inductionHypothesis() const {
+            return (flagByte() & kAdmissionInductionHypothesisFlag) != 0;
         }
 
         /// @brief The record's `ordisOnly` byte (0 or 1).
@@ -12581,7 +13486,10 @@ namespace gl {
         };
         put(static_cast<int32_t>(v.standardMaxAdmissionDepth));
         put(static_cast<int32_t>(v.standardMaxSecondaryNumber));
-        put(static_cast<uint8_t>(v.flag ? 1 : 0));
+        assert((!v.inductionHypothesis || v.flag)
+            && "serializeAdmissionValueToArena: an induction hypothesis value is recursion-owned");
+        put(static_cast<uint8_t>((v.flag ? kAdmissionRecursionFlag : 0)
+            | (v.inductionHypothesis ? kAdmissionInductionHypothesisFlag : 0)));
         put(static_cast<uint8_t>(v.ordisOnly ? 1 : 0));
         put(kc);
         for (const int32_t id : v.key) put(id);
@@ -13361,10 +14269,10 @@ namespace gl {
     /// @invariant Zero heap: page-tier `PagedVector`s and `ColdHashSet`s on
     ///            the arena handed in. Never deloaded, never dumped, never a
     ///            proof input.
-    /// @see ExpressionAnalyzer::applyEquivalenceClassToRejectedMap,
-    ///      ExpressionAnalyzer::applyEquivalenceClassToRejectedMapIntegration,
-    ///      ExpressionAnalyzer::applyEquivalenceClassToRejectedOrdisCore,
-    ///      ExpressionAnalyzer::applyEquiClasses, HashMap::insertEpoch,
+    /// @see EquivalenceAdmissionRewriter::applyEquivalenceClassToRejectedMap,
+    ///      EquivalenceAdmissionRewriter::applyEquivalenceClassToRejectedMapIntegration,
+    ///      EquivalenceAdmissionRewriter::applyEquivalenceClassToRejectedOrdisCore,
+    ///      EquivalenceProcessor::applyEquiClasses, HashMap::insertEpoch,
     ///      forEachSubstitutionToken.
     class RejectedValidityBuckets {
     public:
@@ -13742,8 +14650,8 @@ namespace gl {
     ///            for a delta class, the persistent waterline of
     ///            `eqClassSttmntIndexMapMap` for a non-delta class); the
     ///            batch advances it to the registry size after every round.
-    /// @see `ExpressionAnalyzer::buildEquiClassTable`,
-    ///      `ExpressionAnalyzer::collectEquiAffectedRows`.
+    /// @see `EquivalenceProcessor::buildEquiClassTable`,
+    ///      `EquivalenceProcessor::collectEquiAffectedRows`.
     class EquiClassTable {
     public:
         /// @brief One class of the table.
@@ -13898,8 +14806,8 @@ namespace gl {
     ///            the registry; a product equal to a registry row is known at
     ///            that scope (dropped), or in compressor mode an `OriginOnly`
     ///            beside the row's `Seed`.
-    /// @see `ExpressionAnalyzer::stageEquiClosure`,
-    ///      `ExpressionAnalyzer::drainStagedEquiProducts`.
+    /// @see `EqualityPropagation::stageEquiClosure`,
+    ///      `EqualityPropagation::drainStagedEquiProducts`.
     class StagedEquiProducts {
     public:
         /// @brief Record kinds.
@@ -14218,7 +15126,9 @@ namespace gl {
     /// @param pk       The packed (templateId, validityId) key.
     /// @param depth    `standardMaxAdmissionDepth`.
     /// @param sec      `standardMaxSecondaryNumber`.
-    /// @param flag     The value flag.
+    /// @param flags    The value flag byte: `kAdmissionRecursionFlag`,
+    ///                 optionally with `kAdmissionInductionHypothesisFlag`
+    ///                 (0, 1 or 3; asserted).
     /// @param keyIds   The key value ids (positional order); null iff
     ///                 `keyCount == 0`.
     /// @param keyCount The key id count (`>= 0`).
@@ -14237,7 +15147,7 @@ namespace gl {
     ///      `serializeAdmissionValueToArena`, `insertAdmissionBlobSorted`.
     inline void insertAdmissionIdsBlob(
         TypedColdBlobMap<int64_t, AdmissionMapValue>& m, int64_t pk,
-        int32_t depth, int32_t sec, bool flag,
+        int32_t depth, int32_t sec, uint8_t flags,
         const int32_t* keyIds, int32_t keyCount,
         const int32_t* remIds, int32_t remCount,
         const ValueInterner& vi, ScratchArena& gArena,
@@ -14245,6 +15155,8 @@ namespace gl {
     {
         assert(keyCount >= 0 && (keyCount == 0 || keyIds != nullptr));
         assert(remCount >= 0 && (remCount == 0 || remIds != nullptr));
+        assert(isValidAdmissionFlagByte(flags)
+            && "insertAdmissionIdsBlob: malformed flag byte");
         const ArenaOffset mark = gArena.cursor();
         const int32_t len = 18 + 4 * (keyCount + remCount);
         char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
@@ -14255,7 +15167,7 @@ namespace gl {
         };
         put(depth);
         put(sec);
-        put(static_cast<uint8_t>(flag ? 1 : 0));
+        put(flags);
         put(static_cast<uint8_t>(ordisOnly ? 1 : 0));
         put(keyCount);
         for (int32_t i = 0; i < keyCount; ++i) put(keyIds[i]);
@@ -15143,10 +16055,13 @@ namespace gl {
     ///        `admissionMapIntegration` inner-map entry.
     ///
     /// @details
-    /// Layout: `instruction.markedGoal` (int32), `instruction.data` count (int32),
+    /// Layout: `instruction.markedGoal` (int32), `instruction.pathVariables`
+    /// (int32, 0 = empty list), `instruction.forbidden` (five int32 words: the
+    /// variables' low and high halves, then the levels' low and high halves,
+    /// `forbiddenSetWord`, then the premise level), `instruction.data` count (int32),
     /// then per `IntLogicalEntity`: `category`, `signature`, `arity`, `definedSet`
     /// (int32 each) + `elements` (int32 count + int32 each); then `valueIds`
-    /// (int32 count + int32 each); finally `instruction.ownerTask` (int64).
+    /// (int32 count + int32 each).
     ///
     /// @see `IntegrationEntry`, `IntLogicalEntity`, `Codec`.
     template <>
@@ -15162,6 +16077,12 @@ namespace gl {
                 out.insert(out.end(), p, p + sizeof(x));
             };
             put(v.instruction.markedGoal);
+            put(v.instruction.pathVariables);
+            put(forbiddenSetWord(v.instruction.forbidden.variables, false));
+            put(forbiddenSetWord(v.instruction.forbidden.variables, true));
+            put(forbiddenSetWord(v.instruction.forbidden.levels, false));
+            put(forbiddenSetWord(v.instruction.forbidden.levels, true));
+            put(v.instruction.forbidden.premiseLevel);
             put(static_cast<int32_t>(v.instruction.data.size()));
             for (const IntLogicalEntity& e : v.instruction.data) {
                 put(e.category);
@@ -15173,7 +16094,6 @@ namespace gl {
             }
             put(static_cast<int32_t>(v.valueIds.size()));
             for (const int32_t id : v.valueIds) put(id);
-            put(v.instruction.ownerTask);
             return out;
         }
 
@@ -15193,6 +16113,12 @@ namespace gl {
                 cur += sizeof(x);
             };
             get(v.instruction.markedGoal);
+            get(v.instruction.pathVariables);
+            int32_t words[5] = { 0, 0, 0, 0, 0 };
+            for (int32_t& w : words) get(w);
+            v.instruction.forbidden.variables = forbiddenSetFromWords(words[0], words[1]);
+            v.instruction.forbidden.levels = forbiddenSetFromWords(words[2], words[3]);
+            v.instruction.forbidden.premiseLevel = words[4];
             int32_t dc = 0; get(dc);
             v.instruction.data.resize(static_cast<std::size_t>(dc));
             for (int32_t i = 0; i < dc; ++i) {
@@ -15211,7 +16137,6 @@ namespace gl {
             v.valueIds.resize(static_cast<std::size_t>(vc));
             for (int32_t i = 0; i < vc; ++i)
                 get(v.valueIds[static_cast<std::size_t>(i)]);
-            get(v.instruction.ownerTask);
             assert(cur == end
                 && "Codec<IntegrationEntry>: blob longer than the layout");
             return v;
@@ -15623,15 +16548,17 @@ namespace gl {
     ///        `(IntInstruction, ValueIdSet)` map entry.
     ///
     /// @details The instruction key is the `[leStart, leStart + leCount)` run of
-    /// @ref ArenaIntLE plus `markedGoalId`; the value set is the append-only chain
+    /// @ref ArenaIntLE plus `markedGoalId`, `pathVarsId` (0 = empty path
+    /// list) and `forbidden` (empty on an unsplit instruction,
+    /// D-579); the value set is the
+    /// append-only chain
     /// headed at `valHead` (`-1` when empty), `valCount` members, walked through
-    /// the owning map's `valNodes`. `ownerTask` is the task that created the
-    /// entry (I-284); it rides the record but is not part
-    /// of the instruction key.
+    /// the owning map's `valNodes`.
     /// @see ArenaIntegrationMap, IntInstruction.
     struct ArenaIntEntry {
         int32_t leStart, leCount, markedGoalId, valHead, valCount;
-        int64_t ownerTask;
+        int32_t pathVarsId = 0;
+        IntegrationForbiddenSets forbidden;
     };
 
     /// @brief One node of an entry's value chain in @ref ArenaIntegrationMap.
@@ -15718,9 +16645,10 @@ namespace gl {
                 les.push_back(le);
             }
             e.markedGoalId = instr.markedGoal;
+            e.pathVarsId = instr.pathVariables;
+            e.forbidden = instr.forbidden;
             e.valHead = -1;
             e.valCount = 0;
-            e.ownerTask = instr.ownerTask;
             entries.push_back(e);
             return entries.size() - 1;
         }
@@ -15764,9 +16692,10 @@ namespace gl {
         /// (zero-copy when the blob is single-page; a page straddle copies once onto
         /// the map's own arena via the `ScratchArena&` peek overload — 0% heap, no
         /// `std::vector<char>` spill), then parses the `Codec<IntegrationEntry>` field layout —
-        /// `markedGoal`, entity count, then per entity `category` / `signature` /
-        /// `arity` / `definedSet` + its element run, then the value run, then the
-        /// owner task — field by
+        /// `markedGoal`, `pathVariables`, the four forbidden-set words and the
+        /// premise level, entity
+        /// count, then per entity `category` / `signature` /
+        /// `arity` / `definedSet` + its element run, then the value run — field by
         /// field straight into `entries` / `les` / `elemCol` / `valNodes`. The value
         /// ids are stored `DecodedIdLess`-canonical and push straight into the chain
         /// in stored order, so the arena state is byte-identical to
@@ -15802,6 +16731,12 @@ namespace gl {
                 ArenaIntEntry e;
                 e.leStart = les.size();
                 get(e.markedGoalId);
+                get(e.pathVarsId);
+                int32_t words[5] = { 0, 0, 0, 0, 0 };
+                for (int32_t& w : words) get(w);
+                e.forbidden.variables = forbiddenSetFromWords(words[0], words[1]);
+                e.forbidden.levels = forbiddenSetFromWords(words[2], words[3]);
+                e.forbidden.premiseLevel = words[4];
                 int32_t dc = 0; get(dc);
                 e.leCount = dc;
                 for (int32_t i = 0; i < dc; ++i) {
@@ -15821,7 +16756,6 @@ namespace gl {
                 }
                 e.valHead = -1;
                 e.valCount = 0;
-                e.ownerTask = 0;
                 const int32_t ei = entries.size();
                 entries.push_back(e);
                 int32_t vc = 0; get(vc);
@@ -15829,13 +16763,6 @@ namespace gl {
                     int32_t v = 0; get(v);
                     pushValue(ei, v);
                 }
-                assert(cur + sizeof(int64_t) <= end
-                    && "ArenaIntegrationMap::buildFromCold: blob shorter "
-                       "than the layout");
-                ArenaIntEntry withOwner = entries[ei];
-                std::memcpy(&withOwner.ownerTask, cur, sizeof(int64_t));
-                cur += sizeof(int64_t);
-                entries.setAt(ei, withOwner);
                 assert(cur == end
                     && "ArenaIntegrationMap::buildFromCold: blob longer "
                        "than the layout");
@@ -15851,6 +16778,8 @@ namespace gl {
             const ArenaIntEntry& e = entries[ei];
             if (e.leCount != static_cast<int32_t>(q.data.size())) return false;
             if (e.markedGoalId != q.markedGoal) return false;
+            if (e.pathVarsId != q.pathVariables) return false;
+            if (compareForbiddenSets(e.forbidden, q.forbidden) != 0) return false;
             for (int32_t i = 0; i < e.leCount; ++i) {
                 const ArenaIntLE& le = les[e.leStart + i];
                 const IntLogicalEntity& qle = q.data[static_cast<std::size_t>(i)];
@@ -15893,7 +16822,9 @@ namespace gl {
         /// `vi.encode(category)`, then `vi.encode(element)` for each element in
         /// order, then `vi.encode(signature)` (arity is a raw int, NOT minted),
         /// then `vi.encode(definedSet)`; AFTER all entities, mint
-        /// `vi.encode(markedGoal)` LAST. First-seen mint order defines the id→string
+        /// `vi.encode(markedGoal)`, then the non-empty path list (an empty list
+        /// mints nothing and stores 0); the forbidden sets are raw words, NOT
+        /// minted. First-seen mint order defines the id→string
         /// map that reaches the stored `Codec<IntegrationEntry>` blob and the
         /// `.deload/` id table ([I-84](#i-84)), so a reordered mint would diverge the
         /// deload bytes even when no theorem or verifier byte moves — the strict
@@ -15903,7 +16834,9 @@ namespace gl {
         /// The STORAGE layout is an INTERNAL free choice (the pool is transient
         /// `genScratchArenas`, never deloaded; only the `(start, len)` range is
         /// recorded downstream): `[entityCount][per entity: catId, sigId, arity,
-        /// dsId, elemCount, elemIds…][markedGoalId]` — markedGoal LAST so the single
+        /// dsId, elemCount, elemIds…][markedGoalId][pathVarsId][forbidden: four
+        /// words][premiseLevel]` — markedGoal, the path list and the forbidden sets LAST so the
+        /// single
         /// mint pass stores in encode order with no placeholder patch. Element ids
         /// are minted before signature/definedSet but stored after them, so one
         /// entity's element ids are held in a stack `elemIds[]` (cap
@@ -15942,6 +16875,12 @@ namespace gl {
                 for (int32_t j = 0; j < ec; ++j) pool.push_back(elemIds[j]);
             }
             pool.push_back(vi.encode(wi.markedGoal()));
+            pool.push_back(wi.pathVariablesId == 0 ? 0 : vi.encode(wi.pathVariables()));
+            pool.push_back(forbiddenSetWord(wi.forbidden.variables, false));
+            pool.push_back(forbiddenSetWord(wi.forbidden.variables, true));
+            pool.push_back(forbiddenSetWord(wi.forbidden.levels, false));
+            pool.push_back(forbiddenSetWord(wi.forbidden.levels, true));
+            pool.push_back(wi.forbidden.premiseLevel);
             return FlatRange{ start, pool.size() - start };
         }
 
@@ -15950,7 +16889,8 @@ namespace gl {
         ///
         /// @details Parses the canonical flattened layout
         /// (`[entityCount][per entity: catId, sigId, arity, dsId, elemCount,
-        /// elemIds…][markedGoalId]` — the layout @ref flattenWorkInstructionInto
+        /// elemIds…][markedGoalId][pathVarsId][forbidden: four words][premiseLevel]` — the
+        /// layout @ref flattenWorkInstructionInto
         /// writes) sequentially and compares each field to entry @p ei's `les` /
         /// `elemCol` records. Mints NOTHING; compares already-minted ids, so it is
         /// byte-identical to `entryEquals(ei, rebuilt IntInstruction)` by
@@ -15989,7 +16929,15 @@ namespace gl {
                 if (!eq) return false;
             }
             const int32_t mgId = rd();
-            return e.markedGoalId == mgId;
+            const int32_t pvId = rd();
+            IntegrationForbiddenSets forbidden;
+            const int32_t vLow = rd();
+            forbidden.variables = forbiddenSetFromWords(vLow, rd());
+            const int32_t lLow = rd();
+            forbidden.levels = forbiddenSetFromWords(lLow, rd());
+            forbidden.premiseLevel = rd();
+            return e.markedGoalId == mgId && e.pathVarsId == pvId
+                && compareForbiddenSets(e.forbidden, forbidden) == 0;
         }
 
         /// @brief Append a new entry parsed from the flattened run `run[0, len)` —
@@ -16031,9 +16979,14 @@ namespace gl {
                 les.push_back(le);
             }
             e.markedGoalId = rd();
+            e.pathVarsId = rd();
+            const int32_t vLow = rd();
+            e.forbidden.variables = forbiddenSetFromWords(vLow, rd());
+            const int32_t lLow = rd();
+            e.forbidden.levels = forbiddenSetFromWords(lLow, rd());
+            e.forbidden.premiseLevel = rd();
             e.valHead = -1;
             e.valCount = 0;
-            e.ownerTask = 0;
             entries.push_back(e);
             assert(pos == len
                 && "ArenaIntegrationMap::appendEntryFlattened: run longer "
@@ -16069,7 +17022,7 @@ namespace gl {
         /// Composes @ref flattenWorkInstructionInto (into a byte-bump run instead of
         /// a pool) with @ref findOrEmplaceFlattened: under a `ScratchScope` on the
         /// map's own `*arena`, compute the run length in one pass over @p wi
-        /// (`2 + Σ(5 + elemCount)`), one byte-bump `alloc`, mint+fill the run in the
+        /// (`7 + Σ(5 + elemCount)`), one byte-bump `alloc`, mint+fill the run in the
         /// FROZEN `encodeWorkInstruction` mint order, then id-compare / append via
         /// @ref findOrEmplaceFlattened. The append copies the ids into the page-tier
         /// records, so the scope may rewind on return with nothing dangling
@@ -16082,11 +17035,6 @@ namespace gl {
         /// entry is a HIT — a probe-then-mint design would diverge the id table on
         /// hits and is banned.
         ///
-        /// The owner task is not part of the comparison: a new entry records
-        /// @p wi's `ownerTask`, a hit keeps the stored entry's task, and the
-        /// caller decides whether the two tasks share the entry
-        /// (I-284).
-        ///
         /// @param wi The working instruction (resident; spans valid).
         /// @param vi The owning LB's value interner (mint side).
         /// @return The entry index (hit or newly appended).
@@ -16096,7 +17044,9 @@ namespace gl {
         ///      ExecutionParameters::MAX_INSTRUCTION_ELEMENTS.
         int32_t findOrEmplaceWork(const WorkInstruction& wi, ValueInterner& vi) {
             const int32_t n = wi.entityCount();
-            int32_t len = 2;   // entityCount header + markedGoal trailer
+            // entityCount header + markedGoal, path-list, four forbidden-set
+            // words and premise-level trailer
+            int32_t len = 8;
             for (int32_t i = 0; i < n; ++i) len += 5 + wi.elemCount(i);
             ScratchScope scope(*arena);
             int32_t* run = reinterpret_cast<int32_t*>(arena->resolve(
@@ -16123,19 +17073,16 @@ namespace gl {
                 for (int32_t j = 0; j < ec; ++j) run[pos++] = elemIds[j];
             }
             run[pos++] = vi.encode(wi.markedGoal());
+            run[pos++] = wi.pathVariablesId == 0 ? 0 : vi.encode(wi.pathVariables());
+            run[pos++] = forbiddenSetWord(wi.forbidden.variables, false);
+            run[pos++] = forbiddenSetWord(wi.forbidden.variables, true);
+            run[pos++] = forbiddenSetWord(wi.forbidden.levels, false);
+            run[pos++] = forbiddenSetWord(wi.forbidden.levels, true);
+            run[pos++] = wi.forbidden.premiseLevel;
             assert(pos == len
                 && "ArenaIntegrationMap::findOrEmplaceWork: fill length "
                    "!= computed length");
-            const int32_t before = entries.size();
-            const int32_t ei = findOrEmplaceFlattened(run, len);
-            if (entries.size() != before) {
-                // A new entry records its creating task; a hit keeps the stored
-                // entry's task (the caller compares the two).
-                ArenaIntEntry e = entries[ei];
-                e.ownerTask = wi.ownerTask;
-                entries.setAt(ei, e);
-            }
-            return ei;
+            return findOrEmplaceFlattened(run, len);
         }
 
         /// @brief Whether entry @p ei's value set contains @p v.
@@ -16173,7 +17120,8 @@ namespace gl {
                 out.data.push_back(std::move(ile));
             }
             out.markedGoal = e.markedGoalId;
-            out.ownerTask = e.ownerTask;
+            out.pathVariables = e.pathVarsId;
+            out.forbidden = e.forbidden;
             return out;
         }
 
@@ -16217,7 +17165,8 @@ namespace gl {
                                 vi.decodeView(le.dsId), le.arity, start);
             }
             wi.setMarkedGoal(vi.decodeView(e.markedGoalId));
-            wi.ownerTask = e.ownerTask;
+            if (e.pathVarsId != 0) wi.setPathVariables(vi.decodeView(e.pathVarsId));
+            wi.forbidden = e.forbidden;
         }
 
         /// @brief Entry @p ei's value set, `DecodedIdLess`-sorted (owned heap copy).
@@ -16307,8 +17256,11 @@ namespace gl {
                     return valueIdLess(la.dsId, lb.dsId, *vi) ? -1 : 1;
             }
             if (a.leCount != b.leCount) return a.leCount < b.leCount ? -1 : 1;
-            if (a.markedGoalId == b.markedGoalId) return 0;
-            return valueIdLess(a.markedGoalId, b.markedGoalId, *vi) ? -1 : 1;
+            if (a.markedGoalId != b.markedGoalId)
+                return valueIdLess(a.markedGoalId, b.markedGoalId, *vi) ? -1 : 1;
+            if (a.pathVarsId != b.pathVarsId)
+                return pathVariablesLess(a.pathVarsId, b.pathVarsId, *vi) ? -1 : 1;
+            return compareForbiddenSets(a.forbidden, b.forbidden);
         }
 
         /// @brief Entry indices in `DecodedInstructionLess` order — the snapshot /
@@ -16386,10 +17338,11 @@ namespace gl {
         ///
         /// @details
         /// Walks the entries in `DecodedInstructionLess` order (`sortedIndices`) and,
-        /// per entry, appends its `Codec<IntegrationEntry>`-layout bytes (`markedGoal`,
+        /// per entry, appends its `Codec<IntegrationEntry>`-layout bytes (`markedGoal`, `pathVariables`,
+        /// the four forbidden-set words, the premise level,
         /// entity count, then per entity `category` / `signature` / `arity` /
         /// `definedSet` + its element run, then the `DecodedIdLess`-sorted value run
-        /// from `valuesAt`, then the owner task) into a flat byte buffer + per-record
+        /// from `valuesAt`) into a flat byte buffer + per-record
         /// length buffer, then
         /// replaces the key's whole run in one engine `assignRun`. The produced bytes
         /// are byte-identical to `m.assignRun(pk, flatten())` — same record order,
@@ -16434,8 +17387,9 @@ namespace gl {
 
             // Pass 1 — per-record length + total, on the arena byte-bump tier.
             // Each record's length is the exact byte count the field walk below
-            // emits: 8 (markedGoalId + leCount) + per-entity (20 header ints +
-            // 4*elemsCount) + 4 (valCount header) + 4*valCount + 8 (ownerTask).
+            // emits: 32 (markedGoalId + pathVarsId + four forbidden-set words +
+            // premiseLevel + leCount) + per-entity (20 header ints + 4*elemsCount) + 4 (valCount
+            // header) + 4*valCount.
             // `valCount` is the
             // deduped value-chain length `valuesAt` walks (insertValue dedups
             // before pushValue), so it equals pass 2's emitted value count.
@@ -16445,10 +17399,10 @@ namespace gl {
             int64_t total = 0;
             for (int32_t ii = 0; ii < idxN; ++ii) {
                 const ArenaIntEntry& e = entries[idx[ii]];
-                int32_t rl = 8;
+                int32_t rl = 32;
                 for (int32_t i = 0; i < e.leCount; ++i)
                     rl += 20 + 4 * les[e.leStart + i].elemsCount;
-                rl += 4 + 4 * e.valCount + static_cast<int32_t>(sizeof(int64_t));
+                rl += 4 + 4 * e.valCount;
                 lens[ii] = rl;
                 total += rl;
             }
@@ -16473,6 +17427,12 @@ namespace gl {
                 const int32_t before = off;
                 const ArenaIntEntry& e = entries[ei];
                 put(e.markedGoalId);
+                put(e.pathVarsId);
+                put(forbiddenSetWord(e.forbidden.variables, false));
+                put(forbiddenSetWord(e.forbidden.variables, true));
+                put(forbiddenSetWord(e.forbidden.levels, false));
+                put(forbiddenSetWord(e.forbidden.levels, true));
+                put(e.forbidden.premiseLevel);
                 put(e.leCount);
                 for (int32_t i = 0; i < e.leCount; ++i) {
                     const ArenaIntLE& le = les[e.leStart + i];
@@ -16488,8 +17448,6 @@ namespace gl {
                     ei, valsBuf, ExecutionParameters::MAX_INTEGRATION_ENTRY_VALUES);
                 put(vn);
                 for (int32_t k = 0; k < vn; ++k) put(valsBuf[k]);
-                std::memcpy(outBytes + off, &e.ownerTask, sizeof(int64_t));
-                off += static_cast<int32_t>(sizeof(int64_t));
                 assert(off - before == lens[ii]
                     && "ArenaIntegrationMap::writeToCold: pass-2 length "
                        "!= pass-1 length");
@@ -17124,7 +18082,7 @@ namespace gl {
             }
         }
         // statement flags: GLOBAL-id keys, packed values folded verbatim
-        // through the merging door (flag 5 wins, iterations min-merge across
+        // through the merging door (a real flag wins, iterations min-merge across
         // ancestors' blobs).
         int32_t flagCount = 0; src.getPod(flagCount);
         for (int32_t f = 0; f < flagCount; ++f) {
@@ -17201,6 +18159,24 @@ namespace gl {
     ///   `isPartOfRecursion`, `primedForContradiction`, `contradictionTheoremId`
     ///   — induction- / recursion- / contradiction-LB bookkeeping (the two
     ///   ids decode through the NameMap; 0 = unset).
+    /// - `goalPending` — set only while a conjecture's last non-anchor
+    ///   premise is seeded into its goal block, before the goal step.
+    /// - `inductionDoubleKey`, `inductionParameterDigits` — the strong step
+    ///   block's double-marker demand key (0 = none) and the lemma digits it
+    ///   refuses; route 5 through the key serves only an original of lemma
+    ///   input values, sets and operators (D-502).
+    /// - `inductionDoubleChainId` — the strong hypothesis premise chain with
+    ///   its two markers, named by the induction scopes the key opens
+    ///   (D-519).
+    /// - `inductionProductKey`, `inductionProductChainId`,
+    ///   `recursionProductImplId` — the same for the strong step's second
+    ///   hypothesis, the multiplication catcher `x·m = n`
+    ///   (D-566).
+    /// - `usefulnessTest`, `usefulnessOpenSlot`, `usefulnessScopeId`,
+    ///   `usefulnessHeadId`, `usefulnessKeyId` — a weak step block's induction
+    ///   usefulness test: its state, the head operator's output slot, the
+    ///   scope `main_boundary_is_useful`, the planted head and the key
+    ///   (D-521).
     ///
     /// **Statement state**
     /// - `intToBeProved`            — pending obligations on this LB.
@@ -17326,10 +18302,44 @@ namespace gl {
         ColdHashSet<PodKeyStore<int64_t>>& revived;
     };
 
+    /// @brief How an induction block opens its twin partner's
+    ///        zero-or-successor OR as its case experiment
+    ///        (D-588).
+    ///
+    /// @details
+    /// The OR is "l = zero or ∃q: s(q) = l" on the partner l
+    /// (`Memory::twinPartnerId`); both armed kinds release the successor case
+    /// first. The weak step block (armed by its hypothesis install when the
+    /// second premise holds the free partner where the first holds `rec`)
+    /// then follows the ordinary one-at-a-time order: the zero case is
+    /// released once the successor case is resolved or retired, and is
+    /// refuted there. A zero block (armed at creation) releases the successor
+    /// case and no other: once it is refuted, the OR's exclusion derives
+    /// l = zero at `main`.
+    enum class TwinExperiment : uint8_t {
+        none = 0,
+        successorThenZero = 1,
+        successorCase = 2
+    };
+
+    /// @brief Shared logical-block storage operated on by the proof algorithms.
+    /// @details Public fields retain their declaration order, arena bindings and
+    /// lifecycle contracts; access does not replace the claim and phase protocols.
     struct Memory {
+
         int startInt;
+
+
+
+
         int startIntRepl;
+
+
+
+
         int startIntPi;
+
+
         // Tracks every `(implicationN[...])` form whose rules were
         // installed into this LB's hash registry via `addToHashMemory`.
         // Used by `sanitizeHashMemory` (called once at end of every
@@ -17346,18 +18356,33 @@ namespace gl {
         // decoupled, so ids never re-bind; the registry deliberately
         // survives destroyGrid (existing behavior), which is why the
         // lbStateInterner does NOT reset there.
+
+
         TypedColdSet<LbStatePairKey>& expandedImplications =
             lbMemory.expandedImplications;
+
+
+
+
         TypedColdBlobMap<int64_t, CompactExpansionRec>& compactExpansions =
             lbMemory.compactExpansions;
+
+
+
+
         ColdHashMap<PodKeyStore<int64_t>, int32_t>& expansionCarrierCount =
             lbMemory.expansionCarrierCount;
+
+
         // The LB's expression key (its identity) — statified: interned in the
         // never-deloaded analyzer-wide skeletonInterner() and stored as a 4-byte
         // id (0 == empty, the root sentinel). The former `std::string exprKey`
         // member is now the exprKey() accessor, byte-identical by construction
         // (D-151).
+
+
         int32_t exprKeyId = 0;
+
 
         /// @brief The LB's expression key as a string (byte-identical to the
         ///        former `std::string exprKey` member).
@@ -17393,7 +18418,9 @@ namespace gl {
         // arguments; compressor LBs hold the variables of their target
         // theorem. Written once at creation on the single-threaded
         // registration seam; read by the typed-equality lookups.
+
         int32_t varDefSetsId = 0;
+
 
         /// @brief Zero-copy view of the LB's variable definition-set record.
         ///
@@ -17410,7 +18437,7 @@ namespace gl {
         /// @invariant `I-267` — the record is fixed at LB
         ///            creation and never rewritten.
         /// @see setVarDefSets, exprKeyView,
-        ///      ExpressionAnalyzer::lookupLbVarDefinitionSet.
+        ///      ScopeTypeResolver::lookupLbVarDefinitionSet.
         StrSpan varDefSetsView() const;
 
         /// @brief Record the LB's variable definition sets (interned once).
@@ -17418,8 +18445,8 @@ namespace gl {
         /// @details
         /// Interns @p pairs into the never-deloaded `skeletonInterner()` and
         /// stores its id. Called only on the single-threaded registration
-        /// seams (`ExpressionAnalyzer::assignLbVarDefinitionSets`,
-        /// `ExpressionAnalyzer::assignTheoremVarDefinitionSets`), never during
+        /// seams (`ScopeTypeResolver::assignLbVarDefinitionSets`,
+        /// `ScopeTypeResolver::assignTheoremVarDefinitionSets`), never during
         /// a burst, because interning mints into a shared table. An empty
         /// record stores 0.
         ///
@@ -17436,7 +18463,10 @@ namespace gl {
         // reach it (the derivation chains inside the LB use this form,
         // not exprKey). Decoded at use; the string content lives on the
         // cold name table, deloadable with the LB.
+
         NameId recursionHypothesisId = 0;
+
+
         // The induction implication installed in this recursion block
         // (the auxy implication of recursion block #1) as its `ruleInterner`
         // id; 0 when the LB is not a recursion step block. The firing
@@ -17445,18 +18475,142 @@ namespace gl {
         // (`FiringRecord::recursionHead`), whose deposit takes the
         // force-disintegration procedure
         // (D-356).
+
+
         int32_t recursionAuxyImplId = 0;
+
+        // Whether this block's weak hypothesis install prepared identical
+        // integration goals split by premise: its integration instructions
+        // may carry forbidden sets, so every route-3 decision here reads them
+        // per instruction (D-579).
+        bool premiseSplitFiled = false;
+
+        // Whether this block was created as a weak induction step block. Set
+        // at creation, before the hypothesis install, which a strong step
+        // block shares the shape of: every integration key filed here must be
+        // connected to the induction
+        // (D-583).
+        bool weakStepBlock = false;
+
+        // Whether this block was created as a strong induction step block.
+        // Set at creation like `weakStepBlock`; every integration key filed
+        // here at an induction scope or below must be connected to the
+        // induction as well, the values the strong demands catch counting as
+        // connected (D-584).
+        bool strongStepBlock = false;
+
+        // The zero of this step block's induction (the anchor's zero, the
+        // right side of its base case `(=[n,zero])`) as a `nameMap` id; set at
+        // creation with the step flags, 0 in every other block. A size marker
+        // the filing scope knows equal to it bounds nothing and does not
+        // connect (D-584).
+        NameId inductionZeroId = 0;
+
+        // The partner of this block's induction variable in a conjecture with
+        // twin premises (the variable at the induction variable's slot of the
+        // second twin), as a NameMap id; 0 in every other block. Set at
+        // creation on the weak step block, whose hypothesis leaves the
+        // partner universal, and on the induction's zero blocks
+        // (D-587).
+        NameId twinPartnerId = 0;
+
+        // The anchor's zero and successor names (NameMap ids), set with
+        // `twinPartnerId`; 0 elsewhere. They identify the partner's
+        // zero-or-successor OR (D-588).
+        NameId twinZeroId = 0;
+        NameId twinSuccessorId = 0;
+
+        // How this block opens the partner's zero-or-successor OR: the weak
+        // step block's install arms "successor case, then zero case", a zero
+        // block is armed for the successor case only at creation
+        // (D-588).
+        TwinExperiment twinExperiment = TwinExperiment::none;
+
+        // The weak step block's twin cohort (its `orDisjunctCount` key), and
+        // the scope of the released successor case (NameMap id) of the weak
+        // step block or a base-case block, where the second twin goal or the
+        // partner's value demands are filed; 0 elsewhere and until set
+        // (D-588,
+        // D-589). Whether a base-case block has filed
+        // those value demands (`AdmissionMemory::fileTwinValueDemands`).
+        int32_t twinCohortId = 0;
+        NameId twinCaseScopeId = 0;
+        bool twinValueDemandsFiled = false;
+
+        // The weak step block's twin integration goals
+        // (D-589): the first twin premise's two-marker
+        // goal as the hypothesis install files it (NameMap id), the block
+        // levels of the first and the second twin premise, and `rec2`, the
+        // name the copy `(=[q,rec2])` gives the twin partner's predecessor q
+        // once `(in2[q,<partner>,<successor>])` at `main` or in the twin
+        // successor case filed the second goal, the first goal with `rec2`
+        // for `rec`; 0 elsewhere and until set
+        // (D-581).
+        NameId twinFirstGoalId = 0;
+        NameId twinPredecessorId = 0;
+        int32_t twinFirstLevel = 0;
+        int32_t twinSecondLevel = 0;
+
+        // The strong step block's second induction implication, the
+        // multiplication catcher `x·m = n ∧ m ≠ n ∧ P(m) → Q(m)`, as its
+        // `ruleInterner` id; 0 in every other block. Its fired head is an
+        // induction-hypothesis head like the first one's
+        // (`isInductionHypothesisRule`; D-566).
+        int32_t recursionProductImplId = 0;
+
+        /// @brief Whether a rule is one of this block's installed induction
+        ///        implications (D-566).
+        ///
+        /// @details
+        /// A recursion step block installs one induction implication
+        /// (`recursionAuxyImplId`); a strong step block also installs the
+        /// multiplication catcher (`recursionProductImplId`). A firing of
+        /// either marks its head as the induction hypothesis head
+        /// (`FiringRecord::recursionHead`, D-356). An id of 0 never names a
+        /// rule, so a block without induction implications answers false.
+        ///
+        /// @param implicationId A fired rule's `originalImplicationId`.
+        /// @return True iff @p implicationId is nonzero and names one of the
+        ///         installed induction implications.
+        /// @see recursionAuxyImplId, recursionProductImplId,
+        ///      gpu::isInductionHypothesisSource — the device twin.
+        bool isInductionHypothesisRule(int32_t implicationId) const {
+            return implicationId != 0
+                && (implicationId == recursionAuxyImplId || implicationId == recursionProductImplId);
+        }
+
+
+
+
         Memory* parentMemory;
+
+
+
+
         int level;
+
+
 
         // Reference aliases into lbMemory's four folded-in HashMemory instances
         // (D-147), so the body.overallHashMemory... call sites
         // are unchanged. The instances live in lbMemory (declared below); binding
         // to their stable storage before lbMemory constructs is the same pattern
         // as the equivalenceClassesMap alias.
+
+
         HashMemory& overallHashMemory = lbMemory.overallHashMemory;
+
+
+
+
         HashMemory& localHashMemory = lbMemory.localHashMemory;
+
+
+
+
         HashMemory& localHashMemoryDelta = lbMemory.localHashMemoryDelta;
+
+
         /// @brief Rules recovered from EXTERNAL mail for the next burst.
         ///
         /// @details Holds the implications that `disintegrateExpr2`
@@ -17468,7 +18622,11 @@ namespace gl {
         ///          it in place of the former throwaway scratch memory.
         ///          Implications reach it only through
         ///          `addExprToMemoryBlock` (the single hash-memory door).
+
+
         HashMemory& workingMemory = lbMemory.workingMemory;
+
+
 
         // Keyed by validity id (D-134), migrated onto the cold BLOB map (Batch
         // 3): a reference alias into lbMemory; each class is one canonical byte
@@ -17477,13 +18635,21 @@ namespace gl {
         // Order-sensitive walks (reactToHypo, applyEquiClasses pass 2, the dump
         // section) iterate a decoded-name lex-sorted snapshot — never raw id
         // order (I-84).
+
+
         TypedColdBlobMap<NameId, EquivalenceClass>& equivalenceClassesMap =
             lbMemory.equivalenceClassesMap;
 
+
+
         /// Complete merged classes for canonicalization; ordinary equality
         /// application continues to read equivalenceClassesMap.
+
+
         TypedColdBlobMap<NameId, EquivalenceClass>& canonicalEquivalenceClassesMap =
             lbMemory.canonicalEquivalenceClassesMap;
+
+
 
         /// @brief Per-step delta set of equivalence classes whose membership
         ///        changed during the current elementary step's
@@ -17509,7 +18675,11 @@ namespace gl {
         ///          push / size / validityAt / classAt. A reference alias into
         ///          lbMemory (the cold deloadable storage). See
         ///          `ChangedClassesBuffer`.
+
+
         ChangedClassesBuffer& changedClassesThisStep = lbMemory.changedClassesThisStep;
+
+
 
         /// @brief Per-hashburst staging buffer for algebra-`admissionMap`
         ///        writes, drained once after the fixpoint loop.
@@ -17529,7 +18699,11 @@ namespace gl {
         ///
         /// @see `AdmissionKeyAlgebraRecord` — the element type.
         /// @see `prover.hpp::drainAdmissionKeysAlgebra` — the drain.
+
+
         std::vector<AdmissionKeyAlgebraRecord> admissionKeysAlgebra;
+
+
 
         /// @brief Per-hashburst staging buffer for integration-template
         ///        registrations, drained once after the fixpoint loop.
@@ -17549,7 +18723,11 @@ namespace gl {
         ///
         /// @see `DeferredIntegrationPrep` — the element type.
         /// @see `prover.hpp::drainDeferredIntegrationPreps` — the drain.
+
+
         std::vector<DeferredIntegrationPrep> deferredIntegrationPreps;
+
+
 
         /// @brief Per-hashburst staging buffer for ordis2 demands, drained
         ///        once after the fixpoint loop
@@ -17569,20 +18747,36 @@ namespace gl {
         ///
         /// @see `Ordis2DemandRecord` — the element type.
         /// @see `prover.hpp::drainAdmissionKeysOrdis2` — the drain.
+
+
         std::vector<Ordis2DemandRecord> admissionKeysOrdis2;
+
+
         // Keyed by the templateInterner id of the integration template
         // (D-135; the former string key). No validity
         // dimension — the map never filters at wipeSubtree (counter
         // snapshots, no scope tag).
+
+
         ColdHashMap<PodKeyStore<NameId>, int>& integrationStartIntMap =
             lbMemory.integrationStartIntMap;
+
+
 
         // Routing mailIn uses a dedicated transient mail-pool arena that is
         // filled, absorbed, and released within the phase-1 worker claim.
         // Outgoing mail lives inside LbMemory and is claim/reloaded only when
         // `mailOutPending` is set.
+
+
         RoutingColdMail mailIn;
+
+
+
+
         DeloadableMailOut& mailOut = lbMemory.mailOut;
+
+
         // Two-channel internal-mail split (sandbox/equi_reshuffle
         // follow-up consolidation, 2026-05-24). `sameIter` is the
         // ephemeral hashburst-output channel: filled by
@@ -17601,12 +18795,23 @@ namespace gl {
         // unchanged. Like the other lbMemory.* aliases, declared before lbMemory
         // and bound by reference (the subobject address is valid; the references
         // are used only after lbMemory constructs).
-        ColdMail& sameIterationInternalMail = lbMemory.sameInternalMail;  // hashburst output channel
-        ColdMail& nextIterationInternalMail = lbMemory.nextInternalMail;  // cross-iteration deferral channel
+
+
+        ColdMail& sameIterationInternalMail = lbMemory.sameInternalMail;
+
+  // hashburst output channel
+
+
+        ColdMail& nextIterationInternalMail = lbMemory.nextInternalMail;
+
+  // cross-iteration deferral channel
 
         // During input absorption, new source replays belong to the output
         // channel so the completed input clear cannot erase queued work.
+
+
         ColdMail* replayMailDuringAbsorb = nullptr;
+
 
         /// @brief Read the smallest carried assignment for a pending source.
         /// @details A queued construction can reside in either internal channel.
@@ -17654,8 +18859,10 @@ namespace gl {
         // lookupEqClassIndex / upsertEqClassIndex / eraseEqClassIndex helpers
         // (never iterated in key order, never dumped). Dischargeable, reset at
         // destroyGrid.
+
         TypedColdMap<EqClassKey, int>& eqClassSttmntIndexMapMap =
             lbMemory.eqClassSttmntIndexMapMap;
+
 
         /// @brief Decode a validity id's equivalence-class list from the cold
         ///        blob store — the read boundary that replaced the former
@@ -17716,9 +18923,43 @@ namespace gl {
         void assignClassesById(NameId validityId,
                                const std::vector<EquivalenceClass>& classes)
         {
+            for (const EquivalenceClass& cls : classes)
+                assert(cls.memberCount() >= 2
+                    && "assignClassesById: a stored equivalence class has two or more members");
             equivalenceClassesMap.assignRun(validityId, classes);
         }
+
+        /// @brief Whether an application equivalence class at a scope or at one
+        ///        of its strict ancestors holds a name.
+        ///
+        /// @details
+        /// Walks the scope's NameMap parent chain from the scope itself to the
+        /// root and tests every class stored in `equivalenceClassesMap` at each
+        /// scope for the member. These are exactly the classes that
+        /// `updateEquivalenceClasses` merges for an equality at the scope (the
+        /// same-scope pass plus the strict-ancestor pass), so a `true` answer
+        /// means an equality naming the member joins an existing class and a
+        /// `false` answer means it would found a new one. A scope that was
+        /// never interned has no classes and no interned ancestors, so the
+        /// answer is `false`.
+        ///
+        /// Read-only and non-minting: class blobs are peeked onto the slot's
+        /// gen-scratch arena under a per-class `ScratchScope`, so the walk
+        /// allocates no heap memory.
+        ///
+        /// @param validity Scope of the equality; need not be interned.
+        /// @param member   NameMap id of the name; must be interned (non-zero).
+        /// @return `true` iff some application class at the scope or a strict
+        ///         ancestor contains `member`.
+        /// @invariant Changes no class, name or arena state visible after the
+        ///            call.
+        /// @see EquivalenceProcessor::updateEquivalenceClasses — the caller that
+        ///      keeps a reflexive equality from founding a one-member class.
+        bool applicationClassHoldsName(StrSpan validity, NameId member);
+
         bool isActive;
+
+
 
         /// @brief Entry-selected OR roots whose Phase 3 inference is excluded.
         ///
@@ -17726,7 +18967,10 @@ namespace gl {
         /// The phase worker owns this set on its scratch arena while holding
         /// the logical-block claim. Null denotes ordinary processing. The
         /// binding ends before the lifecycle drains and is never serialized.
+
+
         const ColdHashSet<PodKeyStore<NameId>>* phase3IgnoredOrRoots = nullptr;
+
 
         /// @brief Test whether Phase 3 excludes inference at a scope.
         ///
@@ -17765,7 +19009,10 @@ namespace gl {
         /// Plain LB-object state, never deloaded; `0` at every seam a reader
         /// reaches. The staging itself rides the worker slot
         /// (`ruleStagings()`), not the LB.
+
         int32_t ruleStagingArmDepth = 0;
+
+
 
         /// @brief The thread that published `WorkerOwned` on `stewardClaim`.
         ///
@@ -17777,7 +19024,11 @@ namespace gl {
         /// foreign holder is two writers on one LB and asserts (I-122). Phase-2
         /// split siblings share the LB read-only (I-83) and never consult it.
         /// Plain LB-object state on the never-deloaded slab, never dumped.
+
+
         std::atomic<std::thread::id> claimHolder{};
+
+
 
 
         /// @brief Quiescence latch — `true` when this LB's next burst MAY
@@ -17809,7 +19060,11 @@ namespace gl {
         /// flagged here (keeps the O(descendants) fan-out off the commit path).
         /// @invariant A missed wake is a missed theorem (unsound); every deposit
         ///            door must set it — validated by `QUIESCE_SHADOW_CHECK`.
+
+
         bool hasWork = true;
+
+
 
         /// @brief Always-resident summary bit for the deloadable outgoing
         ///        mailbox.
@@ -17823,7 +19078,11 @@ namespace gl {
         /// @invariant `false` implies `mailOut.empty()`; `true` requires a
         ///            claim/reload before inspecting the mailbox.
         ///            [I-163]
+
+
         bool mailOutPending = false;
+
+
 
         /// @brief Always-resident logical live-byte snapshot of `mailOut`.
         ///
@@ -17831,7 +19090,11 @@ namespace gl {
         /// mailbox. Telemetry can therefore sum all LBs after a phase join
         /// without loading cold mailboxes. This is a logical component size;
         /// physical main-pool blocks remain accounted by the whole-pool peak.
+
+
         int64_t mailOutLiveBytes = 0;
+
+
 
         /// @brief Largest observed live byte count of source records and indexes.
         ///
@@ -17839,7 +19102,10 @@ namespace gl {
         /// proof state, and is not cloned or serialized. Summing block peaks does
         /// not represent a simultaneous whole-grid peak. Shared string interners
         /// and arena page padding are excluded.
+
+
         int64_t parkedSourcePeakBytes = 0;
+
 
         /// @brief Measure the resident block's parked-source container storage.
         ///
@@ -17851,7 +19117,7 @@ namespace gl {
         /// @return Current source-container live bytes, excluding shared strings.
         /// @invariant The block is resident and claimed, or is under single-threaded
         /// construction/testing. No proof decision reads this measurement.
-        /// @see ExpressionAnalyzer::performElemPhase3, parkedSourcePeakBytes.
+        /// @see Prover::performElemPhase3, parkedSourcePeakBytes.
         int64_t sampleParkedSourceStorage() {
             int64_t bytes = existenceReplays.liveBytes();
             for (const HashMemory* memory : {&overallHashMemory, &localHashMemory,
@@ -17880,7 +19146,10 @@ namespace gl {
         /// emptiness belt (`mailOut` deliberately excluded — outgoing-only,
         /// see `hasWork`). Over-approximating on purpose (Rule 19: when in
         /// doubt, stay dirty).
+
         bool mutatedThisBurst = false;
+
+
 
         /// @brief The running apply's deferred-erase context for
         ///        `expandedImplications`, or `nullptr` outside an apply.
@@ -17893,7 +19162,11 @@ namespace gl {
         /// the one `eraseIf`. Null means immediate erase — the contract
         /// outside an apply, not a fallback. Never deloaded (a raw pointer
         /// into the apply's scratch, valid only while the apply runs).
+
+
         DeferredExpandedErase* deferredExpandedErase = nullptr;
+
+
 
         /// @brief `intEncodedStatementsCount()` snapshot taken at
         ///        `performElemPhase1` entry (before the pre-burst mail absorb).
@@ -17904,7 +19177,11 @@ namespace gl {
         /// rewrite, or a subtree-wipe erase — keeps `hasWork` set. A cheap,
         /// deload-tolerant integer read (the count lives with the persistent
         /// registry, I-108), so it is legal while the main arena is cold.
+
+
         int encodedCountAtBurstStart = 0;
+
+
 
         /// @brief `QUIESCE_SHADOW_CHECK` scratch: whether the skip predicate
         ///        WOULD have skipped this LB's burst this iteration.
@@ -17914,7 +19191,11 @@ namespace gl {
         /// active-build records the predicate's verdict here but still sweeps the
         /// LB, and `performElemPhase3` asserts a would-skip LB's burst was a
         /// no-op. Inert (written but never read) in a normal build.
+
+
         bool shadowWouldSkip = false;
+
+
 
         /// LB-split part count = number of EXPRESSION BUCKETS this LB runs as. `1`
         /// is the unsplit identity (byte-identical to no split). Two-state per LB:
@@ -17924,7 +19205,11 @@ namespace gl {
         /// (`isStraggler`, the idle-core fair-share; D-201).
         /// A value `> 1` also marks the LB an ineligible steward eviction victim.
         /// Persists across iterations; never reset. Default `1`.
+
+
         int numberOfParts = 1;
+
+
 
         /// One-shot "just activated this iteration" flag. A born-parked induction
         /// zero block that `activateZeroCondition` flips active (the only
@@ -17935,11 +19220,15 @@ namespace gl {
         /// `numberOfParts`, then clears the flag (one-shot; later iterations fall
         /// back to the submatch stat). Set single-threaded in
         /// `activateZeroCondition`, cleared single-threaded at task build.
+
+
         bool justActivated = false;
+
+
 
         /// @brief CUDA route: this LB's Phase 2 task usage without stumps,
         ///        recorded at the end of its phase 1
-        ///        (`ExpressionAnalyzer::recordPhase2Measurement`).
+        ///        (`Phase2Executor::recordPhase2Measurement`).
         ///
         /// @details
         /// The CUDA chunk packing sizes its chunks from these recorded values and
@@ -17948,29 +19237,53 @@ namespace gl {
         /// is read-only from the end of its phase 1 until its phase-2 finalize,
         /// so the values are exact for every packing pass of the burst;
         /// `phase2MeasurementEpoch` names the burst and the packing asserts it.
+
+
         gpu::Phase2TaskProjectionUsage phase2TaskUsage{};
+
+
 
         /// @brief CUDA route: the hash memories this LB's executable request
         ///        batches read (`gpu::selectPhase2HashMemories`); zero when it
         ///        has no task. Recorded with `phase2TaskUsage`.
+
+
         uint32_t phase2SelectedHashMemories = 0;
+
+
 
         /// @brief CUDA route: the projection usage for
         ///        `phase2SelectedHashMemories`; zero when the LB has no task.
         ///        Recorded with `phase2TaskUsage`.
+
+
         gpu::Phase2ProjectionUsage phase2ProjectionUsage{};
+
+
 
         /// @brief The analyzer's `phase2MeasurementEpoch` when the three fields
         ///        above were recorded; zero means never.
+
+
         uint64_t phase2MeasurementEpoch = 0;
 
+
+
+
+
         bool isPartOfRecursion;
+
+
         // VESTIGIAL (never incremented — no prover increment site exists). The
         // no-op-iteration short-circuit it was reserved for is now carried by
         // `hasWork` + the phase-3 SLEEP detector (D-194). Kept
         // only for the CE-swap / dump / test references that still name it; not a
         // live counter.
+
+
         int deltaNumberStatements;
+
+
         // Id-form history map (D-131) on the cold blob map
         // (I-121): packed (expressionId, validityId)
         // origin-interner keys -> the key's run of (OriginTag, packed antecedent
@@ -17982,19 +19295,39 @@ namespace gl {
         // discharge (the chapter export reads it on discharged LBs); reset to
         // empty at CE-clone teardown (resetToFresh). The originInterner its keys
         // index resets in lockstep at destroyGrid.
+
+
         TypedColdBlobMap<int64_t, IdOrigin>& exprOriginMap = lbMemory.exprOriginMap;
+
+
+
+
         int recursionCounter;
+
+
+
+
         int contradictionIndex;
+
+
         // Packed (templateId, validityId) keys (D-135)
         // — the populations are clean-signature / marker-form template
         // strings, the same family as the admission EWV sets. Writers via
         // mintTemplateKey, gates via the non-minting lookupTemplateKey;
         // wipeSubtree filters by the low-16-bits validity predicate; the
         // dump sections derive decode + lex-sort.
+
+
         ColdHashSet<PodKeyStore<int64_t>>& integrationPrepared =
             lbMemory.integrationPrepared;
+
+
+
+
         ColdHashSet<PodKeyStore<int64_t>>& integrationPreparedMarker =
             lbMemory.integrationPreparedMarker;
+
+
         // D-72 (sandbox/implication_cleanup):
         // Pending scopes to wipe at the END of the hashburst (drained
         // by `performElemPhase3` immediately after
@@ -18011,24 +19344,40 @@ namespace gl {
         // scope was created via encodePush, so the insert is a non-minting
         // lookup + assert. The drain decodes + lex-sorts before the
         // wipeSubtree calls — the former string-set order exactly.
+
+
         ColdHashSet<PodKeyStore<NameId>>& pendingWipeScopes =
             lbMemory.pendingWipeScopes;
+
+
         // Mail-eligibility memo sets as NameMap ids (the
 
 
         /// @brief Scope-qualified weak variable membership for canonical selection.
+
+
         ColdHashSet<PodKeyStore<int64_t>>& intWeakVariables = lbMemory.intWeakVariables;
+
+
 
         // Dedicated id space for admission/rejected template strings
         // (D-132). Disjoint from nameMap's id space —
         // see TemplateInterner. Resets only in lockstep with the
         // destroyGrid nameMap reset.
+
+
         TemplateInterner templateInterner;
+
+
 
         // Dedicated int32 id space for admission/rejected VALUE-field
         // strings (D-1322). See ValueInterner; same
         // destroyGrid lockstep reset.
+
+
         ValueInterner valueInterner;
+
+
 
         // Dedicated int32 id space for the origin maps' expression AND
         // validity strings (D-131). Deliberately not
@@ -18037,12 +19386,20 @@ namespace gl {
         // interned locally. Same destroyGrid lockstep reset; never wiped
         // on scope teardown (exprOriginMap itself survives wipeSubtree, so
         // its id space must too).
+
+
         ValueInterner originInterner;
+
+
 
         // Dedicated int32 id space for this LB's outgoing routing mailbox.
         // The table is owned by lbMemory.mailOut and therefore deloads, reloads,
         // and clears in lockstep with the two id-bearing mailOut columns.
+
+
         ValueInterner mailOutInterner;
+
+
 
         // Dedicated int32 id space for the rule-registry strings — LMV head
         // templates, premise-chain elements, original implications,
@@ -18051,7 +19408,11 @@ namespace gl {
         // single-threaded install sites; the parallel hashburst only
         // decodes (array-index const refs, I-83-safe). Same destroyGrid
         // lockstep reset.
+
+
         ValueInterner ruleInterner;
+
+
 
         // Dedicated id space for the LB-state strings — OR-branching
         // bookkeeping (derived expressions, or-signatures, branch
@@ -18060,29 +19421,120 @@ namespace gl {
         // implications may be locally un-interned, and a mint there would
         // shift the dumped id table. All writers single-threaded; same
         // destroyGrid lockstep reset.
+
+
         ValueInterner lbStateInterner;
+
+
 
         // Lazy per-id memoization for the equivalence-class path (classifyName /
         // scanSpecialTokens results keyed by NameMap id). Derived state, a pure
         // function of nameMap contents — never wiped or filtered on scope
         // teardown. On the cold deloadable arena (tag base 705), survives
         // discharge; a reference alias into lbMemory. See EqClassNameCaches.
+
+
         EqClassNameCaches& eqClassNameCaches = lbMemory.eqClassNameCaches;
 
+
+
         // --- Incubator: contradiction proving ---
+
+
         bool primedForContradiction = false;
+
+        // True only while `ProofGridBuilder::addTheoremToMemory` seeds a
+        // conjecture's last non-anchor premise into this block, before the
+        // conjecture's head becomes the block's goal: the case gate counts it
+        // as proof work, so the ORs the premise unfolds into open or park as
+        // they would with the goal registered (D-495).
+        bool goalPending = false;
+
+        // The packed template key of this strong-induction step block's
+        // double-marker demand `in3[marker1,marker2,n,+]` at main, filed by
+        // `ProofGridBuilder::addTheoremToMemory`; 0 when the block files none.
+        // Route 5 through this key is an induction admission: it serves only
+        // an original whose every argument is a number outside
+        // `inductionParameterDigits` (`hasOnlyInductionDigits`,
+        // `AdmissionMemory::isAdmittedIntegrationDouble`,
+        // D-502). Set once;
+        // the key lives at main, which no wipe closes.
+        int64_t inductionDoubleKey = 0;
+
+        // The digits the strong step block's induction demand refuses: the
+        // lemma's element-valued numbers (typed `(1)`) that fill no input
+        // slot of a non-anchor premise or of the head, ascending
+        // (`ProofGridBuilder::inductionParameterDigits`; G3: zero, one and
+        // two). Set with `inductionDoubleKey`; empty otherwise.
+        int32_t inductionParameterDigits[ExecutionParameters::MAX_ARITY] = {};
+        int32_t inductionParameterDigitCount = 0;
+
+        // The lemma's induction variables (`ScopeTypes::findDigitArgs`, as
+        // numbers): the strong step block's induction demand admits an
+        // original only when every argument at its input slots is one of
+        // them (`AdmissionPolicy::inductionInputsAllowed`,
+        // D-601). Set with `inductionDoubleKey`;
+        // empty otherwise.
+        int32_t inductionVariableDigits[ExecutionParameters::MAX_ARITY] = {};
+        int32_t inductionVariableDigitCount = 0;
+
+        // The strong step block's hypothesis premise chain with the bound
+        // value written `marker1` and its distance `marker2`, concatenated in
+        // premise order, as a NameMap id: an induction scope opened through
+        // `inductionDoubleKey` carries it in its name, and a second admission
+        // through the key on the same path is refused by it
+        // (D-519). Set with `inductionDoubleKey`; 0 when
+        // the block files no double-marker demand.
+        NameId inductionDoubleChainId = 0;
+
+        // The strong step block's second induction demand, the bound premise
+        // `in3[marker1,marker2,n,*]` of its multiplication catcher
+        // (`recursionProductImplId`), filed at main beside
+        // `inductionDoubleKey` and gated like it (D-502); 0 when the block
+        // files none. Its marked chain names the induction scopes it opens
+        // (D-519). Both demands eat the strong slot
+        // (`kStrongInductionSlot`; D-566).
+        int64_t inductionProductKey = 0;
+        NameId inductionProductChainId = 0;
+
+        // The induction usefulness test of a weak step block
+        // (D-521). `Pending` from grid build: the
+        // hypothesis premises and head are planted at `usefulnessScopeId`
+        // (`main_boundary_is_useful`), where `main`'s rules fire on them.
+        // `Caught` once the key catches the head there (the scope is queued
+        // for wiping; the next barrier switches the block off); `Done` after
+        // that switch-off or after proof burst 3 without a catch (the scope
+        // is queued for wiping). `None` on every other block. The planted head
+        // and the key are NameMap ids; `usefulnessOpenSlot` is the head
+        // operator's output argument, the one slot the comparison skips.
+        enum class UsefulnessTest : uint8_t { None = 0, Pending = 1, Caught = 2, Done = 3 };
+        UsefulnessTest usefulnessTest = UsefulnessTest::None;
+        int32_t usefulnessOpenSlot = -1;
+        NameId usefulnessScopeId = 0;
+        NameId usefulnessHeadId = 0;
+        NameId usefulnessKeyId = 0;
+
+
         // The pre-built theorem published when this primed LB finds its
         // contradiction, as a NameMap id; 0 when unset (a defined state —
         // the discharge publishes nothing then). Decoded at the publish
         // site; content lives on the cold name table.
+
+
         NameId contradictionTheoremId = 0;
+
+
         // A NORMAL (non-primed, non-CE, non-recursion) LB reached a full
         // contradiction at its exact `main` — its premise set is
         // inconsistent, so every theorem provable at or below this LB is
         // vacuous. Set by dischargeContradiction's normal-LB branch; read
         // by the post-join emission gates through the self-or-ancestor
         // walk (never-deloaded LB-slab state like isActive; not dumped).
+
+
         bool mainContradiction = false;
+
+
 
         // --- OR bookkeeping: convergence tracking ---
         // (The legacy orAdmissionSet gate container was dropped with
@@ -18098,29 +19550,52 @@ namespace gl {
         // coldIntSetAt (which would re-sort by raw int). The disjunct order feeds
         // ordisMerge's origin construction and its per-branch cleanup loop —
         // decoded order, never id order (I-84).
+
+
         TypedColdSetMap<LbStatePairKey, int32_t>& orBookkeeping =
             lbMemory.orBookkeeping;
+
+
         // Number of disjuncts per parent-scoped cohort id for convergence.
+
+
         ColdHashMap<PodKeyStore<int32_t>, int>& orDisjunctCount =
             lbMemory.orDisjunctCount;
+
+
         // Sequenced or-disintegration: cohortId -> the UNRELEASED disjunct
         // payload-body ids (decoded-lex runs, the orBookkeeping discipline;
         // release order is re-derived by the disjunct ranking at each
-        // release, never stored) and cohortId -> the cohort's seed level run
-        // (ascending ints). Reference aliases into lbMemory (tags 805..810).
+        // release, never stored) and cohortId -> the cohort's OR-source levels
+        // (ascending ints), retained through queue exhaustion for convergence. Reference aliases into lbMemory (tags 805..810).
+
+
         TypedColdSetMap<int32_t, int32_t>& orPendingBranches =
             lbMemory.orPendingBranches;
+
+
+
+
         TypedColdSetMap<int32_t, int32_t>& orPendingLevels =
             lbMemory.orPendingLevels;
+
+
 
         // Flag-5 relay staging (D-284): compact NameMap id →
         // sender witness-generation stamp + the staging deposit's level run.
         // Main-scope only; erased when fillMailOut ships the compact.
         // Reference aliases into lbMemory (tags 811..815).
+
+
         TypedColdMap<int32_t, int32_t>& pendingRelayIter =
             lbMemory.pendingRelayIter;
+
+
+
+
         TypedColdSetMap<int32_t, int32_t>& pendingRelayLevels =
             lbMemory.pendingRelayLevels;
+
 
         /// @brief Stage one compact for the flag-5 mail relay.
         ///
@@ -18169,8 +19644,45 @@ namespace gl {
                 [&](int32_t k) { return k == key; });
         }
 
+        /// @brief Stage one OR for the flag-6 unconditional-ordis mail.
+        ///
+        /// @details
+        /// The OR was reached by unfolding a conjecture premise at this block's
+        /// main scope. `fillMailOut` sets flag 6 on its outgoing row, so every
+        /// descendant that receives it with proof work opens its case split
+        /// unconditionally. Staging an OR twice keeps one entry.
+        /// Single-threaded per LB (the caller holds the worker claim or runs at
+        /// grid build).
+        ///
+        /// @param exprId The OR's NameMap expression id (main scope).
+        /// @return Nothing.
+        /// @see fillMailOut (the consumer), eraseUnconditionalOrdis,
+        ///      LbMemory::pendingUnconditionalOrdis.
+        void stageUnconditionalOrdis(NameId exprId) {
+            assert(exprId != 0
+                && "stageUnconditionalOrdis: the OR is interned before it is staged");
+            lbMemory.pendingUnconditionalOrdis.mint(exprId);
+        }
+
+        /// @brief Drop one OR staged for the unconditional-ordis mail.
+        ///
+        /// @details
+        /// `fillMailOut` calls it after the OR's outgoing row carries flag 6.
+        /// An OR that is not staged is a defined no-op.
+        ///
+        /// @param exprId The OR's NameMap expression id.
+        /// @return Nothing.
+        /// @see stageUnconditionalOrdis.
+        void eraseUnconditionalOrdis(NameId exprId) {
+            lbMemory.pendingUnconditionalOrdis.eraseIf(
+                [&](NameId k) { return k == exprId; });
+        }
+
         // --- Static hot path: NameId-based hash memory ---
+
         NameMap nameMap;
+
+
 
         // --- Statification: the static per-LB aggregate (tier 1) ---
         // Owns the LB's block manager + every statified container; the
@@ -18178,7 +19690,11 @@ namespace gl {
         // pool blocks until a statified container first grows, so the
         // `Memory empty` teardown temporaries and the pre-config `body`
         // member stay free.
+
+
         LbMemory lbMemory{ &staticMemory() };
+
+
 
         // --- Statification: the PERSISTENT per-LB arena (the determinism fix) ---
         // A second arena drawn from the SEPARATE persistent pool
@@ -18196,8 +19712,16 @@ namespace gl {
         // HERE, above the intToBeProved member. persistentDirty satisfies the
         // TypedColdSetMap ctor but is never consulted — intToBeProved is in no
         // deload stream, so its dirty state is never read.
+
+
         DirtyState persistentDirty = DirtyState::Clean;
+
+
+
+
         LbArena persistentArena{ &persistentMemory() };
+
+
 
         // THE statement registry (int16 rows; string form on demand via
         // decodeExpression) — statified: lives on the LB's static pages
@@ -18207,21 +19731,36 @@ namespace gl {
         // spelling; it is not separate state. The alias makes `Memory`
         // non-assignable as a whole — by design, nothing may
         // whole-assign an LB (teardown swaps individual members).
+
+
         SharedExpressionList& intEncodedStatements =
             lbMemory.intEncodedStatements;
+
+
 
         // Deload bookkeeping: the file set written by the last
         // deloadStaticContainers call and the chain string it was keyed
         // on. Reload reads THESE, never the manifest (file count is not
         // recoverable from names alone). Heap bookkeeping by design
         // (D-174).
+
+
         std::vector<std::string> deloadFiles;
+
+
+
+
         std::string deloadChain;
+
+
         // Injective per-LB file-name handle (replaced the chain hash):
         // assigned ONCE at first dump by ensureDeloadOrdinal, then reused
         // for every re-dump and tail so a base+tail set shares one
         // identity. -1 = unassigned. Heap skeleton, read while cold.
+
+
         int64_t deloadOrdinal = -1;
+
 
         /// @brief Which on-disk format the LAST dump wrote — the dispatch key
         ///        `reloadFromImage` reads to pick the matching loader.
@@ -18237,13 +19776,19 @@ namespace gl {
         /// file open. Both loaders still assert their own header version, so a
         /// field/file mismatch is caught (Rule 19).
         enum class DeloadKind : uint8_t { Canonical = 0, Raw = 1 };
+
         DeloadKind deloadKind = DeloadKind::Canonical;
+
+
 
         // Payload byte count of the LAST raw image this LB wrote (page + byte-
         // bump bytes). 0 until the first raw dump; stale but harmless after a v3
         // dump (the pager only consults it on the raw path). Read via the
         // lastRawImageBytes() accessor.
+
+
         int64_t lastRawImageBytes_ = 0;
+
 
         /// @brief Payload byte count of the last v4 raw image this LB wrote —
         ///        the working-set pager's victim-ranking input.
@@ -18275,26 +19820,53 @@ namespace gl {
         // (dumpStaticContainersRaw / discharge-free); plain shell scalars,
         // readable while the LB is cold. Freed to the allocator on discharge
         // (Raw->Canonical) and at batch-start purge.
+
         int64_t rawExtentOffset_ = -1;
+
+
+
+
         int32_t rawExtentClassBytes_ = 0;
+
+
         // The extent epoch the slab was allocated in. A slab is valid ONLY
         // while this equals staticMemory().extentEpoch(); a mismatch means the
         // slab is from a purged prior batch (offsets recycled from 0) and the
         // next dump must allocate a fresh slab rather than overwrite in place.
+
+
         int64_t rawExtentEpoch_ = -1;
+
+
         // Image bytes (header + payload) this LB currently occupies in the
         // extent file — the per-LB term of the extentLiveBytes telemetry, kept
         // in sync by a delta on each extent dump and zeroed on slab free.
+
+
         int64_t lastExtentLiveBytes_ = 0;
+
+
         // Tail-delta bookkeeping (the WAL/threshold pattern): row total
         // of the last FULL dump, rows accumulated across tail files
         // since it, and the number of tail file-sets written (also the
         // next tail's name index). A restructuring mutation, tails
         // exceeding the compaction fraction of the base, or too many
         // tail sets trigger the next full canonical rewrite.
+
+
         int64_t deloadBaseRows = 0;
+
+
+
+
         int64_t deloadTailRows = 0;
+
+
+
+
         int32_t deloadTailCount = 0;
+
+
         // Element count per statified container (tag order), recorded at
         // deload — the ONLY legal metadata about a cold LB's containers
         // (size() asserts residency, I-111).
@@ -18303,7 +19875,11 @@ namespace gl {
         // (intToBeProved moved to the persistent pool); a tag >= 38 indexed
         // directly would be off by 3. The one tag indexer below uses tag 0; any
         // new indexer must be position-aware, not tag-value-keyed.
+
+
         std::vector<int32_t> deloadedCounts;
+
+
         // Set when the LB leaves the active set (the kernel's end-of-
         // iteration sweep) — deactivation is permanent: no path flips
         // isActive back, so a flagged LB never runs again
@@ -18315,7 +19891,11 @@ namespace gl {
         // the statified containers (their content is dead; the post-
         // prove gates probe exact RAM records instead) — ensureLoaded
         // asserts against the flag: nothing ever reloads a discharged LB.
+
+
         bool dischargedForever = false;
+
+
 
         // Exact (originalId, validityId) pair set of intEncodedStatements
         // at discharge time — the post-prove equality-node gate's probe
@@ -18324,7 +19904,10 @@ namespace gl {
         // intKnownStatements registered bit, which keeps
         // canonicalization-erased rows and would answer as a superset
         // (D-157).
+
+
         std::unordered_set<int64_t> dischargedRegistryKeys;
+
 
         /// @brief The discharge protocol's memory step: capture the
         ///        exact registry record, empty every dischargeable
@@ -18384,8 +19967,10 @@ namespace gl {
 
         // The claim word itself. Plain default Idle — CE clones and every
         // LB outside an eviction plan never leave it.
+
         std::atomic<uint8_t> stewardClaim{
             static_cast<uint8_t>(StewardClaim::Idle) };
+
 
         /// @brief Statement-registry element count, readable whether the
         ///        LB is resident or deloaded.
@@ -18564,13 +20149,23 @@ namespace gl {
 
     public:
 
+
+
         // The int mirrors of the local / delta vectors — statified like
         // the registry above; same pure reference aliases into
         // `lbMemory`.
+
+
         SharedExpressionList& intLocalEncodedStatements =
             lbMemory.intLocalEncodedStatements;
+
+
+
+
         SharedExpressionList& intLocalEncodedStatementsDelta =
             lbMemory.intLocalEncodedStatementsDelta;
+
+
         /// @brief Statements absorbed from EXTERNAL mail this burst (int16
         ///        rows).
         ///
@@ -18582,8 +20177,12 @@ namespace gl {
         ///          static request-generation pipeline (`mandatorySrcInt` /
         ///          pair sources). Statified reference alias into
         ///          `lbMemory` like its siblings.
+
+
         SharedExpressionList& intExternalStatements =
             lbMemory.intExternalStatements;
+
+
 
         // Packed-key statement registry: packStatementKey(originalId,
         // validityId) -> StatementFlags. Carries TWO memberships via the
@@ -18591,14 +20190,143 @@ namespace gl {
         // (level-registry admission; the Site F dedup record). Gates test
         // the bit their contract
         // names, never bare presence. Writes go through upsertStatementKey.
+
+
         TypedColdMap<StatementKey, StatementFlags>& intKnownStatements =
             lbMemory.intKnownStatements;
 
+
+
         // Source validity remains attached to each OR while matching may use
         // canonical views at deeper comparable validity scopes.
+
+
         OrImplications& orImplications = lbMemory.orImplications;
+
+
+
+
         TypedColdMap<int64_t, int32_t>& existenceReplays = lbMemory.existenceReplays;
+
+        /// @brief The slot of the strong induction demand in
+        ///        `LbMemory::inductionEats` (a route-1 slot is the admitting
+        ///        template's id, always positive).
+        static constexpr int32_t kStrongInductionSlot = -1;
+
+        /// @brief The slot the induction hypothesis ate at a scope.
+        ///
+        /// @details
+        /// One order per path (D-519):
+        /// the first witness admission of the induction hypothesis at a scope
+        /// fixes the slot it eats there — the admitting template's id for a
+        /// chain admission, `kStrongInductionSlot` for the strong demand.
+        /// Further witnesses for that slot open sibling scopes; every other
+        /// slot is eaten only inside those scopes.
+        ///
+        /// @param scope The scope the admission is made at (its comparison
+        ///              scope, the parent of the opened induction scope).
+        /// @return The recorded slot, or null when the hypothesis has eaten
+        ///         nothing at @p scope yet.
+        /// @see recordInductionEat, inductionSlotOpen, LbMemory::inductionEats.
+        const int32_t* inductionEatenSlot(NameId scope) const {
+            assert(scope != 0 && "inductionEatenSlot: scope must be minted");
+            return lbMemory.inductionEats.find(static_cast<int64_t>(scope));
+        }
+
+        /// @brief Whether the induction hypothesis may eat a slot at a scope.
+        ///
+        /// @details
+        /// True while the hypothesis has eaten nothing at @p scope, or when
+        /// @p slot is the slot it ate there (a further witness for the same
+        /// slot opens a sibling scope). False for any other slot: one order
+        /// per path (D-519).
+        ///
+        /// @param scope The admission's comparison scope.
+        /// @param slot  The candidate slot: a template id (positive) or
+        ///              `kStrongInductionSlot`.
+        /// @return True iff the eat keeps one order per path.
+        /// @see inductionEatenSlot, recordInductionEat.
+        bool inductionSlotOpen(NameId scope, int32_t slot) const {
+            assert((slot > 0 || slot == kStrongInductionSlot)
+                && "inductionSlotOpen: a slot is a template id or the strong demand");
+            const int32_t* eaten = inductionEatenSlot(scope);
+            return eaten == nullptr || *eaten == slot;
+        }
+
+        /// @brief Record the slot the induction hypothesis eats at a scope.
+        ///
+        /// @details
+        /// Called by every committed witness admission of the induction
+        /// hypothesis. The first record at @p scope fixes the slot; a later
+        /// commit must eat that same slot, which `inductionSlotOpen` guarantees
+        /// for every caller — asserted (D-519).
+        ///
+        /// @param scope The admission's comparison scope.
+        /// @param slot  The eaten slot: a template id (positive) or
+        ///              `kStrongInductionSlot`.
+        /// @see inductionSlotOpen, LbMemory::inductionEats.
+        void recordInductionEat(NameId scope, int32_t slot) {
+            assert(inductionSlotOpen(scope, slot)
+                && "recordInductionEat: one order per path - the scope ate another slot");
+            if (inductionEatenSlot(scope) == nullptr)
+                lbMemory.inductionEats.insert(static_cast<int64_t>(scope), slot);
+        }
+
+        /// @brief Record that the induction hypothesis fired at an induction
+        ///        scope this burst.
+        ///
+        /// @details
+        /// The installed induction implication's head was deposited at
+        /// @p leaf (`StatementMemory::addExprToMemoryBlock` with
+        /// `recursionHead`). The firing waits for this burst's
+        /// `settleInductionTrees`, which settles the leaf's tree on its
+        /// first firing (D-520).
+        ///
+        /// @param leaf The induction scope the hypothesis fired at.
+        /// @see settleInductionTrees, LbMemory::inductionFirings.
+        void recordInductionFiring(NameId leaf);
+
+        /// @brief Whether the induction tree a scope belongs to has settled.
+        ///
+        /// @details
+        /// A scope's tree is rooted at its nearest scope that is not an
+        /// induction scope (`ScopeSyntax::inductionRootOf`). Once the
+        /// hypothesis fired in one leaf of the tree, the rest of the tree was
+        /// wiped and the hypothesis opens no further induction scope in it
+        /// (D-520).
+        ///
+        /// @param scope A minted validity id.
+        /// @return True iff the tree containing @p scope has settled.
+        /// @see settleInductionTrees, LbMemory::inductionSettledRoots.
+        bool inductionTreeSettled(NameId scope) const;
+
+        /// @brief Settle the induction trees whose hypothesis fired this
+        ///        burst.
+        ///
+        /// @details
+        /// Runs once per burst in the phase-3 scope cleanup, right before the
+        /// wipe drain (D-520). The burst's
+        /// firing leaves are taken in decoded-name order. A leaf of a tree
+        /// that has not settled, and whose path to `main` is not being wiped
+        /// this burst, settles the tree: its root joins
+        /// `LbMemory::inductionSettledRoots`, and every induction scope whose
+        /// parent lies on the path from the leaf to the root - the siblings
+        /// along the path and the leaf's own children - joins
+        /// `pendingWipeScopes`. The leaf and its ancestors stay, and work
+        /// continues in the leaf. A later leaf of a settled tree changes
+        /// nothing. The firing set is reset.
+        ///
+        /// @invariant Deterministic: leaves in decoded-name order, the scope
+        ///            scan in NameMap id order; the wipe drain sorts by name.
+        /// @see recordInductionFiring, inductionTreeSettled, wipeSubtrees.
+        void settleInductionTrees();
+
+
+
+
         OrImplicationMatchIndex& orImplicationMatches = lbMemory.orImplicationMatches;
+
+
 
         // Packed-key local-origin membership index:
         // packStatementKey(originalId, validityId) per local statement,
@@ -18607,8 +20335,12 @@ namespace gl {
         // checkLocalEncodedMemoryStatic and the applyEquivalenceClass
         // absorption tests; string-keyed probes go through the non-minting
         // isLocalEncodedStatement.
+
+
         ColdHashSet<PodKeyStore<int64_t>>& intLocalEncodedStatementsSet =
             lbMemory.intLocalEncodedStatementsSet;
+
+
 
         // Packed-key per-statement LB-level index:
         // packStatementKey(originalId, validityId) -> a SORTED-UNIQUE set of LB
@@ -18618,8 +20350,12 @@ namespace gl {
         // levels in order after a decode + lex-sort of the keys (Rule 14
         // byte-identity contract). String-keyed probes go through the
         // non-minting lookupStatementLevels (returns the cold key id).
+
+
         TypedColdSetMap<StatementKey, int>& intStatementLevelsMap =
             lbMemory.intStatementLevelsMap;
+
+
 
         // Packed-key goal registry: packStatementKey(originalId, validityId)
         // -> a SORTED-UNIQUE set of auxies (induction-discharge bookkeeping
@@ -18634,13 +20370,19 @@ namespace gl {
         // order-sensitive walks go through decodeToBeProvedSorted (lex order on
         // the decoded (original, validityName) pair — never raw id order). The
         // dump section prints a literal `tags={}` per row.
+
+
         TypedColdSetMap<StatementKey, int> intToBeProved{
             &persistentArena, &persistentDirty };
+
+
 
         // Settled-goal inbox: contradiction seeds (the `__contradiction__`
         // exprKey suffix, verbatim) deposited by the post-join theorem drain
         // when a primed contradiction child of THIS LB emits its theorem
-        // (whose head is negate(seed), I-165). The end-of-burst
+        // (whose head is negate(seed), I-165), and by the in-run or seam for
+        // a companion it subsumes (`retireSubsumedCompanion`: the seed a
+        // firing complement twin would deposit). The end-of-burst
         // `drainDisprovedGoals` probes each seed against this LB's MAIN goals
         // in both directions: seed == goal means the goal is disproved and
         // its integration machinery is wiped; negate(seed) == goal means the
@@ -18652,8 +20394,12 @@ namespace gl {
         // it while the LB is cold without a claim); in NO deload stream; the
         // byte-key set dedups repeat deposits; reclaimed with the persistent
         // arena at discharge.
+
+
         ColdHashSet<BytesKeyStore> pendingDisprovedGoals{
             &persistentArena, &persistentDirty };
+
+
 
         // Dead OR-branch inbox: NameMap vids of `_ordis_` branch scopes whose
         // asserted disjunct is refuted — the refutation (`negate(disjunct)`)
@@ -18666,8 +20412,12 @@ namespace gl {
         // convergence at the reduced count. Rides the PERSISTENT arena like
         // `pendingDisprovedGoals` (never deloaded, in NO deload stream); the
         // pod-key set dedups repeat detections; reclaimed at discharge.
+
+
         ColdHashSet<PodKeyStore<NameId>> pendingDeadOrBranches{
             &persistentArena, &persistentDirty };
+
+
 
         // Live `_ordis_` branch registry (I-206): NameMap
         // vids of branch scopes `ordisMerge` has seen (the seed deposit is the
@@ -18679,8 +20429,12 @@ namespace gl {
         // PERSISTENT arena like `pendingDeadOrBranches` (never deloaded, in NO
         // deload stream); the pod-key set dedups repeat sightings; reclaimed at
         // discharge.
+
+
         ColdHashSet<PodKeyStore<NameId>> orLiveBranches{
             &persistentArena, &persistentDirty };
+
+
 
         // Frozen `_ordis_` branch registry (I-206): NameMap
         // vids of branch scopes that reached every `toBeProved` goal on their
@@ -18695,8 +20449,12 @@ namespace gl {
         // Rides the PERSISTENT arena like `pendingDeadOrBranches` (never
         // deloaded, in NO deload stream — readable while the main arena is
         // cold); reclaimed at discharge.
+
+
         ColdHashSet<PodKeyStore<NameId>> frozenOrBranches{
             &persistentArena, &persistentDirty };
+
+
 
         // Induction-head construction registry
         // (I-286): the names of the
@@ -18709,7 +20467,53 @@ namespace gl {
         // NameMap id is minted early. Grow-only; rides the PERSISTENT arena
         // like `frozenOrBranches` (never deloaded, in NO deload stream);
         // reclaimed at discharge.
+
+
         ColdHashSet<BytesKeyStore> recursionHeadWitnesses{
+            &persistentArena, &persistentDirty };
+
+        // Hidden-argument witness registry
+        // (I-292): the names of the witnesses
+        // this recursion block published whose own source existence has an
+        // argument that is not a number (`hasOnlyNumberArguments`), that is,
+        // constructions over constructed objects such as the accumulator of
+        // the fold of a restriction. A recursion-owned admission template
+        // never accepts one through a compound element
+        // (`updateAdmissionMapRecursion`); an operator's output binding is
+        // unaffected. Filled only in recursion blocks (`isPartOfRecursion`),
+        // the blocks whose installed induction implication owns recursion
+        // templates. Byte keys, so no NameMap id is minted early. Grow-only;
+        // rides the PERSISTENT arena like `recursionHeadWitnesses` (never
+        // deloaded, in NO deload stream); reclaimed at discharge.
+        ColdHashSet<BytesKeyStore> hiddenArgumentWitnesses{
+            &persistentArena, &persistentDirty };
+
+        // Built-on-listed witness registry
+        // (I-293): the names of the witnesses this
+        // recursion block published whose own source existence names a
+        // witness of `recursionHeadWitnesses` or `hiddenArgumentWitnesses`,
+        // such as the sequence that appends a value to the accumulator the
+        // hypothesis concluded. No implication subproof naming one of them is
+        // opened (`openImplicationSubproof`). Filled only in recursion blocks
+        // (`isPartOfRecursion`), after the two registries it reads. Byte
+        // keys, so no NameMap id is minted early. Grow-only; rides the
+        // PERSISTENT arena like the two registries (never deloaded, in NO
+        // deload stream); reclaimed at discharge.
+        ColdHashSet<BytesKeyStore> builtOnListedWitnesses{
+            &persistentArena, &persistentDirty };
+
+        // Subproof goal record: the validity id of an implication subproof
+        // scope -> the NameId of the goal its implication states there,
+        // written when `openImplicationSubproof` opens the scope. A class
+        // rewrite may respell the open goal
+        // (`EqualityPropagation::sanitizeToBeProved`); the closure then
+        // writes the equality step back to this spelling and cites it
+        // (`GoalProcessor::dischargeToBeProved`,
+        // D-557). Read only to write
+        // history (Rule 16). A reopened scope overwrites its entry; rides the
+        // PERSISTENT arena like the goal registry (never deloaded, in NO
+        // deload stream); reclaimed at discharge.
+        TypedColdMap<int64_t, int64_t> subproofGoals{
             &persistentArena, &persistentDirty };
 
         // Retired-disjunct record per `_ordis_` cohort: cohortId (the
@@ -18721,12 +20525,19 @@ namespace gl {
         // per retired branch, the reductio ingredient (the disjunct's
         // negation at that scope), so the exported row still accounts for
         // every flattened disjunct and `check_or_convergence` can validate
-        // it. The pair packs an lbStateInterner id (high) with a NameMap vid
-        // (low) — a mixed-space composite, decoded only by these two sites.
+        // it. `ordisMerge` also adds each retired branch's refutation levels,
+        // saved at retirement in `closedOrGoalLevels`, to the promoted
+        // statement. The pair packs an lbStateInterner id (high) with a
+        // NameMap vid (low) — a mixed-space composite, decoded only by
+        // `drainDeadOrBranches` and `ordisMerge`.
         // Rides the PERSISTENT arena (never deloaded, in NO deload stream);
         // reclaimed at discharge.
+
+
         TypedColdSetMap<int32_t, int64_t> orRetiredDisjuncts{
             &persistentArena, &persistentDirty };
+
+
 
         // Cohort-release inbox (sequenced or-disintegration): cohortIds whose
         // live branch RESOLVED this burst — it derived an expression matching
@@ -18738,8 +20549,12 @@ namespace gl {
         // (never deloaded, in NO deload stream); the pod-key set dedups
         // repeat stagings; a stale entry whose cohort retired is the drain's
         // defined skip; reclaimed at discharge.
+
+
         ColdHashSet<PodKeyStore<int32_t>> pendingOrReleases{
             &persistentArena, &persistentDirty };
+
+
 
         // Route-(a) starter pick (admission-based ordis): cohortId -> the
         // ADMITTED disjunct's wrapped payload id (lbStateInterner space, the
@@ -18752,8 +20567,12 @@ namespace gl {
         // (product-of-disintegration) cohorts write no row. Rides the
         // PERSISTENT arena like pendingOrReleases (never deloaded, in NO
         // deload stream); reclaimed at discharge.
+
+
         TypedColdMap<int32_t, int32_t> orStarterPick{
             &persistentArena, &persistentDirty };
+
+
 
         // Processed-or ledger (the deposit door's or-uniqueness gate, I-219):
         // scope vid (NameMap) -> sorted-unique run of packed pairs
@@ -18777,8 +20596,12 @@ namespace gl {
         // (a closed scope never re-deposits). Numeric run order — never
         // observable: in NO deload stream, in NO dump. Rides the PERSISTENT
         // arena like `orStarterPick` (never deloaded); reclaimed at discharge.
+
+
         TypedColdSetMap<NameId, int64_t> processedOrLedger{
             &persistentArena, &persistentDirty };
+
+
 
         // Watch ledgers — the canonical bookkeeping of the two exact-text
         // gates (contradiction and goal) that used to be served by
@@ -18798,18 +20621,38 @@ namespace gl {
         // observable: in NO deload stream, in NO dump. Persistent arena like
         // `processedOrLedger`; copied by `cloneFactsTemplate`; reclaimed at
         // discharge.
+
+
         TypedColdSetMap<int64_t, int64_t> negationLedger{
             &persistentArena, &persistentDirty };
+
+
+
+
         TypedColdSetMap<int64_t, int64_t> goalLedger{
             &persistentArena, &persistentDirty };
+
+
         // `goalLedger` is DERIVED from `intToBeProved` (goals are few): the
         // three fields are its freshness key — the registry's key-set epoch
         // and row count as of the last rebuild, plus a stale flag raised by
         // every class merge, scope wipe and discharge. Rebuilt by
-        // `ExpressionAnalyzer::ensureGoalLedgerCurrent` before any probe.
+        // `WatchProcessor::ensureGoalLedgerCurrent` before any probe.
+
+
         uint32_t goalLedgerEpoch = 0;
+
+
+
+
         int32_t goalLedgerCount = -1;
+
+
+
+
         bool goalLedgerStale = true;
+
+
 
         // Pending watch work, drained once per `standardProcessing` by
         // `materializeWatchHits` (after `applyEquiClasses` and its cleanup,
@@ -18820,8 +20663,33 @@ namespace gl {
         // descendant class scope (packed `(run scope, original)`). Persistent
         // arena so a seeding-time arrival survives to the next drain; never
         // deloaded, never dumped; cleared at every drain and at discharge.
+
+
         PagedVector<int64_t> pendingWatchArrivals{ &persistentArena, &persistentDirty };
+        // Events of the demand-built OR heads
+        // (D-597): packed `(original, scope)` of
+        // every known row that may refute a deferred OR's disjunct, staged
+        // by `StatementArrivals::stageDeferredOrEvent` and the rule-arrival
+        // scan, of every new goal shaped like a deferred OR's instance,
+        // staged at the goal door and by the scan, and of every arrived
+        // premise an event waits for; drained by
+        // `RejectedSourceReplay::drainDeferredOrEvents` in each
+        // `standardProcessing` call. Persistent arena; never deloaded,
+        // never dumped; cleared at every drain and at discharge.
+        PagedVector<int64_t> pendingDeferredOrEvents{ &persistentArena, &persistentDirty };
+        // Events whose build waits for a premise: the NameMap id of the
+        // missing premise text (a typing `(in[v,S])`) -> the waiting
+        // events' packed `(original, scope)`, sorted unique. The premise's
+        // arrival re-stages them. Persistent arena; never deloaded, never
+        // dumped; reset at discharge.
+        TypedColdSetMap<int32_t, int64_t> deferredOrWaiting{ &persistentArena, &persistentDirty };
+
+
+
+
         PagedVector<int64_t> pendingWatchRechecks{ &persistentArena, &persistentDirty };
+
+
         // Pending implication-gate work (D-406),
         // drained once per `standardProcessing` by `drainSubproofArrivals`
         // first in step 4b: every row made known since the last drain while
@@ -18830,27 +20698,43 @@ namespace gl {
         // (`rebuildCanonicalScope`). Same lifetime as the watch queues:
         // persistent arena, never deloaded, never dumped, cleared at every
         // drain and at discharge.
+
+
         PagedVector<int64_t> pendingSubproofArrivals{ &persistentArena, &persistentDirty };
+
+
+
+
         PagedVector<NameId> pendingSubproofRechecks{ &persistentArena, &persistentDirty };
-        // Finished-task wipe (I-284). The task on whose
-        // behalf integration work currently runs (0 = none): set by the
-        // integration doors through `IntegrationTaskScope`, cleared for the
-        // duration of every statement deposit; read by every door that
-        // creates a derivative. Pending finish checks, drained once per
-        // `standardProcessing` by the finished-task sweep: every row made known
-        // since the last sweep while a live root exists (packed
-        // `(original, scope)`), and every scope whose complete class view
-        // changed meanwhile. Same lifetime as the implication-gate queues.
-        int64_t integrationTaskContext = 0;
-        PagedVector<int64_t> pendingRootArrivals{ &persistentArena, &persistentDirty };
-        PagedVector<NameId> pendingRootRechecks{ &persistentArena, &persistentDirty };
+
+        // Pending contradiction-scope demand work
+        // (D-560), drained once per
+        // `standardProcessing` by `drainContradictionDemands` in step 4b:
+        // every row made known since the last drain while a contradiction
+        // scope was registered (packed `(original, scope)`), and every demand
+        // a parked candidate's revival found ready (packed `(compound
+        // template, scope)`). Same lifetime as the watch queues: persistent
+        // arena, never deloaded, never dumped, cleared at every drain and at
+        // discharge.
+        PagedVector<int64_t> pendingContradictionArrivals{ &persistentArena, &persistentDirty };
+        PagedVector<int64_t> pendingContradictionDemands{ &persistentArena, &persistentDirty };
+
+
+
 
         // Int mirrors for static addExprToMemoryBlock early checks. Statified
         // onto the cold-map family (Batch 1); reference aliases into lbMemory.
+
+
         ColdHashSet<PodKeyStore<NameId>>& intValidityNamesToFilter =
             lbMemory.intValidityNamesToFilter;
+
+
+
+
         ColdHashSet<PodKeyStore<NameId>>& intAxedVariables =
             lbMemory.intAxedVariables;
+
 
         /// @brief Insert an outgoing statement from owned expression strings.
         ///
@@ -18908,7 +20792,7 @@ namespace gl {
         /// (find-or-mint — the paired `insertMailOutStatement` deposit uses the
         /// same ids), packs them via `packOriginKey`, and folds the flag into
         /// the mailbox's side column (`DeloadableMailOut::setStatementFlag`:
-        /// flag 5 wins, generation stamps min-merge). Raises the resident
+        /// a real flag wins, generation stamps min-merge). Raises the resident
         /// pending bit like every mailbox write door.
         ///
         /// @param original Outgoing expression bytes.
@@ -18916,20 +20800,20 @@ namespace gl {
         /// @param flagCode The flag code (`kMailStatementFlag*`).
         /// @param iteration The sender disintegration's witness-generation
         ///                  stamp; -1 = none.
-        /// @param integrated The statement is registered here as the head of
-        ///                  one of this LB's integration rules' firings
-        ///                  (default false; D-444).
+        /// @param fromPremise Whether the statement is a product of this
+        ///                  block's forced disintegration
+        ///                  (D-522).
         /// @return Nothing.
         /// @invariant Input spans do not alias `mailOutInterner` storage across
         ///            a mint; the LB is resident and claimed.
         /// @see insertMailOutStatement, DeloadableMailOut::setStatementFlag.
         void setMailOutStatementFlag(const StrSpan& original,
             const StrSpan& validityName, int32_t flagCode, int32_t iteration,
-            bool integrated = false) {
+            bool fromPremise = false) {
             const int32_t originalId = mailOutInterner.encode(original);
             const int32_t validityId = mailOutInterner.encode(validityName);
             mailOut.setStatementFlag(packOriginKey(originalId, validityId),
-                flagCode, iteration, integrated);
+                flagCode, iteration, fromPremise);
             mailOutPending = true;
             mailOutLiveBytes = mailOut.liveBytes();
         }
@@ -19014,6 +20898,8 @@ namespace gl {
 			templateInterner(),
 			valueInterner(),
 			primedForContradiction(false),
+			goalPending(false),
+			inductionDoubleKey(0),
 			contradictionTheoremId(0),
             nameMap()
         {
@@ -19170,7 +21056,7 @@ namespace gl {
         ///      clones the template once per conjecture.
         Memory* cloneFactsTemplate(LbStore& store) const;
 
-    };
+};
 
 
     /// @brief Visit the signed cores that can occur in this block's requests.
@@ -19187,7 +21073,7 @@ namespace gl {
     /// @param emit Sink accepting a NameId core and a zero-or-one polarity.
     /// @return Nothing.
     /// @invariant Reads only logical key bytes; allocates and mints nothing.
-    /// @see ExpressionAnalyzer::filterIntEncodedStatements.
+    /// @see HashRequestGenerator::filterIntEncodedStatements.
     template<class Emit>
     inline void forEachPremiseCore(const Memory& body, Emit&& emit) {
         const HashMemory* memories[] = { &body.overallHashMemory,
@@ -19274,6 +21160,297 @@ namespace gl {
     inline bool usedAsPremise(const Memory& body, const IntEncodedExpr& row) {
         if (row.isAnchor || row.nameId == body.nameMap.lookup(StrSpan("=", 1))) return true;
         return body.lbMemory.usedAsPremiseCorePairs.lookup(packInt32Pair(row.nameId, row.negation)) != 0;
+    }
+
+    /// @brief Leading id of a premise SHAPE key in `HashMemory::premisePatterns`.
+    constexpr int32_t kPremiseShapeKeyKind = 1;
+    /// @brief Leading id of a premise PATTERN key in `HashMemory::premisePatterns`.
+    constexpr int32_t kPremisePatternKeyKind = 2;
+    /// @brief Leading id of a closed-scope key in `HashMemory::premisePatterns`.
+    constexpr int32_t kPremiseClosedScopeKeyKind = 3;
+    /// @brief Byte ceiling of any `premisePatterns` key: the `IdVecKey` count,
+    ///        the kind, the signed predicate (name + polarity) and two ids per
+    ///        argument slot.
+    constexpr int32_t kMaxPremisePatternKeyBytes = static_cast<int32_t>(sizeof(int32_t))
+        * (1 + 3 + 2 * static_cast<int32_t>(ExecutionParameters::MAX_ARITY));
+    static_assert(ExecutionParameters::MAX_ARITY < 63,
+                  "premise u_ masks are int64 bit sets over the argument slots");
+
+    /// @brief The `u_` slot mask of one premise — bit `j` set iff argument
+    ///        `j` is unchangeable.
+    ///
+    /// @details
+    /// A premise's unchangeable (`u_`) arguments are the slots the firing
+    /// gate pins to a literal; every other slot is a variable. The mask is
+    /// the key family selector of `premisePatternKeyInto`: a row is compared
+    /// with a premise pattern under exactly that premise's mask. A statement
+    /// row carries no unchangeable argument, so its own mask is zero.
+    ///
+    /// @param e The encoded premise (or row).
+    /// @return The bit set over `[0, e.arity)`.
+    /// @see premisePatternKeyInto, HashMemory::premisePatterns.
+    inline int64_t premiseUnchangeableMask(const IntEncodedExpr& e) {
+        assert(e.arity >= 0 && e.arity <= ExecutionParameters::MAX_ARITY);
+        int64_t mask = 0;
+        for (int32_t j = 0; j < e.arity; ++j)
+            if (e.argUnchangeable[j] != 0) mask |= int64_t{1} << j;
+        return mask;
+    }
+
+    /// @brief Encode the premise SHAPE key of an expression — signed predicate
+    ///        plus first-appearance argument numbering.
+    ///
+    /// @details
+    /// The key is the `IdVecKey` run `[kind 1, nameId, negation, n_0 ..
+    /// n_{arity-1}]`, where `n_j` numbers argument `j` by the first
+    /// appearance of its `argId` (`1, 2, ...`). A `u_` argument's `argId` is
+    /// the id of its `u_`-prefixed name, so it is its own variable here —
+    /// the numbering the single-premise normalized key uses
+    /// (`HashRequestGenerator::filterIntEncodedStatements`). A row and a
+    /// premise that can match have the same shape key; the shape selects the
+    /// `u_` masks recorded for it. Writes into a caller buffer; mints and
+    /// allocates nothing.
+    ///
+    /// @param e   The encoded premise or row.
+    /// @param out Caller buffer of at least `kMaxPremisePatternKeyBytes`.
+    /// @param cap The buffer size.
+    /// @return The key length in bytes.
+    /// @see premisePatternKeyInto, encodeIdVecKeyInto.
+    inline int32_t premiseShapeKeyInto(const IntEncodedExpr& e, char* out, int32_t cap) {
+        assert(e.arity >= 0 && e.arity <= ExecutionParameters::MAX_ARITY);
+        int32_t ids[3 + ExecutionParameters::MAX_ARITY];
+        int32_t n = 0;
+        ids[n++] = kPremiseShapeKeyKind;
+        ids[n++] = e.nameId;
+        ids[n++] = e.negation;
+        NameId seen[ExecutionParameters::MAX_ARITY];
+        int32_t seenN = 0;
+        for (int32_t j = 0; j < e.arity; ++j) {
+            int32_t number = 0;
+            for (int32_t s = 0; s < seenN; ++s)
+                if (seen[s] == e.argId[j]) { number = s + 1; break; }
+            if (number == 0) {
+                seen[seenN++] = e.argId[j];
+                number = seenN;
+            }
+            ids[n++] = number;
+        }
+        return encodeIdVecKeyInto(ids, n, out, cap);
+    }
+
+    /// @brief Encode the premise PATTERN key of an expression under a `u_`
+    ///        slot mask — the literal at every masked slot, the numbered
+    ///        variable elsewhere.
+    ///
+    /// @details
+    /// The key is the `IdVecKey` run `[kind 2, nameId, negation]` followed by
+    /// one `(value, flag)` pair per argument slot: a masked slot contributes
+    /// `(argFullId, 1)` — for a premise the id of the `u_` literal without
+    /// its prefix, for a row the argument's own id, the two values the firing
+    /// gate compares — and an unmasked slot `(n, 0)`, `n` numbering the
+    /// unmasked arguments by the first appearance of their `argId`. A premise
+    /// encoded under its own mask (`premiseUnchangeableMask`) and a row
+    /// encoded under the same mask produce the same key exactly when the row
+    /// carries the premise's literals and repeats its variables. Writes into
+    /// a caller buffer; mints and allocates nothing.
+    ///
+    /// @param e    The encoded premise or row.
+    /// @param mask The `u_` slot mask; no bit at or above `e.arity`.
+    /// @param out  Caller buffer of at least `kMaxPremisePatternKeyBytes`.
+    /// @param cap  The buffer size.
+    /// @return The key length in bytes.
+    /// @see premiseShapeKeyInto, premisePatternAdmitsIn.
+    inline int32_t premisePatternKeyInto(const IntEncodedExpr& e, int64_t mask,
+                                         char* out, int32_t cap) {
+        assert(e.arity >= 0 && e.arity <= ExecutionParameters::MAX_ARITY);
+        assert(mask >= 0 && (e.arity >= 63 || (mask >> e.arity) == 0)
+            && "premisePatternKeyInto: a mask bit beyond the argument slots");
+        int32_t ids[3 + 2 * ExecutionParameters::MAX_ARITY];
+        int32_t n = 0;
+        ids[n++] = kPremisePatternKeyKind;
+        ids[n++] = e.nameId;
+        ids[n++] = e.negation;
+        NameId seen[ExecutionParameters::MAX_ARITY];
+        int32_t seenN = 0;
+        for (int32_t j = 0; j < e.arity; ++j) {
+            if (((mask >> j) & 1) != 0) {
+                ids[n++] = e.argFullId[j];
+                ids[n++] = 1;
+                continue;
+            }
+            int32_t number = 0;
+            for (int32_t s = 0; s < seenN; ++s)
+                if (seen[s] == e.argId[j]) { number = s + 1; break; }
+            if (number == 0) {
+                seen[seenN++] = e.argId[j];
+                number = seenN;
+            }
+            ids[n++] = number;
+            ids[n++] = 0;
+        }
+        return encodeIdVecKeyInto(ids, n, out, cap);
+    }
+
+    /// @brief Encode the closed-scope key of one scope in
+    ///        `HashMemory::premisePatterns`.
+    ///
+    /// @details
+    /// The key `[kind 3, scope]`. While a subtree wipe has closed the scope
+    /// (its rules left `encodedMap`) and no later install has reopened it,
+    /// the key's run holds one record; a reopened scope's run is empty. Writes
+    /// into a caller buffer; mints and allocates nothing.
+    ///
+    /// @param scope The scope's NameMap id.
+    /// @param out   Caller buffer of at least `kMaxPremisePatternKeyBytes`.
+    /// @param cap   The buffer size.
+    /// @return The key length in bytes.
+    /// @see HashRuleIndex::recordClosedPremiseScope,
+    ///      HashRuleIndex::reopenPremisePatternScope, premisePatternScopeClosed.
+    inline int32_t premiseClosedScopeKeyInto(NameId scope, char* out, int32_t cap) {
+        const int32_t ids[2] = { kPremiseClosedScopeKeyKind, static_cast<int32_t>(scope) };
+        return encodeIdVecKeyInto(ids, 2, out, cap);
+    }
+
+    /// @brief Pack a premise-pattern owner with its install scope in the high
+    ///        half — runs then sort by scope, `main` (id 1) first.
+    ///
+    /// @param scope      The NameMap id of the rule's install scope.
+    /// @param copyImplId The `ruleInterner` id of the multiplication copy.
+    /// @return The scope-major owner.
+    /// @see scopeOfPremisePatternOwner.
+    constexpr RuleOwner packPremisePatternOwner(NameId scope, int32_t copyImplId) noexcept {
+        return packInt32Pair(static_cast<int32_t>(scope), copyImplId);
+    }
+
+    /// @brief The install scope of a scope-major premise-pattern owner.
+    ///
+    /// @param owner The owner packed by `packPremisePatternOwner`.
+    /// @return The scope's NameMap id.
+    /// @see packPremisePatternOwner.
+    constexpr NameId scopeOfPremisePatternOwner(RuleOwner owner) noexcept {
+        return static_cast<NameId>(static_cast<int32_t>(
+            static_cast<uint64_t>(owner) >> 32));
+    }
+
+    /// @brief Value `j` of a key's run in the premise-pattern map (a mask, an
+    ///        owner or a closed scope — eight bytes each).
+    ///
+    /// @details Reads in place when the record is contiguous, else copies it
+    ///          into a stack buffer. Read-only; safe on the shared phase-2 LB.
+    ///
+    /// @param map The premise-pattern map.
+    /// @param id  A present key id.
+    /// @param j   The record index in `[0, runLen(id))`.
+    /// @return The record value.
+    inline int64_t premisePatternRunValueAt(
+        const TypedColdBlobMap<IdVecKey, RuleOwnerRec>& map, int32_t id, int32_t j) {
+        const char* p = nullptr;
+        int32_t len = 0;
+        int64_t value = 0;
+        const bool contiguous = map.inner().peekBlobAt(id, j, p, len);
+        assert(len == static_cast<int32_t>(sizeof(int64_t))
+            && "premisePatternRunValueAt: record length drift");
+        if (contiguous) {
+            std::memcpy(&value, p, sizeof(int64_t));
+        } else {
+            char buf[sizeof(int64_t)];
+            map.inner().blobAt(id, j, buf);
+            std::memcpy(&value, buf, sizeof(int64_t));
+        }
+        return value;
+    }
+
+    /// @brief Whether a scope is recorded closed in a premise-pattern map.
+    ///
+    /// @details A closed scope's key carries a one-record run; an absent key
+    ///          (never closed) or an empty run (reopened) answers false.
+    ///          Read-only, mints nothing.
+    ///
+    /// @param map   The premise-pattern map.
+    /// @param scope The scope's NameMap id.
+    /// @return `true` iff a wipe closed the scope and no install reopened it.
+    /// @see premiseClosedScopeKeyInto.
+    inline bool premisePatternScopeClosed(
+        const TypedColdBlobMap<IdVecKey, RuleOwnerRec>& map, NameId scope) {
+        char key[kMaxPremisePatternKeyBytes];
+        const int32_t len = premiseClosedScopeKeyInto(scope, key, kMaxPremisePatternKeyBytes);
+        const int32_t id = map.inner().lookup(StrSpan(key, len));
+        return id != 0 && map.runLen(id) > 0;
+    }
+
+    /// @brief Whether one hash memory has a live rule premise that accepts a
+    ///        statement row — signed predicate, repetition shape, `u_`
+    ///        literals and scope comparability, all against the same premise.
+    ///
+    /// @details
+    /// Looks up the row's shape key, then for every `u_` mask recorded for
+    /// that shape the row's pattern key under the mask. A hit's owners are
+    /// visited by distinct scope (scope-major order, `main` first): a scope a
+    /// subtree wipe closed (its rules left `encodedMap`) is skipped, any other
+    /// scope comparable with the row's scope (equal, ancestor or descendant)
+    /// accepts. Each condition is necessary for the row to occur in a request
+    /// that fires one of this memory's rules, so a rejected row can fire none
+    /// of them; the complete-request scope chain and the firing gate stay
+    /// where they are. Read-only, mints and allocates nothing; safe on the
+    /// shared phase-2 LB and on the GPU projection threads.
+    ///
+    /// @param hm  The hash memory.
+    /// @param nm  The LB's NameMap (scope comparability).
+    /// @param row The encoded statement row.
+    /// @return `true` iff some live premise of @p hm accepts the row.
+    /// @see premisePatternAdmits, HashMemory::premisePatterns.
+    inline bool premisePatternAdmitsIn(const HashMemory& hm, const NameMap& nm,
+                                       const IntEncodedExpr& row) {
+        const auto& map = hm.premisePatterns;
+        if (map.count() == 0) return false;
+        char key[kMaxPremisePatternKeyBytes];
+        const int32_t shapeLen = premiseShapeKeyInto(row, key, kMaxPremisePatternKeyBytes);
+        const int32_t shapeId = map.inner().lookup(StrSpan(key, shapeLen));
+        if (shapeId == 0) return false;
+        const int32_t maskN = map.runLen(shapeId);
+        for (int32_t m = 0; m < maskN; ++m) {
+            const int64_t mask = premisePatternRunValueAt(map, shapeId, m);
+            const int32_t patternLen =
+                premisePatternKeyInto(row, mask, key, kMaxPremisePatternKeyBytes);
+            const int32_t patternId = map.inner().lookup(StrSpan(key, patternLen));
+            if (patternId == 0) continue;
+            const int32_t ownerN = map.runLen(patternId);
+            NameId previous = 0;
+            for (int32_t o = 0; o < ownerN; ++o) {
+                const NameId scope = scopeOfPremisePatternOwner(
+                    premisePatternRunValueAt(map, patternId, o));
+                if (scope == previous) continue;
+                previous = scope;
+                if (premisePatternScopeClosed(map, scope)) continue;
+                if (nm.comparable(scope, row.validityId)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief Whether any of the LB's four hash memories has a live rule
+    ///        premise that accepts a statement row — the request statement
+    ///        filter's premise-pattern condition.
+    ///
+    /// @details
+    /// The union over `overallHashMemory`, `localHashMemory`,
+    /// `localHashMemoryDelta` and `workingMemory`. The GPU route prefilters
+    /// the uploaded rows of a logical block once, for every filter call of
+    /// that block, and the processor filter must keep the identical row list
+    /// (split stumps are translated between the two), so both apply this one
+    /// union. Every local and external rule install reaches
+    /// `overallHashMemory`, which is probed first.
+    ///
+    /// @param body The resident LB.
+    /// @param row  The encoded statement row.
+    /// @return `true` iff some live rule premise of the LB accepts the row.
+    /// @see premisePatternAdmitsIn, HashRequestGenerator::filterIntEncodedStatements,
+    ///      gpu::Phase2ProjectionArena::appendLogicalBlock.
+    inline bool premisePatternAdmits(const Memory& body, const IntEncodedExpr& row) {
+        return premisePatternAdmitsIn(body.overallHashMemory, body.nameMap, row)
+            || premisePatternAdmitsIn(body.localHashMemory, body.nameMap, row)
+            || premisePatternAdmitsIn(body.localHashMemoryDelta, body.nameMap, row)
+            || premisePatternAdmitsIn(body.workingMemory, body.nameMap, row);
     }
 
     /// @brief Best replacement peer for one downprioritized `it_/int_` arg
@@ -19423,28 +21600,64 @@ namespace gl {
     /// @details
     /// A `DependencyItem` is one entry in `Dependencies::originalAuxyMap`.
     /// `auxies` is the set of auxiliary indices the expression cares about;
-    /// `expr` is the raw expression text; `allLevelsInvolved` is `true` when
-    /// the dependency spans every LB level (overrides per-level filtering).
-    /// Plain value type, no ordering.
+    /// `expr` is the raw expression text; `levelsUsed` is the union of the
+    /// levels the triad's closed step and base proofs used, one bit per
+    /// level; the induction promotion compares it with the conjecture's
+    /// premise levels (D-516). Plain value type,
+    /// no ordering.
     ///
     /// @see [`Dependencies`](#dependencies) — owns these.
     struct DependencyItem {
         std::set<int> auxies;
         std::string expr;
-        bool allLevelsInvolved;
+        uint64_t levelsUsed;
 
         DependencyItem()
             : auxies(),
             expr(),
-            allLevelsInvolved(false) {
+            levelsUsed(0) {
         }
 
         DependencyItem(const std::set<int>& auxies_,
             const std::string& expr_,
-            bool allLevelsInvolved_)
+            uint64_t levelsUsed_)
             : auxies(auxies_),
             expr(expr_),
-            allLevelsInvolved(allLevelsInvolved_) {
+            levelsUsed(levelsUsed_) {
+        }
+    };
+
+    /// @brief One conjecture's step win: the triad whose step block proved
+    /// first while covering every premise level
+    /// (D-517).
+    ///
+    /// @details
+    /// Created at the barrier that settles the first covering step closure
+    /// of the conjecture while its head goal is open. The goal block pointer
+    /// is address-stable for the grid's lifetime (I-109); the record is read
+    /// only at single-threaded barrier seams and by the induction promotion.
+    /// `promotionAwaitsTyping` marks a winning triad whose promotion met a
+    /// goal block without the typing fact; `awaitingAuxyIndex` is the
+    /// auxiliary index the barrier re-queues once the fact arrives.
+    ///
+    /// @see `Dependencies::stepWins` — owns these.
+    struct StepWinRecord {
+        int originalIndex;
+        Memory* goalBlock;
+        std::string head;
+        std::string inductionVariable;
+        bool strongInduction;
+        bool promotionAwaitsTyping;
+        int awaitingAuxyIndex;
+
+        StepWinRecord()
+            : originalIndex(-1),
+            goalBlock(nullptr),
+            head(),
+            inductionVariable(),
+            strongInduction(false),
+            promotionAwaitsTyping(false),
+            awaitingAuxyIndex(-1) {
         }
     };
 
@@ -19460,18 +21673,30 @@ namespace gl {
     ///   (carries the auxiliary-index set, the expression text, and the
     ///   all-levels flag).
     /// - `originalInductionVariableMap`  — original index → `(induction_var,
-    ///   typing_set)` pair. Populated only for induction-target originals.
+    ///   recursion_counter)` pair: the variable and the decimal `recK` counter
+    ///   of the triad's step key `(in2[recK,n,s])`. Populated only for
+    ///   induction-target originals.
+    /// - `strongInductionOriginals`      — the induction-target originals whose
+    ///   step block carries the strong hypothesis
+    ///   (D-500); the others are weak.
+    /// - `stepBlockOriginal`             — step block → the original of its
+    ///   triad, recorded where the step block is created.
+    /// - `stepWins`                      — conjecture expression → its step
+    ///   win (D-517).
     /// - `auxyIndex`, `originalIndex`    — running counters; the producer
     ///   bumps these on every fresh insertion to keep the indices stable.
     ///
     /// @see [`DependencyItem`](#dependencyitem) — value type of `originalAuxyMap`.
-    /// @see [I-18](../../docs/agentic_swdd/30_invariants.md#i-18) — induction scheduled on
-    ///      a bound variable must first prove `(in[n, N])`. The typing set
-    ///      lives in `originalInductionVariableMap`'s second tuple slot.
+    /// @see [I-18](../../docs/agentic_swdd/30_invariants.md#i-18) — an induction
+    ///      theorem is promoted only when `(in[n, N])` is known at its chain
+    ///      block (`TheoremPublisher::updateGlobal`).
     struct Dependencies {
         std::map<int, int> auxyOriginalMap;
         std::map<int, DependencyItem> originalAuxyMap;
         std::map<int, std::tuple<std::string, std::string>> originalInductionVariableMap;
+        std::set<int> strongInductionOriginals;
+        std::unordered_map<const Memory*, int> stepBlockOriginal;
+        std::map<std::string, StepWinRecord> stepWins;
         int auxyIndex;
         int originalIndex;
 
@@ -19479,6 +21704,9 @@ namespace gl {
             : auxyOriginalMap(),
             originalAuxyMap(),
             originalInductionVariableMap(),
+            strongInductionOriginals(),
+            stepBlockOriginal(),
+            stepWins(),
             auxyIndex(0),
             originalIndex(0) {
         }
@@ -19491,6 +21719,9 @@ namespace gl {
             : auxyOriginalMap(auxyOriginalMap_),
             originalAuxyMap(originalAuxyMap_),
             originalInductionVariableMap(originalInductionVariableMap_),
+            strongInductionOriginals(),
+            stepBlockOriginal(),
+            stepWins(),
             auxyIndex(auxyIndex_),
             originalIndex(originalIndex_) {
         }
@@ -19575,8 +21806,8 @@ namespace gl {
     /// inside the one LB whose map minted them, which is why mail historically
     /// re-encoded its payload at every seam
     /// ([I-91](../../docs/agentic_swdd/30_invariants.md#i-91)). The 4-byte width is
-    /// deliberate: one table spanning every LB far exceeds the per-LB `NameMap`'s
-    /// `NameId` ceiling (`MAX_NAME_IDS` = 32000).
+    /// deliberate: one table spanning every LB exceeds the per-LB `NameMap`'s
+    /// `NameId` mint-time tripwire (`ExecutionParameters::MAX_NAME_IDS`).
     ///
     /// Concurrency: minting is SINGLE-THREADED and confined to the cycle-end commit
     /// barrier (plus the load-time broadcast and the post-`pool.join()`
@@ -19610,7 +21841,51 @@ namespace gl {
     /// @invariant No parallel proof phase is running; every routing `mailIn` is
     ///            empty and delivered `MailLog` blobs were retired first.
     /// @see mailInterner, MailLog::retireDeliveredBatches,
-    ///      ExpressionAnalyzer::proveKernel.
+    ///      Prover::proveKernel.
     void resetMailInterner();
+
+    /// @brief The process-wide, never-deloaded batch byte dictionary — the one
+    ///        copy of key bytes that several logic blocks hold.
+    ///
+    /// @details
+    /// A `BatchByteDictionary` on a function-local-static arena of the
+    /// never-deloaded LB-body pool (the `skeletonInterner` precedent),
+    /// activated on the first call, which `initBatchByteSharing` makes from
+    /// the single-threaded prover setup. The per-block string tables and the
+    /// per-block native-key pool store references to its entries instead of
+    /// their own copies. Entries are added only at the barrier
+    /// (`ProofBarrier::finish`, between the steward quiesce and the discharge
+    /// wake) and are never removed: each batch is a fresh process.
+    ///
+    /// @return The active singleton dictionary.
+    /// @see `BatchByteDictionary`, `batchByteCandidates`, `skeletonInterner`.
+    BatchByteDictionary& batchByteDictionary();
+
+    /// @brief The process-wide, hash-striped nomination table of the batch
+    ///        byte dictionary.
+    ///
+    /// @details `kBatchByteCandidateStripes` mutex-guarded stripes on the main
+    /// pool, filled concurrently by the end-of-phase-3 seam of each logic block
+    /// (one copy per distinct payload) and emptied by
+    /// `BatchByteDictionary::promoteNominations` at the barrier.
+    ///
+    /// @return The singleton registry (`init` it via `initBatchByteSharing`).
+    BatchByteCandidateRegistry& batchByteCandidates();
+
+    /// @brief Number of stripes of the process-wide nomination table.
+    ///
+    /// @details Bounds lock contention among the phase-3 workers; each used
+    /// stripe holds at least one main-pool block while nominations exist.
+    inline constexpr unsigned kBatchByteCandidateStripes = 32;
+
+    /// @brief Activate batch byte sharing for this process.
+    ///
+    /// @details Creates and activates the batch dictionary and initializes
+    /// the nomination registry with `kBatchByteCandidateStripes` stripes.
+    /// Called from the single-threaded prover setup; idempotent (several
+    /// provers per process).
+    ///
+    /// @return Nothing.
+    void initBatchByteSharing();
 
 } // namespace gl

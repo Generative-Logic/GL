@@ -1337,3 +1337,205 @@ TEST(shared_expressions, mixed_list_lifetimes_match_independent_vectors) {
     for (auto* list : lists) list->clear();
     ASSERT_EQ(store.liveBytes(), 0);
 }
+
+// ---- Sub-page first pages (D-464) --------------------
+
+namespace {
+    // 4 MiB pool / 256 KiB block / 2 KiB page: five sub-page classes
+    // (64 .. 1,024 bytes); an int32 page holds 512 elements.
+    const gl::StaticMemoryConfig kSubPagePvCfg{ 4 << 20, 1 << 18, 2048 };
+
+    // A 100-byte element: too large for the 64-byte class.
+    struct SubPageWide {
+        char bytes[100];
+    };
+}
+
+TEST(paged_vector, sub_page_vector_grows_through_slots_to_whole_pages) {
+    gl::GlobalMemoryManager m; m.init(kSubPagePvCfg);
+    gl::LbArena a(&m); a.enableSubPages();
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    // A 64-byte slot holds 16 elements; each class doubles; 1,024 bytes hold 256.
+    const int32_t boundaries[] = { 16, 32, 64, 128, 256 };
+    int32_t next = 0;
+    for (int32_t cls = 0; cls < 5; ++cls) {
+        while (next < boundaries[cls]) {
+            v.push_back(next * 3 + 1);
+            ++next;
+            ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(64 << cls));
+        }
+        for (int32_t other = 0; other < 5; ++other)
+            ASSERT_EQ(a.liveSubPages(other), other == cls ? 1 : 0);
+        for (int32_t i = 0; i < next; ++i) ASSERT_EQ(v[i], i * 3 + 1);
+    }
+    // Past the largest slot: one whole page, then more pages and a directory.
+    v.push_back(next * 3 + 1);
+    ++next;
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(2048));
+    ASSERT_EQ(v.pagesHeld(), 1);
+    for (int32_t cls = 0; cls < 5; ++cls) ASSERT_EQ(a.liveSubPages(cls), 0);
+    while (next < 1500) { v.push_back(next * 3 + 1); ++next; }
+    ASSERT_EQ(v.pagesHeld(), 3);
+    for (int32_t i = 0; i < next; ++i) ASSERT_EQ(v[i], i * 3 + 1);
+    // Shrinking to empty returns every page; the next push takes a slot again.
+    v.truncate(0);
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(0));
+    v.push_back(7);
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(64));
+    ASSERT_EQ(v[0], 7);
+    a.assertInvariants();
+}
+
+TEST(paged_vector, sub_page_bulk_and_splice_paths_keep_content) {
+    gl::GlobalMemoryManager m; m.init(kSubPagePvCfg);
+    gl::LbArena a(&m); a.enableSubPages();
+    gl::DirtyState d = gl::DirtyState::Clean;
+    std::vector<int32_t> oracle;
+    gl::PagedVector<int32_t> v(&a, &d);
+    const auto check = [&]() {
+        ASSERT_EQ(v.size(), static_cast<int32_t>(oracle.size()));
+        for (int32_t i = 0; i < v.size(); ++i)
+            ASSERT_EQ(v[i], oracle[static_cast<std::size_t>(i)]);
+    };
+    // appendRun of 100 elements takes the 512-byte slot directly.
+    std::vector<int32_t> run(100);
+    for (int32_t i = 0; i < 100; ++i) run[static_cast<std::size_t>(i)] = 1000 + i;
+    v.appendRun(run.data(), 100);
+    oracle.insert(oracle.end(), run.begin(), run.end());
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(512));
+    ASSERT_EQ(a.liveSubPages(3), 1);
+    check();
+    // insertAt crosses 128 elements into the 1,024-byte slot.
+    for (int32_t k = 0; k < 40; ++k) {
+        v.insertAt(k * 2, -k);
+        oracle.insert(oracle.begin() + k * 2, -k);
+    }
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(1024));
+    check();
+    // replaceRange grows past 256 elements into a whole page.
+    std::vector<int32_t> patch(150, 77);
+    v.replaceRange(10, 5, patch.data(), 150);
+    oracle.erase(oracle.begin() + 10, oracle.begin() + 15);
+    oracle.insert(oracle.begin() + 10, patch.begin(), patch.end());
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(2048));
+    check();
+    // erase and truncate shrink; a whole-page vector keeps its page.
+    v.erase(3);
+    oracle.erase(oracle.begin() + 3);
+    v.truncate(20);
+    oracle.resize(20);
+    ASSERT_EQ(v.liveBytes(), static_cast<int64_t>(2048));
+    check();
+    // growTo on an empty vector takes the slot that holds the target size.
+    gl::PagedVector<int32_t> w(&a, &d);
+    w.growTo(40);
+    ASSERT_EQ(w.liveBytes(), static_cast<int64_t>(256));
+    for (int32_t i = 0; i < 40; ++i) w.writeRunAt(i, &i, 1);
+    for (int32_t i = 0; i < 40; ++i) ASSERT_EQ(w[i], i);
+    // The reload stream (bulkAppendBytes) and copy assignment.
+    gl::PagedVector<int32_t> r(&a, &d);
+    std::vector<char> stream;
+    v.appendSpanBytes(stream, 0);
+    r.bulkAppendBytes(stream.data(), v.size());
+    ASSERT_EQ(r.liveBytes(), static_cast<int64_t>(128));
+    for (int32_t i = 0; i < v.size(); ++i) ASSERT_EQ(r[i], v[i]);
+    gl::PagedVector<int32_t> copy(&a, &d);
+    copy = w;
+    ASSERT_EQ(copy.liveBytes(), static_cast<int64_t>(256));
+    for (int32_t i = 0; i < 40; ++i) ASSERT_EQ(copy[i], i);
+    // resetKeepingPages keeps the slot; clear returns it.
+    w.resetKeepingPages();
+    ASSERT_EQ(w.liveBytes(), static_cast<int64_t>(256));
+    w.push_back(5);
+    ASSERT_EQ(w[0], 5);
+    w.clear();
+    ASSERT_EQ(w.liveBytes(), static_cast<int64_t>(0));
+    a.assertInvariants();
+}
+
+TEST(paged_vector, sub_page_no_straddle_runs_stay_contiguous) {
+    gl::GlobalMemoryManager m; m.init(kSubPagePvCfg);
+    gl::LbArena a(&m); a.enableSubPages();
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<char> v(&a, &d);
+    std::vector<std::pair<int32_t, std::string>> runs;
+    // Slot moves (64 -> 128 -> 512), the move to a whole page, page padding.
+    const int32_t lengths[] = { 40, 40, 300, 700, 1500, 1000, 3 };
+    const int64_t held[] = { 64, 128, 512, 2048, -1, -1, -1 };
+    for (int32_t k = 0; k < 7; ++k) {
+        const int32_t n = lengths[k];
+        const std::string s(static_cast<std::size_t>(n), static_cast<char>('a' + k));
+        const int32_t start = v.appendRunNoStraddle(s.data(), n);
+        runs.push_back({ start, s });
+        if (held[k] > 0) ASSERT_EQ(v.liveBytes(), held[k]);
+        int32_t runLen = 0;
+        const char* p = v.contiguousRun(start, runLen);
+        ASSERT_TRUE(runLen >= n);
+        ASSERT_TRUE(std::string(p, static_cast<std::size_t>(n)) == s);
+    }
+    ASSERT_EQ(runs[1].first, 40);
+    ASSERT_EQ(runs[4].first, 2048);
+    for (const auto& entry : runs) {
+        int32_t runLen = 0;
+        const char* p = v.contiguousRun(entry.first, runLen);
+        ASSERT_TRUE(std::string(p, entry.second.size()) == entry.second);
+    }
+    a.assertInvariants();
+}
+
+TEST(paged_vector, sub_page_skips_too_small_classes_and_needs_the_opt_in) {
+    gl::GlobalMemoryManager m; m.init(kSubPagePvCfg);
+    gl::LbArena plain(&m);
+    gl::LbArena sub(&m);
+    sub.enableSubPages();
+    gl::DirtyState d = gl::DirtyState::Clean;
+    // Without the opt-in the first element takes a whole page.
+    gl::PagedVector<int32_t> whole(&plain, &d);
+    whole.push_back(1);
+    ASSERT_EQ(whole.liveBytes(), static_cast<int64_t>(2048));
+    // A 100-byte element skips the 64-byte class; two need 256 bytes.
+    gl::PagedVector<SubPageWide> wide(&sub, &d);
+    SubPageWide element{};
+    element.bytes[0] = 9;
+    wide.push_back(element);
+    ASSERT_EQ(wide.liveBytes(), static_cast<int64_t>(128));
+    element.bytes[0] = 10;
+    wide.push_back(element);
+    ASSERT_EQ(wide.liveBytes(), static_cast<int64_t>(256));
+    ASSERT_EQ(wide[0].bytes[0], 9);
+    ASSERT_EQ(wide[1].bytes[0], 10);
+    sub.assertInvariants();
+}
+
+TEST(paged_hash_index, sub_page_tables_take_one_slot) {
+    gl::GlobalMemoryManager m; m.init(kSubPagePvCfg);
+    gl::LbArena a(&m); a.enableSubPages();
+    gl::PagedHashIndex index(&a);
+    index.reset(64);                            // 256 bytes: class 2
+    ASSERT_EQ(index.liveBytes(), static_cast<int64_t>(256));
+    ASSERT_EQ(a.liveSubPages(2), 1);
+    for (int32_t i = 0; i < 64; ++i) ASSERT_EQ(index.at(i), 0);
+    for (int32_t i = 0; i < 64; ++i) index.set(i, i * 5 + 1);
+    gl::PagedHashIndex neighbour(&a);
+    neighbour.reset(64);                        // the next slot of the same page
+    for (int32_t i = 0; i < 64; ++i) ASSERT_EQ(neighbour.at(i), 0);
+    for (int32_t i = 0; i < 64; ++i) ASSERT_EQ(index.at(i), i * 5 + 1);
+    index.reset(4);                             // 16 bytes take the 64-byte slot
+    ASSERT_EQ(index.liveBytes(), static_cast<int64_t>(64));
+    ASSERT_EQ(a.liveSubPages(2), 1);
+    ASSERT_EQ(a.liveSubPages(0), 1);
+    index.reset(1024);                          // 4 KiB: two pages and a directory
+    ASSERT_EQ(index.liveBytes(), static_cast<int64_t>(3 * 2048));
+    ASSERT_EQ(a.liveSubPages(0), 0);
+    for (int32_t i = 0; i < 1024; ++i) ASSERT_EQ(index.at(i), 0);
+    index.clear();
+    neighbour.clear();
+    ASSERT_EQ(a.liveSubPages(2), 0);
+    a.assertInvariants();
+    // Without the opt-in a minimum table holds a whole page.
+    gl::LbArena plain(&m);
+    gl::PagedHashIndex whole(&plain);
+    whole.reset(64);
+    ASSERT_EQ(whole.liveBytes(), static_cast<int64_t>(2048));
+}

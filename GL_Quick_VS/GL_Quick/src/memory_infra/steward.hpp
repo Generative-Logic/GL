@@ -40,6 +40,52 @@ namespace gl {
 
     struct Memory;
 
+    /// @brief Frozen non-owning order of logical-block pointers.
+    /// @details Copies the range description, never its elements. The caller
+    /// holds the storage unchanged through the working-set window and quiescence.
+    class MemoryOrderView {
+        Memory* const* data_ = nullptr;
+        std::size_t count_ = 0;
+        bool valid_ = false;
+    public:
+        /// @brief Construct an unregistered order.
+        /// @details This is the ordinary closed-window state.
+        /// @return Invalid empty view.
+        MemoryOrderView() = default;
+        /// @brief Borrow a frozen contiguous order from any storage owner.
+        /// @details A registered empty order may have a null data pointer.
+        /// @param data First pointer slot.
+        /// @param count Number of slots held live by the caller.
+        /// @return Registered immutable order description.
+        MemoryOrderView(Memory* const* data, std::size_t count)
+            : data_(data), count_(count), valid_(true) {
+            assert(data != nullptr || count == 0);
+        }
+        /// @brief Borrow the existing processor vector interface.
+        /// @details The vector must remain frozen through all consumers.
+        /// @param order Non-null vector owned by the caller.
+        /// @return Registered description of its current contiguous range.
+        MemoryOrderView(const std::vector<Memory*>* order) {
+            assert(order != nullptr);
+            data_ = order->data(); count_ = order->size(); valid_ = true;
+        }
+        /// @brief Test whether an order is registered.
+        /// @details Registered emptiness is distinct from a closed window.
+        /// @return True after construction from a caller-owned range.
+        bool valid() const { return valid_; }
+        /// @brief Read the frozen number of slots.
+        /// @details An unregistered order is not readable.
+        /// @return Range length, including zero for registered emptiness.
+        std::size_t size() const { assert(valid_); return count_; }
+        /// @brief Read one logical-block pointer in unchanged order.
+        /// @details No state on the pointed-to block is changed.
+        /// @param index Slot below the frozen length.
+        /// @return Borrowed logical-block pointer.
+        Memory* operator[](std::size_t index) const {
+            assert(valid_ && index < count_); return data_[index];
+        }
+    };
+
     namespace steward {
 
         /// @brief Steward wake watermark, as a fraction of the pool's
@@ -680,9 +726,23 @@ namespace gl {
         /// @param workers   Worker count — the in-flight margin between
         ///                  the cursor and the window start.
         /// @param directory The deload directory for prefetch reloads.
+        /// @brief Preserve the processor vector registration interface.
+        /// @details Borrows a frozen range and delegates to the storage-neutral door.
+        /// @param phase Phase identifier.
+        /// @param cursor Stable dispatch cursor.
+        /// @param order Caller-owned frozen vector.
+        /// @param workers In-flight worker margin.
+        /// @param directory Deload directory.
+        /// @return Nothing.
+        void beginPhaseWindow(int phase, const std::atomic<std::size_t>* cursor,
+            const std::vector<Memory*>* order, unsigned workers,
+            const std::string& directory) {
+            beginPhaseWindow(phase, cursor, MemoryOrderView(order), workers, directory);
+        }
+
         void beginPhaseWindow(int phase,
                               const std::atomic<std::size_t>* cursor,
-                              const std::vector<Memory*>* order,
+                              MemoryOrderView order,
                               unsigned workers,
                               const std::string& directory);
 
@@ -733,7 +793,18 @@ namespace gl {
         /// @param count     How many head slots to warm (typically the
         ///                  phase window width); clamped to `order` size.
         /// @param directory The deload directory the loads read from.
-        void prefetchHead(const std::vector<Memory*>* order,
+        /// @brief Preserve prefetch from the processor's frozen vector.
+        /// @details Delegates with a value copy of its immutable range description.
+        /// @param order Caller-owned vector.
+        /// @param count Requested head count.
+        /// @param directory Deload directory.
+        /// @return Nothing.
+        void prefetchHead(const std::vector<Memory*>* order, std::size_t count,
+            const std::string& directory) {
+            prefetchHead(MemoryOrderView(order), count, directory);
+        }
+
+        void prefetchHead(MemoryOrderView order,
                           std::size_t count,
                           const std::string& directory);
 
@@ -813,7 +884,7 @@ namespace gl {
         /// @return The farthest-next-use eligible victim behind the cursor, or
         ///         `nullptr` when none qualifies (the pass then ends — a
         ///         defined result, the stream pauses).
-        Memory* pickVictimBehindCursor(const std::vector<Memory*>* order,
+        Memory* pickVictimBehindCursor(MemoryOrderView order,
                                        std::size_t cur,
                                        std::size_t keepLo,
                                        std::size_t keepHi,
@@ -846,7 +917,7 @@ namespace gl {
         /// @param keepHi Exclusive upper bound of the kept working set.
         /// @return The farthest-behind eligible victim (floor-preferred), or
         ///         `nullptr` when not even a one-block victim exists.
-        Memory* pickVictimTwoTier(const std::vector<Memory*>* order,
+        Memory* pickVictimTwoTier(MemoryOrderView order,
                                   std::size_t cur,
                                   std::size_t keepLo,
                                   std::size_t keepHi) const;
@@ -879,7 +950,7 @@ namespace gl {
         ///        behind the open window's cursor.
         ///
         /// @details
-        /// Installed on the main pool by `ExpressionAnalyzer::prove`
+        /// Installed on the main pool by `Prover::prove`
         /// (`GlobalMemoryManager::setPressureValve`) and run by any thread
         /// whose next grant would leave fewer than `emergencyFloorBlocks()`
         /// blocks free (D-422). One eviction through the
@@ -1004,7 +1075,7 @@ namespace gl {
         ///                does no I/O; executing tasks read the window's
         ///                registered directory.)
         void maintainWorkingSet(const std::atomic<std::size_t>* cursor,
-                                const std::vector<Memory*>* order,
+                                MemoryOrderView order,
                                 unsigned workers);
 
         /// @brief Blocks currently held by in-flight eviction dumps —
@@ -1226,7 +1297,7 @@ namespace gl {
         // (ioScratch_); the discharge path has its own.
         LbArena stewardScratch_{ &lbMemory() };
         const std::atomic<std::size_t>* windowCursor_ = nullptr;
-        const std::vector<Memory*>* windowOrder_ = nullptr;
+        MemoryOrderView windowOrder_{};
         unsigned windowWorkers_ = 0;
         // Monotone window identity: bumped at every beginPhaseWindow AND
         // endPhaseWindow, so a task can tell whether the window that planned

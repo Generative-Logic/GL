@@ -25,6 +25,7 @@
 #pragma once
 
 #include "global_memory_manager.hpp"
+#include "../infra/peak_snapshot.hpp"
 #include "ptr_directory.hpp"
 
 #include <cassert>
@@ -254,8 +255,25 @@ namespace gl {
         /// @details
         /// Legal at deload or teardown, when every container's offsets are
         /// simultaneously rebuilt (reload) or discarded (destruction). After
-        /// this, the cursor restarts at 0.
+        /// this, the cursor restarts at 0 and the sub-page free lists are empty.
         void releaseAll();
+
+        /// @brief `releaseAll` for a raw-image eviction: return every block but
+        ///        keep the sub-page free lists.
+        ///
+        /// @details
+        /// A raw image restores every live page at its vid, the pages carved
+        /// into sub-page slots included, and the container bookkeeping that
+        /// names those slots survives in the never-deloaded shell. The free
+        /// lists (one head per class plus the class counters, all in this
+        /// object) therefore stay valid across the round trip and are kept, so
+        /// the restored arena reuses exactly the slots it had free. A canonical
+        /// eviction or a teardown uses `releaseAll`, which empties them.
+        /// `assertInvariants` validates the kept lists once the restore has
+        /// rebound their pages.
+        ///
+        /// @return Nothing.
+        void releaseAllForRawImage();
 
         /// @brief Set the pool purpose this arena's blocks are attributed to.
         ///
@@ -479,7 +497,8 @@ namespace gl {
             assert(isLivePageSlot(pageTable_.peek(vid))
                 && "LbArena::pageAt on a freed vid");
 #endif
-            return pageTable_.peek(vid);
+            const auto page = pageTable_.peek(vid);
+            return page;
         }
 
         /// @brief Resolve a live vid to its physical page (read-only).
@@ -496,7 +515,8 @@ namespace gl {
             assert(isLivePageSlot(pageTable_.peek(vid))
                 && "LbArena::pageAt on a freed vid");
 #endif
-            return pageTable_.peek(vid);
+            const auto page = pageTable_.peek(vid);
+            return page;
         }
 
         /// @brief Pages currently live (allocated and not yet freed).
@@ -526,6 +546,117 @@ namespace gl {
             return freePageCount_;
         }
 
+        // ---- Sub-page tier (small first pages) --------------------------
+        // A paged container whose whole content fits a fraction of a page takes
+        // one power-of-two slot (64 bytes up to half a page) instead of a whole
+        // page, and moves to a whole page once it outgrows the largest slot. The
+        // slots of one size class are carved from ordinary live pages of this
+        // tier (`allocPage`), so compaction moves and the raw image restores
+        // them with no special case: a slot is its page's vid plus a byte
+        // offset. Free slots of a class form an intrusive LIFO threaded through
+        // the slots themselves (the link in each free slot's last 8 bytes, so the
+        // poison still covers offset 0), with one head per class in this object
+        // (D-464).
+
+        /// @brief Smallest sub-page slot in bytes (size class 0).
+        static constexpr int32_t kSubPageMinBytes = 64;
+
+        /// @brief Upper bound on the number of sub-page size classes (class 7
+        ///        is 8 KiB; only classes below the page size exist).
+        static constexpr int32_t kSubPageMaxClasses = 8;
+
+        /// @brief One sub-page slot: the vid of the page that holds it and the
+        ///        slot's byte offset inside that page.
+        struct SubPage {
+            int32_t vid;
+            int32_t offset;
+        };
+
+        /// @brief Let paged containers on this arena take sub-page slots.
+        ///
+        /// @details
+        /// Per-arena opt-in, set once by the logic-block aggregate for its
+        /// persistent arena (`LbMemory`): small containers there live for the
+        /// whole run, so a slot saves most of a page each. Scratch and mail
+        /// arenas stay page-only (their containers are transient). Legal only
+        /// on an arena that holds no block and no vid (asserted), so every
+        /// container on it starts empty.
+        ///
+        /// @return Nothing.
+        void enableSubPages();
+
+        /// @brief Whether paged containers on this arena take sub-page slots.
+        ///
+        /// @return `true` after `enableSubPages`.
+        bool subPagesEnabled() const { return subPagesEnabled_; }
+
+        /// @brief Number of sub-page size classes for this pool's page size.
+        ///
+        /// @details
+        /// Class `c` holds `kSubPageMinBytes << c` bytes; only classes strictly
+        /// smaller than a page exist (5 classes, 64 to 1,024 bytes, at the
+        /// 2 KiB production page), capped at `kSubPageMaxClasses`. Asserts the
+        /// arena is bound.
+        ///
+        /// @return Class count; 0 when a page holds no 64-byte slot pair.
+        int32_t subPageClassCount() const;
+
+        /// @brief Bytes of one slot of size class `cls`.
+        ///
+        /// @param cls Size class, `0 <= cls < kSubPageMaxClasses`.
+        /// @return `kSubPageMinBytes << cls`.
+        static constexpr int32_t subPageBytes(int32_t cls) {
+            return kSubPageMinBytes << cls;
+        }
+
+        /// @brief Allocate one slot of size class `cls`.
+        ///
+        /// @details
+        /// Pops the class's free list; when it is empty, takes a fresh page with
+        /// `allocPage`, keeps its first slot, and pushes the others in
+        /// descending offset order so later pops ascend. The slot's bytes are
+        /// not initialized. Reuse is deterministic: the same allocation and
+        /// free sequence yields the same slots. Asserts residency, the opt-in
+        /// and the class range.
+        ///
+        /// @param cls Size class, `0 <= cls < subPageClassCount()`.
+        /// @return The slot; `pageAt(vid) + offset` resolves to
+        ///         `subPageBytes(cls)` writable bytes until `freeSubPage`.
+        SubPage allocSubPage(int32_t cls);
+
+        /// @brief Return a slot of size class `cls` to its free list.
+        ///
+        /// @details
+        /// Poisons the slot (`kArenaPoisonByte`) so a stale read announces
+        /// itself, then stores the list link in its last 8 bytes. The page that
+        /// holds the slot stays live and owned by the class. Asserts residency,
+        /// the opt-in, the class range, a slot-aligned offset and a live slot
+        /// of the class to return.
+        ///
+        /// @param slot A slot returned by `allocSubPage(cls)` and not yet freed.
+        /// @param cls  The size class it was allocated from.
+        void freeSubPage(SubPage slot, int32_t cls);
+
+        /// @brief Slots of size class `cls` currently allocated (telemetry /
+        ///        tests).
+        ///
+        /// @param cls Size class, `0 <= cls < kSubPageMaxClasses`.
+        /// @return Allocated minus freed slots of the class.
+        int32_t liveSubPages(int32_t cls) const {
+            assert(cls >= 0 && cls < kSubPageMaxClasses);
+            return subPageLive_[cls];
+        }
+
+        /// @brief Pages carved into slots of size class `cls` (telemetry /
+        ///        tests).
+        ///
+        /// @param cls Size class, `0 <= cls < kSubPageMaxClasses`.
+        /// @return Live pages owned by the class.
+        int32_t subPageSlabs(int32_t cls) const {
+            assert(cls >= 0 && cls < kSubPageMaxClasses);
+            return subPageSlabs_[cls];
+        }
+
         /// @brief In-place page compaction — pack the live pages onto the
         ///        contiguous prefix of the held blocks and return the emptied
         ///        blocks to the pool. The background steward's reclaim.
@@ -544,6 +675,10 @@ namespace gl {
         /// reclaim must never depend on the pool it frees. `scr` must be exclusive
         /// to the calling thread (the discharge path and the steward each own one,
         /// since they can run concurrently).
+        ///
+        /// Pages carved into sub-page slots without a live slot return to the
+        /// page tier first (`releaseEmptySubPagePages`), so a discharged logic
+        /// block gives back their blocks too.
         ///
         /// @param scr A scratch arena bound to a never-deloaded pool (e.g.
         ///            `lbMemory()`), exclusive to this thread; returned with no
@@ -829,6 +964,8 @@ namespace gl {
                 }
             }
             if (runStart != nullptr) fill(runStart, runLen);
+            // The page bytes are back: the sub-page free-slot links are readable.
+            assertSubPageInvariants();
         }
 
         // ---- Byte-bump scratch fill (the per-worker scratch / sealed path) --
@@ -913,18 +1050,91 @@ namespace gl {
         /// dead slot is a tagged free-vid chain node and the chain visits exactly
         /// the dead slots, terminating (D-228); the
         /// intrusive free-list length matches `freePageCount_`; and every carved
-        /// page is accounted as either live or free. Under `GL_ARENA_PARANOID` it
-        /// additionally proves every live and free page is distinct and lies in a
-        /// carved block — no page is both free and live, no vid aliases another's
-        /// page. Called UNCONDITIONALLY at the coarse, infrequent seams
-        /// (`compactPages`, `releaseAll`, `markDeloaded` / `markResident`) and only
-        /// under `GL_ARENA_PARANOID` at the fine seams (`allocPage` / `freePage`),
-        /// so a violation aborts at the exact seam where the structure diverged.
+        /// page is accounted as either live or free; and every sub-page free list
+        /// holds exactly the carved slots that are not allocated. Under
+        /// `GL_ARENA_PARANOID` it additionally proves every live and free page is
+        /// distinct and lies in a carved block — no page is both free and live, no
+        /// vid aliases another's page. Called UNCONDITIONALLY at the end of
+        /// `compactPages`; a raw restore runs the content-free part
+        /// (`assertPageTierInvariants`) in `restoreForRawLoadEnd` and the list walk
+        /// (`assertSubPageInvariants`) at the end of `fillRawImage`; only under
+        /// `GL_ARENA_PARANOID` it runs at the fine seams (`allocPage` /
+        /// `freePage`), so a violation aborts at the exact seam where the
+        /// structure diverged.
         /// NDEBUG-gated (the body is empty under NDEBUG; this project keeps asserts
         /// on, so it is live in release).
         ///
         /// @invariant Pure read — never mutates the arena.
         void assertInvariants() const;
+
+        /// @brief The part of `assertInvariants` that reads no page content:
+        ///        the byte-bump and page-tier bookkeeping and the sub-page
+        ///        counters.
+        ///
+        /// @details
+        /// Holds as soon as a raw restore has bound its vids, before the page
+        /// bytes are filled (`restoreForRawLoadEnd` runs it there); the
+        /// sub-page list walk (`assertSubPageInvariants`) reads the free-slot
+        /// links inside the pages and runs at the end of `fillRawImage`.
+        /// NDEBUG-gated like `assertInvariants`.
+        ///
+        /// @invariant Pure read — never mutates the arena.
+        void assertPageTierInvariants() const;
+
+        /// @brief Walk every sub-page free list: its length equals the carved
+        ///        slots minus the live ones and every node is a slot of a live
+        ///        page.
+        ///
+        /// @details
+        /// Reads the links stored in the free slots, so it needs filled pages;
+        /// an arena without vids (lists kept across a raw eviction) is
+        /// skipped. NDEBUG-gated like `assertInvariants`.
+        ///
+        /// @invariant Pure read — never mutates the arena.
+        void assertSubPageInvariants() const;
+
+
+        /// @brief Observe every physical allocation owned by this arena.
+        /// @details Raw block coverage distinguishes retained page capacity from live
+        /// pages. Named container observations later refine the live-page intervals.
+        /// Never loads a deloaded arena and never mutates its storage.
+        /// @return Nothing.
+        void observeResidentRanges() const {
+            if (global_ == nullptr) return;
+            const std::size_t block=static_cast<std::size_t>(global_->blockBytes());
+            { peak_snapshot::Scope owner("byteStorage");
+              for(int32_t i=0;i<blocks_.size();++i) {
+                  peak_snapshot::note(blocks_.peek(i),block,5);
+                  const int64_t used=std::max<int64_t>(0,std::min<int64_t>(block,
+                      static_cast<int64_t>(cursor_)-static_cast<int64_t>(i)*block));
+                  peak_snapshot::note(blocks_.peek(i),static_cast<std::size_t>(used),8);
+              }
+            }
+            { peak_snapshot::Scope owner("freePageCapacity");
+              for(int32_t i=0;i<pageBlocks_.size();++i)
+                  peak_snapshot::note(pageBlocks_.peek(i),block,5);
+            }
+            { peak_snapshot::Scope owner("unassignedLivePages");
+              for(int32_t i=0;i<pageTable_.size();++i)
+                  if(isLivePageSlot(pageTable_.peek(i)))
+                      peak_snapshot::note(pageTable_.peek(i),static_cast<std::size_t>(pageBytes()),6);
+            }
+            { peak_snapshot::Scope owner("freeSubPageCapacity");
+              if (pageTable_.size() > 0)
+                  for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+                      const int32_t bytes = subPageBytes(cls);
+                      for (int64_t link = subPageFree_[cls]; link != -1;) {
+                          const SubPage slot = unpackSubPage(link);
+                          const char* address = pageTable_.peek(slot.vid) + slot.offset;
+                          peak_snapshot::note(address, static_cast<std::size_t>(bytes), 5);
+                          link = *reinterpret_cast<const int64_t*>(address + bytes - sizeof(int64_t));
+                      }
+                  }
+            }
+            { peak_snapshot::Scope owner("blocksDirectory"); blocks_.observeResidentRanges(); }
+            { peak_snapshot::Scope owner("pageBlocksDirectory"); pageBlocks_.observeResidentRanges(); }
+            { peak_snapshot::Scope owner("pageTable"); pageTable_.observeResidentRanges(); }
+        }
 
     private:
         /// @brief Compute the block geometry from the global manager on first
@@ -986,6 +1196,46 @@ namespace gl {
         ///            `pageBlocks_`).
         void releaseFrom(PtrDirectory<kArenaBlockTableInline>& dir);
 
+        /// @brief Return every page carved into sub-page slots whose slots are
+        ///        all free to the page tier — the sub-page reclaim run at the
+        ///        start of `compactPages`.
+        ///
+        /// @details
+        /// A carved page stays with its size class while any slot on it is
+        /// live; once every slot is free (for example after a discharge emptied
+        /// the containers), its slots leave the class's free list (the order of
+        /// the other free slots is kept) and the page is freed, so the packing
+        /// that follows returns its block. Deterministic: a pure function of
+        /// the free lists. Scratch on `scr` (one per-vid counter per class).
+        ///
+        /// @param scr Scratch arena on an independent pool, exclusive to the
+        ///            calling thread.
+        /// @return Nothing.
+        void releaseEmptySubPagePages(LbArena& scr);
+
+        /// @brief Pack a sub-page slot into one free-list word.
+        ///
+        /// @details The vid takes the high 32 bits and the offset the low 32;
+        /// both are non-negative, so a packed slot is never the `-1` end mark.
+        ///
+        /// @param slot A slot with `vid >= 0` and `offset >= 0`.
+        /// @return The packed word.
+        static int64_t packSubPage(SubPage slot) {
+            assert(slot.vid >= 0 && slot.offset >= 0);
+            return (static_cast<int64_t>(slot.vid) << 32)
+                 | static_cast<int64_t>(static_cast<uint32_t>(slot.offset));
+        }
+
+        /// @brief Unpack a free-list word — `packSubPage`'s inverse.
+        ///
+        /// @param word A packed slot, not the `-1` end mark.
+        /// @return The slot.
+        static SubPage unpackSubPage(int64_t word) {
+            assert(word >= 0);
+            return SubPage{ static_cast<int32_t>(word >> 32),
+                            static_cast<int32_t>(static_cast<uint32_t>(word)) };
+        }
+
         GlobalMemoryManager* global_ = nullptr;  // null until bound
         PoolPurpose purpose_ = PoolPurpose::Unattributed;  // pool attribution of every block
         int32_t blockBytes_ = 0;     // 0 until ensureGeometry; cached after
@@ -1012,6 +1262,13 @@ namespace gl {
         int32_t freePageCount_ = 0;      // length of the freeHead_ chain
         int32_t livePages_ = 0;          // allocated minus freed
         int32_t freeVidHead_ = -1;       // free-vid LIFO head; -1 = empty (D-228)
+
+        // Sub-page tier: per class, the free-slot LIFO head (packed slot,
+        // -1 = empty), the allocated slot count and the pages carved for it.
+        bool subPagesEnabled_ = false;
+        int64_t subPageFree_[kSubPageMaxClasses] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+        int32_t subPageLive_[kSubPageMaxClasses] = {};
+        int32_t subPageSlabs_[kSubPageMaxClasses] = {};
     };
 
 }

@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 7: Provenance (reference-level).
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html">Compilation &amp; names</a>
@@ -164,10 +164,10 @@ to the proof.</p>
     <li><a href="#local">7.2 &nbsp;Locality</a></li>
     <li><a href="#lift">7.3 &nbsp;The chapter walker — overview</a></li>
     <li><a href="#lift-mech">7.4 &nbsp;Mechanism 1 — ancestor lifting</a></li>
-    <li><a href="#barrier">7.5 &nbsp;Mechanism 2 — the OR-branch barrier</a></li>
+    <li><a href="#barrier">7.5 &nbsp;Mechanism 2 — the lift barriers</a></li>
     <li><a href="#cycle">7.6 &nbsp;Mechanism 3 — path-cycle filter</a></li>
     <li><a href="#contraswitch">7.7 &nbsp;Mechanism 4 — the <code>__contradiction__</code> fallback</a></li>
-    <li><a href="#notinput">7.8 &nbsp;Provenance is never a proof input</a></li>
+    <li><a href="#permanent">7.8 &nbsp;Provenance is permanent proof history</a></li>
     <li><a href="#leanexport">7.9 &nbsp;Independent Lean certificate</a></li>
   </ol>
 </div>
@@ -269,14 +269,23 @@ truthful and re-checkable:
 each expression at the <i>closest-to-<code>main</code></i> scope that still has an
 origin for it. Sound because ancestor facts are universally visible — and lifting
 moves only toward <code>main</code>, never away (descendant-only facts aren't
-universally available). The row then truthfully states where the derivation lives.</li>
-<li><b>2 · OR-branch barrier.</b> The lift may not cross a
+universally available). The row then truthfully states where the derivation lives.
+When the lifted copy would close a cycle (the fact holds at <code>main</code> only
+through the implication a subproof is proving), the walker cites the subproof's own
+copy instead, which has its own recorded origin.</li>
+<li><b>2 · Lift barriers.</b> The lift may not cross a
 <code>_boundary_orint_</code> / <code>_boundary_ordis_</code> delimiter. OR-branch
 scopes are conditional on a disjunct hypothesis; the OR-family verifier checkers
-need them kept branch-distinct, or both branches collapse to the same parent cell.</li>
+need them kept branch-distinct, or both branches collapse to the same parent cell.
+A contradiction scope is a barrier for one statement only, its own assumption:
+that statement is cited inside the scope even when an ancestor proves it too.</li>
 <li><b>3 · Path-cycle filter.</b> A <code>thread_local</code> path set rejects any
-candidate whose (lifted) dependencies are already on the recursion path — no chapter
-row can form a cycle the <code>origin chain termination</code> check would flag.
+candidate whose (lifted) dependencies are already on the recursion path, so the walk
+prefers a derivation that ends in leaves. A proved theorem cited at <code>main</code> is such
+a leaf through its <code>theorem</code> origin, which every broadcast theorem carries, OR theorems
+and or-elimination merges built during the run included. Only when no acyclic candidate
+exists does the walker fall back to the first recorded origin; the
+<code>origin chain termination</code> check then flags the cycle.
 The chapter goal itself is inserted into the path at entry, which rejects the
 prover's self-applying forward-inference origin (prevents a self-reference leaf).</li>
 <li><b>4 · <code>__contradiction__</code> fallback.</b> When a negated head has no
@@ -294,9 +303,9 @@ This is what keeps theorem citations acyclic <i>across</i> chapters, where
 the path filter (mechanism 3) cannot see.</li>
 </ul>
 <p>
-A hard <b>TRIPWIRE</b> at entry asserts if the
-<code>hypothetical_disintegration</code> sentinel scope ever reaches the walker — it
-is a throwaway structural probe and must never appear in a chapter.
+A hard <b>TRIPWIRE</b> at entry asserts if a hypothetical-disintegration
+sentinel scope ever reaches the walker — each one is a throwaway structural
+probe and must never appear in a chapter.
 </p>
 <p><b>Zoom in records scope inheritance.</b> A child row cites exactly the same
 expression at its original ancestor scope. Both endpoint scopes are kept in the
@@ -324,7 +333,7 @@ requires that exact source pair; a child row cannot count as its own parent.</p>
   <path d="M182 116 L216 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
   <rect x="216" y="70" width="312" height="108" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
   <text x="372" y="92" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">buildStack — walk origins backward</text>
-  <text x="372" y="113" fill="#8B8FA5" font-size="9" text-anchor="middle">① lift, preserving zoom in endpoints   ② OR barrier</text>
+  <text x="372" y="113" fill="#8B8FA5" font-size="9" text-anchor="middle">① lift, preserving zoom in endpoints   ② lift barriers</text>
   <text x="372" y="129" fill="#8B8FA5" font-size="9" text-anchor="middle">③ path-cycle filter (+ goal in path)</text>
   <text x="372" y="148" fill="#8B8FA5" font-size="9" text-anchor="middle">④ no origin? → __contradiction__ block (only LB switch)</text>
   <text x="372" y="164" fill="#8B8FA5" font-size="9" text-anchor="middle">⑤ theorem citation must not cycle with fixed or written dependencies</text>
@@ -351,7 +360,8 @@ installed only in a descendant scope. So the walker cannot simply assume an
 ancestor proves the fact — <code>liftToShallowestOriginAncestor</code> reports a
 scope only if <i>that</i> scope has its own recorded origin for the fact. It
 prefers the <b>shallowest</b> (closest to <code>main</code>) such scope —
-closer to <code>main</code> means more universally true.
+closer to <code>main</code> means more universally true. Only when a chapter cannot be
+written without a cycle that way does it cite a deeper scope that has its own record.
 </p>
 
 <figure>
@@ -400,7 +410,7 @@ chain upward until it runs out of ancestor-side origin entries.
 </div>
 
 <!-- ===================== 7.5 ===================== -->
-<h2 id="barrier">7.5 &nbsp;Mechanism 2 — the OR-branch barrier</h2>
+<h2 id="barrier">7.5 &nbsp;Mechanism 2 — the lift barriers</h2>
 <p>
 The lift may not cross a <code>_boundary_orint_</code> or
 <code>_boundary_ordis_</code> delimiter. OR-branch scopes are
@@ -438,6 +448,17 @@ would assert it unconditionally, which it isn't.
 branch-local derivation would silently appear in the chapter as a global
 fact.</figcaption>
 </figure>
+
+<p>
+<b>The assumption barrier.</b> A contradiction scope assumes one statement
+and closes when that assumption leads to a contradiction. Its proof must
+use the assumption. Sometimes an ancestor scope proves the same statement as
+well, for instance a subproof that runs beside the contradiction scope and
+closes late. Lifting the assumption to that proven copy would detach the
+contradiction from what the scope assumed. So the lift stops at the
+contradiction scope for its own assumption, and for nothing else: every
+other statement inside the scope still lifts as usual.
+</p>
 
 <!-- ===================== 7.6 ===================== -->
 <h2 id="cycle">7.6 &nbsp;Mechanism 3 — the path-cycle filter</h2>
@@ -546,7 +567,7 @@ stays inside one LB's origin map.
   <text x="644" y="100" fill="#F0E8DC" font-size="10" text-anchor="middle">with rule + premises</text>
 
   <text x="380" y="156" fill="#8B8FA5" font-size="11" text-anchor="middle">A dedicated child LB — independent is its provenance (no upward propagation), not its tree position.</text>
-  <text x="380" y="174" fill="#8B8FA5" font-size="11" text-anchor="middle">TRIPWIRE: hypothetical_disintegration sentinel scope must never reach buildStack — asserts at entry.</text>
+  <text x="380" y="174" fill="#8B8FA5" font-size="11" text-anchor="middle">TRIPWIRE: a hypothetical-disintegration sentinel scope must never reach buildStack — asserts at entry.</text>
   <text x="380" y="200" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">This is the only LB switch buildStack ever performs.</text>
 </svg>
 <figcaption><b>One switch, deliberate.</b> Every other walk stays inside the
@@ -555,60 +576,63 @@ exception.</figcaption>
 </figure>
 
 <div class="key">
-<b>The TRIPWIRE.</b> The sentinel scope
-<code>hypothetical_disintegration</code> is a throwaway used by structural
-probing inside the prover. It must never appear in a chapter row — if
+<b>The TRIPWIRE.</b> Each structural dry run inside the prover gets its own
+sentinel scope (named
+<code>…_product_of_hypo_disintegration_of_integration_goal_&lt;n&gt;_&lt;goal&gt;</code>),
+a throwaway that is wiped at the end of the step of its dry run. It must never appear in a chapter row — if
 <code>buildStack</code> ever encounters it on the recursion path, it
 asserts at the function's entry. The assert is load-bearing: a sentinel
 leaking into the chapter would silently corrupt the verifier's scope
 walk.
 </div>
 
-<h2 id="notinput">7.8 &nbsp;Provenance is never a proof input</h2>
+<h2 id="permanent">7.8 &nbsp;Provenance is permanent proof history</h2>
 <p>This is the single firmest rule about the origin map, worth stating plainly.</p>
 <div class="key">
-<b>The proving logic does not branch on the origin map.</b>
-No rule fires, no admission is granted, no branch is taken because of what is — or
-isn't — in <code>exprOriginMap</code>: no proof <i>decision</i> turns on the map's
-contents. One redundant dedup gate inside <code>applyEquivalenceClass</code> still
-reads the map, but it duplicates a statement-level check, so no theorem depends on
-it — and it is slated for removal. This is what
-makes the forthcoming origin-map-free silicon build possible as a <i>design target</i>
-— the same theorems are intended to prove without the map present — though the
-silicon path is a design consequence of this contract, not a currently-implemented
-check. Provenance is an output that rides alongside the proof, not a wheel it turns
-on.
+<b>The origin map is kept on every build and is always complete.</b>
+The proof compressor needs the history, so no build drops it &mdash; the silicon
+design included. A proof decision may read the map only through a reader that the
+design documents name; adding a reader is an architecture decision for the
+maintainer. There is one such reader today: before a recursion step admits a
+witness, it walks the witness's derivation tree and refuses a witness whose history
+links back to the instruction's path
+(<a href="mechanisms.html#admit-paths">§4.2.1</a>). Every other rule firing,
+admission and branch decides without looking at the map.
 </div>
 <p>
-The flip side is an obligation: precisely because nothing re-derives it, every state
-change that alters a derived fact <b>must</b> emit the matching origin line, or the
-audit graph silently rots. Concretely: when an equivalence-class rewrite touches an
-expression that already has a history line and is <i>not</i> a goal in
-<code>intToBeProved</code>, it must emit a fresh <code>equality1</code> line for the
-rewritten form (goals are exempt — they have no upstream line to extend). “Write it,
-never branch on it, always keep it complete” is the whole contract — and it is what
-lets an independent verifier re-check every theorem <i>that reaches its processed
-proof-graph input</i>, plus the auxiliary files it explicitly consumes, without
-trusting the prover at all (the <code>equality1</code> row at the end of the
+The flip side is an obligation: every state change that alters a derived fact
+<b>must</b> emit the matching origin line. Concretely: when an equivalence-class
+rewrite touches an expression that already has a history line and is <i>not</i> a
+goal in <code>intToBeProved</code>, it must emit a fresh <code>equality1</code> line
+for the rewritten form (goals are exempt &mdash; they have no upstream line to
+extend). A missing line does not only leave a hole in the audit graph: the
+witness-history walk stops on it with an assert. &ldquo;Always write it, always keep
+it complete, read it to decide only through a named reader&rdquo; is the whole
+contract &mdash; and the complete history is what lets an independent verifier
+re-check every theorem <i>that reaches its processed proof-graph input</i>, plus the
+auxiliary files it explicitly consumes, without trusting the prover at all (the
+<code>equality1</code> row at the end of the
 <a href="mechanisms.html#admit-rev">§4.2.5</a> Gauss trace is exactly such a
 re-checked line). Anything filtered upstream of that input is outside the
-verifier's sight by construction — see <a href="#record">§7.1</a> for the three
+verifier's sight by construction &mdash; see <a href="#record">§7.1</a> for the three
 visibility cases.
 </p>
 <figure>
-<svg viewBox="0 0 760 180" role="img" aria-label="Proving logic writes provenance but never reads it">
+<svg viewBox="0 0 760 180" role="img" aria-label="Proving logic writes every history line; one named reader, the witness-history check, reads the history to decide">
   <defs>
     <marker id="ni-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker>
-    <marker id="ni-no" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 10 M10 0 L0 10" stroke="#E879F9" stroke-width="2"/></marker>
+    <marker id="ni-rd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#B084EB"/></marker>
   </defs>
   <rect x="60" y="62" width="200" height="60" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="160" y="88" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">proving logic</text><text x="160" y="106" fill="#8B8FA5" font-size="9.5" text-anchor="middle">rules · admission · branching</text>
   <path d="M260 80 L494 80" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#ni-ar)"/><text x="377" y="70" fill="#5DCAA5" font-size="11" text-anchor="middle">writes (always, completely)</text>
-  <path d="M494 108 L260 108" stroke="#E879F9" stroke-width="1.6" stroke-dasharray="5 4" marker-start="url(#ni-no)"/><text x="377" y="128" fill="#E879F9" font-size="11" text-anchor="middle">never reads to decide</text>
-  <rect x="498" y="62" width="200" height="60" rx="10" fill="#1C1F2B" stroke="#B084EB"/><text x="598" y="88" fill="#B084EB" font-size="12.5" font-weight="bold" text-anchor="middle">exprOriginMap</text><text x="598" y="106" fill="#8B8FA5" font-size="9.5" text-anchor="middle">documentation only</text>
-  <text x="377" y="160" fill="#8B8FA5" font-size="11" text-anchor="middle">Remove the map entirely and the same theorems still prove — that is the test of this rule.</text>
+  <path d="M498 108 L264 108" stroke="#B084EB" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ni-rd)"/><text x="377" y="128" fill="#B084EB" font-size="11" text-anchor="middle">read to decide: named readers only</text>
+  <rect x="498" y="62" width="200" height="60" rx="10" fill="#1C1F2B" stroke="#B084EB"/><text x="598" y="88" fill="#B084EB" font-size="12.5" font-weight="bold" text-anchor="middle">exprOriginMap</text><text x="598" y="106" fill="#8B8FA5" font-size="9.5" text-anchor="middle">permanent proof history</text>
+  <text x="377" y="160" fill="#8B8FA5" font-size="11" text-anchor="middle">Today's one reader: a recursion step's witness-history check.</text>
 </svg>
-<figcaption><b>One-way.</b> The arrow only goes out. The day a proof decision
-depends on the origin map, the map has stopped being documentation.</figcaption>
+<figcaption><b>Written always, read by name.</b> Every derivation goes out to the
+map. A decision reads it back only through a reader the design names; a new reader
+is the maintainer's decision, and it makes the map's completeness part of the
+proof.</figcaption>
 </figure>
 
 <h2 id="leanexport">7.9 &nbsp;Independent Lean certificate</h2>
@@ -635,7 +659,7 @@ introduce their outer parameters explicitly and close the definitionally equal
 unfolded sides with <code>Iff.rfl</code>; no generated line ends in an
 unrestricted <code>simp</code> tactic. Equality substitution eliminates the named equalities in order,
 witness projection follows the named conjunction path, and scoped facts are
-specialized at their recorded prefixes. The disequality-symmetry action applies equality symmetry to
+specialized at their recorded prefixes. Conjunction construction first introduces the surrounding scope variables and assumptions, then its own component premises. Only the component premises become the pair supplied to the constructor. The disequality-symmetry action applies equality symmetry to
 the proposed reverse equality and passes that result directly to the one cited
 disequality. A scoped task-formulation row returns its own introduced scope
 premise directly. An <code>equality2</code> row chains its two cited equalities
@@ -643,7 +667,10 @@ with equality transitivity in certificate order. A contradiction row applies
 the cited negation to its cited positive complement. When a child assumption
 is being refuted, the row introduces exactly that assumption and applies each
 fact to its own recorded context. One fact may come from an ancestor; facts
-from sibling scopes cannot be combined. During a premise-element action, the cited implication is the recorded
+from sibling scopes cannot be combined. A subproof or a contradiction scope
+opened inside a contradiction scope is entered through that scope: its own
+assumption is the innermost one, and a subproof's discharge applies its result
+to the enclosing scope's assumptions. During a premise-element action, the cited implication is the recorded
 scope template and the row returns the unique matching introduced premise. An
 implication action applies its cited rule and supplies the cited premises in
 that rule's order; scoped citations are first specialized to the recorded scope,
@@ -855,13 +882,13 @@ negative constituents. Omitting or changing a constituent fails verification.</f
 <svg viewBox="0 0 760 90" role="img" aria-label="Ordered premises build exactly one conjunction alternative, then introduce the OR"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="125" y="35">Assume A, then B</text><text x="380" y="35">Construct A AND B</text><text x="640" y="35">Select OR alternative</text><text x="380" y="77">The compact definition fixes the conjuncts, signs, order and OR position</text></g><path d="M225 30h45m-8-6 8 6-8 6M490 30h40m-8-6 8 6-8 6" stroke="#7EA2C4" fill="none"/></svg>
 </section>
 <section id="composition-proof"><h2>Proofs of composed implications</h2>
-<p>An implication-composition row cites both original implications with their own scopes. The verifier checks their intermediate argument match and the exact scope of the result. Lean introduces each binder group and premise in order, applies all premises to the first implication to obtain the intermediate fact, then applies the second. A dependency from a sibling scope is rejected. Either source can cite a registered theorem at the main scope; both citations must resolve and both participate in the check for circular theorem dependencies.</p>
+<p>The prover composes two rules only for a purpose: the second rule's conclusion must match what an integration is looking for, or an open goal up to one number-valued constant. In the second case the composed rule can conclude the goal directly, and the equality-copy check runs on it at once. An implication-composition row cites both original implications with their own scopes. The verifier checks their intermediate argument match and the exact scope of the result. Lean introduces each binder group and premise in order, applies all premises to the first implication to obtain the intermediate fact, then applies the second. A dependency from a sibling scope is rejected. Either source can cite a registered theorem at the main scope; both citations must resolve and both participate in the check for circular theorem dependencies.</p>
 <svg viewBox="0 0 760 110" role="img" aria-label="Each binder group and producer premise is introduced, then the complete premise chain is passed through the two cited implications to produce the conclusion">
 <g fill="#1d2636" stroke="#7EA2C4"><rect x="15" y="20" width="170" height="55" rx="8"/><rect x="290" y="20" width="180" height="55" rx="8"/><rect x="575" y="20" width="170" height="55" rx="8"/></g>
 <g fill="#F0E8DC" text-anchor="middle" font-size="15"><text x="100" y="53">Assume A₁, …, Aₖ</text><text x="380" y="53">First proof gives B</text><text x="660" y="53">Second proof gives C</text></g>
 <g fill="none" stroke="#7EA2C4" stroke-width="2"><path d="M185 47h95m-8-6 8 6-8 6M470 47h95m-8-6 8 6-8 6"/></g><text x="380" y="100" fill="#F0E8DC" text-anchor="middle" font-size="14">Both source binders map one-to-one onto the complete result binder</text></svg>
 <p>The verifier also requires a one-to-one match of both complete binder sets and the result binder: bound-to-fixed specialization and collapsing two bound variables are rejected. The composition proof travels with outgoing history, so another block receiving a derived fact can also check the rule that produced it. The active source-support records drive composition. The proof-history map records what happened and is never consulted to decide which rules may be composed.</p></section>
-<section id="conjunction-refutation"><h2>Checking composed supporting rules</h2><p>The checker first proves the guarded helper by assuming the whole conjunction and contradicting the selected member. It then checks an ordinary implication composition between that helper and the original owning implication.</p><p>Lean replays both steps explicitly. Bound variables correspond one-to-one, fixed parameters stay fixed, and sources have compatible scopes. The intermediate rule is proof documentation and does not enter runtime rule memory. The direct composed rule receives ordinary compilation and firing history.</p><svg viewBox="0 0 920 155" role="img" aria-label="Checking composed supporting rules"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Prove the guarded helper</text><text x="150" y="77" text-anchor="middle" fill="#172635">Exact parts and signed guard</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Compose with original owner</text><text x="460" y="77" text-anchor="middle" fill="#172635">Existing checked composition</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Certify the direct rule</text><text x="770" y="77" text-anchor="middle" fill="#172635">Ordinary runtime installation</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">No new proof tag or unchecked theorem is introduced.</text></svg></section>
+<section id="conjunction-refutation"><h2>Checking composed supporting rules</h2><p>The checker first proves the guarded helper by assuming the whole conjunction and contradicting the selected member. It then checks an ordinary implication composition between that helper and the original owning implication. The composed rule may list the helper's premises in another order, because the compiler stores a rule once for every order of its premises; the check pairs each premise of the helper with one of the composed rule, and Lean takes the hypotheses in the composed rule's order.</p><p>Lean replays both steps explicitly. Bound variables correspond one-to-one, fixed parameters stay fixed, and sources have compatible scopes. The intermediate rule is proof documentation and does not enter runtime rule memory. The direct composed rule receives ordinary compilation and firing history.</p><svg viewBox="0 0 920 155" role="img" aria-label="Checking composed supporting rules"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Prove the guarded helper</text><text x="150" y="77" text-anchor="middle" fill="#172635">Exact parts and signed guard</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Compose with original owner</text><text x="460" y="77" text-anchor="middle" fill="#172635">Existing checked composition</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Certify the direct rule</text><text x="770" y="77" text-anchor="middle" fill="#172635">Ordinary runtime installation</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">No new proof tag or unchecked theorem is introduced.</text></svg></section>
 <section id="compiled-contraposition"><h2>Prepared contrapositives</h2>
 <p>One explicit exception preserves the existing search boundary: a negated existence may refute a candidate's membership in its domain, but contraposition does not turn domain membership into negative body facts for every candidate.</p>
 <p>Forward definitions keep their separate conclusions. During compilation, implications from the same definition family with the same complete premise can also supply a grouped conclusion. Every combination covering all bound variables is prepared, including larger covering combinations.</p>
@@ -872,6 +899,28 @@ negative constituents. Omitting or changing a constituent fails verification.</f
 <text x="380" y="145" text-anchor="middle" fill="currentColor">Prepared compact → own statement → ordinary rule expansion.</text><text x="380" y="175" text-anchor="middle" fill="currentColor">Forward definitions and construction obligations stay intact.</text></svg>
 <p>At disintegration, the prover substitutes actual arguments into prepared templates in the source scope. Each result has its own compact statement and ordinary rule expansion, like an implication attached to an existence. This preserves its normal ownership through mail, equality rewriting and removal; the fixed domain and range remain parameters. Grouping cites every contributing implication; contraposition cites the exact grouped or original implication. The verifier checks the substitutions and scopes, and Lean replays the derivations. Facts from separate cases cannot be combined.</p></section>
 <section id="or-equality-evidence"><h2>Equality evidence inside each OR case</h2><p>Convergence cites the actual fact from each case. When its arguments differ from the common conclusion, it also cites positive equalities visible there. The checker validates the substitution and Lean repeats it before leaving the case. Evidence survives case cleanup; no extra runtime copy of the conclusion is needed.</p><svg viewBox="0 0 760 120" role="img" aria-label="Actual case fact and local equality are checked inside the case before OR elimination"><g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="380" y="27">Case: actual E(n) + cited i = n</text><text x="380" y="58">Checked substitution inside this case</text><text x="380" y="88">E(i) is justified for this case</text><text x="380" y="116">Every case accounted for → OR elimination</text></g></svg></section>
+<section id="incubator-processing-cost"><h2>Incubator uses bounded chapter search</h2>
+<p>The search reuses the exact score of a proposed move when applying it. Scheduling updates only the choices affected by a completed prerequisite. These savings preserve the same selected layout, cost and proof order.</p>
+<p>Every recorded proof step stays in the book. Steps are arranged within their scopes once, and chapter search works inside each anchor stretch, examining insertions up to 512 positions away; each stretch ends with its deepest theorem. Complete subproofs and operation blocks are then placed after their prerequisites and before their users. A cycle stops processing; no block is split to hide a forward reference.</p>
+<svg viewBox="0 0 800 150" role="img" aria-label="Incubator rows pass through one scope arrangement, bounded chapter search inside each anchor stretch and strict nested block placement">
+<g fill="#202635" stroke="#7EA2C4"><rect x="10" y="20" width="240" height="75" rx="8"/><rect x="280" y="20" width="240" height="75" rx="8"/><rect x="550" y="20" width="240" height="75" rx="8"/></g>
+<g fill="#F0E8DC" text-anchor="middle" font-size="16"><text x="130" y="49">Arrange each scope once</text><text x="130" y="76">Retain every proof row</text><text x="400" y="49">Search per anchor stretch</text><text x="400" y="76">Preserve cited-proof order</text><text x="670" y="49">Place intact nested blocks</text><text x="670" y="76">Check every dependency</text><text x="400" y="130">Formal steps and collapsed reader rows are measured separately.</text></g>
+<g stroke="#7EA2C4" stroke-width="2"><path d="M250 58 H280"/><path d="M520 58 H550"/></g></svg></section>
+<section id="nested-proof-order"><h2>Subproofs appear where their results are needed</h2>
+<p>The main mathematical book places each collapsed subproof after its prerequisites and before any step that uses its result. A subproof containing another subproof follows the same rule recursively. Opening a card reveals the original scoped derivation at that position; assumptions stay inside their owning scope.</p>
+<svg viewBox="0 0 760 250" role="img" aria-label="Prerequisites precede an intact subproof containing a nested subproof, followed by the result's use">
+<g fill="#202635" stroke="#7EA2C4"><rect x="20" y="15" width="720" height="40" rx="8"/><rect x="20" y="75" width="720" height="110" rx="8"/><rect x="100" y="120" width="610" height="45" rx="8" stroke="#5DCAA5"/><rect x="20" y="205" width="720" height="35" rx="8"/></g>
+<g fill="#F0E8DC" font-size="16"><text x="40" y="41">Derive the required premises</text><text x="40" y="103">Subproof: its assumptions and steps stay together</text><text x="120" y="148">Nested subproof, placed before its result is used</text><text x="40" y="229">Use the completed subproof result</text></g></svg>
+<p>The verifier, Lean and the HTML all consume the same processed proof. The formal-step count includes every proof step and every dependency across scope boundaries, whether cards are open or closed. A separate main-row count measures ordinary visible rows plus one per closed operation or scope block. Collapsing a card does not shorten the formal proof. The ordering must have no use before derivation; some dependency crossings can remain unavoidable.</p></section>
+<section id="reader-operations"><h2>One hierarchy of readable proof operations</h2>
+<p>Brief prose explains each recorded step as a completed derivation in both modes. A subproof result says Obtained as a result of a subproof; it is not an instruction to prove that result again. Mixed mode also includes the explanatory subproof paragraphs. Each OR case has one introductory assumption line. For OR introduction, it says to assume the negated premises for this case; the goal is the selected disjunct. For a refuted OR case, the goal is contradiction; the assumed case is never used as a substitute goal label.</p>
+<p>Main and incubator share the strict reader layout. Main repeats proof shortening and arrangement until stable; incubator arranges its unchanged proof rows once and uses a bounded chapter search inside each anchor stretch. Incubator keeps every original formal row while its processed graph gains dependency-first order. Integration targets visibly say <strong>TO PROVE</strong> in both modes. Right-clicking reader expressions exposes their compiled definitions.</p>
+<p>Integration and disintegration now have collapsible headers inside the ordinary proof hierarchy. An integration names the goal it constructs, including when its construction rule is stored as a compiled carrier followed by an ordinary expansion. A disintegration names its original source, lists its used witnesses on one comma-separated row, and lists its externally used products under Products of disintegration used in proof. Witness names come from the original existential projections; the header does not introduce new assumptions. Opening either reveals the original checked proof lines and tags, including nested subproofs. An MPL result citation can land on its closed header. Common-notation citations reveal the actual numbered derivation row, opening its enclosing blocks. The achieved formula is orange and its common notation is bold.</p>
+<svg viewBox="0 0 800 280" role="img" aria-label="Main and incubator share this hierarchy: OR case contains integration and a subproof; primitive disintegration rows remain behind a source, witnesses and products header"><g fill="#202635" stroke="#7EA2C4"><rect x="15" y="15" width="770" height="170" rx="8"/><rect x="55" y="62" width="690" height="100" rx="8"/><rect x="95" y="108" width="610" height="35" rx="8"/><rect x="15" y="207" width="770" height="57" rx="8"/></g><g fill="#F0E8DC" font-size="17"><text x="35" y="44">OR case — explicit case and goal</text><text x="75" y="91">Integration — goal in MPL and common notation</text><text x="115" y="132">Subproof — its own assumptions and checked rows</text><text x="35" y="231">Disintegration — original source → used witnesses and products</text><text x="35" y="252">Open to inspect every primitive expansion and disintegration</text></g></svg>
+<p>Common notation appears beneath every displayed line and has its own right-hand proof citations. References use the available width and stay on one line when they fit. Chapter, part and subpart numbers identify the hierarchy. The three induction parts share their parent chapter number: .1 for typing, .2 for zero and .3 for the induction step. The chosen notation follows chapter, index and auxiliary-page navigation in either direction. Index captions are bold grey by default and brighter in common-only mode; implication arrows sit close to their premise groups. Each arrow and conclusion is vertically centered against its own complete premise group, including nested bracketed formulas. A floating header keeps navigation, the legend, the notation checkbox and prominent Expand all / Collapse all buttons together while scrolling. The block controls apply across the complete chapter. Switching modes keeps the current proof row in place. It hides MPL and the READS label while making the mathematical text more prominent. Operation names and explanatory labels stand out in color and weight from the formulas beneath them. Each visible proof row keeps its (position/total) number on the left in the same color, with clickable numbered citations on the right. Every AND member has its own indented line. Multiline premise and expression groups have matching full-height brackets. An exactly repeated member is written once in common notation; the complete original formal expression remains available in mixed mode. Layout is recursive: an implication inside an AND keeps its own indented premise list and large right arrow to the conclusion, with full-height parentheses grouping the complete formula.</p>
+<p>Every named definition reads in common notation through its own prepared template, written the way a mathematician states the notion: the factorization existence is <em>∃ primes p₀ ≥ p₁ ≥ … ≥ pₖ: n = ∏ᵢ₌₀ᵏ pᵢ</em>, a factorization is <em>n = ∏ᵢ₌₀ᵏ P(i) with primes P(0) ≥ … ≥ P(k)</em>, coprimality is <em>gcd(a, b) = 1</em>, the Bézout statement is <em>∃ m, n ∈ ℕ: a · m = b · n ± 1</em>, the divisor set is <em>D = {d ∈ ℕ : 2 ≤ d ≤ k, d ∣ k}</em>. A name a template introduces itself (m, n, p, k, d) is a letter that no proof page uses for a variable, so it can never meet a name of the formula around it. A named definition is never unfolded into its atoms. Only the numbered expressions the compiler generates (an existence, a conjunction, a disjunction or an implication with a number) are unfolded, and that unfolding stops at every named definition inside them, which again reads through its template. A long template breaks only at its own seam, with an indented continuation line. A name without a template stops the rendering with an assertion instead of falling back to its unfolded body.</p>
+<svg viewBox="0 0 800 210" role="img" aria-label="A numbered existence unfolds into its parts; the unfolding stops at the named definition inside it, which reads through its own template"><g fill="#202635" stroke="#7EA2C4"><rect x="15" y="15" width="380" height="50" rx="8"/><rect x="15" y="140" width="250" height="50" rx="8"/><rect x="300" y="140" width="485" height="50" rx="8"/></g><g stroke="#7EA2C4" fill="none"><path d="M140 65 L140 140"/><path d="M300 65 L520 140"/></g><g fill="#F0E8DC" font-size="16"><text x="35" y="38">existence45 — numbered: unfolded</text><text x="35" y="57" fill="#8B8FA5" font-size="13">∃ y₁ ∈ ℕ: …</text><text x="35" y="163">in — relation</text><text x="35" y="181" fill="#8B8FA5" font-size="13">y₁ ∈ ℕ</text><text x="320" y="163">hasPrimeFactorization — named: template</text><text x="320" y="181" fill="#8B8FA5" font-size="13">∃ primes p₀ ≥ p₁ ≥ … ≥ pₖ: y₁ = ∏ᵢ₌₀ᵏ pᵢ</text></g></svg>
+<p>The compact reader count and complete formal count are both shown across all parts of a chapter. Headers are presentation summaries, never new proof rules. The formal graphs remain checked by the GL verifier; connected Lean certification covers the main book. Changes to the presentation also undergo an agent-operated browser suite checking navigation, nested collapse, notation, highlighting and layout.</p></section>
 </main>
 </body>
 </html>

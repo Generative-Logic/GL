@@ -1,0 +1,28 @@
+!(interval[1,4,2,9,12])	main	contradiction	!(in[int_0_lev_4_1,12])	main	(in[int_0_lev_4_1,12])	main	(interval[1,4,2,9,12])	main
+!(in[int_0_lev_4_1,12])	main	disintegration	!(>[int_0_lev_4_1](preorder[1,4,2,int_0_lev_4_1])(>[](preorder[1,4,int_0_lev_4_1,10])(in[int_0_lev_4_1,12])))	main
+!(>[int_0_lev_4_1](preorder[1,4,2,int_0_lev_4_1])(>[](preorder[1,4,int_0_lev_4_1,10])(in[int_0_lev_4_1,12])))	main	expansion	!(implication91[1,4,2,10,12])	main
+!(implication91[1,4,2,10,12])	main	implication	(>[](implication89[u_12,u_1,u_4,u_2])(>[](implication90[u_12,u_1,u_4,u_10])(>[](in[u_2,u_1])(>[](in[u_10,u_1])!(implication91[u_1,u_4,u_2,u_10,u_12])))))	main	(implication89[12,1,4,2])	main	(implication90[12,1,4,10])	main	(in[10,1])	main	(in[2,1])	main
+(>[](implication89[u_12,u_1,u_4,u_2])(>[](implication90[u_12,u_1,u_4,u_10])(>[](in[u_2,u_1])(>[](in[u_10,u_1])!(implication91[u_1,u_4,u_2,u_10,u_12])))))	main	disintegration	!(&(&(&(&(implication89[12,1,4,2])(implication90[12,1,4,10]))(implication91[1,4,2,10,12]))(in[2,1]))(in[10,1]))	main
+!(&(&(&(&(implication89[12,1,4,2])(implication90[12,1,4,10]))(implication91[1,4,2,10,12]))(in[2,1]))(in[10,1]))	main	expansion	!(interval[1,4,2,10,12])	main
+!(interval[1,4,2,10,12])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(interval[1,4,2,10,11]))))	main	(AnchorGauss[1,2,3,4,5,6,7,8])	main	(in2[9,10,3])	main	(interval[1,4,2,9,12])	main
+(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(interval[1,4,2,10,11]))))	main	theorem
+(AnchorGauss[1,2,3,4,5,6,7,8])	main	task formulation
+(in2[9,10,3])	main	task formulation
+(interval[1,4,2,9,12])	main	task formulation
+(implication89[12,1,4,2])	main	disintegration	(&(&(&(&(implication89[12,1,4,2])(implication90[12,1,4,9]))(implication91[1,4,2,9,12]))(in[2,1]))(in[9,1]))	main
+(&(&(&(&(implication89[12,1,4,2])(implication90[12,1,4,9]))(implication91[1,4,2,9,12]))(in[2,1]))(in[9,1]))	main	expansion	(interval[1,4,2,9,12])	main
+(implication90[12,1,4,10])	main	disintegration	(&(&(subset[12,11])(implication90[12,1,4,10]))(implication141[11,1,4,10,12]))	main
+(&(&(subset[12,11])(implication90[12,1,4,10]))(implication141[11,1,4,10,12]))	main	expansion	(limitSet[1,4,11,10,12])	main
+(limitSet[1,4,11,10,12])	main	task formulation
+(in[10,1])	main	disintegration	(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,10]))(implication91[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,10]))(implication91[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main	expansion	(interval[1,4,2,10,11])	main
+(interval[1,4,2,10,11])	main	task formulation
+(in[2,1])	main	disintegration	(&(&(&(&(implication89[12,1,4,2])(implication90[12,1,4,9]))(implication91[1,4,2,9,12]))(in[2,1]))(in[9,1]))	main
+(in[int_0_lev_4_1,12])	main	implication	(>[1](in[1,u_11])(>[](preorder[u_1,u_4,1,u_10])(in[1,u_12])))	main	(in[int_0_lev_4_1,11])	main	(preorder[1,4,int_0_lev_4_1,10])	main
+(>[1](in[1,u_11])(>[](preorder[u_1,u_4,1,u_10])(in[1,u_12])))	main	expansion	(implication141[11,1,4,10,12])	main
+(implication141[11,1,4,10,12])	main	disintegration	(&(&(subset[12,11])(implication90[12,1,4,10]))(implication141[11,1,4,10,12]))	main
+(in[int_0_lev_4_1,11])	main	implication	(>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_10])(in[1,u_11])))	main	(preorder[1,4,2,int_0_lev_4_1])	main	(preorder[1,4,int_0_lev_4_1,10])	main
+(>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_10])(in[1,u_11])))	main	expansion	(implication91[1,4,2,10,11])	main
+(implication91[1,4,2,10,11])	main	disintegration	(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,10]))(implication91[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(preorder[1,4,2,int_0_lev_4_1])	main	disintegration	!(>[int_0_lev_4_1](preorder[1,4,2,int_0_lev_4_1])(>[](preorder[1,4,int_0_lev_4_1,10])(in[int_0_lev_4_1,12])))	main
+(preorder[1,4,int_0_lev_4_1,10])	main	disintegration	!(>[int_0_lev_4_1](preorder[1,4,2,int_0_lev_4_1])(>[](preorder[1,4,int_0_lev_4_1,10])(in[int_0_lev_4_1,12])))	main

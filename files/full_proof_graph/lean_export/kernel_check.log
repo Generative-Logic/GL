@@ -1,0 +1,25 @@
+$ C:\Users\nikol\.elan\bin\lake.EXE build
+✔ [2/10] Built GLExport.ProofSupport (3.8s)
+✔ [3/10] Built GLExport.Generated.Definitions (3.3s)
+✔ [4/10] Built GLExport.Generated.Peano (4.7s)
+✔ [5/10] Built GLExport.NatModel (4.6s)
+✔ [6/10] Built GLExport.Generated.Gauss (3.5s)
+⚠ [7/10] Built GLExport.Generated.FTA (13s)
+warning: GLExport/Generated/FTA.lean:16839:44: This simp argument is unused:
+  notNotIff
+
+Hint: Omit it from the simp argument list.
+  simp only [gl_and23, notAndIffNotOrNot,̵ ̵n̵o̵t̵N̵o̵t̵I̵f̵f̵] at or_cases
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: GLExport/Generated/FTA.lean:17298:44: This simp argument is unused:
+  notNotIff
+
+Hint: Omit it from the simp argument list.
+  simp only [gl_and23, notAndIffNotOrNot,̵ ̵n̵o̵t̵N̵o̵t̵I̵f̵f̵] at or_cases
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+✔ [8/10] Built GLExport.NatResults (2.8s)
+✔ [9/10] Built GLExport (1.2s)
+Build completed successfully (10 jobs).
+exit 0

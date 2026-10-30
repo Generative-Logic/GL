@@ -92,7 +92,7 @@ namespace gl {
     /// The edges must be readable while an LB's main arena is COLD (the tree is
     /// navigated regardless of deload state), so they cannot ride the deloadable
     /// per-LB arena. The store therefore lives on a dedicated, NEVER-DELOADED
-    /// arena (the `ExpressionAnalyzer`-owned `simpleMapArena{ &lbMemory() }`, the
+    /// arena (the `Prover`-owned `simpleMapArena{ &lbMemory() }`, the
     /// LB-body pool the skeleton interner already uses), exactly the `MailLog`
     /// model: its two cold containers are pure runtime containers — never
     /// enumerated by `LbMemory::visitContainers`, so never deloaded / dirty-tracked
@@ -147,7 +147,7 @@ namespace gl {
         /// @brief Bind the two cold containers to the store arena.
         ///
         /// @details
-        /// Both draw their pages from `arena` (the `ExpressionAnalyzer`-owned
+        /// Both draw their pages from `arena` (the `Prover`-owned
         /// `simpleMapArena` / `ceSimpleMapArena` on the never-deloaded LB-body
         /// pool). `dirty` is present only to satisfy the container constructors —
         /// it is NEVER read (these containers produce no deload image).

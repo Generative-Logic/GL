@@ -1,0 +1,11 @@
+(primeseq[1,4,5,6,7,10])	main	validity name	(prime[1,4,5,6,7,repl_lev_2_1])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])
+(prime[1,4,5,6,7,repl_lev_2_1])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])	equality1	(prime[1,4,5,6,7,9])	main	(=[9,repl_lev_2_1])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])
+(prime[1,4,5,6,7,9])	main	task formulation
+(=[9,repl_lev_2_1])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])	symmetry of equality	(=[repl_lev_2_1,9])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])
+(=[repl_lev_2_1,9])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])	implication	(>[1,2](in2[1,2,u_10])(=[2,u_9]))	main	(in2[repl_lev_2_0,repl_lev_2_1,10])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])
+(>[1,2](in2[1,2,u_10])(=[2,u_9]))	main	expansion	(implication2438[10,9])	main
+(implication2438[10,9])	main	disintegration	(&(&(implication2437[10,2])(implication2438[10,9]))(implication2439[2,9,10]))	main
+(&(&(implication2437[10,2])(implication2438[10,9]))(implication2439[2,9,10]))	main	expansion	(EnumerationRelationSet1[2,9,10])	main
+(EnumerationRelationSet1[2,9,10])	main	task formulation
+(in2[repl_lev_2_0,repl_lev_2_1,10])	main_boundary_(primeseq[1,4,5,6,7,10])_subproof_(primeseq[1,4,5,6,7,10])	premise element	(>[repl_lev_2_0,repl_lev_2_1](in2[repl_lev_2_0,repl_lev_2_1,10])(prime[1,4,5,6,7,repl_lev_2_1]))_integration_goal	main
+(>[repl_lev_2_0,repl_lev_2_1](in2[repl_lev_2_0,repl_lev_2_1,10])(prime[1,4,5,6,7,repl_lev_2_1]))_integration_goal	main	expansion for integration	(primeseq[1,4,5,6,7,10])_integration_goal	main

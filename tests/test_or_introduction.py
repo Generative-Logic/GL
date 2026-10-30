@@ -154,5 +154,78 @@ class OrIntroductionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class FullImplicationSourceTests(unittest.TestCase):
+    """OR introduction citing a full implication chain whose premise is the
+    OR: the flat rule of a root integration goal
+    (D-492)."""
+    source = '(>[x,y](choice[x,y,f,a,n])(in2[x,y,g]))'
+    target = OrIntroductionTests.target
+
+    def match(self, target=None, source=None):
+        return match_or_introduction(parse_mpl(target or self.target), parse_mpl(source or self.source),
+                                     definitions())
+
+    def test_each_disjunct_of_a_chain_premise_and_nothing_else(self):
+        self.assertEqual(self.match(), {'binder_groups': [['p'], ['i']], 'tree': [0, 1], 'path': [2]})
+        self.assertEqual(self.match('(>[i,p](in2[i,p,f])(choice[i,p,f,a,n]))')['path'], [1])
+        nested = '(>[x](in2[x,a,f])(>[y](choice[x,y,f,a,n])(in2[x,y,g])))'
+        self.assertEqual(self.match(source=nested), self.match())
+        for invalid in [
+            '(>[p](=[p,a])(>[i](=[i,n])(choice[i,p,g,a,n])))',
+            '(>[p](=[p,n])(>[i](=[i,n])(choice[i,p,f,a,n])))',
+            '(>[p,i](in2[p,i,f])(choice[i,p,f,a,n]))',
+            '(>[a](=[a,a])(>[i](=[i,n])(choice[i,a,f,a,n])))',
+        ]:
+            with self.subTest(invalid=invalid):
+                self.assertIsNone(self.match(invalid))
+        self.assertIsNone(self.match(source='(>[x,y](in2[x,y,f])(in2[x,y,g]))'))
+        self.assertIsNone(self.match(source='!(>[x,y](choice[x,y,f,a,n])(in2[x,y,g]))'))
+
+    def test_verifier_requires_the_cited_rule_at_the_same_scope(self):
+        from tests.test_harness import make_proof_line, make_state_minimal
+        from verifier import check_expansion
+        state = make_state_minimal()
+        state.current_gl_binary = definitions()
+        origin = make_proof_line(self.source, 'main', 'reformulation for integration flattened')
+        row = make_proof_line(self.target, 'main', 'expansion', self.source, 'main')
+        self.assertTrue(check_expansion(row, [origin, row], state))
+        self.assertFalse(check_expansion(row, [row], state))
+        wrong = make_proof_line('(>[p](=[p,n])(>[i](=[i,n])(choice[i,p,f,a,n])))', 'main', 'expansion',
+                                self.source, 'main')
+        self.assertFalse(check_expansion(wrong, [origin, wrong], state))
+        row.namespace = 'main_boundary_case'
+        self.assertFalse(check_expansion(row, [origin, row], state))
+
+    def test_certificate_and_lean_kernel(self):
+        from proof_export.certificate import _chapter_certificate
+        from proof_export.graph import Chapter, ProofRow, Dependency, parse_scoped_expression
+        from proof_export.lean import _render_chapter_steps
+        with tempfile.TemporaryDirectory(prefix='or_introduction_flat_') as directory:
+            source = parse_scoped_expression(self.source)
+            rows = (ProofRow(1, source, 'main', 'task formulation', ()),
+                    ProofRow(2, parse_scoped_expression(self.target), 'main', 'expansion', (Dependency(source, 'main'),)))
+            path = Path(directory)/'1_single_chapter_proof.txt'
+            path.write_text(f'{self.source}\tmain\ttask formulation\n{self.target}\tmain\texpansion\t{self.source}\tmain\n',
+                            encoding='utf-8')
+            signatures = {'=': ('element', 'element'), 'in2': ('element', 'element', 'binary_relation'),
+                          'pair': ('element',)*4,
+                          'choice': ('element', 'element', 'binary_relation', 'element', 'element')}
+            certificate = _chapter_certificate(Chapter(path, 1, 'single_chapter_proof', rows),
+                signatures, {}, {}, binary_entries=definitions())
+            self.assertEqual(certificate['steps'][-1]['action'], 'structural_or_introduce')
+            lines, _ = _render_chapter_steps(certificate, 'introduction', {self.source: 'source'},
+                {name: name for name in ('f', 'a', 'n', 'g')}, ambient_variables={'f', 'a', 'n', 'g'},
+                binary_definitions=definitions())
+            lean = Path(directory)/'FlatIntroduction.lean'
+            lean.write_text('def gl_pair {α : Type} (p a i n : α) : Prop := p=a ∧ i=n\n'
+                'def gl_choice {α : Type} (i p : α) (f : α → α → Prop) (a n : α) : Prop := f i p ∨ gl_pair p a i n\n'
+                'example {α : Type} (f g : α → α → Prop) (a n : α) (source : ∀ x y, gl_choice x y f a n → g x y) : '
+                '(∀ p, p=a → ∀ i, i=n → gl_choice i p f a n) := by\n' + '\n'.join(lines) + '\n  exact row_2\n',
+                encoding='utf-8')
+            result = subprocess.run([lean_executable(), str(lean)], cwd=LEAN_PROJECT,
+                env=lean_environment(), capture_output=True, text=True, encoding='utf-8', timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

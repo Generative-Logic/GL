@@ -26,9 +26,13 @@
 /// @brief Tests for the antisymmetry-shaped variable-copy trigger:
 ///        `gl::detectAntisymmetryCopyVar` (shape detection) and the
 ///        `(=[X,X_copy])` deposit in
-///        `ExpressionAnalyzer::addTheoremToMemory`.
+///        `gl::tests::ProverFixture::addTheoremToMemory`.
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../prover.hpp"
 
@@ -42,13 +46,13 @@ namespace {
 
 TEST(antisym_variable_copy, detect_positive) {
     std::string copyVar;
-    ASSERT_TRUE(gl::detectAntisymmetryCopyVar(antisymChain, "(=[7,8])", copyVar));
+    ASSERT_TRUE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(antisymChain, "(=[7,8])", copyVar));
     ASSERT_TRUE(copyVar == std::string("7"));
 }
 
 TEST(antisym_variable_copy, detect_positive_mirrored_head) {
     std::string copyVar;
-    ASSERT_TRUE(gl::detectAntisymmetryCopyVar(antisymChain, "(=[8,7])", copyVar));
+    ASSERT_TRUE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(antisymChain, "(=[8,7])", copyVar));
     // The copy variable is the swapped argument that appears first
     // left-to-right in the earlier premise, independent of head order.
     ASSERT_TRUE(copyVar == std::string("7"));
@@ -56,18 +60,18 @@ TEST(antisym_variable_copy, detect_positive_mirrored_head) {
 
 TEST(antisym_variable_copy, detect_negative_non_equality_head) {
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(
         antisymChain, "(preorder[1,4,7,8])", copyVar));
 }
 
 TEST(antisym_variable_copy, detect_negative_negated_head) {
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(antisymChain, "!(=[7,8])", copyVar));
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(antisymChain, "!(=[7,8])", copyVar));
 }
 
 TEST(antisym_variable_copy, detect_negative_head_over_other_vars) {
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(antisymChain, "(=[7,9])", copyVar));
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(antisymChain, "(=[7,9])", copyVar));
 }
 
 TEST(antisym_variable_copy, detect_negative_negated_premise) {
@@ -76,7 +80,7 @@ TEST(antisym_variable_copy, detect_negative_negated_premise) {
         "!(preorder[1,4,8,7])",
     };
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(chain, "(=[7,8])", copyVar));
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(chain, "(=[7,8])", copyVar));
 }
 
 TEST(antisym_variable_copy, detect_negative_identical_premises) {
@@ -85,7 +89,7 @@ TEST(antisym_variable_copy, detect_negative_identical_premises) {
         "(preorder[1,4,7,8])",
     };
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(chain, "(=[7,8])", copyVar));
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(chain, "(=[7,8])", copyVar));
 }
 
 TEST(antisym_variable_copy, detect_negative_transitivity_shape) {
@@ -94,7 +98,7 @@ TEST(antisym_variable_copy, detect_negative_transitivity_shape) {
         "(preorder[1,4,8,9])",
     };
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(chain, "(=[7,9])", copyVar));
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(chain, "(=[7,9])", copyVar));
 }
 
 TEST(antisym_variable_copy, detect_negative_different_operators) {
@@ -103,14 +107,14 @@ TEST(antisym_variable_copy, detect_negative_different_operators) {
         "(in3[1,4,8,7])",
     };
     std::string copyVar;
-    ASSERT_FALSE(gl::detectAntisymmetryCopyVar(chain, "(=[7,8])", copyVar));
+    ASSERT_FALSE(gl::VariableCopyDetector::detectAntisymmetryCopyVar(chain, "(=[7,8])", copyVar));
 }
 
 TEST(antisym_variable_copy, deposit_at_innermost_lb) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string conj =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](preorder[1,4,7,8])(>[](preorder[1,4,8,7])(=[7,8]))))";
-    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
 
     gl::Memory* anchorLB =
         ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -123,27 +127,27 @@ TEST(antisym_variable_copy, deposit_at_innermost_lb) {
     ASSERT_TRUE(innerLB != nullptr);
 
     // The copy equality is a known main-scope statement of the innermost LB.
-    const gl::NameId copyId = innerLB->nameMap.lookup("(=[7,7_copy])");
+    const gl::NameId copyId = ((*(innerLB)).nameMap).lookup("(=[7,7_copy])");
     ASSERT_NE(copyId, 0);
-    const gl::StatementFlags* fl = innerLB->intKnownStatements.find(
+    const gl::StatementFlags* fl = ((*(innerLB)).intKnownStatements).find(
         gl::StatementKey{ copyId, gl::NameMap::MAIN_ID });
     ASSERT_TRUE(fl != nullptr);
     ASSERT_TRUE(fl != nullptr);
 
     // The ancestors carry no copy axiom (the deposit is innermost-only).
-    ASSERT_TRUE(outerLB->nameMap.lookup("(=[7,7_copy])") == 0);
+    ASSERT_TRUE(((*(outerLB)).nameMap).lookup("(=[7,7_copy])") == 0);
 }
 
 TEST(antisym_variable_copy, no_deposit_for_other_shapes) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string conj =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
-    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
 
     gl::Memory* anchorLB =
         ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
     ASSERT_TRUE(anchorLB != nullptr);
     gl::Memory* innerLB = ea.simpleMapStore.findChild(anchorLB, "(in2[7,8,3])");
     ASSERT_TRUE(innerLB != nullptr);
-    ASSERT_TRUE(innerLB->nameMap.lookup("(=[7,7_copy])") == 0);
+    ASSERT_TRUE(((*(innerLB)).nameMap).lookup("(=[7,7_copy])") == 0);
 }

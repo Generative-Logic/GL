@@ -232,6 +232,19 @@ namespace gl {
         return false;
     }
 
+    /// @brief Test an owned string for an exact byte prefix.
+    /// @details An empty prefix matches; a longer prefix or differing byte does not.
+    /// @param s String to inspect.
+    /// @param pfx Prefix bytes, valid for at least n bytes.
+    /// @param n Prefix length.
+    /// @return Whether the first n bytes of s equal the prefix.
+    /// @see startsWithSpan.
+    inline bool startsWith(const std::string& s, const char* pfx, std::size_t n) {
+            if (s.size() < n) return false;
+            for (std::size_t i = 0; i < n; ++i) if (s[i] != pfx[i]) return false;
+            return true;
+        }
+
     /// @brief Prefix test over a span — the zero-allocation twin of the
     ///        `startsWith(const std::string&, const char*, n)` helper used
     ///        across the prover.
@@ -1024,6 +1037,52 @@ namespace gl {
         }
     }
 
+    /// @brief Visit every flat leaf `(core[args])` of an MPL expression
+    ///        (D-522).
+    ///
+    /// @details
+    /// Every argument list `[...]` of a canonical MPL text belongs either to a
+    /// leaf — an application `(core[args])`, possibly negated or nested in an
+    /// implication, an existence or an and — or to a binder `>[vars]`. The
+    /// scan visits each leaf once, left to right, as the span from its opening
+    /// parenthesis through the closing `)` after its argument list (a leading
+    /// `!` is not part of the span), and skips binder lists. Text after a
+    /// leaf (the `_integration_goal` suffix of a goal key) is ignored. A `[`
+    /// that is neither a binder nor preceded by `(core` is not MPL and asserts.
+    ///
+    /// @tparam Sink A callable `bool(StrSpan leaf)`; returning true stops the
+    ///         scan.
+    /// @param expr The MPL text.
+    /// @param sink Per-leaf callback; the span points into @p expr.
+    /// @return True iff @p sink stopped the scan.
+    /// @invariant Allocates nothing.
+    /// @see collectExprTokens, getArgsSpans.
+    template <typename Sink>
+    inline bool forEachLeafSpan(const StrSpan& expr, Sink sink) {
+        int32_t i = 0;
+        while (i < expr.len) {
+            if (expr.ptr[i] != '[') { ++i; continue; }
+            int32_t close = i + 1;
+            while (close < expr.len && expr.ptr[close] != ']') ++close;
+            assert(close < expr.len && i > 0 && "forEachLeafSpan: an argument list follows a core or a binder");
+            if (expr.ptr[i - 1] != '>') {
+                int32_t open = i - 1;
+                while (open >= 0 && expr.ptr[open] != '(') {
+                    const char c = expr.ptr[open];
+                    assert(c != ')' && c != '[' && c != ']' && c != '!' && c != '>'
+                        && "forEachLeafSpan: a leaf is (core[args])");
+                    (void)c;
+                    --open;
+                }
+                assert(open >= 0 && open < i - 1 && close + 1 < expr.len && expr.ptr[close + 1] == ')'
+                    && "forEachLeafSpan: a leaf is (core[args])");
+                if (sink(StrSpan(expr.ptr + open, close + 2 - open))) return true;
+            }
+            i = close + 1;
+        }
+        return false;
+    }
+
     /// @brief View twin of `ce::extractExpression` — the core expression
     ///        name of a canonical MPL form, as a slice of the input.
     ///
@@ -1274,7 +1333,7 @@ namespace gl {
         return result;
     }
 
-    /// @brief View twin of `ExpressionAnalyzer::replaceUSubstrings` —
+    /// @brief View twin of `DefinitionExpansion::replaceUSubstrings` —
     ///        strip `u_` prefixes that begin a token (after `[` or `,`),
     ///        into the scratch arena.
     ///
@@ -1334,48 +1393,74 @@ namespace gl {
         return ScratchString::wrap(arena, buf, outLen);
     }
 
-    /// @brief Deduplicate the bound-variable lists of an implication, dropping
-    ///        `u_`-prefixed vars — the heap-free span twin of the former
-    ///        file-static `deduplicateBoundVars`.
+    /// @brief Deduplicate the bound-variable lists of an implication across its
+    ///        nested scopes, dropping `u_`-prefixed vars — the heap-free span
+    ///        form of the bound-variable cleanup after a variable merge.
     ///
     /// @details
-    /// After variable replacement a `(>[...]` bound-variable list may contain
-    /// duplicate or `u_`-prefixed vars. This walks @p impl once, copying every
-    /// byte verbatim EXCEPT each `(>[` list's comma-separated var run, which it
-    /// rebuilds: parse the tokens between `(>[` and the next `]`, skip empty and
-    /// `u_`-prefixed tokens, keep the first occurrence of each remaining var
-    /// (linear `equalSpans` dedup against a bounded stack `StrSpan seen[]`), and
-    /// re-emit the distinct vars comma-joined. The `(>[` and the trailing `]`
-    /// echo 1:1; a `(>[` with no matching `]` copies through unchanged. The
-    /// output only COPIES or REMOVES bytes, so its length is `<= impl.len` — one
-    /// `allocBytes(impl.len)` worst-case buffer, filled in a single pass, wrapped
-    /// at the exact filled length (`assert(at <= impl.len)`; an empty input or an
-    /// all-stripped output returns the default empty `ScratchString`, since
-    /// `wrap` requires `len > 0`).
+    /// After variable replacement (`multiplyImplication` merges the variables
+    /// of a partition class into one name) a `(>[...]` bound-variable list may
+    /// contain a duplicate, a `u_`-prefixed var, or a name that an ENCLOSING
+    /// implication already binds. A name binds once per scope chain (I-29: a
+    /// name bound again is a new, independent variable), so the merged variable keeps its
+    /// outermost binder and every inner one goes; otherwise the text would
+    /// state a different, possibly false, rule than the merge produced.
     ///
-    /// Byte-identical to the heap oracle by construction: same `(>[` detection,
-    /// same first-seen order, same `u_` strip, same comma join — a pure string
-    /// transform, no mint, no interner. The result rides @p arena's string tier
-    /// and is spanned only at the caller's synchronous edge (09c pitfall 4/5).
-    /// The per-list dedup set is a stack `StrSpan[kBoundVarCap]` (cap 64, the
-    /// `reconstructImplicationFullBind` bound-var-list ceiling); an overrun is a
-    /// loud Rule-19 widen-on-STOP assert.
+    /// This walks @p impl once, copying every byte verbatim EXCEPT each `(>[`
+    /// list's comma-separated var run, which it rebuilds: parse the tokens
+    /// between `(>[` and the next `]`, skip empty and `u_`-prefixed tokens, skip
+    /// every token already bound by an enclosing open implication or earlier in
+    /// the same list (linear `equalSpans` scan of a bounded stack
+    /// `StrSpan bound[]`), and re-emit the kept vars comma-joined. A
+    /// parenthesis-depth counter tracks the open implications: an implication's
+    /// names are bound until the `)` that closes it, so sibling scopes (two
+    /// implications under one conjunction) each keep their own binders. The
+    /// `(>[` and the trailing `]` echo 1:1; a `(>[` with no matching `]` copies
+    /// through unchanged. The output only COPIES or REMOVES bytes, so its length
+    /// is `<= impl.len` — one `allocBytes(impl.len)` worst-case buffer, filled
+    /// in a single pass, wrapped at the exact filled length
+    /// (`assert(at <= impl.len)`; an empty input or an all-stripped output
+    /// returns the default empty `ScratchString`, since `wrap` requires
+    /// `len > 0`).
+    ///
+    /// A pure string transform, no mint, no interner. The result rides
+    /// @p arena's string tier and is spanned only at the caller's synchronous
+    /// edge (09c pitfall 4/5). The open-scope names are a stack
+    /// `StrSpan[kBoundVarCap]` (cap 128, the `MAX_EXPRESSIONS * MAX_ARITY`
+    /// argument ceiling of one rule) and the open implications a stack of
+    /// `kScopeCap` (64) entries; an overrun is a loud Rule-19 widen-on-STOP
+    /// assert, as is a `)` without its `(`.
     ///
     /// @param impl  The implication text to clean (a slice of a stable buffer).
     /// @param arena Per-slot string-tier scratch arena receiving the result.
     /// @return The cleaned implication as a `ScratchString` on @p arena; empty
     ///         when @p impl is empty or the transform emits nothing.
+    /// @invariant In the result no `(>[...]` list binds a name that an
+    ///            enclosing implication or the same list already binds.
     /// @see equalSpans; getArgsSpans (the sibling `[...]` slicer).
     inline ScratchString deduplicateBoundVarsScratch(StrSpan impl, ScratchArena& arena) {
         if (impl.len == 0) return ScratchString();
-        constexpr int32_t kBoundVarCap = 64;
+        constexpr int32_t kBoundVarCap = 128;
+        constexpr int32_t kScopeCap = 64;
         char* buf = arena.allocBytes(impl.len);   // output never grows
+        StrSpan bound[kBoundVarCap];               // names of the open implications
+        int32_t boundN = 0;
+        int32_t scopeOuterDepth[kScopeCap];        // depth outside each open implication
+        int32_t scopeBoundStart[kScopeCap];        // boundN when it opened
+        int32_t scopeN = 0;
+        int32_t depth = 0;
         int32_t at = 0;
         int32_t i = 0;
         while (i < impl.len) {
             // Look for "(>["
             if (i + 2 < impl.len && impl.ptr[i] == '(' && impl.ptr[i + 1] == '>'
                 && impl.ptr[i + 2] == '[') {
+                assert(scopeN < kScopeCap
+                    && "deduplicateBoundVarsScratch: implication nesting exceeds cap 64");
+                scopeOuterDepth[scopeN] = depth;
+                scopeBoundStart[scopeN] = boundN;
+                ++scopeN;
+                ++depth;
                 buf[at++] = '('; buf[at++] = '>'; buf[at++] = '[';
                 i += 3;
                 int32_t closeBracket = -1;
@@ -1383,8 +1468,6 @@ namespace gl {
                     if (impl.ptr[s] == ']') { closeBracket = s; break; }
                 }
                 if (closeBracket >= 0) {
-                    StrSpan seen[kBoundVarCap];
-                    int32_t seenN = 0;
                     int32_t emitted = 0;
                     const int32_t listEnd = closeBracket;
                     int32_t pos = i;                 // absolute index of the var run
@@ -1403,13 +1486,13 @@ namespace gl {
                             const bool isU =
                                 (tokLen >= 2 && v.ptr[0] == 'u' && v.ptr[1] == '_');
                             if (!isU) {
-                                bool dup = false;
-                                for (int32_t k = 0; k < seenN; ++k)
-                                    if (equalSpans(v, seen[k])) { dup = true; break; }
-                                if (!dup) {
-                                    assert(seenN < kBoundVarCap
-                                        && "deduplicateBoundVarsScratch: bound-var list exceeds cap 64");
-                                    seen[seenN++] = v;
+                                bool isBound = false;
+                                for (int32_t k = 0; k < boundN; ++k)
+                                    if (equalSpans(v, bound[k])) { isBound = true; break; }
+                                if (!isBound) {
+                                    assert(boundN < kBoundVarCap
+                                        && "deduplicateBoundVarsScratch: bound names exceed cap 128");
+                                    bound[boundN++] = v;
                                     if (emitted > 0) buf[at++] = ',';
                                     std::memcpy(buf + at, v.ptr,
                                                 static_cast<std::size_t>(tokLen));
@@ -1422,7 +1505,18 @@ namespace gl {
                     i = closeBracket;   // the ']' is copied on the next iteration
                 }
             } else {
-                buf[at++] = impl.ptr[i];
+                const char c = impl.ptr[i];
+                if (c == '(') {
+                    ++depth;
+                } else if (c == ')') {
+                    assert(depth > 0 && "deduplicateBoundVarsScratch: ')' without its '('");
+                    --depth;
+                    if (scopeN > 0 && depth == scopeOuterDepth[scopeN - 1]) {
+                        --scopeN;
+                        boundN = scopeBoundStart[scopeN];
+                    }
+                }
+                buf[at++] = c;
                 ++i;
             }
         }

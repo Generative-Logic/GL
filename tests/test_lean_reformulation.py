@@ -14,8 +14,13 @@ import subprocess
 import tempfile
 import unittest
 
-from proof_export.certificate import _defined_output_totality, _definition_from_expansion, _membership_body_key
-from proof_export.graph import Dependency, ProofRow, parse_scoped_expression
+from proof_export.certificate import (
+    _defined_output_totality,
+    _definition_from_expansion,
+    _membership_body_key,
+    binary_entries_with_overrides,
+)
+from proof_export.graph import Chapter, Dependency, ProofRow, TheoremRecord, parse_scoped_expression
 from proof_export.lean import _defined_output_proof_term, _membership_transport_term, _render_reformulated_theorem
 from proof_export.membership_transport import membership_transport_plan
 from proof_export.mpl import parse_mpl
@@ -48,6 +53,37 @@ def singleton_with_membership_premise():
     return certificate
 
 
+def equality_output_certificate(binders, retained, equality):
+    """The singleton's existence with an equality output: {i0} = u_2.
+
+    The theorem keeps ``retained`` for the binders and states
+    ``existence21[i0,V1]``; the cited source concludes ``equality`` from the
+    retained premise and the singleton definition of ``V2``.
+    """
+    certificate = singleton_certificate()
+    certificate["binary_definitions"]["existence21"] = {
+        "arity": 2,
+        "category": "existence",
+        "elements": ["(EnumerationSet1[u_1,1])", "(=[1,u_2])"],
+        "signature": ["element", "set"],
+    }
+    certificate["types"]["existence21"] = ["element", "set"]
+    theorem = certificate["theorems"][0]
+    step = theorem["chapters"][0]["steps"][0]
+    prefix = "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    target = prefix + f"(>[{binders}]{retained}(existence21[i0,V1])))"
+    source = prefix + f"(>[{binders}]{retained}(>[V2](EnumerationSet1[i0,V2]){equality})))"
+    theorem["theorem"]["mpl"] = target
+    theorem["variable_types"]["v1"] = "element"
+    theorem["variable_types"]["V1"] = "set"
+    step["conclusion"]["mpl"] = target
+    step["dependencies"][0]["theorem_reference"]["theorem"]["mpl"] = source
+    return certificate
+
+
+WITNESS = "(fun (x_1 : α) => (x_1 = zero))"
+
+
 class ConstructiveReformulationTests(unittest.TestCase):
     def render(self, certificate):
         return "\n".join(_render_reformulated_theorem(certificate["theorems"][0], certificate)[0])
@@ -76,6 +112,70 @@ class ConstructiveReformulationTests(unittest.TestCase):
         source["mpl"] = source["mpl"].replace("(in[v1,N])", "!(in[v1,N])")
         with self.assertRaisesRegex(AssertionError, "logical orderings"):
             self.render(certificate)
+
+    def test_source_stating_the_equality_reversed_is_applied_through_symmetry(self):
+        text = self.render(equality_output_certificate("v1,V1", "(EnumerationSet1[v1,V1])", "(=[V1,V2])"))
+        self.assertIn(
+            f"    have source_result : (V1 = {WITNESS}) := by\n"
+            f"      exact reformulationSource _ _ reformulation_premise_1 {WITNESS} defined_output\n"
+            f"    have output_result : ({WITNESS} = V1) := by\n"
+            "      exact Eq.symm source_result\n",
+            text,
+        )
+
+    def test_source_stating_the_definition_orientation_needs_no_symmetry(self):
+        text = self.render(equality_output_certificate("v1,V1", "(EnumerationSet1[v1,V1])", "(=[V2,V1])"))
+        self.assertIn(
+            f"    have output_result : ({WITNESS} = V1) := by\n"
+            f"      exact reformulationSource _ _ reformulation_premise_1 {WITNESS} defined_output\n",
+            text,
+        )
+        self.assertNotIn("source_result", text)
+        self.assertNotIn("Eq.symm", text)
+
+    def test_symmetric_uniqueness_source_keeps_the_stated_orientation(self):
+        # Both orientations apply to `P V1 → P V2 → V1 = V2`; no symmetry step.
+        text = self.render(equality_output_certificate("V1", "(EnumerationSet1[i0,V1])", "(=[V1,V2])"))
+        self.assertIn(f"exact reformulationSource {WITNESS} defined_output _ reformulation_premise_1", text)
+        self.assertNotIn("Eq.symm", text)
+
+    def test_source_equality_matching_neither_orientation_is_rejected(self):
+        with self.assertRaisesRegex(AssertionError, "0 logical orderings"):
+            self.render(equality_output_certificate("v1,V1", "(EnumerationSet1[v1,V1])", "(=[V1,V1])"))
+
+    def test_existence_not_beginning_with_the_defined_output_is_rejected(self):
+        certificate = equality_output_certificate("v1,V1", "(EnumerationSet1[v1,V1])", "(=[V2,V1])")
+        certificate["binary_definitions"]["existence21"]["elements"].reverse()
+        with self.assertRaisesRegex(AssertionError, "does not begin with the defined output"):
+            self.render(certificate)
+
+    def test_kernel_accepts_the_symmetry_step(self):
+        text = self.render(equality_output_certificate("v1,V1", "(EnumerationSet1[v1,V1])", "(=[V1,V2])"))
+        lines = text.splitlines()
+        start = next(index for index, line in enumerate(lines) if "have source_result" in line)
+        proof = "\n".join(line[2:] for line in lines[start:start + 4])
+        support = (LEAN_PROJECT / "GLExport/ProofSupport.lean").read_text(encoding="utf-8")
+        code = support + f"""
+open GLExport
+example {{α : Type}} (zero : α) (gl_EnumerationSet1 : α → GLSet α → Prop)
+    (reformulationSource : ∀ (v1 : α) (V1 : GLSet α), gl_EnumerationSet1 v1 V1 →
+      ∀ (V2 : GLSet α), gl_EnumerationSet1 zero V2 → V1 = V2)
+    (v1 : α) (V1 : GLSet α) (reformulation_premise_1 : gl_EnumerationSet1 v1 V1)
+    (defined_output : gl_EnumerationSet1 zero {WITNESS}) :
+    ({WITNESS} = V1) := by
+{proof}
+  exact output_result
+"""
+        with tempfile.TemporaryDirectory(prefix="reformulation_symmetry_") as directory:
+            path = Path(directory) / "ReformulationSymmetry.lean"
+            path.write_text(code, encoding="utf-8")
+            result = subprocess.run(
+                [str(lean_executable()), str(path)], cwd=LEAN_PROJECT,
+                env=lean_environment(),
+                text=True, encoding="utf-8", stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_source_anchor_cannot_change(self):
         certificate = singleton_certificate()
@@ -324,6 +424,40 @@ class ReformulationDefinitionTests(unittest.TestCase):
         target = "(>[2](H[2])(existence9[2]))"
         with self.assertRaises(AssertionError):
             _definition_from_expansion(reformulation_row(target, source))
+
+
+class ReformulationBinaryDefinitionTests(unittest.TestCase):
+    """A reformulation existence the binary holds keeps GL's own body."""
+
+    ANCHOR = "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    # The source states the limit equality parameter first: V2 = V3.
+    SOURCE = (ANCHOR + "(>[v1,V1,V2](limitSequence[N,+,v1,V1,V2])"
+              "(>[V3](limitSequence[N,+,v1,V1,V3])(=[V2,V3]))))")
+    TARGET = ANCHOR + "(>[v1,V1,V2](limitSequence[N,+,v1,V1,V2])(existence24[N,+,v1,V1,V2])))"
+    GL_BODY = ["(limitSequence[u_1,u_2,u_3,u_4,1])", "(=[1,u_5])"]
+
+    def overrides(self, binary):
+        row = reformulation_row(self.TARGET, self.SOURCE)
+        theorem = TheoremRecord(1, parse_mpl(self.TARGET), "reformulated statement", "-1",
+                                (Chapter(Path("1_reformulated.txt"), 1, "main", (row,)),))
+        with tempfile.TemporaryDirectory(prefix="reformulation_binary_") as directory:
+            path = Path(directory) / "GL_binary.json"
+            path.write_text(json.dumps(binary), encoding="utf-8")
+            return binary_entries_with_overrides((), [(None, theorem)], path)
+
+    def test_existence_in_the_binary_keeps_gl_body_against_a_reversed_row(self):
+        entry = {"arity": 5, "category": "existence", "elements": list(self.GL_BODY),
+                 "signature": "(existence24[u_1,u_2,u_3,u_4,u_5])"}
+        _, overrides, entries = self.overrides({"existence24": entry})
+        self.assertNotIn("existence24", overrides)
+        self.assertEqual(entries["existence24"]["elements"], self.GL_BODY)
+
+    def test_existence_missing_from_the_binary_is_reconstructed_from_its_row(self):
+        _, overrides, entries = self.overrides({})
+        self.assertEqual(overrides["existence24"]["elements"],
+                         ["(limitSequence[u_1,u_2,u_3,u_4,1])", "(=[u_5,1])"])
+        self.assertEqual(overrides["existence24"]["definition_source"], "reformulation_action")
+        self.assertIs(entries["existence24"], overrides["existence24"])
 
 
 if __name__ == "__main__":

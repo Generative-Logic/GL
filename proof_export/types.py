@@ -314,14 +314,20 @@ def load_type_environment(
 def infer_expression_variables(
     expressions: list[Expression],
     signatures: dict[str, tuple[str, ...]],
+    fixed: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """
     @brief Infer every argument token type across a group of expressions.
     @details Each atom occurrence constrains arguments by its resolved signature;
     `=` instead joins its two arguments, and a class only `=` joins is an
-    element (I-267). A token joining unlike ports is rejected.
+    element (I-267). A token joining unlike ports is rejected. A token whose
+    type is already known outside the expressions — a variable bound by an
+    enclosing scope — enters through @p fixed and constrains its class like a
+    port, before the element default applies.
     @param expressions Parsed expressions sharing one variable environment.
     @param signatures Resolved atom signatures.
+    @param fixed Known types of tokens bound outside the expressions; tokens
+    that occur in none of them are ignored.
     @return Sorted token-to-type mapping.
     """
 
@@ -345,6 +351,9 @@ def infer_expression_variables(
             for argument, kind in zip(atom.arguments, signature, strict=True):
                 union.constrain(("token", argument), kind)
                 tokens.add(argument)
+    for token, kind in sorted((fixed or {}).items()):
+        if token in tokens:
+            union.constrain(("token", token), kind)
     for node in equality_nodes:
         union.default(node, ELEMENT)
     return {token: union.resolved(("token", token)) for token in sorted(tokens)}

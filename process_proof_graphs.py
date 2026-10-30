@@ -32,6 +32,10 @@ from functools import cache
 from configuration_reader import configuration_reader
 import expression_utils
 from expression_utils import replace_keys_in_string
+from proof_convergence import process_to_fixed_point
+from proof_export.corpora import INCUBATOR_ANCHORS
+from proof_export.mpl import Atom, Implication, parse_mpl
+from proof_hierarchy import order_main_hierarchies
 
 # Assume the project root is the folder containing this file
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -370,6 +374,35 @@ def rename_external_theorem(raw_expr: str, config) -> str:
     return replace_keys_in_string(raw_expr, repl_map)
 
 
+def theorem_rename_map(raw_expr: str, config) -> dict[str, str]:
+    """
+    @brief Map every token of one closed theorem expression to its
+    theorem-local display name.
+    @details
+    Anchor slots take the anchor's configured names
+    (`get_anchor_mapping_from_expr`); every other token, in order of first
+    appearance, takes a typed name from `_mint_typed_var` (`v<N>` for a
+    number, `V<N>` for a set or relation, counted separately). The map
+    depends on the expression alone. It names the global theorem list, and a
+    chapter cell holding a theorem implication that is not in that list
+    verbatim — for example a compact implication's canonical reconstruction of
+    a proved theorem in a different variable numbering. Such a theorem binds
+    all its variables, so the chapter's own map, whose names belong to the
+    chapter's variables, never applies to it.
+    @param raw_expr Raw closed theorem expression (anchor implication).
+    @param config Configuration reader with anchors and definition sets.
+    @return Token-to-name replacement map for `replace_keys_in_string`.
+    """
+
+    repl_map = get_anchor_mapping_from_expr(raw_expr, config)
+    arg_types = classify_args_by_defset(raw_expr, config)
+    counters = {"digit": 1, "set": 1}
+    for a in get_all_args(raw_expr):
+        if a not in repl_map:
+            repl_map[a] = _mint_typed_var(a, arg_types, counters)
+    return repl_map
+
+
 def strip_anchor_vars_from_outer_implication(expr: str) -> str:
     """For anchored theorem implications, clear the outer >[...] binder list."""
     if not is_theorem_anchor_implication(expr):
@@ -397,7 +430,7 @@ def _build_fname_list(theorems):
     idx = 0
     for parts in theorems:
         method = parts[1].lower() if len(parts) > 1 else ""
-        if method == "induction":
+        if method in ("induction", "strong induction"):
             fnames = [
                 f"{idx}_induction_typing.txt",
                 f"{idx + 1}_check_zero.txt",
@@ -534,9 +567,248 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
     return filtered_theorems, filtered_stacks
 
 
-def create_processed_proof_graph(config: configuration_reader,
-                                 raw_dir=None, proc_dir=None,
-                                 theorems_dir=None):
+SCOPE_BOUNDARY = "_boundary_"
+INDUCTION_SCOPE_PREFIX = "is_"
+INT_SCOPE_PREFIX = "int_scope_"
+# Payload prefixes of the prover's search fences the processed graph deletes:
+# induction scopes (D-519) and int scopes
+# (D-578).
+STRIPPED_SCOPE_PREFIXES = (INDUCTION_SCOPE_PREFIX, INT_SCOPE_PREFIX)
+# Raw-only tags that hand a statement from such a scope to an enclosing one.
+SCOPE_EXIT_TAGS = ("induction scope", "int scope")
+IDENTITY_TAGS = ("zoom in",) + SCOPE_EXIT_TAGS
+
+
+def strip_induction_scope_segments(scope: str) -> str:
+    """
+    @brief Delete every induction-scope and int-scope segment from one
+    validity name.
+
+    @details An induction scope `<parent>_boundary_is_<chain>_<names>` is the
+    prover's search fence around one admission of an induction hypothesis; it
+    carries no assumption (D-519). An int scope
+    `<parent>_boundary_int_scope_<premise>_<witness>` is the fence around one
+    premise-bound integration (D-578) and carries no
+    assumption either. The processed graph shows the rows of both at the
+    nearest enclosing scope. The name is split at `_boundary_` (no payload
+    contains it, I-139); every segment whose payload starts with `is_` or
+    `int_scope_` is removed and every other segment keeps its place, so an OR
+    branch or subproof opened inside such a scope moves up with it.
+
+    @param scope A validity name `main(_boundary_<payload>)*`.
+    @return The name without induction-scope and int-scope segments.
+    @invariant Pure; a name without such segments is returned unchanged.
+    @see strip_induction_scopes
+    """
+    parts = scope.split(SCOPE_BOUNDARY)
+    kept = [parts[0]] + [part for part in parts[1:]
+                         if not part.startswith(STRIPPED_SCOPE_PREFIXES)]
+    return SCOPE_BOUNDARY.join(kept)
+
+
+def _chapter_scope_cells(row):
+    """
+    @brief List the positions of a chapter row's validity names.
+
+    @details A row is `expression, validity, tag, (dependency, validity)*`:
+    its own validity sits at position 1 and each dependency's at an even
+    position from 4 on.
+
+    @param row One chapter row (a list of cells).
+    @return The positions holding validity names.
+    """
+    positions = [1] if len(row) >= 2 else []
+    positions.extend(range(4, len(row), 2))
+    return positions
+
+
+def _reachable_rows(rows, keys):
+    """
+    @brief Find the rows a chapter's goal row reaches through its citations.
+
+    @details Starts at the first non-empty row and follows each dependency
+    `(expression, validity)` cell to the row with that key, depth first.
+
+    @param rows Chapter rows; empty rows are skipped.
+    @param keys The key of each row, `None` for an empty or removed row.
+    @return The set of reached row positions.
+    """
+    by_key = {}
+    for index, key in enumerate(keys):
+        if key is not None and key not in by_key:
+            by_key[key] = index
+    start = next((i for i, key in enumerate(keys) if key is not None), None)
+    reached = set()
+    if start is None:
+        return reached
+    pending = [start]
+    while pending:
+        index = pending.pop()
+        if index in reached:
+            continue
+        reached.add(index)
+        row = rows[index]
+        for j in range(3, len(row) - 1, 2):
+            target = by_key.get((row[j], row[j + 1]))
+            if target is not None and target not in reached:
+                pending.append(target)
+    return reached
+
+
+def strip_induction_scopes(stack):
+    """
+    @brief Remove the induction scopes and int scopes from one raw chapter.
+
+    @details The raw graph keeps the prover's induction scopes (D-519) and
+    int scopes (D-578); the
+    processed graph deletes them. Every validity name loses its
+    `_boundary_is_...` and `_boundary_int_scope_...` segments. A row that
+    thereby cites itself — a `zoom in` of a source into such a scope, the
+    `induction scope` row depositing a goal reached in a leaf at the scope's
+    root, or the `int scope` row promoting a statement of a finished int scope
+    to its parent — is an identity: its place is taken by the row it cites
+    (following identities to the first real derivation), which leaves its own
+    place, so the goal row stays first. Of rows with one key after the merge
+    the first stays, and rows that only the dropped rows reached are dropped
+    with them. A chapter without such scopes is returned unchanged.
+
+    @param stack Raw chapter rows, each a list of cells; empty rows allowed.
+    @return The chapter rows without induction scopes and int scopes.
+    @invariant No `_boundary_is_` or `_boundary_int_scope_` segment and no
+               `induction scope` or `int scope` row remains; the citations form
+               no cycle; each key names one row.
+    @see strip_induction_scope_segments
+    """
+    markers = tuple(SCOPE_BOUNDARY + prefix for prefix in STRIPPED_SCOPE_PREFIXES)
+    if not any(marker in row[c] for row in stack for c in _chapter_scope_cells(row) for marker in markers) \
+            and not any(len(row) > 2 and row[2] in SCOPE_EXIT_TAGS for row in stack):
+        return stack
+    raw_keys = [(row[0], row[1]) if len(row) >= 2 else None for row in stack]
+    reachable_before = _reachable_rows(stack, raw_keys)
+    rows = [list(row) for row in stack]
+    for row in rows:
+        for c in _chapter_scope_cells(row):
+            row[c] = strip_induction_scope_segments(row[c])
+    raw_index = {}
+    for index, key in enumerate(raw_keys):
+        if key is not None:
+            raw_index.setdefault(key, index)
+
+    def is_identity(index):
+        row = rows[index]
+        return (len(row) == 5 and row[2] in IDENTITY_TAGS
+                and (row[3], row[4]) == (row[0], row[1]))
+
+    for index, row in enumerate(rows):
+        if len(row) > 2 and row[2] in SCOPE_EXIT_TAGS:
+            assert is_identity(index), "an induction scope or int scope row cites its statement at the leaf"
+    keys = [(row[0], row[1]) if len(row) >= 2 else None for row in rows]
+    removed = set()
+    for index in range(len(rows)):
+        if index in removed or keys[index] is None or not is_identity(index):
+            continue
+        source = index
+        visited = {index}
+        while is_identity(source):
+            raw_dependency = (stack[source][3], stack[source][4])
+            assert raw_dependency in raw_index, "an identity row's source is in its chapter"
+            source = raw_index[raw_dependency]
+            assert source not in visited, "identity rows form no cycle"
+            visited.add(source)
+        for dropped in visited:
+            if dropped != index:
+                removed.add(dropped)
+        rows[index] = list(rows[source])
+        keys[index] = keys[source]
+    for index in removed:
+        keys[index] = None
+    seen = set()
+    for index, key in enumerate(keys):
+        if key is None:
+            continue
+        if key in seen:
+            keys[index] = None
+            continue
+        seen.add(key)
+    reachable_after = _reachable_rows(rows, keys)
+    for index in reachable_before:
+        if keys[index] is not None and index not in reachable_after:
+            keys[index] = None
+    result = [rows[index] for index in range(len(rows))
+              if keys[index] is not None or not stack[index]]
+    for row in result:
+        for c in _chapter_scope_cells(row):
+            for marker in markers:
+                assert marker not in row[c], "no induction scope or int scope survives processing"
+        assert not (len(row) > 2 and row[2] in SCOPE_EXIT_TAGS), \
+            "no induction scope or int scope row survives processing"
+    assert len({(row[0], row[1]) for row in result if len(row) >= 2}) \
+        == sum(1 for row in result if len(row) >= 2), \
+        "each key names one row after induction-scope and int-scope removal"
+    assert _has_citation_cycle(stack) or not _has_citation_cycle(result), \
+        "induction-scope and int-scope removal creates no citation cycle"
+    return result
+
+
+def _has_citation_cycle(rows):
+    """
+    @brief Whether a chapter's citations form a cycle.
+
+    @details Each row cites the rows keyed by its dependency cells; a cycle
+    is a row reaching itself. Depth first with an explicit frame stack, so
+    long chapters need no recursion.
+
+    @param rows Chapter rows; empty rows are skipped, the first row of a key
+                stands for it.
+    @return True iff some row reaches itself through citations.
+    """
+    by_key = {}
+    for i, row in enumerate(rows):
+        if len(row) >= 2:
+            by_key.setdefault((row[0], row[1]), i)
+    state = {}
+    for root in by_key.values():
+        if root in state:
+            continue
+        state[root] = 1
+        frames = [(root, 3)]
+        while frames:
+            i, j = frames[-1]
+            row = rows[i]
+            if j >= len(row) - 1:
+                state[i] = 2
+                frames.pop()
+                continue
+            frames[-1] = (i, j + 2)
+            target = by_key.get((row[j], row[j + 1]))
+            if target is None or state.get(target) == 2:
+                continue
+            if state.get(target) == 1:
+                return True
+            state[target] = 1
+            frames.append((target, 3))
+    return False
+
+
+def _prepare_processed_graph(config: configuration_reader, raw_dir, proc_dir, theorems_dir):
+    """
+    @brief Load, prune and rename a raw proof graph for processing.
+
+    @details Empties the processed folder, loads the raw theorem list and
+    chapters, prunes theorems nothing needs, normalises anchored theorem
+    implications, deletes the prover's induction scopes and int scopes, applies the variable
+    renaming iterations and the external-theorem tags, and writes the processed
+    `external_theorems.txt`. Arranging the book and writing its chapters and
+    theorem list is left to the caller.
+
+    @param config Visualizer configuration of the graph.
+    @param raw_dir Raw proof-graph folder, or None for the main graph.
+    @param proc_dir Processed folder, or None for the main graph.
+    @param theorems_dir Theorem folder, or None for the main graph.
+    @return The renamed theorem rows, the renamed chapters by file name, the
+            external theorem set, and the processed folder.
+    @see create_processed_proof_graph, create_processed_theorem_list
+    """
     expression_utils.set_configuration(config)
     # These results depend only on the expression and this fixed configuration.
     # Caches die with the call; chapter-specific replacement maps remain local.
@@ -598,6 +870,14 @@ def create_processed_proof_graph(config: configuration_reader,
     # -------------------------------------------------------------------------
     raw_theorems, raw_stacks = normalize_anchor_implications(raw_theorems, raw_stacks)
 
+    # -------------------------------------------------------------------------
+    # STEP 1b: Delete the prover's induction scopes (D-519) and int scopes
+    # (D-578) from every validity name before any
+    # renaming reads a scope cell.
+    # -------------------------------------------------------------------------
+    raw_stacks = {name: strip_induction_scopes(stack)
+                  for name, stack in raw_stacks.items()}
+
     # Rebuild derived indices from (possibly filtered) raw_theorems
     raw_thm_to_idx = {thm[0]: i for i, thm in enumerate(raw_theorems)}
 
@@ -643,7 +923,7 @@ def create_processed_proof_graph(config: configuration_reader,
     for parts in raw_theorems:
         thm_expr = parts[0]
         method = parts[1].lower() if len(parts) > 1 else ""
-        if method == "induction":
+        if method in ("induction", "strong induction"):
             fname_to_raw_thm[f"{file_idx}_induction_typing.txt"] = thm_expr
             fname_to_raw_thm[f"{file_idx + 1}_check_zero.txt"] = thm_expr
             fname_to_raw_thm[f"{file_idx + 2}_check_induction_condition.txt"] = thm_expr
@@ -801,18 +1081,12 @@ def create_processed_proof_graph(config: configuration_reader,
     for i, thm_row in enumerate(renamed_theorems):
         raw_thm_expr = thm_row[0]
 
-        thm_repl_map = get_anchor_mapping_from_expr(raw_thm_expr, config)
-        thm_arg_type = types_for(raw_thm_expr)
-        thm_counters = {"digit": 1, "set": 1}
-        for a in arguments_for(raw_thm_expr):
-            if a not in thm_repl_map:
-                thm_repl_map[a] = _mint_typed_var(a, thm_arg_type, thm_counters)
-
+        thm_repl_map = theorem_rename_map(raw_thm_expr, config)
         renamed_theorems[i][0] = replace_keys_in_string(raw_thm_expr, thm_repl_map)
 
         # Also rename the induction variable (field 2) for induction theorems
         method = thm_row[1].lower() if len(thm_row) > 1 else ""
-        if method == "induction" and len(thm_row) > 2:
+        if method in ("induction", "strong induction") and len(thm_row) > 2:
             raw_ind_var = thm_row[2]
             renamed_theorems[i][2] = thm_repl_map.get(raw_ind_var, raw_ind_var)
 
@@ -889,10 +1163,12 @@ def create_processed_proof_graph(config: configuration_reader,
                         # below converts v/V -> w/W as for internal cites.
                         ram_stacks[fname][r_idx][c_idx] = external_renames[orig_cell]
                     else:
-                        # Fallback: rename with chapter's own map (e.g. back-reformulated source)
-                        repl_map = stack_repl_maps.get(fname, {})
-                        if repl_map:
-                            ram_stacks[fname][r_idx][c_idx] = replace_keys_in_string(cell, repl_map)
+                        # A theorem implication outside the theorem list (an
+                        # or theorem's source implication, a compact's
+                        # reconstruction in another numbering) binds all its
+                        # variables: it takes its own theorem-local names.
+                        ram_stacks[fname][r_idx][c_idx] = replace_keys_in_string(
+                            cell, theorem_rename_map(cell, config))
 
     # -------------------------------------------------------------------------
     # ITERATION 5: v->w / V->W on cited theorem-anchor implications.
@@ -978,16 +1254,87 @@ def create_processed_proof_graph(config: configuration_reader,
         for expr in sorted(all_external):
             f.write(expr + "\n")
 
-    # -------------------------------------------------------------------------
-    # Final Save
-    # -------------------------------------------------------------------------
+    return renamed_theorems, ram_stacks, all_external, proc_dir
+
+
+def _write_theorem_list(proc_dir, theorems):
+    """
+    @brief Write a processed graph's `global_theorem_list.txt`.
+
+    @details One tab-separated line per theorem row (statement, method,
+    induction variable), in the given order.
+
+    @param proc_dir Processed proof-graph folder.
+    @param theorems Theorem rows in book order.
+    @return None.
+    """
+    with open(proc_dir / "global_theorem_list.txt", "w", encoding="utf-8") as f:
+        for thm in theorems:
+            f.write("\t".join(thm) + "\n")
+
+
+def create_processed_proof_graph(config: configuration_reader,
+                                 raw_dir=None, proc_dir=None,
+                                 theorems_dir=None):
+    """
+    @brief Process a raw proof graph into its arranged proof book.
+
+    @details Prepares the graph (`_prepare_processed_graph`), arranges the book
+    (`process_to_fixed_point`, then the reader hierarchies of
+    `order_main_hierarchies`), and writes every chapter and the theorem list.
+
+    @param config Visualizer configuration of the graph.
+    @param raw_dir Raw proof-graph folder, or None for the main graph.
+    @param proc_dir Processed folder, or None for the main graph.
+    @param theorems_dir Theorem folder, or None for the main graph.
+    @return None.
+    @see create_processed_theorem_list
+    """
+    renamed_theorems, ram_stacks, all_external, proc_dir = _prepare_processed_graph(
+        config, raw_dir, proc_dir, theorems_dir)
+
+    renamed_theorems, ram_stacks = process_to_fixed_point(
+        renamed_theorems, ram_stacks, _build_fname_list, all_external,
+        PROJECT_ROOT / "files" / "GL_binaries")
+
+    ram_stacks = order_main_hierarchies(
+        renamed_theorems, ram_stacks, _build_fname_list(renamed_theorems), all_external)
+
     for fname, stack in ram_stacks.items():
         with open(proc_dir / fname, "w", encoding="utf-8") as f:
             for row in stack:
                 f.write("\t".join(row) + "\n")
 
-    with open(proc_dir / "global_theorem_list.txt", "w", encoding="utf-8") as f:
-        for thm in renamed_theorems:
-            f.write("\t".join(thm) + "\n")
+    _write_theorem_list(proc_dir, renamed_theorems)
 
     print(f"Success: Processed proof graphs have been written to {proc_dir}")
+
+
+def create_processed_theorem_list(config: configuration_reader, raw_dir, proc_dir, theorems_dir):
+    """
+    @brief Write only the renamed theorem list of the incubator book.
+
+    @details Between the incubator and the main batches the run needs only the
+    incubator's processed theorem list: the simple-fact conversion reads
+    nothing else. The incubator arrangement (`process_incubator_book`) permutes
+    theorems and rows but changes no theorem row, so the prepared list holds the
+    lines of the arranged list in the prover's order. The book itself is
+    arranged once, after the last batch (`create_processed_proof_graph`).
+    No chapter is written.
+
+    @param config Visualizer configuration of the graph.
+    @param raw_dir Incubator raw proof-graph folder.
+    @param proc_dir Incubator processed folder.
+    @param theorems_dir Incubator theorem folder.
+    @return None.
+    @invariant Every theorem is anchored on an incubator anchor (asserted).
+    @see create_processed_proof_graph
+    """
+    renamed_theorems, _, _, proc_dir = _prepare_processed_graph(config, raw_dir, proc_dir, theorems_dir)
+    for theorem in renamed_theorems:
+        expression = parse_mpl(theorem[0])
+        assert isinstance(expression, Implication) and isinstance(expression.premise, Atom)
+        assert expression.premise.head in INCUBATOR_ANCHORS, \
+            f"the theorem list alone serves the incubator book only: {theorem[0]}"
+    _write_theorem_list(proc_dir, renamed_theorems)
+    print(f"Success: Incubator theorem list has been written to {proc_dir}")

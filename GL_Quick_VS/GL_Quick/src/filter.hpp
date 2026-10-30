@@ -34,8 +34,8 @@
 /// translation unit.
 ///
 /// @details
-/// Method bodies for the CE filter live in `filter.cpp`; they are member
-/// functions of `ExpressionAnalyzer` (declared in `prover.hpp`). This header
+/// `CounterexampleFilter` in `proof/counterexample_filter.hpp` owns filter
+/// setup and publication; `filter.cpp` retains the Prover phase loop. This header
 /// is the home for CE-only types and free helpers that should not pollute
 /// `prover.hpp` / `memory.hpp`.
 ///
@@ -57,7 +57,7 @@ namespace gl {
     /// @brief One row of the CE-filter contradiction table.
     ///
     /// @details
-    /// `ExpressionAnalyzer` holds a `std::vector<ContradictionItem>`
+    /// `Prover` holds a `std::vector<ContradictionItem>`
     /// (`contradictionTable`) keyed by conjecture index. Per-row `successful`
     /// is set `true` when the prover detects that the conjecture contradicts
     /// the simple-fact base — `successful == true` means REFUTED; the filter

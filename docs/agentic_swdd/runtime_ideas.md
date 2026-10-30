@@ -117,7 +117,7 @@ is already rejected below.
 
 ## 2. The chapter walker — `buildStack` *(measured and CLOSED 2026-08-21)*
 
-**Where.** `visualizer.cpp`, stage `native.raw_proof`. Was 36.4 s of a 181.8 s
+**Where.** `proof/proof_reconstructor.cpp`, stage `native.raw_proof`. Was 36.4 s of a 181.8 s
 gated shortcut pipeline, essentially all of it `native.raw.build_stack`;
 serialization 0.03 s, LB release 2.2 µs, the whole Python tail ~1 s.
 
@@ -371,7 +371,7 @@ endpoints are measured cleanly. Corroboration that survives a drifting clock:
 enumeration unchanged within 0.7%. Batches 4 and 5 pay a wider filter now that
 `alsoAcceptFullKeys` is true for them, which is inside the 13.3%.
 
-**Where.** `performElem2` (`prover.cpp`), the three remaining
+**Where.** `performElem2` (`proof/phase2_executor.cpp`), the three remaining
 `stumpLen = 1` call sites, and the merge phase inside
 `generateEncodedRequestsStatic` that only they still reach.
 

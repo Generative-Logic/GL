@@ -41,6 +41,8 @@
 
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <thread>
+#include <vector>
 
 CUDA_TEST(phase2_cuda, device_contract_is_supported) {
     const gl::gpu::CudaDeviceContract contract =
@@ -51,6 +53,36 @@ CUDA_TEST(phase2_cuda, device_contract_is_supported) {
     ASSERT_TRUE(contract.totalGlobalBytes > 0);
     ASSERT_TRUE(contract.multiprocessorCount > 0);
     ASSERT_TRUE(contract.maximumThreadsPerBlock >= 256);
+}
+
+CUDA_TEST(phase2_cuda, context_creation_leaves_a_usable_context) {
+    gl::gpu::createCudaContext();
+    std::size_t freeBytes = 0, totalBytes = 0;
+    ASSERT_EQ(cudaMemGetInfo(&freeBytes, &totalBytes), cudaSuccess);
+    ASSERT_TRUE(totalBytes > 0 && freeBytes <= totalBytes);
+}
+
+CUDA_TEST(phase2_cuda, concurrent_first_cuda_use_waits_for_one_initialization) {
+    // Several threads start CUDA work at once while a warm-up creates the
+    // context; every contract query must succeed.
+    gl::gpu::CudaContextWarmup warmup;
+    std::vector<std::thread> users;
+    std::vector<int> ordinals(8, -1);
+    for (std::size_t i = 0; i < ordinals.size(); ++i) {
+        users.emplace_back([&ordinals, i] {
+            ordinals[i] = gl::gpu::queryCudaDeviceContract().deviceOrdinal;
+        });
+    }
+    for (auto& user : users) user.join();
+    for (int ordinal : ordinals) ASSERT_TRUE(ordinal >= 0);
+}
+
+CUDA_TEST(phase2_cuda, background_context_warmup_joins_before_device_work) {
+    {
+        gl::gpu::CudaContextWarmup warmup;
+    }
+    const uint32_t input = 0x2468ACE1u;
+    ASSERT_EQ(gl::gpu::launchCudaContractProbe(input), input * 1664525u + 1013904223u);
 }
 
 CUDA_TEST(phase2_cuda, native_kernel_launches_and_round_trips) {
@@ -383,6 +415,78 @@ CUDA_TEST(phase2_cuda, automatic_capacity_plans_fit_budgets_and_lend_blocks) {
     outputFloor.columns[1] = UINT64_MAX;
     ASSERT_EQ(gl::gpu::planPhase2Buffers(input, smallBudget.blocks, demand, outputFloor).state,
         gl::gpu::Phase2BufferPlanState::needsOutputSegmentation);
+}
+
+CUDA_TEST(phase2_cuda, dedicated_frontier_store_blocks_hold_the_whole_reservation) {
+    const gl::gpu::Phase2BufferPlanInput input{
+        {1, 8, 256, 16384, 1024, 256, 16384, 10, 1024, 4096,
+         65536, 1024, 65536, 1, 1024, 4096, 65536, 1024, 11, 1024, 4096, 1024, 32, 4096},
+        {2, 8, 8, 8}, {8, 128, 64, 32}};
+    auto demand = gl::gpu::initialPhase2WorkDemand();
+    const uint32_t store = static_cast<uint32_t>(gl::gpu::Phase2WorkDimension::frontierStore);
+    demand.items[store] = 5000000;  // above the former 4,194,304-row ceiling
+    constexpr uint64_t mib = 1024ull * 1024;
+    const auto budget = gl::gpu::makePhase2GpuBudget(7 * 1024 * mib, 8 * 1024 * mib, 0,
+        gl::gpu::kPhase2FrontierStoreReserveBytes);
+    ASSERT_EQ(budget.frontierStoreBlocks, 448u);
+    // A working budget small enough that the shared plan must scale demand down.
+    constexpr uint64_t working = 512;
+    const auto shared = gl::gpu::planPhase2Buffers(input, working, demand);
+    const auto dedicated = gl::gpu::planPhase2Buffers(input, working, demand, {}, false,
+        budget.frontierStoreBlocks);
+    ASSERT_EQ(shared.state, gl::gpu::Phase2BufferPlanState::fits);
+    ASSERT_EQ(dedicated.state, gl::gpu::Phase2BufferPlanState::fits);
+    ASSERT_EQ(shared.frontierStoreDedicatedBlocks, 0u);
+    ASSERT_TRUE(shared.totalBlocks <= working);
+    ASSERT_TRUE(shared.growth.frontierStoreRecords < gl::gpu::phase2FrontierStoreMaximumRows);
+    // The store fills the dedicated reservation.
+    ASSERT_EQ(dedicated.growth.frontierStoreRecords, gl::gpu::phase2FrontierStoreMaximumRows);
+    ASSERT_EQ(dedicated.frontierStoreDedicatedBlocks, 448u);
+    ASSERT_TRUE(dedicated.totalBlocks <= working + dedicated.frontierStoreDedicatedBlocks);
+    ASSERT_TRUE(dedicated.totalBlocks - dedicated.frontierStoreDedicatedBlocks >= working * 95 / 100);
+    // The store no longer competes with the other processing columns.
+    ASSERT_TRUE(dedicated.growth.frontierStoreRecords > shared.growth.frontierStoreRecords);
+    ASSERT_TRUE(dedicated.growth.acceptedEvents >= shared.growth.acceptedEvents);
+    ASSERT_TRUE(dedicated.growth.rawRequests >= shared.growth.rawRequests);
+    ASSERT_TRUE(dedicated.evaluation.generatedBytes >= shared.evaluation.generatedBytes);
+    // A level demand far below the ceiling still gets the whole reservation,
+    // so a later level larger than every earlier one stays on the device.
+    auto small = demand;
+    small.items[store] = 1000;
+    const auto unmeasured = gl::gpu::planPhase2Buffers(input, working, small, {}, false,
+        budget.frontierStoreBlocks);
+    ASSERT_EQ(unmeasured.state, gl::gpu::Phase2BufferPlanState::fits);
+    ASSERT_EQ(unmeasured.growth.frontierStoreRecords, gl::gpu::phase2FrontierStoreMaximumRows);
+    ASSERT_EQ(unmeasured.frontierStoreDedicatedBlocks, 448u);
+    ASSERT_TRUE(unmeasured.totalBlocks <= working + unmeasured.frontierStoreDedicatedBlocks);
+    // A smaller reservation holds the largest store whose two buffers fit it
+    // (2 x 2^20 rows x 56 bytes = 56 blocks of 100).
+    const auto partial = gl::gpu::planPhase2Buffers(input, working, small, {}, false, 100);
+    ASSERT_EQ(partial.state, gl::gpu::Phase2BufferPlanState::fits);
+    ASSERT_TRUE(partial.growth.frontierStoreRecords >= (1u << 20));
+    ASSERT_TRUE(partial.frontierStoreDedicatedBlocks >= 56u);
+    ASSERT_TRUE(partial.frontierStoreDedicatedBlocks <= 100u);
+    ASSERT_TRUE(partial.totalBlocks <= working + partial.frontierStoreDedicatedBlocks);
+}
+
+CUDA_TEST(phase2_cuda, block_pool_leases_dedicated_frontier_store_blocks) {
+    constexpr uint64_t mib = 1024ull * 1024;
+    gl::gpu::CudaPhase2BlockPool pool(8 * mib, 4 * mib);
+    ASSERT_EQ(pool.budget().blocks, 4u);
+    ASSERT_EQ(pool.budget().frontierStoreBlocks, 2u);
+    ASSERT_EQ(pool.availableBlocks(), 6u);
+    ASSERT_EQ(pool.reservedBytes(), 12 * mib);
+    ASSERT_TRUE(pool.reservedBytes() <= pool.deviceFreeBeforePoolBytes());
+    const auto whole = pool.reserveBlocks(6);
+    ASSERT_EQ(pool.availableBlocks(), 0u);
+    const uint64_t value = 0x0fedcba987654321ull;
+    uint64_t output = 0;
+    char* const last = static_cast<char*>(pool.address(whole)) + 12 * mib - sizeof(value);
+    ASSERT_EQ(cudaMemcpy(last, &value, sizeof(value), cudaMemcpyHostToDevice), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(&output, last, sizeof(output), cudaMemcpyDeviceToHost), cudaSuccess);
+    ASSERT_EQ(output, value);
+    pool.release(whole);
+    ASSERT_EQ(pool.availableBlocks(), 6u);
 }
 
 CUDA_TEST(phase2_cuda, completed_batch_feedback_redistributes_output_capacity) {

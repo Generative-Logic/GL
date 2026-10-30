@@ -47,7 +47,7 @@ namespace gl::gpu {
         const Phase2ProjectionArena& projection_;
         const Phase2TaskProjectionArena& tasks_;
         const Phase2GrowthScheduleArena& schedule_;
-        LbArena arena_{&staticMemory()};
+        LbArena arena_{&gpuHostStorage()};
         DirtyState dirty_{DirtyState::Clean};
         PagedVector<DeviceAcceptedGrowthEvent> events_{&arena_, &dirty_};
         PagedVector<uint32_t> requests_{&arena_, &dirty_};

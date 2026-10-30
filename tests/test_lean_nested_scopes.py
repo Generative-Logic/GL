@@ -16,7 +16,7 @@ from proof_export.certificate import _schema3_action_metadata
 from proof_export.graph import Chapter, Dependency, ProofRow, ScopedExpression
 from proof_export.lean import (
     _scope_layers, _scope_entry_and_specializations, _render_chapter_steps, ANCHOR_MPL,
-    _negated_conjunction_projection, render_expression,
+    CONTEXT_NAMES, _negated_conjunction_projection, render_expression,
 )
 from proof_export.mpl import parse_mpl, map_arguments, to_mpl
 from tests.lean_toolchain import LEAN_PROJECT, lean_environment, lean_executable
@@ -283,16 +283,52 @@ class NegatedConjunctionReplayTests(unittest.TestCase):
 
 
 class NullaryTheoremCompactionTests(unittest.TestCase):
-    def chapter(self, anchor_head):
+    def chapter(self, anchor_head, certificate_id=None):
         anchor = parse_mpl(ANCHOR_MPL[anchor_head])
         theorem = "(>[" + ",".join(anchor.arguments) + "]" + ANCHOR_MPL[anchor_head] + "(=[i0,i1]))"
+        reference = {"theorem_id": "prior_proof", "source_index": 0, "theorem": {"mpl": theorem}}
+        if certificate_id is not None:
+            reference["certificate_id"] = certificate_id
         step = {"id": "chapter_1_line_1", "source_line": 1, "source_tag": "compilation",
                 "action": "definition_compact", "namespace": "main",
                 "conclusion": {"mpl": "(implication99[])"},
                 "dependencies": [{"namespace": "main", "source_kind": "selected_theorem",
-                    "expression": {"mpl": theorem}, "theorem_reference": {
-                        "theorem_id": "prior_proof", "source_index": 0, "theorem": {"mpl": theorem}}}]}
+                    "expression": {"mpl": theorem}, "theorem_reference": reference}]}
         return {"steps": [step], "variable_types": {}}
+
+    def test_theorem_of_a_preceding_certificate_binds_its_own_anchor_context(self):
+        # A Peano theorem compiled into a zero-argument compact inside a Gauss
+        # or FTA proof, and a Gauss theorem inside an FTA proof.
+        for current, source, certificate in (("AnchorGauss", "AnchorPeano", "peano_live_67"),
+                                              ("AnchorFTA", "AnchorPeano", "peano_live_67"),
+                                              ("AnchorFTA", "AnchorGauss", "gauss_live_33")):
+            with self.subTest(current=current, source=source):
+                lines, _ = _render_chapter_steps(self.chapter(source, certificate), "test", {}, {},
+                    anchor_head=current, binary_definitions={"implication99": {"category": "implication"}})
+                text = "\n".join(lines)
+                context = " ".join("compiled_" + CONTEXT_NAMES[a] for a in parse_mpl(ANCHOR_MPL[source]).arguments)
+                self.assertIn("    simp only [gl_implication99]", text)
+                self.assertIn("    intro " + context + "\n", text)
+                self.assertIn("    intro compiled_anchor compiled_induction compiled_strong_induction", text)
+                self.assertIn("    exact prior_proof " + context
+                              + " compiled_anchor compiled_induction compiled_strong_induction", text)
+                self.assertNotIn("have source_row_1", text)
+                self.assertNotIn("anchorPeanoOf", text)
+
+    def test_theorem_of_a_preceding_certificate_must_match_its_anchor(self):
+        for chapter in (self.chapter("AnchorPeano", "gauss_live_33"),
+                        self.chapter("AnchorGauss", "peano_live_67")):
+            with self.subTest(chapter=chapter["steps"][0]["dependencies"][0]["theorem_reference"]["certificate_id"]):
+                with self.assertRaises(AssertionError):
+                    _render_chapter_steps(chapter, "test", {}, {}, anchor_head="AnchorFTA",
+                        binary_definitions={"implication99": {"category": "implication"}})
+
+    def test_adapted_theorem_of_a_preceding_certificate_is_rejected(self):
+        chapter = self.chapter("AnchorPeano", "peano_live_67")
+        chapter["steps"][0]["dependencies"][0]["theorem_reference"]["adaptation"] = {}
+        with self.assertRaises(AssertionError):
+            _render_chapter_steps(chapter, "test", {}, {}, anchor_head="AnchorGauss",
+                binary_definitions={"implication99": {"category": "implication"}})
 
     def test_local_carriers_bind_the_complete_source_context_for_every_anchor(self):
         for anchor in ANCHOR_MPL:

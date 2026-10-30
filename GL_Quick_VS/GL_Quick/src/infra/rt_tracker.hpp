@@ -57,7 +57,7 @@ namespace gl {
     /// @par Lifecycle
     /// One tracker per elementary step. Nothing is
     /// shared with other calls, other threads, or other outer iterations
-    /// of `ExpressionAnalyzer::prove`. Per `I-59`.
+    /// of `Prover::prove`. Per `I-59`.
     ///
     /// @par Relationship to the hashburst dump
     /// Separate file (`.debug/hashburst_trace.txt` vs `.rt/<chain>.log`),

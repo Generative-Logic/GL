@@ -1,0 +1,12 @@
+(inSequence[1,7,3])	main	equality1	(inSequence[1,6,3])	main	(=[6,7])	main
+(inSequence[1,6,3])	main	implication	(>[pi_lev_0_4](in[pi_lev_0_4,u_1])(>[](in2[pi_lev_0_4,u_6,u_3])(inSequence[u_1,u_6,u_3])))	main	(in2[2,6,3])	main	(in[2,1])	main
+(>[pi_lev_0_4](in[pi_lev_0_4,u_1])(>[](in2[pi_lev_0_4,u_6,u_3])(inSequence[u_1,u_6,u_3])))	main	expansion	(implication1873[1,6,3])	main
+(implication1873[1,6,3])	main	reformulation for integration >[bound]	!(>[pi_lev_1_1](in[pi_lev_1_1,1])!(in2[pi_lev_1_1,6,3]))_integration_goal	main
+!(>[pi_lev_1_1](in[pi_lev_1_1,1])!(in2[pi_lev_1_1,6,3]))_integration_goal	main	expansion for integration	(inSequence[1,6,3])_integration_goal	main
+(in2[2,6,3])	main	disintegration	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main
+(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main	expansion	(AnchorPeano[1,2,3,4,5,6])	main
+(AnchorPeano[1,2,3,4,5,6])	main	task formulation
+(in[2,1])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main	expansion	(NaturalNumbers[1,2,3,4,5])	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main
+(=[6,7])	main	task formulation

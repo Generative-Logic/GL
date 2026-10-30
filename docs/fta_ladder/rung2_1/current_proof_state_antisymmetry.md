@@ -195,7 +195,7 @@ the entire run).
  all-distinct rewritten variants), but its witness body is parked in
  the same `rejectedMap` and its natural demander — the two-premise
  zero-identity rule — registers NO marker: marker registration is
- gated by `baselineClassicQualifies` (`prover.hpp`), which requires
+ gated by `baselineClassicQualifies` (`logical_block/admission_policy.hpp`), which requires
  MORE than `minNumOperatorsKey` (= 2, config default) `in3` premises
  AND an `in3[` head (or a `minLenLongKey`-length key). Equality-headed
  and small rules never demand; the dump confirms zero markers with a

@@ -42,6 +42,7 @@
 #include "existence_lookup_indexes.hpp"
 #include "canonical_use_index.hpp"
 #include "unary_composition_store.hpp"
+#include "contradiction_fact_index.hpp"
 
 #include <cstdint>
 
@@ -62,47 +63,65 @@ namespace gl {
         NameId ownSubId;
     };
 
-    /// @brief One integration task: a `prepareIntegration` expression at its
-    ///        scope, with the root task it was prepared on behalf of.
+    /// @brief One integration trial: a gated integration admission made in
+    ///        its own trial scope until its gate elements are known there.
     ///
     /// @details
-    /// The task table of the finished-task wipe (I-284)
-    /// holds one record per node key — the packed `(template, scope)` key of a
-    /// task's `integrationPreparedMarker` text, of the negated compound a
-    /// contradiction task opens, or of an opening gate (a Case A subproof, a
-    /// Case OR split, a Case B rule installation) registered as a node below
-    /// its task. A task prepared while no task is active is a root (`root`
-    /// equals its own key, `parent` is zero); every other node inherits its
-    /// parent's root verbatim and names it as `parent`. The root never changes
-    /// after creation: class changes rewrite instruction texts, never this
-    /// record. Trivially copyable, streamed verbatim on deload.
+    /// The record of `LbMemory::integrationTrials`
+    /// (D-481), keyed by the packed
+    /// `(canonical source, parent scope)` pair of the existence whose
+    /// admission is on trial. `trialScope` is the minted
+    /// `<parent>_boundary_integration_<names>` scope, `<names>` the witnesses
+    /// the admission mints; `source` names the concrete source text the
+    /// promotion admits at the parent; `generation`, `integrationDepth` and
+    /// `flags` are the source's replay metadata, with the park-flag layout
+    /// (2: integration construction, 4: OR disintegration allowed, 8:
+    /// inherited relay source).
     ///
-    /// `flags` bit 0 (`kShared`) marks a node whose derivative was reached by
-    /// a second requester (another root or an independent trigger); a shared
-    /// node strictly below a finished root survives with everything below it.
-    /// Bits 1 and 2 classify a root for the finish test: `kExactRoot` — no
-    /// marker, finished when the expression is known; `kOutputRoot` — one
-    /// marker at the operator's declared output slot `outputSlot`, finished
-    /// when any value is known there. A root with neither bit never finishes.
-    /// Bit 3 (`kRetired`) marks a node removed with its finished root: its
-    /// derivatives are gone and no new derivative is made on its behalf.
+    /// The gate elements are NameMap ids of the fully fixed non-implication
+    /// elements of the gated instructions, each filled argument replaced by
+    /// the new name filling it. They are grouped per gated instruction: group
+    /// `g` covers `gates[groupEnd[g - 1] .. groupEnd[g])` (from 0 for
+    /// `g == 0`). The trial passes when every gate of one group is known at
+    /// the trial scope. A passed record stays as the parent's receipt: the
+    /// promotion admits at the parent the witnesses and expressions listed in
+    /// `LbMemory::integrationTrialContents` under `trialScope` —
+    /// `witnessCount` witnesses, then `expressionCount` expressions.
     ///
-    /// @see LbMemory::integrationTasks, ExpressionAnalyzer::prepareIntegration.
-    struct IntegrationTaskRec {
-        /// @brief `flags` bit: a second requester reached a derivative.
-        static constexpr uint32_t kShared = 1u << 0;
-        /// @brief `flags` bit: a root without a marker.
-        static constexpr uint32_t kExactRoot = 1u << 1;
-        /// @brief `flags` bit: a root with one marker at a declared output slot.
-        static constexpr uint32_t kOutputRoot = 1u << 2;
-        /// @brief `flags` bit: the node was removed with its finished root.
-        static constexpr uint32_t kRetired = 1u << 3;
+    /// Every field is a 32-bit integer and unused slots stay zero, so the
+    /// record is padding-free and its deload bytes are a pure function of its
+    /// content.
+    ///
+    /// @see LbMemory::integrationTrials, ScopeSyntax::atOrBelowIntegrationTrial.
+    struct IntegrationTrialRec {
+        /// @brief `status`: the gate is not yet known at the trial scope.
+        static constexpr int32_t kOpen = 0;
+        /// @brief `status`: the gate became known; the parent admits the source.
+        static constexpr int32_t kPassed = 1;
+        /// @brief Capacity of `groupEnd` — gated instructions per trial.
+        static constexpr int32_t kMaxGroups = 8;
+        /// @brief Capacity of `gates` — gate elements per trial.
+        static constexpr int32_t kMaxGates = 16;
 
-        int64_t root;
-        int64_t parent;
-        uint32_t flags;
-        int32_t outputSlot;
+        NameId trialScope = 0;
+        NameId source = 0;
+        int32_t status = kOpen;
+        int32_t generation = 0;
+        int32_t integrationDepth = 0;
+        int32_t flags = 0;
+        int32_t groupCount = 0;
+        int32_t groupEnd[kMaxGroups] = {};
+        NameId gates[kMaxGates] = {};
+        int32_t witnessCount = 0;
+        int32_t expressionCount = 0;
     };
+
+    /// @brief Kind of one listed expression of an integration trial: a
+    ///        statement.
+    static constexpr int32_t kIntegrationTrialStatement = 0;
+    /// @brief Kind of one listed expression of an integration trial: an
+    ///        implication extracted as a rule.
+    static constexpr int32_t kIntegrationTrialRule = 1;
 
     // The blob-map equivalenceClassesMap stores EquivalenceClass records keyed by
     // a validity id; the record type is named only in TypedCold's member
@@ -267,7 +286,8 @@ namespace gl {
             // ids in decoded-lex order (per-call DecodedIdLess, the
             // orBookkeeping discipline — release order is re-derived by the
             // ranking at each release, never stored); orPendingLevels holds
-            // the cohort's seed level run (ascending ints, natural order).
+            // the cohort's OR-source levels until retirement. Convergence
+            // adds them to the conditional cases' levels (ascending ints).
             // Both dischargeable side tables like orBookkeeping.
             OrPendingBranchesKeys = 805,
             OrPendingBranchesRunStarts = 806,
@@ -335,26 +355,77 @@ namespace gl {
             OrSupportEqualitiesKeys = 874,
             OrSupportEqualitiesRunStarts = 875,
             OrSupportEqualitiesValues = 876,
-            // Finished-task wipe (tags 877..893): the integration task table,
-            // the owner maps from derivatives to the task that created them,
-            // and the finished roots. Dischargeable side tables.
-            IntegrationTasksKeys = 877,
-            IntegrationTasksValues = 878,
-            IntegrationPreparedOwnersKeys = 879,
-            IntegrationPreparedOwnersValues = 880,
-            IntegrationScopeOwnersKeys = 881,
-            IntegrationScopeOwnersValues = 882,
-            IntegrationRuleOwnersKeys = 883,
-            IntegrationRuleOwnersValues = 884,
-            IntegrationCopyOwnersKeys = 885,
-            IntegrationCopyOwnersValues = 886,
-            AlgebraKeyOwnersKeys = 887,
-            AlgebraKeyOwnersValues = 888,
-            AdmissionSetOwnersKeys = 889,
-            AdmissionSetOwnersValues = 890,
-            AdmissionTriggerOwnersKeys = 891,
-            AdmissionTriggerOwnersValues = 892,
-            FinishedIntegrationRoots = 893,
+            // Tags 877 through 893 are retired and must not be reassigned.
+            // Goal enrollment of unary composition (D-469).
+            UnaryCompositionGoalsKeys = 894,
+            UnaryCompositionGoalsRunStarts = 895,
+            UnaryCompositionGoalsValues = 896,
+            UnaryCompositionObservedGoals = 897,
+            // Integration trials (D-481):
+            // dischargeable side table.
+            IntegrationTrialsKeys = 898,
+            IntegrationTrialsValues = 899,
+            // What an integration trial admits on success
+            // (D-481): dischargeable side table.
+            IntegrationTrialContentsKeys = 900,
+            IntegrationTrialContentsValues = 901,
+            // The slot the induction hypothesis ate at each scope
+            // (D-519): dischargeable side table.
+            InductionEatsKeys = 902,
+            InductionEatsValues = 903,
+            // The burst's induction-hypothesis firings and the settled
+            // induction trees (D-520): dischargeable.
+            InductionFirings = 904,
+            InductionSettledRoots = 905,
+            // ORs reached by unfolding a conjecture premise, awaiting the
+            // flag-6 unconditional-ordis mail
+            // (D-528): dischargeable side table.
+            PendingUnconditionalOrdis = 906,
+            // Cohorts opened from a conjecture premise's OR, whose case
+            // assumptions are disintegrated with force_ witnesses
+            // (D-527): dischargeable side table.
+            ForcedOrCohorts = 907,
+            // Statements a forced disintegration produced, and those a parent
+            // shipped with the from-premise mail flag
+            // (D-522): dischargeable side table.
+            ForcedProducts = 908,
+            // Open negated-compound contradiction scopes the demand drain
+            // serves, with their bootstrap state
+            // (D-560): dischargeable side table.
+            ContradictionScopesKeys = 909,
+            ContradictionScopesValues = 910,
+            // Cohorts opened by a demand of the induction hypothesis, released
+            // below an unsettled induction scope
+            // (D-575): dischargeable side table.
+            HypothesisOrCohorts = 911,
+            // Goal-driven marked-head implications installed per scope
+            // (D-574): dischargeable side
+            // table.
+            GoalDemandInstalls = 912,
+            // Scopes where the induction hypothesis shot
+            // (D-572): dischargeable side
+            // table.
+            HypothesisShots = 913,
+            // Int scopes of premise-bound integrations: each scope's goal
+            // group and premise level, each group's premise levels and
+            // promoted mark, and each premise's first finished scope
+            // (D-578): dischargeable side tables.
+            IntScopesKeys = 914,
+            IntScopesValues = 915,
+            IntScopeGroupsKeys = 916,
+            IntScopeGroupsValues = 917,
+            IntScopeFirstFinishKeys = 918,
+            IntScopeFirstFinishValues = 919,
+            // Size markers of a weak step block
+            // (D-583): dischargeable side table.
+            SizeMarkers = 920,
+            // Witnesses a route-3 commit wrote into an integration instruction
+            // (D-585): dischargeable side table.
+            OneWayWitnesses = 921,
+            // Case-experiment cohorts of a twin block, which release one case
+            // only (D-588): dischargeable side
+            // table.
+            ExperimentOrCohorts = 922,
             // Append new tags here - never renumber, reorder, or reuse.
             // Tags 4..18 survive discharge (survivesDischarge): the cold STRING
             // tags (4..17) plus the NameMap validity-node forest (18). Tag 28
@@ -385,6 +456,7 @@ namespace gl {
               valueStrings(&manager, &dirty),
               valueStringsLengths(&valueStrings),
               valueStringsBytes(&valueStrings),
+              originPrefixes(&manager, &dirty),
               originStrings(&manager, &dirty),
               originStringsLengths(&originStrings),
               originStringsBytes(&originStrings),
@@ -484,10 +556,17 @@ namespace gl {
             // Pool attribution: every block this aggregate draws is logic-block
             // state (observability only; the arena holds no block yet).
             manager.setPurpose(PoolPurpose::LbState);
+            // Small persistent containers take sub-page slots instead of whole
+            // pages (D-464).
+            manager.enableSubPages();
+            originStrings.keyStore().bindPrefixes(originPrefixes);
             overallHashMemory.bindSharedBytes(sharedNativeKeys);
             localHashMemory.bindSharedBytes(sharedNativeKeys);
             localHashMemoryDelta.bindSharedBytes(sharedNativeKeys);
             workingMemory.bindSharedBytes(sharedNativeKeys);
+            // The stores whose key bytes recur across logic blocks hold
+            // references into the process-wide batch byte dictionary.
+            forEachBatchSharedStore([](BytesKeyStore& store) { store.enableBatchSharing(); });
             // The arena's directories use this object's direct storage (see
             // kPageTableDirectEntries).
             manager.attachDirectoryStorage(pageTableDirect_, kPageTableDirectEntries,
@@ -496,6 +575,77 @@ namespace gl {
 
         LbMemory(const LbMemory&) = delete;
         LbMemory& operator=(const LbMemory&) = delete;
+
+        /// @brief Visit every byte-key store that takes part in the batch byte
+        ///        dictionary.
+        ///
+        /// @details
+        /// The seven per-block string tables and the payload store of the
+        /// per-block native-key pool (`sharedNativeKeys`), whose clients keep
+        /// their block-local pool identifiers. These are the stores whose bytes
+        /// recur across logic blocks (the F12 structure census).
+        ///
+        /// @tparam F Callable `void(BytesKeyStore&)`.
+        /// @param visit Called once per participating store, in a fixed order.
+        /// @return Nothing.
+        template <typename F>
+        void forEachBatchSharedStore(F&& visit) {
+            visit(templateStrings.keyStore());
+            visit(valueStrings.keyStore());
+            visit(originStrings.keyStore());
+            visit(ruleStrings.keyStore());
+            visit(lbStateStrings.keyStore());
+            visit(nameStrings.keyStore());
+            visit(subStrings.keyStore());
+            visit(sharedNativeKeys.payloadStore());
+        }
+
+        /// @brief End-of-phase-1 batch-sharing seam: convert the rows nominated
+        ///        before the last barrier whose bytes the dictionary now holds.
+        ///
+        /// @details
+        /// Runs under the worker's exclusive claim of this logic block while the
+        /// dictionary is read-only. Converted stores reclaim their local bytes
+        /// at once. Content, identifiers, hashes and canonical images are
+        /// unchanged; only where the bytes live changes.
+        ///
+        /// @param scratch The worker slot's page-tier scratch arena (prefix
+        ///        repack only).
+        /// @return Nothing.
+        void shareBatchBytesAfterPhase1(LbArena& scratch) {
+            RT_SCOPE_HERE("PH1_BATCH_BYTES_CONVERT_PENDING");
+            forEachBatchSharedStore([&](BytesKeyStore& store) {
+                if (store.sharePendingRows() == 0) return;
+                RT_SCOPE_HERE("BATCH_BYTES_COMPACT");
+                store.compactAfterBatchConversion(scratch);
+            });
+        }
+
+        /// @brief End-of-phase-3 batch-sharing seam: convert the rows minted
+        ///        since the last scan whose bytes the dictionary holds, and
+        ///        nominate the rest.
+        ///
+        /// @details
+        /// Runs under the worker's exclusive claim of this logic block while the
+        /// dictionary is read-only. Each missing payload goes to the shared,
+        /// hash-striped nomination table, which keeps one copy per distinct
+        /// payload; the barrier promotes payloads nominated at least twice.
+        /// Converted stores reclaim their local bytes at once.
+        ///
+        /// @param candidates The process-wide striped nomination table.
+        /// @param scratch The worker slot's page-tier scratch arena (prefix
+        ///        repack only).
+        /// @return Nothing.
+        void shareBatchBytesAfterPhase3(BatchByteCandidateRegistry& candidates, LbArena& scratch) {
+            RT_SCOPE_HERE("PH3_BATCH_BYTES_SCAN_NEW");
+            forEachBatchSharedStore([&](BytesKeyStore& store) {
+                const int32_t rows = store.shareNewRows(
+                    [&](StrSpan bytes, uint64_t hash) { candidates.nominate(bytes, hash); });
+                if (rows == 0) return;
+                RT_SCOPE_HERE("BATCH_BYTES_COMPACT");
+                store.compactAfterBatchConversion(scratch);
+            });
+        }
 
         /// @brief Direct entries of the arena's page table (vid -> page), held
         ///        in this object instead of a spilled pool block.
@@ -543,6 +693,7 @@ namespace gl {
         ColdStringTable valueStrings;
         ColdStringTable::LengthsView valueStringsLengths;
         ColdStringTable::BytesView valueStringsBytes;
+        PrefixKeyMetadata originPrefixes;
         ColdStringTable originStrings;
         ColdStringTable::LengthsView originStringsLengths;
         ColdStringTable::BytesView originStringsBytes;
@@ -704,8 +855,8 @@ namespace gl {
         // Sequenced or-disintegration (tags 805..810): cohortId -> the
         // unreleased disjunct payload-body ids (decoded-lex runs via a
         // per-call DecodedIdLess, read in run order like orBookkeeping), and
-        // cohortId -> the cohort's seed level run (ascending ints, natural
-        // order). Both dischargeable, rebuilt per grid like orBookkeeping /
+        // cohortId -> OR-source levels retained through queue exhaustion and
+        // added at convergence (ascending ints, natural order). Both dischargeable, rebuilt per grid like orBookkeeping /
         // orDisjunctCount.
         TypedColdSetMap<int32_t, int32_t> orPendingBranches;
         TypedColdSetMap<int32_t, int32_t>::KeysView orPendingBranchesKeys;
@@ -912,23 +1063,33 @@ namespace gl {
             visit(ContainerTag::OrSupportEqualitiesKeys, orSupportEqualitiesKeys);
             visit(ContainerTag::OrSupportEqualitiesRunStarts, orSupportEqualitiesRunStarts);
             visit(ContainerTag::OrSupportEqualitiesValues, orSupportEqualitiesValues);
-            visit(ContainerTag::IntegrationTasksKeys, integrationTasksKeys);
-            visit(ContainerTag::IntegrationTasksValues, integrationTasksValues);
-            visit(ContainerTag::IntegrationPreparedOwnersKeys, integrationPreparedOwnersKeys);
-            visit(ContainerTag::IntegrationPreparedOwnersValues, integrationPreparedOwnersValues);
-            visit(ContainerTag::IntegrationScopeOwnersKeys, integrationScopeOwnersKeys);
-            visit(ContainerTag::IntegrationScopeOwnersValues, integrationScopeOwnersValues);
-            visit(ContainerTag::IntegrationRuleOwnersKeys, integrationRuleOwnersKeys);
-            visit(ContainerTag::IntegrationRuleOwnersValues, integrationRuleOwnersValues);
-            visit(ContainerTag::IntegrationCopyOwnersKeys, integrationCopyOwnersKeys);
-            visit(ContainerTag::IntegrationCopyOwnersValues, integrationCopyOwnersValues);
-            visit(ContainerTag::AlgebraKeyOwnersKeys, algebraKeyOwnersKeys);
-            visit(ContainerTag::AlgebraKeyOwnersValues, algebraKeyOwnersValues);
-            visit(ContainerTag::AdmissionSetOwnersKeys, admissionSetOwnersKeys);
-            visit(ContainerTag::AdmissionSetOwnersValues, admissionSetOwnersValues);
-            visit(ContainerTag::AdmissionTriggerOwnersKeys, admissionTriggerOwnersKeys);
-            visit(ContainerTag::AdmissionTriggerOwnersValues, admissionTriggerOwnersValues);
-            visit(ContainerTag::FinishedIntegrationRoots, finishedIntegrationRootsKeys);
+            unaryComposition.visitGoalContainers(static_cast<uint32_t>(ContainerTag::UnaryCompositionGoalsKeys),
+                [&](uint32_t tag, auto& column) { visit(static_cast<ContainerTag>(tag), column); });
+            visit(ContainerTag::IntegrationTrialsKeys, integrationTrialsKeys);
+            visit(ContainerTag::IntegrationTrialsValues, integrationTrialsValues);
+            visit(ContainerTag::IntegrationTrialContentsKeys, integrationTrialContentsKeys);
+            visit(ContainerTag::IntegrationTrialContentsValues, integrationTrialContentsValues);
+            visit(ContainerTag::InductionEatsKeys, inductionEatsKeys);
+            visit(ContainerTag::InductionEatsValues, inductionEatsValues);
+            visit(ContainerTag::InductionFirings, inductionFiringsKeys);
+            visit(ContainerTag::InductionSettledRoots, inductionSettledRootsKeys);
+            visit(ContainerTag::PendingUnconditionalOrdis, pendingUnconditionalOrdisKeys);
+            visit(ContainerTag::ForcedOrCohorts, forcedOrCohortsKeys);
+            visit(ContainerTag::ForcedProducts, forcedProductsKeys);
+            visit(ContainerTag::ContradictionScopesKeys, contradictionScopesKeys);
+            visit(ContainerTag::ContradictionScopesValues, contradictionScopesValues);
+            visit(ContainerTag::HypothesisOrCohorts, hypothesisOrCohortsKeys);
+            visit(ContainerTag::GoalDemandInstalls, goalDemandInstallsKeys);
+            visit(ContainerTag::HypothesisShots, hypothesisShotsKeys);
+            visit(ContainerTag::IntScopesKeys, intScopesKeys);
+            visit(ContainerTag::IntScopesValues, intScopesValues);
+            visit(ContainerTag::IntScopeGroupsKeys, intScopeGroupsKeys);
+            visit(ContainerTag::IntScopeGroupsValues, intScopeGroupsValues);
+            visit(ContainerTag::IntScopeFirstFinishKeys, intScopeFirstFinishKeys);
+            visit(ContainerTag::IntScopeFirstFinishValues, intScopeFirstFinishValues);
+            visit(ContainerTag::SizeMarkers, sizeMarkersKeys);
+            visit(ContainerTag::OneWayWitnesses, oneWayWitnessesKeys);
+            visit(ContainerTag::ExperimentOrCohorts, experimentOrCohortsKeys);
         }
 
         // Current signed premise eligibility (the only multiplication and
@@ -986,43 +1147,144 @@ namespace gl {
         TypedColdMap<int64_t, int32_t>::KeysView existenceReplaysKeys{ &existenceReplays.inner() };
         TypedColdMap<int64_t, int32_t>::ValuesView existenceReplaysValues{ &existenceReplays.inner() };
 
-        // Finished-task wipe (I-284). The task table keyed
-        // by task key (packed template/scope key of the task text) -> root,
-        // parent task and flags. The owner maps name the task that created a
-        // derivative: an `integrationPrepared` gate key, a scope id, a rule
-        // (`packRuleOwner` of the installed implication and scope), a
-        // multiplication copy (the owner every LMV of the copy carries), an
-        // algebra `admissionMap` key, an `admissionSetIntegration` key, a
-        // `triggersForAdmissionSetIntegration` key. Owner zero means an
-        // independent derivative. `finishedIntegrationRoots` holds every root
-        // found finished. All dischargeable; `wipeSubtrees` erases the entries
-        // whose scope half is closed.
-        TypedColdMap<int64_t, IntegrationTaskRec> integrationTasks{ &manager, &dirty };
-        TypedColdMap<int64_t, IntegrationTaskRec>::KeysView integrationTasksKeys{ &integrationTasks.inner() };
-        TypedColdMap<int64_t, IntegrationTaskRec>::ValuesView integrationTasksValues{ &integrationTasks.inner() };
-        TypedColdMap<int64_t, int64_t> integrationPreparedOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView integrationPreparedOwnersKeys{ &integrationPreparedOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView integrationPreparedOwnersValues{ &integrationPreparedOwners.inner() };
-        TypedColdMap<int64_t, int64_t> integrationScopeOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView integrationScopeOwnersKeys{ &integrationScopeOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView integrationScopeOwnersValues{ &integrationScopeOwners.inner() };
-        TypedColdMap<int64_t, int64_t> integrationRuleOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView integrationRuleOwnersKeys{ &integrationRuleOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView integrationRuleOwnersValues{ &integrationRuleOwners.inner() };
-        TypedColdMap<int64_t, int64_t> integrationCopyOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView integrationCopyOwnersKeys{ &integrationCopyOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView integrationCopyOwnersValues{ &integrationCopyOwners.inner() };
-        TypedColdMap<int64_t, int64_t> algebraKeyOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView algebraKeyOwnersKeys{ &algebraKeyOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView algebraKeyOwnersValues{ &algebraKeyOwners.inner() };
-        TypedColdMap<int64_t, int64_t> admissionSetOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView admissionSetOwnersKeys{ &admissionSetOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView admissionSetOwnersValues{ &admissionSetOwners.inner() };
-        TypedColdMap<int64_t, int64_t> admissionTriggerOwners{ &manager, &dirty };
-        TypedColdMap<int64_t, int64_t>::KeysView admissionTriggerOwnersKeys{ &admissionTriggerOwners.inner() };
-        TypedColdMap<int64_t, int64_t>::ValuesView admissionTriggerOwnersValues{ &admissionTriggerOwners.inner() };
-        ColdHashSet<PodKeyStore<int64_t>> finishedIntegrationRoots{ &manager, &dirty };
-        ColdHashSet<PodKeyStore<int64_t>>::KeysView finishedIntegrationRootsKeys{ &finishedIntegrationRoots };
+        // Integration trials (D-481),
+        // keyed by the packed (canonical source, parent scope) pair. An open
+        // record leaves with its trial scope, every record with its parent
+        // scope (`wipeSubtrees`). Dischargeable.
+        TypedColdMap<int64_t, IntegrationTrialRec> integrationTrials{ &manager, &dirty };
+        TypedColdMap<int64_t, IntegrationTrialRec>::KeysView integrationTrialsKeys{ &integrationTrials.inner() };
+        TypedColdMap<int64_t, IntegrationTrialRec>::ValuesView integrationTrialsValues{ &integrationTrials.inner() };
+        // What each integration trial admits on success, keyed by the packed
+        // (trial scope, index) pair: indices below the record's
+        // `witnessCount` hold (slot ordinal, witness name) pairs in slot
+        // order, the next `expressionCount` hold (kind, expression) pairs,
+        // kind `kIntegrationTrialStatement` or `kIntegrationTrialRule`
+        // (D-481). Leaves with its record.
+        // Dischargeable.
+        TypedColdMap<int64_t, int64_t> integrationTrialContents{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView integrationTrialContentsKeys{ &integrationTrialContents.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView integrationTrialContentsValues{ &integrationTrialContents.inner() };
+        // Induction eats (D-519),
+        // keyed by the scope where the induction hypothesis admitted a witness:
+        // the slot it ate there — the admitting template's id, or
+        // `Memory::kStrongInductionSlot` for the strong demand. One order per
+        // path: at that scope the hypothesis eats no other slot. Leaves with
+        // its scope (`wipeSubtrees`). Dischargeable.
+        TypedColdMap<int64_t, int32_t> inductionEats{ &manager, &dirty };
+        TypedColdMap<int64_t, int32_t>::KeysView inductionEatsKeys{ &inductionEats.inner() };
+        TypedColdMap<int64_t, int32_t>::ValuesView inductionEatsValues{ &inductionEats.inner() };
+        // Induction tree settlement (D-520): the burst's
+        // firings of the induction hypothesis at induction scopes, drained and
+        // reset every burst by `Memory::settleInductionTrees`; and the roots of
+        // settled trees, whose first firing wiped the rest of the tree - no
+        // induction scope opens below a settled root. A settled root leaves
+        // with its scope (`wipeSubtrees`). Both dischargeable.
+        ColdHashSet<PodKeyStore<NameId>> inductionFirings{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<NameId>>::KeysView inductionFiringsKeys{ &inductionFirings };
+        ColdHashSet<PodKeyStore<NameId>> inductionSettledRoots{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<NameId>>::KeysView inductionSettledRootsKeys{ &inductionSettledRoots };
+        // ORs reached by unfolding a conjecture premise (NameMap expression ids
+        // at main) awaiting the flag-6 unconditional-ordis mail; `fillMailOut`
+        // erases each once it ships
+        // (D-528). Dischargeable.
+        ColdHashSet<PodKeyStore<NameId>> pendingUnconditionalOrdis{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<NameId>>::KeysView pendingUnconditionalOrdisKeys{ &pendingUnconditionalOrdis };
+        // OR cohorts (lbStateInterner cohort ids) opened from a conjecture
+        // premise's OR, in place or on a flag-6 arrival: each case
+        // `drainPendingOrReleases` releases carries the forced signal, and the
+        // absorb disintegrates it with force_ witnesses
+        // (D-527). Dischargeable.
+        ColdHashSet<PodKeyStore<int32_t>> forcedOrCohorts{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int32_t>>::KeysView forcedOrCohortsKeys{ &forcedOrCohorts };
+        // OR cohorts (lbStateInterner cohort ids) opened through a demand whose
+        // source is an induction hypothesis rule (the hypothesis's missing
+        // expression): `drainPendingOrReleases` releases their cases below an
+        // unsettled induction scope, exempt from the I-328 block
+        // (D-575). Dischargeable.
+        ColdHashSet<PodKeyStore<int32_t>> hypothesisOrCohorts{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int32_t>>::KeysView hypothesisOrCohortsKeys{ &hypothesisOrCohorts };
+        // Goal-driven marked-head implications already installed: their rule
+        // owners (`packRuleOwner` of the identity text's ruleInterner id and
+        // the install scope's NameMap id). `IntegrationProcessor::serveGoalNearMiss`
+        // installs each once, since an LMV run appends without dedup
+        // (D-574). Dischargeable.
+        ColdHashSet<PodKeyStore<int64_t>> goalDemandInstalls{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView goalDemandInstallsKeys{ &goalDemandInstalls };
+        // Scopes (NameMap ids) where the induction hypothesis shot: a
+        // statement fired by an installed induction hypothesis rule reached
+        // the statement door there (`recursionHead`). A commit served by an
+        // ancestor's integration demand updates the ancestor's instruction
+        // only after a shot on its path
+        // (`AdmissionMemory::hypothesisShotOnPath`,
+        // D-572). An entry leaves with its
+        // scope. Dischargeable.
+        ColdHashSet<PodKeyStore<NameId>> hypothesisShots{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<NameId>>::KeysView hypothesisShotsKeys{ &hypothesisShots };
+        // Int scopes of premise-bound integrations
+        // (D-578). `intScopes`: each open int scope
+        // (NameMap id) -> `packInt32Pair(goal group, premise level)`, the goal
+        // group being the NameMap id of the opening instruction's integration
+        // goal with unlabelled markers; an entry leaves with its scope.
+        // `intScopeGroups`: goal group -> the bit set of its premises' block
+        // levels, bit 63 set once the group was promoted. `intScopeFirstFinish`:
+        // `packInt32Pair(goal group, premise level)` -> the premise's first
+        // finished scope. Both group tables outlive the wipe of the promoted
+        // scopes: a group promotes once. A first finish of a group not yet
+        // promoted leaves with its scope. All three dischargeable.
+        TypedColdMap<int64_t, int64_t> intScopes{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView intScopesKeys{ &intScopes.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView intScopesValues{ &intScopes.inner() };
+        TypedColdMap<int64_t, int64_t> intScopeGroups{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView intScopeGroupsKeys{ &intScopeGroups.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView intScopeGroupsValues{ &intScopeGroups.inner() };
+        TypedColdMap<int64_t, int64_t> intScopeFirstFinish{ &manager, &dirty };
+        TypedColdMap<int64_t, int64_t>::KeysView intScopeFirstFinishKeys{ &intScopeFirstFinish.inner() };
+        TypedColdMap<int64_t, int64_t>::ValuesView intScopeFirstFinishValues{ &intScopeFirstFinish.inner() };
+        // Size markers of a weak step block: the values (`valueInterner` ids)
+        // filled into an integration instruction there, at the route-3
+        // commit or the statement fill, each through a key connected to the
+        // induction. A later key holding one is connected too
+        // (D-583). A witness name is never
+        // reused within a block, so an entry outlives every scope wipe.
+        // Dischargeable.
+        ColdHashSet<PodKeyStore<int32_t>> sizeMarkers{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int32_t>>::KeysView sizeMarkersKeys{ &sizeMarkers };
+        // One-way witnesses: the witnesses (NameMap ids) a route-3 commit
+        // wrote into an integration instruction. The statement fill never
+        // tries one of them, or a name of its class at the deposit scope, as
+        // a marker again (D-585). A witness name is never
+        // reused within a block, so an entry outlives every scope wipe.
+        // Dischargeable.
+        ColdHashSet<PodKeyStore<int32_t>> oneWayWitnesses{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int32_t>>::KeysView oneWayWitnessesKeys{ &oneWayWitnesses };
+        // OR cohorts (lbStateInterner cohort ids) a twin block opened as its
+        // case experiment: `drainPendingOrReleases` releases their starter
+        // case and never another one
+        // (D-588). Dischargeable.
+        ColdHashSet<PodKeyStore<int32_t>> experimentOrCohorts{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int32_t>>::KeysView experimentOrCohortsKeys{ &experimentOrCohorts };
+        // Statements produced by a forced disintegration, a status-0 seed or a
+        // hypothesis shot (packed NameMap (expression id, scope id)), and the
+        // statements a parent shipped with the from-premise mail flag. The
+        // witness-history check ends its walk at a listed statement
+        // (D-522). Entries leave with their scope.
+        // Dischargeable.
+        ColdHashSet<PodKeyStore<int64_t>> forcedProducts{ &manager, &dirty };
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView forcedProductsKeys{ &forcedProducts };
+        // Contradiction-scope demand (D-560): every
+        // open `contradiction_` scope a negated compound's reductio pushed
+        // (`prepareNegatedCompoundContradiction`), keyed by its scope id, with
+        // 0 until the demand drain has matched the facts visible there against
+        // the rule heads that negate them, 1 after. Leaves with its scope
+        // (`wipeSubtrees`). Dischargeable.
+        TypedColdMap<int64_t, int32_t> contradictionScopes{ &manager, &dirty };
+        TypedColdMap<int64_t, int32_t>::KeysView contradictionScopesKeys{ &contradictionScopes.inner() };
+        TypedColdMap<int64_t, int32_t>::ValuesView contradictionScopesValues{ &contradictionScopes.inner() };
+        // The demand's derived fact index: the facts those scopes see under
+        // the masked keys of the rule heads that negate them. Never deloaded;
+        // cleared at the release seam, the canonical reload, discharge and
+        // every teardown; the raw image carries it verbatim.
+        ContradictionFactIndex contradictionFacts{ &manager };
 
         /// @brief Enumerate the statified containers in tag order
         ///        (read-only).
@@ -1187,23 +1449,33 @@ namespace gl {
             visit(ContainerTag::OrSupportEqualitiesKeys, orSupportEqualitiesKeys);
             visit(ContainerTag::OrSupportEqualitiesRunStarts, orSupportEqualitiesRunStarts);
             visit(ContainerTag::OrSupportEqualitiesValues, orSupportEqualitiesValues);
-            visit(ContainerTag::IntegrationTasksKeys, integrationTasksKeys);
-            visit(ContainerTag::IntegrationTasksValues, integrationTasksValues);
-            visit(ContainerTag::IntegrationPreparedOwnersKeys, integrationPreparedOwnersKeys);
-            visit(ContainerTag::IntegrationPreparedOwnersValues, integrationPreparedOwnersValues);
-            visit(ContainerTag::IntegrationScopeOwnersKeys, integrationScopeOwnersKeys);
-            visit(ContainerTag::IntegrationScopeOwnersValues, integrationScopeOwnersValues);
-            visit(ContainerTag::IntegrationRuleOwnersKeys, integrationRuleOwnersKeys);
-            visit(ContainerTag::IntegrationRuleOwnersValues, integrationRuleOwnersValues);
-            visit(ContainerTag::IntegrationCopyOwnersKeys, integrationCopyOwnersKeys);
-            visit(ContainerTag::IntegrationCopyOwnersValues, integrationCopyOwnersValues);
-            visit(ContainerTag::AlgebraKeyOwnersKeys, algebraKeyOwnersKeys);
-            visit(ContainerTag::AlgebraKeyOwnersValues, algebraKeyOwnersValues);
-            visit(ContainerTag::AdmissionSetOwnersKeys, admissionSetOwnersKeys);
-            visit(ContainerTag::AdmissionSetOwnersValues, admissionSetOwnersValues);
-            visit(ContainerTag::AdmissionTriggerOwnersKeys, admissionTriggerOwnersKeys);
-            visit(ContainerTag::AdmissionTriggerOwnersValues, admissionTriggerOwnersValues);
-            visit(ContainerTag::FinishedIntegrationRoots, finishedIntegrationRootsKeys);
+            unaryComposition.visitGoalContainers(static_cast<uint32_t>(ContainerTag::UnaryCompositionGoalsKeys),
+                [&](uint32_t tag, auto& column) { visit(static_cast<ContainerTag>(tag), column); });
+            visit(ContainerTag::IntegrationTrialsKeys, integrationTrialsKeys);
+            visit(ContainerTag::IntegrationTrialsValues, integrationTrialsValues);
+            visit(ContainerTag::IntegrationTrialContentsKeys, integrationTrialContentsKeys);
+            visit(ContainerTag::IntegrationTrialContentsValues, integrationTrialContentsValues);
+            visit(ContainerTag::InductionEatsKeys, inductionEatsKeys);
+            visit(ContainerTag::InductionEatsValues, inductionEatsValues);
+            visit(ContainerTag::InductionFirings, inductionFiringsKeys);
+            visit(ContainerTag::InductionSettledRoots, inductionSettledRootsKeys);
+            visit(ContainerTag::PendingUnconditionalOrdis, pendingUnconditionalOrdisKeys);
+            visit(ContainerTag::ForcedOrCohorts, forcedOrCohortsKeys);
+            visit(ContainerTag::ForcedProducts, forcedProductsKeys);
+            visit(ContainerTag::ContradictionScopesKeys, contradictionScopesKeys);
+            visit(ContainerTag::ContradictionScopesValues, contradictionScopesValues);
+            visit(ContainerTag::HypothesisOrCohorts, hypothesisOrCohortsKeys);
+            visit(ContainerTag::GoalDemandInstalls, goalDemandInstallsKeys);
+            visit(ContainerTag::HypothesisShots, hypothesisShotsKeys);
+            visit(ContainerTag::IntScopesKeys, intScopesKeys);
+            visit(ContainerTag::IntScopesValues, intScopesValues);
+            visit(ContainerTag::IntScopeGroupsKeys, intScopeGroupsKeys);
+            visit(ContainerTag::IntScopeGroupsValues, intScopeGroupsValues);
+            visit(ContainerTag::IntScopeFirstFinishKeys, intScopeFirstFinishKeys);
+            visit(ContainerTag::IntScopeFirstFinishValues, intScopeFirstFinishValues);
+            visit(ContainerTag::SizeMarkers, sizeMarkersKeys);
+            visit(ContainerTag::OneWayWitnesses, oneWayWitnessesKeys);
+            visit(ContainerTag::ExperimentOrCohorts, experimentOrCohortsKeys);
         }
 
         /// @brief Whether a tag's content survives discharge (rides the
@@ -1275,6 +1547,7 @@ namespace gl {
             orImplicationMatches.clear();
             existenceLookups.clear();
             canonicalUses.clear();
+            contradictionFacts.clear();
             visitContainers([](ContainerTag tag, auto& container) {
                 if (survivesDischarge(tag)) return;
                 container.clear();
@@ -1298,67 +1571,80 @@ namespace gl {
         /// @param visit The visitor, called once per term in a fixed order.
         template <typename Visitor>
         void visitLiveBytes(Visitor&& visit) const {
-            visit("sharedExpressions", sharedExpressions.liveBytes());
-            visit("intEncodedStatements", static_cast<int64_t>(intEncodedStatements.liveBytes()));
-            visit("intLocalEncodedStatements", static_cast<int64_t>(intLocalEncodedStatements.liveBytes()));
-            visit("intLocalEncodedStatementsDelta", static_cast<int64_t>(intLocalEncodedStatementsDelta.liveBytes()));
-            visit("intExternalStatements", static_cast<int64_t>(intExternalStatements.liveBytes()));
-            visit("templateStrings", static_cast<int64_t>(templateStrings.liveBytes()));
-            visit("valueStrings", static_cast<int64_t>(valueStrings.liveBytes()));
-            visit("originStrings", static_cast<int64_t>(originStrings.liveBytes()));
-            visit("ruleStrings", static_cast<int64_t>(ruleStrings.liveBytes()));
-            visit("lbStateStrings", static_cast<int64_t>(lbStateStrings.liveBytes()));
-            visit("nameStrings", static_cast<int64_t>(nameStrings.liveBytes()));
-            visit("subStrings", static_cast<int64_t>(subStrings.liveBytes()));
-            visit("validityNodes", static_cast<int64_t>(validityNodes.liveBytes()));
-            visit("intValidityNamesToFilter", static_cast<int64_t>(intValidityNamesToFilter.liveBytes()));
-            visit("intAxedVariables", static_cast<int64_t>(intAxedVariables.liveBytes()));
-            visit("pendingWipeScopes", static_cast<int64_t>(pendingWipeScopes.liveBytes()));
-            visit("orDisjunctCount", static_cast<int64_t>(orDisjunctCount.liveBytes()));
-            visit("integrationStartIntMap", static_cast<int64_t>(integrationStartIntMap.liveBytes()));
-            visit("intLocalEncodedStatementsSet", static_cast<int64_t>(intLocalEncodedStatementsSet.liveBytes()));
-            visit("usedAsPremiseCorePairs", static_cast<int64_t>(usedAsPremiseCorePairs.liveBytes()));
-            visit("appliedPremiseCorePairs", static_cast<int64_t>(appliedPremiseCorePairs.liveBytes()));
-            visit("intWeakVariables", static_cast<int64_t>(intWeakVariables.liveBytes()));
-            visit("integrationPrepared", static_cast<int64_t>(integrationPrepared.liveBytes()));
-            visit("integrationPreparedMarker", static_cast<int64_t>(integrationPreparedMarker.liveBytes()));
-            visit("expandedImplications", static_cast<int64_t>(expandedImplications.liveBytes()));
-            visit("compactExpansions", static_cast<int64_t>(compactExpansions.liveBytes()));
-            visit("expansionCarrierCount", static_cast<int64_t>(expansionCarrierCount.liveBytes()));
-            visit("intKnownStatements", static_cast<int64_t>(intKnownStatements.liveBytes()));
-            visit("equivalenceClassesMap", static_cast<int64_t>(equivalenceClassesMap.liveBytes()));
-            visit("canonicalEquivalenceClassesMap", static_cast<int64_t>(canonicalEquivalenceClassesMap.liveBytes()));
-            visit("canonicalMemberRepresentatives", static_cast<int64_t>(canonicalMemberRepresentatives.count() * (sizeof(int64_t) + sizeof(int64_t))));
-            visit("canonicalClassChanges", static_cast<int64_t>(canonicalClassChanges.count() * (sizeof(int64_t) + sizeof(int32_t))));
-            visit("exprOriginMap", static_cast<int64_t>(exprOriginMap.liveBytes()));
-            visit("sharedNativeKeys", sharedNativeKeys.liveBytes());
-            visit("overallHashMemory", static_cast<int64_t>(overallHashMemory.liveBytes()));
-            visit("localHashMemory", static_cast<int64_t>(localHashMemory.liveBytes()));
-            visit("localHashMemoryDelta", static_cast<int64_t>(localHashMemoryDelta.liveBytes()));
-            visit("workingMemory", static_cast<int64_t>(workingMemory.liveBytes()));
-            visit("sameInternalMail", static_cast<int64_t>(sameInternalMail.liveBytes()));
-            visit("nextInternalMail", static_cast<int64_t>(nextInternalMail.liveBytes()));
-            visit("changedClassesThisStep", static_cast<int64_t>(changedClassesThisStep.liveBytes()));
-            visit("eqClassNameCaches", static_cast<int64_t>(eqClassNameCaches.liveBytes()));
-            visit("mailOut", static_cast<int64_t>(mailOut.liveBytes()));
-            visit("orPendingBranches", static_cast<int64_t>(orPendingBranches.liveBytes()));
-            visit("orPendingLevels", static_cast<int64_t>(orPendingLevels.liveBytes()));
-            visit("pendingRelayIter", static_cast<int64_t>(pendingRelayIter.liveBytes()));
-            visit("pendingRelayLevels", static_cast<int64_t>(pendingRelayLevels.liveBytes()));
-            visit("orImplications", static_cast<int64_t>(orImplications.liveBytes()));
-            visit("existenceReplays", static_cast<int64_t>(existenceReplays.count() * (sizeof(int64_t) + sizeof(int32_t))));
-            visit("orImplicationMatches", static_cast<int64_t>(orImplicationMatches.liveBytes()));
-            visit("existenceLookups", static_cast<int64_t>(existenceLookups.liveBytes()));
-            visit("canonicalUses", static_cast<int64_t>(canonicalUses.liveBytes()));
-            visit("unaryComposition", static_cast<int64_t>(unaryComposition.liveBytes()));
-            visit("orSupportFacts", static_cast<int64_t>(orSupportFacts.count() * (sizeof(int64_t) * 2)));
-            visit("orSupportEqualities", static_cast<int64_t>(orSupportEqualities.liveBytes()));
-            visit("integrationTasks", static_cast<int64_t>(integrationTasks.liveBytes()));
-            visit("integrationOwners", static_cast<int64_t>(integrationPreparedOwners.liveBytes()
-                + integrationScopeOwners.liveBytes() + integrationRuleOwners.liveBytes()
-                + integrationCopyOwners.liveBytes() + algebraKeyOwners.liveBytes()
-                + admissionSetOwners.liveBytes() + admissionTriggerOwners.liveBytes()));
-            visit("finishedIntegrationRoots", static_cast<int64_t>(finishedIntegrationRoots.liveBytes()));
+            visit("sharedExpressions", peak_snapshot::measure("sharedExpressions", sharedExpressions, [&] { return sharedExpressions.liveBytes(); }));
+            visit("intEncodedStatements", static_cast<int64_t>(peak_snapshot::measure("intEncodedStatements", intEncodedStatements, [&] { return intEncodedStatements.liveBytes(); })));
+            visit("intLocalEncodedStatements", static_cast<int64_t>(peak_snapshot::measure("intLocalEncodedStatements", intLocalEncodedStatements, [&] { return intLocalEncodedStatements.liveBytes(); })));
+            visit("intLocalEncodedStatementsDelta", static_cast<int64_t>(peak_snapshot::measure("intLocalEncodedStatementsDelta", intLocalEncodedStatementsDelta, [&] { return intLocalEncodedStatementsDelta.liveBytes(); })));
+            visit("intExternalStatements", static_cast<int64_t>(peak_snapshot::measure("intExternalStatements", intExternalStatements, [&] { return intExternalStatements.liveBytes(); })));
+            visit("templateStrings", static_cast<int64_t>(peak_snapshot::measure("templateStrings", templateStrings, [&] { return templateStrings.liveBytes(); })));
+            visit("valueStrings", static_cast<int64_t>(peak_snapshot::measure("valueStrings", valueStrings, [&] { return valueStrings.liveBytes(); })));
+            visit("originStrings", static_cast<int64_t>(peak_snapshot::measure("originStrings", originStrings, [&] { return originStrings.liveBytes(); })));
+            visit("ruleStrings", static_cast<int64_t>(peak_snapshot::measure("ruleStrings", ruleStrings, [&] { return ruleStrings.liveBytes(); })));
+            visit("lbStateStrings", static_cast<int64_t>(peak_snapshot::measure("lbStateStrings", lbStateStrings, [&] { return lbStateStrings.liveBytes(); })));
+            visit("nameStrings", static_cast<int64_t>(peak_snapshot::measure("nameStrings", nameStrings, [&] { return nameStrings.liveBytes(); })));
+            visit("subStrings", static_cast<int64_t>(peak_snapshot::measure("subStrings", subStrings, [&] { return subStrings.liveBytes(); })));
+            visit("validityNodes", static_cast<int64_t>(peak_snapshot::measure("validityNodes", validityNodes, [&] { return validityNodes.liveBytes(); })));
+            visit("intValidityNamesToFilter", static_cast<int64_t>(peak_snapshot::measure("intValidityNamesToFilter", intValidityNamesToFilter, [&] { return intValidityNamesToFilter.liveBytes(); })));
+            visit("intAxedVariables", static_cast<int64_t>(peak_snapshot::measure("intAxedVariables", intAxedVariables, [&] { return intAxedVariables.liveBytes(); })));
+            visit("pendingWipeScopes", static_cast<int64_t>(peak_snapshot::measure("pendingWipeScopes", pendingWipeScopes, [&] { return pendingWipeScopes.liveBytes(); })));
+            visit("orDisjunctCount", static_cast<int64_t>(peak_snapshot::measure("orDisjunctCount", orDisjunctCount, [&] { return orDisjunctCount.liveBytes(); })));
+            visit("integrationStartIntMap", static_cast<int64_t>(peak_snapshot::measure("integrationStartIntMap", integrationStartIntMap, [&] { return integrationStartIntMap.liveBytes(); })));
+            visit("intLocalEncodedStatementsSet", static_cast<int64_t>(peak_snapshot::measure("intLocalEncodedStatementsSet", intLocalEncodedStatementsSet, [&] { return intLocalEncodedStatementsSet.liveBytes(); })));
+            visit("usedAsPremiseCorePairs", static_cast<int64_t>(peak_snapshot::measure("usedAsPremiseCorePairs", usedAsPremiseCorePairs, [&] { return usedAsPremiseCorePairs.liveBytes(); })));
+            visit("appliedPremiseCorePairs", static_cast<int64_t>(peak_snapshot::measure("appliedPremiseCorePairs", appliedPremiseCorePairs, [&] { return appliedPremiseCorePairs.liveBytes(); })));
+            visit("intWeakVariables", static_cast<int64_t>(peak_snapshot::measure("intWeakVariables", intWeakVariables, [&] { return intWeakVariables.liveBytes(); })));
+            visit("integrationPrepared", static_cast<int64_t>(peak_snapshot::measure("integrationPrepared", integrationPrepared, [&] { return integrationPrepared.liveBytes(); })));
+            visit("integrationPreparedMarker", static_cast<int64_t>(peak_snapshot::measure("integrationPreparedMarker", integrationPreparedMarker, [&] { return integrationPreparedMarker.liveBytes(); })));
+            visit("expandedImplications", static_cast<int64_t>(peak_snapshot::measure("expandedImplications", expandedImplications, [&] { return expandedImplications.liveBytes(); })));
+            visit("compactExpansions", static_cast<int64_t>(peak_snapshot::measure("compactExpansions", compactExpansions, [&] { return compactExpansions.liveBytes(); })));
+            visit("expansionCarrierCount", static_cast<int64_t>(peak_snapshot::measure("expansionCarrierCount", expansionCarrierCount, [&] { return expansionCarrierCount.liveBytes(); })));
+            visit("intKnownStatements", static_cast<int64_t>(peak_snapshot::measure("intKnownStatements", intKnownStatements, [&] { return intKnownStatements.liveBytes(); })));
+            visit("equivalenceClassesMap", static_cast<int64_t>(peak_snapshot::measure("equivalenceClassesMap", equivalenceClassesMap, [&] { return equivalenceClassesMap.liveBytes(); })));
+            visit("canonicalEquivalenceClassesMap", static_cast<int64_t>(peak_snapshot::measure("canonicalEquivalenceClassesMap", canonicalEquivalenceClassesMap, [&] { return canonicalEquivalenceClassesMap.liveBytes(); })));
+            visit("canonicalMemberRepresentatives", static_cast<int64_t>(peak_snapshot::measure("canonicalMemberRepresentatives", canonicalMemberRepresentatives, [&] { if (peak_snapshot::active()) canonicalMemberRepresentatives.liveBytes(); return canonicalMemberRepresentatives.count(); }) * (sizeof(int64_t) + sizeof(int64_t))));
+            visit("canonicalClassChanges", static_cast<int64_t>(peak_snapshot::measure("canonicalClassChanges", canonicalClassChanges, [&] { if (peak_snapshot::active()) canonicalClassChanges.liveBytes(); return canonicalClassChanges.count(); }) * (sizeof(int64_t) + sizeof(int32_t))));
+            visit("exprOriginMap", static_cast<int64_t>(peak_snapshot::measure("exprOriginMap", exprOriginMap, [&] { return exprOriginMap.liveBytes(); })));
+            visit("sharedNativeKeys", peak_snapshot::measure("sharedNativeKeys", sharedNativeKeys, [&] { return sharedNativeKeys.liveBytes(); }));
+            visit("overallHashMemory", static_cast<int64_t>(peak_snapshot::measure("overallHashMemory", overallHashMemory, [&] { return overallHashMemory.liveBytes(); })));
+            visit("localHashMemory", static_cast<int64_t>(peak_snapshot::measure("localHashMemory", localHashMemory, [&] { return localHashMemory.liveBytes(); })));
+            visit("localHashMemoryDelta", static_cast<int64_t>(peak_snapshot::measure("localHashMemoryDelta", localHashMemoryDelta, [&] { return localHashMemoryDelta.liveBytes(); })));
+            visit("workingMemory", static_cast<int64_t>(peak_snapshot::measure("workingMemory", workingMemory, [&] { return workingMemory.liveBytes(); })));
+            visit("sameInternalMail", static_cast<int64_t>(peak_snapshot::measure("sameInternalMail", sameInternalMail, [&] { return sameInternalMail.liveBytes(); })));
+            visit("nextInternalMail", static_cast<int64_t>(peak_snapshot::measure("nextInternalMail", nextInternalMail, [&] { return nextInternalMail.liveBytes(); })));
+            visit("changedClassesThisStep", static_cast<int64_t>(peak_snapshot::measure("changedClassesThisStep", changedClassesThisStep, [&] { return changedClassesThisStep.liveBytes(); })));
+            visit("eqClassNameCaches", static_cast<int64_t>(peak_snapshot::measure("eqClassNameCaches", eqClassNameCaches, [&] { return eqClassNameCaches.liveBytes(); })));
+            visit("mailOut", static_cast<int64_t>(peak_snapshot::measure("mailOut", mailOut, [&] { return mailOut.liveBytes(); })));
+            visit("orPendingBranches", static_cast<int64_t>(peak_snapshot::measure("orPendingBranches", orPendingBranches, [&] { return orPendingBranches.liveBytes(); })));
+            visit("orPendingLevels", static_cast<int64_t>(peak_snapshot::measure("orPendingLevels", orPendingLevels, [&] { return orPendingLevels.liveBytes(); })));
+            visit("pendingRelayIter", static_cast<int64_t>(peak_snapshot::measure("pendingRelayIter", pendingRelayIter, [&] { return pendingRelayIter.liveBytes(); })));
+            visit("pendingRelayLevels", static_cast<int64_t>(peak_snapshot::measure("pendingRelayLevels", pendingRelayLevels, [&] { return pendingRelayLevels.liveBytes(); })));
+            visit("orImplications", static_cast<int64_t>(peak_snapshot::measure("orImplications", orImplications, [&] { return orImplications.liveBytes(); })));
+            visit("existenceReplays", static_cast<int64_t>(peak_snapshot::measure("existenceReplays", existenceReplays, [&] { if (peak_snapshot::active()) existenceReplays.liveBytes(); return existenceReplays.count(); }) * (sizeof(int64_t) + sizeof(int32_t))));
+            visit("orImplicationMatches", static_cast<int64_t>(peak_snapshot::measure("orImplicationMatches", orImplicationMatches, [&] { return orImplicationMatches.liveBytes(); })));
+            visit("existenceLookups", static_cast<int64_t>(peak_snapshot::measure("existenceLookups", existenceLookups, [&] { return existenceLookups.liveBytes(); })));
+            visit("canonicalUses", static_cast<int64_t>(peak_snapshot::measure("canonicalUses", canonicalUses, [&] { return canonicalUses.liveBytes(); })));
+            visit("unaryComposition", static_cast<int64_t>(peak_snapshot::measure("unaryComposition", unaryComposition, [&] { return unaryComposition.liveBytes(); })));
+            visit("orSupportFacts", static_cast<int64_t>(peak_snapshot::measure("orSupportFacts", orSupportFacts, [&] { if (peak_snapshot::active()) orSupportFacts.liveBytes(); return orSupportFacts.count(); }) * (sizeof(int64_t) * 2)));
+            visit("orSupportEqualities", static_cast<int64_t>(peak_snapshot::measure("orSupportEqualities", orSupportEqualities, [&] { return orSupportEqualities.liveBytes(); })));
+            visit("integrationTrials", static_cast<int64_t>(peak_snapshot::measure("integrationTrials", integrationTrials, [&] { return integrationTrials.liveBytes(); })
+                + peak_snapshot::measure("integrationTrialContents", integrationTrialContents, [&] { return integrationTrialContents.liveBytes(); })));
+            visit("inductionEats", static_cast<int64_t>(peak_snapshot::measure("inductionEats", inductionEats, [&] { return inductionEats.liveBytes(); })));
+            visit("inductionFirings", static_cast<int64_t>(peak_snapshot::measure("inductionFirings", inductionFirings, [&] { return inductionFirings.liveBytes(); })));
+            visit("inductionSettledRoots", static_cast<int64_t>(peak_snapshot::measure("inductionSettledRoots", inductionSettledRoots, [&] { return inductionSettledRoots.liveBytes(); })));
+            visit("pendingUnconditionalOrdis", static_cast<int64_t>(peak_snapshot::measure("pendingUnconditionalOrdis", pendingUnconditionalOrdis, [&] { return pendingUnconditionalOrdis.liveBytes(); })));
+            visit("forcedOrCohorts", static_cast<int64_t>(peak_snapshot::measure("forcedOrCohorts", forcedOrCohorts, [&] { return forcedOrCohorts.liveBytes(); })));
+            visit("hypothesisOrCohorts", static_cast<int64_t>(peak_snapshot::measure("hypothesisOrCohorts", hypothesisOrCohorts, [&] { return hypothesisOrCohorts.liveBytes(); })));
+            visit("goalDemandInstalls", static_cast<int64_t>(peak_snapshot::measure("goalDemandInstalls", goalDemandInstalls, [&] { return goalDemandInstalls.liveBytes(); })));
+            visit("hypothesisShots", static_cast<int64_t>(peak_snapshot::measure("hypothesisShots", hypothesisShots, [&] { return hypothesisShots.liveBytes(); })));
+            visit("intScopes", static_cast<int64_t>(peak_snapshot::measure("intScopes", intScopes, [&] { return intScopes.liveBytes(); })
+                + peak_snapshot::measure("intScopeGroups", intScopeGroups, [&] { return intScopeGroups.liveBytes(); })
+                + peak_snapshot::measure("intScopeFirstFinish", intScopeFirstFinish, [&] { return intScopeFirstFinish.liveBytes(); })));
+            visit("sizeMarkers", static_cast<int64_t>(peak_snapshot::measure("sizeMarkers", sizeMarkers, [&] { return sizeMarkers.liveBytes(); })));
+            visit("oneWayWitnesses", static_cast<int64_t>(peak_snapshot::measure("oneWayWitnesses", oneWayWitnesses, [&] { return oneWayWitnesses.liveBytes(); })));
+            visit("experimentOrCohorts", static_cast<int64_t>(peak_snapshot::measure("experimentOrCohorts", experimentOrCohorts, [&] { return experimentOrCohorts.liveBytes(); })));
+            visit("forcedProducts", static_cast<int64_t>(peak_snapshot::measure("forcedProducts", forcedProducts, [&] { return forcedProducts.liveBytes(); })));
+            visit("contradictionScopes", static_cast<int64_t>(peak_snapshot::measure("contradictionScopes", contradictionScopes, [&] { return contradictionScopes.liveBytes(); })));
+            visit("contradictionFacts", static_cast<int64_t>(peak_snapshot::measure("contradictionFacts", contradictionFacts, [&] { return contradictionFacts.liveBytes(); })));
         }
 
         /// @brief Total live byte footprint across the named container census.

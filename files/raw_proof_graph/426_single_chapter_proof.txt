@@ -1,0 +1,58 @@
+(interval[1,4,2,2,9])	main	contradiction	(in[2,1])	main	!(in[2,1])	main	!(interval[1,4,2,2,9])	main
+(in[2,1])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main	expansion	(NaturalNumbers[1,2,3,4,5])	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main	expansion	(AnchorFTA[1,2,3,4,5,6,7,8])	main
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+!(in[2,1])	main	implication	(>[](implication89[u_9,u_1,u_4,u_2])(>[](implication90[u_9,u_1,u_4,u_2])(>[](implication91[u_1,u_4,u_2,u_2,u_9])(>[](in[u_2,u_1])!(in[u_2,u_1])))))	main	(implication89[9,1,4,2])	main	(implication90[9,1,4,2])	main	(implication91[1,4,2,2,9])	main	(in[2,1])	main
+(>[](implication89[u_9,u_1,u_4,u_2])(>[](implication90[u_9,u_1,u_4,u_2])(>[](implication91[u_1,u_4,u_2,u_2,u_9])(>[](in[u_2,u_1])!(in[u_2,u_1])))))	main	disintegration	!(&(&(&(&(implication89[9,1,4,2])(implication90[9,1,4,2]))(implication91[1,4,2,2,9]))(in[2,1]))(in[2,1]))	main
+!(&(&(&(&(implication89[9,1,4,2])(implication90[9,1,4,2]))(implication91[1,4,2,2,9]))(in[2,1]))(in[2,1]))	main	expansion	!(interval[1,4,2,2,9])	main
+!(interval[1,4,2,2,9])	main	task formulation
+(implication89[9,1,4,2])	main	validity name	(preorder[1,4,2,repl_lev_1_0])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])
+(preorder[1,4,2,repl_lev_1_0])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])	equality1	(preorder[1,4,2,2])	main	(=[2,repl_lev_1_0])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])
+(preorder[1,4,2,2])	main	implication	(>[1](in[1,u_9])(preorder[u_1,u_4,1,u_2]))	main	(in[2,9])	main
+(>[1](in[1,u_9])(preorder[u_1,u_4,1,u_2]))	main	expansion	(implication90[9,1,4,2])	main
+(implication90[9,1,4,2])	main	validity name	(preorder[1,4,repl_lev_1_1,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(preorder[1,4,repl_lev_1_1,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	equality1	(preorder[1,4,2,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	(=[2,repl_lev_1_1])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(preorder[1,4,2,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	implication	(>[pi_lev_1_25](in[pi_lev_1_25,u_1])(>[](in3[u_2,pi_lev_1_25,u_2,u_4])(preorder[u_1,u_4,u_2,u_2])))	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	(in3[2,2_copy,2,4])	main	(in[2_copy,1])	main
+(>[pi_lev_1_25](in[pi_lev_1_25,u_1])(>[](in3[u_2,pi_lev_1_25,u_2,u_4])(preorder[u_1,u_4,u_2,u_2])))	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	expansion	(implication87[1,2,2,4])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(implication87[1,2,2,4])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	equality1	(implication87[1,repl_lev_1_1,2,4])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	(=[repl_lev_1_1,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(implication87[1,repl_lev_1_1,2,4])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	reformulation for integration >[bound]	!(>[pi_lev_1_6](in[pi_lev_1_6,1])!(in3[repl_lev_1_1,pi_lev_1_6,2,4]))_integration_goal	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+!(>[pi_lev_1_6](in[pi_lev_1_6,1])!(in3[repl_lev_1_1,pi_lev_1_6,2,4]))_integration_goal	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	expansion for integration	(preorder[1,4,repl_lev_1_1,2])_integration_goal	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(=[repl_lev_1_1,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	implication	(>[1](in[1,u_9])(=[1,u_2]))	main	(in[repl_lev_1_1,9])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(>[1](in[1,u_9])(=[1,u_2]))	main	expansion	(implication2441[9,2])	main
+(implication2441[9,2])	main	disintegration	(&(implication2441[9,2])(implication2442[2,9]))	main
+(&(implication2441[9,2])(implication2442[2,9]))	main	expansion	(EnumerationSet1[2,9])	main
+(EnumerationSet1[2,9])	main	task formulation
+(in[repl_lev_1_1,9])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	premise element	(>[repl_lev_1_1](in[repl_lev_1_1,9])(preorder[1,4,repl_lev_1_1,2]))_integration_goal	main
+(>[repl_lev_1_1](in[repl_lev_1_1,9])(preorder[1,4,repl_lev_1_1,2]))_integration_goal	main	expansion for integration	(implication90[9,1,4,2])_integration_goal	main
+(in3[2,2_copy,2,4])	main	equality1	(in3[2,2,2,4])	main	(=[2,2_copy])	main
+(in3[2,2,2,4])	main	equality1	(in3[2,2,2_copy,4])	main	(=[2_copy,2])	main
+(in3[2,2,2_copy,4])	main	implication	(>[1,2](=[1,2])(>[](in[1,u_1])(>[](in[2,u_1])(in3[1,u_2,2,u_4]))))	main	(=[2,2_copy])	main	(in[2,1])	main	(in[2_copy,1])	main
+(>[1,2](=[1,2])(>[](in[1,u_1])(>[](in[2,u_1])(in3[1,u_2,2,u_4]))))	main	expansion	(implication22[1,2,4])	main
+(implication22[1,2,4])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(=[2,2_copy])	main	variable copy
+(in[2_copy,1])	main	equality1	(in[2,1])	main	(=[2,2_copy])	main
+(=[2_copy,2])	main	symmetry of equality	(=[2,2_copy])	main
+(=[2,repl_lev_1_1])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])	symmetry of equality	(=[repl_lev_1_1,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication90[9,1,4,2])
+(in[2,9])	main	equality1	(in[2_copy,9])	main	(=[2_copy,2])	main
+(in[2_copy,9])	main	implication	(>[1](=[1,u_2])(in[1,u_9]))	main	(=[2_copy,2])	main
+(>[1](=[1,u_2])(in[1,u_9]))	main	expansion	(implication2442[2,9])	main
+(implication2442[2,9])	main	disintegration	(&(implication2441[9,2])(implication2442[2,9]))	main
+(=[2,repl_lev_1_0])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])	symmetry of equality	(=[repl_lev_1_0,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])
+(=[repl_lev_1_0,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])	implication	(>[1](in[1,u_9])(=[1,u_2]))	main	(in[repl_lev_1_0,9])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])
+(in[repl_lev_1_0,9])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication89[9,1,4,2])	premise element	(>[repl_lev_1_0](in[repl_lev_1_0,9])(preorder[1,4,2,repl_lev_1_0]))_integration_goal	main
+(>[repl_lev_1_0](in[repl_lev_1_0,9])(preorder[1,4,2,repl_lev_1_0]))_integration_goal	main	expansion for integration	(implication89[9,1,4,2])_integration_goal	main
+(implication91[1,4,2,2,9])	main	validity name	(in[repl_lev_1_2,9])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])
+(in[repl_lev_1_2,9])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	equality1	(in[2,9])	main	(=[2,repl_lev_1_2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])
+(=[2,repl_lev_1_2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,4])(>[](in[8,1])(=[2,7]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[repl_lev_1_2,force_lev_1_3,2,4])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	(in[force_lev_1_3,1])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])
+(AnchorPeano[1,2,3,4,5,6])	main	implication	(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	(NaturalNumbers[1,2,3,4,5])	main	(in2[2,6,3])	main
+(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	expansion	(implication76[1,2,3,4,5,6])	main
+(implication76[1,2,3,4,5,6])	main	reformulation for integration and	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main
+(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main	expansion for integration	(AnchorPeano[1,2,3,4,5,6])_integration_goal	main
+(in2[2,6,3])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(in3[repl_lev_1_2,force_lev_1_3,2,4])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	disintegration	!(>[force_lev_1_3](in[force_lev_1_3,1])!(in3[repl_lev_1_2,force_lev_1_3,2,4]))	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])
+!(>[force_lev_1_3](in[force_lev_1_3,1])!(in3[repl_lev_1_2,force_lev_1_3,2,4]))	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	expansion	(preorder[1,4,repl_lev_1_2,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])
+(preorder[1,4,repl_lev_1_2,2])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	premise element	(>[repl_lev_1_2](preorder[1,4,2,repl_lev_1_2])(>[](preorder[1,4,repl_lev_1_2,2])(in[repl_lev_1_2,9])))_integration_goal	main
+(>[repl_lev_1_2](preorder[1,4,2,repl_lev_1_2])(>[](preorder[1,4,repl_lev_1_2,2])(in[repl_lev_1_2,9])))_integration_goal	main	expansion for integration	(implication91[1,4,2,2,9])_integration_goal	main
+(in[force_lev_1_3,1])	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])	disintegration	!(>[force_lev_1_3](in[force_lev_1_3,1])!(in3[repl_lev_1_2,force_lev_1_3,2,4]))	main_boundary_(interval[1,4,2,2,9])_subproof_(implication91[1,4,2,2,9])

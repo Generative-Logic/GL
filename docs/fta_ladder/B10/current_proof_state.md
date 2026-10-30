@@ -16,7 +16,7 @@ Contributions require CLA — see CONTRIBUTING.md.
 
 ## Close-out (2026-08-12)
 
-Maintainer picked **Option A**; implemented as `ExpressionAnalyzer::contradictionLbHoldsRecord` guarding both D-51 fallback sites (commit on this branch, unit test `buildstack_contradiction_fallback_requires_twin_record`). All `[B10TRAP]` instrumentation removed; the leftover 2026-05 per-100k `[buildStack]` progress print removed on maintainer flag (the 5M hang-cap tripwire stays).
+Maintainer picked **Option A**; implemented as `ProofReconstructor::contradictionLbHoldsRecord` guarding both D-51 fallback sites (commit on this branch, unit test `buildstack_contradiction_fallback_requires_twin_record`). All `[B10TRAP]` instrumentation removed; the leftover 2026-05 per-100k `[buildStack]` progress print removed on maintainer flag (the 5M hang-cap tripwire stays).
 
 **Acceptance (production path, one chain):** units **1449/1449**; shortcut **44/44 saved**, verifier **6020 checks / 0 failures — airtight** (B10's chapter exports; `theorem usage termination` covers all 44), method **induction v2**, exe 208.5 s; **full standard pipeline** end-to-end **138972 checks / 0 failures — airtight**, byte-exact match to the D-276 baseline grand total, 1279.5 s (in band). Logs: , .
 
@@ -36,14 +36,14 @@ Row 44 of `files/shortcut/theorems/conjectures.txt`:
 
 ```text
 [buildStack] no origin for: (strictOrder[1,4,9,12]) | validity=main | exprKey=__contradiction__!(strictOrder[1,4,9,12])
-Assertion failed: false && "buildStack: no origin found", visualizer.cpp (buildStack)
+Assertion failed: false && "buildStack: no origin found", proof/proof_reconstructor.cpp (buildStack)
 ```
 
 Exit `0xC0000409`, deterministic. ~1.3M buildStack calls before the crash (backtracking amplification, a symptom not the defect).
 
 ## Diagnosis (three trap runs, commits / / )
 
-Traps are `[B10TRAP]`-marked in `visualizer.cpp`, file-routed to . Runs: .
+Traps are `[B10TRAP]`-marked in `proof/proof_reconstructor.cpp`, file-routed to . Runs: .
 
 **Fact 1 — provenance is complete; the prover recorded everything (Rule 16 satisfied).** In `(in2[rec0,10,3])`, `!(=[9,12])@main` holds ~30 **acyclic** `contradiction` origin records — the or0[9,12] cohort's `(=[9,12])` branch died on in-branch facts contradicting main-scope premises (the expected cancellation argument), each record citing the branch-scope/main opposing pair. Alongside them sits ONE cyclic record: `disintegration ← (&(preorder[1,4,9,12])!(=[9,12]))@main`, whose conjunction's only record is `expansion ← (strictOrder[1,4,9,12])@main` (definitional unfolding written after the head existed).
 

@@ -52,7 +52,19 @@ def write_nat_model(certificates: list[dict], project: Path) -> None:
              "def identity : GLBinaryRelation Nat := fun x y => y = x", "",
              "theorem induction : RelationalInduction domain 0 successor := by",
              "  intro P k base step _",
-             "  exact Nat.rec base (fun n hypothesis => step n True.intro hypothesis (Nat.succ n) rfl) k", ""]
+             "  exact Nat.rec base (fun n hypothesis => step n True.intro hypothesis (Nat.succ n) rfl) k", "",
+             "theorem strongInduction : StrongRelationalInduction domain 0 successor addition := by",
+             "  intro P k base step _",
+             "  refine Nat.strongRecOn (motive := P) k ?_",
+             "  intro k hypothesis",
+             "  cases k with",
+             "  | zero => exact base",
+             "  | succ n =>",
+             "    refine step n True.intro (Nat.succ n) rfl ?_",
+             "    intro j x sum different",
+             "    apply hypothesis",
+             "    unfold addition at sum",
+             "    omega", ""]
     for kind in ("Peano", "Gauss", "FTA"):
         arguments = "domain 0 successor addition multiplication 1"
         if kind != "Peano":
@@ -85,7 +97,7 @@ def write_nat_model(certificates: list[dict], project: Path) -> None:
             arguments = "NatModel.domain 0 NatModel.successor NatModel.addition NatModel.multiplication 1"
             if kind != "Peano":
                 arguments += " 2 NatModel.identity"
-            arguments += f" NatModel.anchor{kind} NatModel.induction"
+            arguments += f" NatModel.anchor{kind} NatModel.induction NatModel.strongInduction"
             namespace = "GLExport.FTA" if kind == "FTA" else "GLExport"
             instances.extend([f"theorem {identifier} : {proposition} := by",
                               f"  exact {namespace}.{identifier} {arguments}", ""])

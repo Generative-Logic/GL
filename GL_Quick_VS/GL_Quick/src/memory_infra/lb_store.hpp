@@ -33,6 +33,7 @@
 #include <new>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 namespace gl {
 
@@ -69,7 +70,7 @@ namespace gl {
     /// never returns a block to the pool MID-run, so within a store's life the
     /// pool grows only to the peak simultaneously-live LB count. At teardown
     /// `releaseAll` (in `~LbStore`) returns every block to the pool, mirroring
-    /// `LbArena::~LbArena`, so the several `ExpressionAnalyzer`s a process builds
+    /// `LbArena::~LbArena`, so the several `Prover`s a process builds
     /// reuse the pool rather than summing their peaks. Nothing reads its grant
     /// ledger, so it is invisible to every deload / throttle / steward decision
     /// (the mail-pool precedent).
@@ -229,6 +230,36 @@ namespace gl {
         /// at teardown, when no live shell is read again. Mutex-guarded.
         void releaseAll();
 
+
+        /// @brief Visit every constructed live object and the slab's retained space.
+        /// @details Runs only in the diagnostic collector after workers stop. A
+        /// sorted copy of the free-slot addresses prevents reading dead objects.
+        /// The scratch copy is allocated after the resident-page snapshot is saved.
+        /// @tparam Visitor Callable receiving one live object address.
+        /// @param visit Read-only object visitor.
+        /// @return Nothing.
+        template<class Visitor>
+        void observeLiveSlots(Visitor&& visit) const {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::vector<uintptr_t> freed;
+            for(const FreeSlot* slot=freeHead_;slot;slot=slot->next)
+                freed.push_back(reinterpret_cast<uintptr_t>(slot));
+            std::sort(freed.begin(),freed.end());
+            std::size_t observed=0;
+            for(char* block:blocks_) {
+                { peak_snapshot::Scope scope("retainedSlabCapacity");
+                  peak_snapshot::note(block,static_cast<std::size_t>(manager_->blockBytes()),7); }
+                const auto count=block==currentBlock_?currentCursor_:slotsPerBlock_;
+                for(std::size_t i=0;i<count;++i) {
+                    char* object=block+i*slotStride_;
+                    if(std::binary_search(freed.begin(),freed.end(),reinterpret_cast<uintptr_t>(object)))
+                        continue;
+                    visit(object);++observed;
+                }
+            }
+            assert(observed==slotsInUse_);
+        }
+
     private:
         /// @brief Intrusive free-list node — overlays a free slot's raw bytes.
         struct FreeSlot {
@@ -239,7 +270,7 @@ namespace gl {
         ///
         /// @details
         /// Deferred from the constructor so the store binds before the pool is
-        /// initialized (the `ExpressionAnalyzer` member-init / ctor-body order).
+        /// initialized (the `Prover` member-init / ctor-body order).
         /// Idempotent — recomputes nothing once `slotsPerBlock_` is set. Asserts
         /// at least one slot fits a block (else `sizeof(Memory)` exceeds the
         /// block size — raise `static_lb_block_bytes`). Caller holds `mutex_`.

@@ -8,6 +8,7 @@
     "max_count_per_conjecture": 0,
     "input_args": ["1"],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 3
   },
   "=": {
@@ -18,6 +19,8 @@
     "max_count_per_conjecture": 0,
     "input_args": ["1", "2"],
     "output_args": [],
+    "symmetric": true,
+    "uniquely_definable": [],
     "max_size_expression": 4
   },
   "in2": {
@@ -28,6 +31,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["1"],
     "output_args": ["2"],
+    "uniquely_definable": [
+      "2"
+    ],
     "max_size_expression": 4
   },
   "in3": {
@@ -40,6 +46,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["1", "2"],
     "output_args": ["3"],
+    "uniquely_definable": [
+      "3"
+    ],
     "max_size_expression": 5
   },
   "fXY": {
@@ -52,6 +61,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 4
   },
   "fXYZ": {
@@ -64,6 +74,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "NaturalNumbers": {
@@ -80,6 +91,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "identity": {
@@ -92,6 +104,9 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "id"
+    ],
     "max_size_expression": 2
   },
   "preorder": {
@@ -104,6 +119,8 @@
     "max_count_per_conjecture": 0,
     "input_args": ["n", "m"],
     "output_args": [],
+    "symmetric": false,
+    "uniquely_definable": [],
     "max_size_expression": 2
   },
   "interval": {
@@ -116,6 +133,9 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "M"
+    ],
     "max_size_expression": 5
   },
   "EnumerationSet2": {
@@ -126,6 +146,7 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "AnchorPeano": {
@@ -143,6 +164,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "AnchorGauss": {
@@ -162,6 +184,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 6
   },
   "AnchorIncubator3": {
@@ -182,6 +205,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 6
   },
   "fold": {
@@ -229,6 +253,9 @@
     "output_args": [
       "p"
     ],
+    "uniquely_definable": [
+      "p"
+    ],
     "max_size_expression": 2
   },
   "residual": {
@@ -241,6 +268,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["n", "m"],
     "output_args": ["p"],
+    "uniquely_definable": [
+      "p"
+    ],
     "max_size_expression": 5
   },
   "sequence": {
@@ -253,6 +283,7 @@
     "max_count_per_conjecture": 0,
     "input_args": ["m"],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 4
   },
   "split": {
@@ -266,6 +297,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["m"],
     "output_args": [],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5
   },
   "limitSequence": {
@@ -279,6 +313,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["n"],
     "output_args": [],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5
   },
   "limitSet": {
@@ -295,6 +332,9 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "L"
+    ],
     "max_size_expression": 5
   },
   "infiniteSequence": {
@@ -307,6 +347,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 1
   },
   "EnumerationSet3": {
@@ -320,6 +361,7 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "nonSequence": {
@@ -340,6 +382,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "nonInterval": {
@@ -359,6 +402,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "constSeq": {
@@ -377,6 +421,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5
   },
   "patterns_to_exclude": [

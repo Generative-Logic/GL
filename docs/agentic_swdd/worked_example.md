@@ -183,7 +183,7 @@ Priority 1+2 seeded the chapter's v-numbering from this expression, so the chapt
 
 The HTML generator renders `files/processed_proof_graph/0_single_chapter_proof.txt` into `files/full_proof_graph/chapter<N>.html`. For each row:
 
-- The `<title>` tag shows the theorem's MPL expression and a human-readable caption (e.g. *"from v1 is a successor of 0, we conclude 0 + 1 = v1"*).
+- The `<title>` tag shows the theorem's MPL expression and a readable caption: the premise `s(0) = v1` defines `v1`, so the caption reads *"s(0) = 0 + 1"*.
 - The proof-line `<div>` for row 1 renders:
  - Step badge: `implication` (clickable to `tags.html#implication`).
  - Content: the derived expression `(in3[i0,i1,v1,+])` rendered with `i` stripped (displays as `(in3[0,1,v1,+])` in the readable form).
@@ -191,7 +191,7 @@ The HTML generator renders `files/processed_proof_graph/0_single_chapter_proof.t
  - Premise citations: the two `main`-scope premises, each clickable back to their task-formulation rows.
 - Dep-glow highlighting on hover traces dependencies visually.
 
-The embedded `GL_BINARY_MAP` includes the entries for `AnchorPeano` and `NaturalNumbers` (and all the implications it depends on), letting the user expand any named expression to its compiled form without leaving the page.
+The page's embedded `GL_BINARY_MAP` holds the entries of every compiled name its expressions mention (here `AnchorPeano` and `NaturalNumbers` among them), letting the user expand any named expression to its compiled form without leaving the page.
 
 ---
 

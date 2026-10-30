@@ -166,6 +166,42 @@ class SelectedCitationSourceTests(unittest.TestCase):
         self.assertEqual(edges, {0: set(), 1: set(), 2: set()})
 
 
+class OrTheoremCompanionCitationTests(unittest.TestCase):
+    """Schema 1/2 ordering of an or-theorem row whose head-switch companion
+    is not a registered theorem (D-217)."""
+
+    def setUp(self):
+        loader = mock.patch("proof_export.certificate.find_theorem",
+                            side_effect=lambda records, _expression, _method, index: records[index])
+        loader.start()
+        self.addCleanup(loader.stop)
+
+    def records(self, with_grounding=True):
+        grounding = PEANO + "(in[i0,N]))"
+        companion = PEANO + "(in[i1,N]))"
+        target = PEANO + "(in[s,N]))"
+        row = ProofRow(1, _scoped(target), "main", "or theorem",
+                       (Dependency(_scoped(grounding), "main"),
+                        Dependency(_scoped(companion), "main")))
+        or_theorem = TheoremRecord(0, parse_mpl(target), "or theorem", "-1",
+                                   (Chapter(Path("0_or_theorem.txt"), 0, "or_theorem", (row,)),))
+        return (or_theorem, _record(1, grounding)) if with_grounding else (or_theorem,)
+
+    def selection(self, last):
+        return {"schema_version": 2, "source_range": {"first": 0, "last": last},
+                "excluded_sources": [], "theorem_id_prefix": "test",
+                "theorem_name_prefix": "Test", "certificate_dependencies": []}
+
+    def test_unregistered_companion_is_dropped_and_grounding_orders_first(self):
+        ordered, edges = _ordered_selected_theorems(self.selection(1), self.records())
+        self.assertEqual([record.source_index for _, record in ordered], [1, 0])
+        self.assertEqual(edges, {0: {1}, 1: set()})
+
+    def test_unregistered_grounding_still_asserts(self):
+        with self.assertRaisesRegex(AssertionError, "resolves to 0 selected theorems"):
+            _ordered_selected_theorems(self.selection(0), self.records(with_grounding=False))
+
+
 class TheoremListBlockTests(unittest.TestCase):
     def test_contiguous_anchor_runs_become_blocks(self) -> None:
         records = (
@@ -244,13 +280,15 @@ class KernelLaunchTests(unittest.TestCase):
             lake = root / "lake.exe"
             with mock.patch.dict(os.environ, {"KEPT_SETTING": "present"}, clear=True), \
                     mock.patch("pathlib.Path.home", return_value=root / "home"), \
-                    mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                    mock.patch("subprocess.Popen", return_value=mock.Mock(wait=mock.Mock(return_value=0))) as popen:
                 live.kernel_check(lake, root, False)
-                arguments, options = run.call_args
+                arguments, options = popen.call_args
                 self.assertEqual(arguments[0], [str(lake), "build"])
                 self.assertEqual(options["cwd"], root)
                 self.assertEqual(options["env"]["ELAN_HOME"], str(root / "home" / ".elan"))
                 self.assertEqual(options["env"]["KEPT_SETTING"], "present")
+                self.assertNotIn("ELAN_HOME", os.environ)
+                self.assertEqual(live._lake_environment()["ELAN_HOME"], str(root / "home" / ".elan"))
                 self.assertNotIn("ELAN_HOME", os.environ)
             self.assertIn("exit 0", (root / "kernel_check.log").read_text(encoding="utf-8"))
 
@@ -259,22 +297,96 @@ class KernelLaunchTests(unittest.TestCase):
             root = Path(temporary)
             custom = str(root / "configured-elan")
             with mock.patch.dict(os.environ, {"ELAN_HOME": custom}), \
+                    mock.patch("subprocess.Popen", return_value=mock.Mock(wait=mock.Mock(return_value=0))) as popen, \
                     mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
                 live.kernel_check(root / "lake.exe", root, True)
-                self.assertEqual(run.call_count, 2)
-                for call in run.call_args_list:
+                self.assertEqual((popen.call_count, run.call_count), (1, 1))
+                for call in (popen.call_args, run.call_args):
                     self.assertEqual(call.kwargs["env"]["ELAN_HOME"], custom)
                     self.assertEqual(call.kwargs["cwd"], root)
-                self.assertEqual(run.call_args_list[1].args[0][1:3], ["env", "lean"])
+                self.assertEqual(run.call_args.args[0][1:3], ["env", "lean"])
+                self.assertEqual(live._lake_environment()["ELAN_HOME"], custom)
                 self.assertEqual(os.environ["ELAN_HOME"], custom)
+            log = (root / "kernel_check.log").read_text(encoding="utf-8")
+            self.assertEqual([line for line in log.splitlines() if line.startswith(("$", "exit"))],
+                             [f"$ {root / 'lake.exe'} build", "exit 0",
+                              f"$ {root / 'lake.exe'} env lean {os.path.join('GLExport', 'Generated', 'FTA.lean')}",
+                              "exit 0"])
 
     def test_kernel_failure_still_fails_the_run_and_is_logged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 7)):
+            with mock.patch("subprocess.Popen", return_value=mock.Mock(wait=mock.Mock(return_value=7))):
                 with self.assertRaisesRegex(RuntimeError, "Lean kernel check failed"):
                     live.kernel_check(root / "lake.exe", root, False)
             self.assertIn("exit 7", (root / "kernel_check.log").read_text(encoding="utf-8"))
+
+    def test_background_check_logs_its_output_then_its_exit_code(self) -> None:
+        """A fake Lake: `python build` runs the project's `build` script."""
+        for code, passes in ((0, True), (5, False)):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "build").write_text(f"print('Build completed successfully')\nraise SystemExit({code})\n",
+                                            encoding="utf-8")
+                check = live.start_kernel_check(Path(sys.executable), root)
+                self.assertEqual(check.log, root / live.KERNEL_LOG)
+                with mock.patch("sys.stdout"):
+                    if passes:
+                        live.finish_kernel_check(check)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Lean kernel check failed"):
+                            live.finish_kernel_check(check)
+                lines = check.log.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(lines, [f"$ {Path(sys.executable)} build", "Build completed successfully", f"exit {code}"])
+
+    def test_export_folder_keeps_lake_build_output_unless_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary)
+            export = out / live.EXPORT_FOLDER
+            for fresh in (False, True):
+                (export / live.LAKE_BUILD_FOLDER / "build").mkdir(parents=True, exist_ok=True)
+                (export / live.LAKE_BUILD_FOLDER / "build" / "trace").write_text("kept", encoding="utf-8")
+                (export / "certificates").mkdir(exist_ok=True)
+                (export / "selection_fta.json").write_text("{}", encoding="utf-8")
+                self.assertEqual(live._fresh_export_directory(out, fresh), export)
+                self.assertEqual((export / live.LAKE_BUILD_FOLDER).exists(), not fresh)
+                self.assertFalse((export / "certificates").exists())
+                self.assertFalse((export / "selection_fta.json").exists())
+                for relative in live.PROJECT_SKELETON:
+                    self.assertTrue((export / relative).is_file(), relative)
+
+    def test_main_export_is_written_without_running_the_kernel_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out, proc = root / "full", root / "proc"
+            proc.mkdir()
+            blocks = {anchor: [index] for index, anchor in enumerate(sorted(live.MAIN_ANCHORS))}
+            certificate = {"corpus": {"coverage": "complete"}}
+            written = []
+            with mock.patch.object(live, "find_lake", return_value=root / "lake.exe"), \
+                    mock.patch.object(live, "load_theorem_records", return_value=[]), \
+                    mock.patch.object(live, "theorem_anchor_indices", return_value=blocks), \
+                    mock.patch.object(live, "sha256_file", return_value="0" * 64), \
+                    mock.patch.object(live, "canonical_sources", return_value=[]), \
+                    mock.patch.object(live, "parsed_sources", return_value={}), \
+                    mock.patch.object(live, "imports_outside_sources", return_value=[]), \
+                    mock.patch.object(live, "build_certificate", return_value=certificate), \
+                    mock.patch.object(live, "write_certificate", side_effect=lambda _, path: written.append(path.parent.name)), \
+                    mock.patch.object(live, "write_lean"), \
+                    mock.patch("proof_export.nat.write_nat_model") as nat, \
+                    mock.patch("subprocess.Popen") as popen, mock.patch("subprocess.run") as run, \
+                    mock.patch("sys.stdout"):
+                export = live.write_main_export(proc, out, root / "config", root / "binaries")
+            self.assertEqual(export, out / live.EXPORT_FOLDER)
+            self.assertEqual(written, ["peano", "gauss", "fta"])
+            nat.assert_called_once()
+            popen.assert_not_called()
+            run.assert_not_called()
+            selection = (export / "selection_fta.json").read_text(encoding="utf-8")
+            self.assertTrue(selection.startswith('{"schema_version":3,"id":"fta_live_1",'))
+            with mock.patch.object(live, "find_lake", return_value=None), mock.patch("sys.stdout"):
+                self.assertIsNone(live.write_main_export(proc, out, root / "config", root / "binaries"))
+            self.assertFalse(export.exists())
 
     def test_kernel_failure_fails_under_optimized_python(self) -> None:
         """`python -O` removes every `assert`; a failed build must still raise."""
@@ -282,7 +394,7 @@ class KernelLaunchTests(unittest.TestCase):
                 "from pathlib import Path\n"
                 "from unittest import mock\n"
                 "from proof_export import live\n"
-                "with mock.patch('subprocess.run', return_value=subprocess.CompletedProcess([], 7)):\n"
+                "with mock.patch('subprocess.Popen', return_value=mock.Mock(wait=mock.Mock(return_value=7))):\n"
                 "    live.kernel_check(Path('lake.exe'), Path(sys.argv[1]), False)\n")
         with tempfile.TemporaryDirectory() as temporary:
             completed = subprocess.run(
@@ -486,6 +598,89 @@ class ExternalReferenceTests(unittest.TestCase):
         )
         references = live.external_references([citer], [citer], [self._dependency()], TARGET_DEFINITIONS)
         self.assertEqual(references["peano_live_2"], {"required_source_indices": [], "theorem_adaptations": []})
+
+
+class ConstructedOrDefinitionTests(unittest.TestCase):
+    """OR theorems sharing one compact head: one operator, per-theorem head arguments."""
+
+    OR_A = "(>[a,b,c,d](in[a,S])(or0[a,b,c,d]))"
+    OR_A_PARENTS = (
+        "(>[a,b,c,d](in[a,S])(>[]!(=[a,b])!(=[c,d])))",
+        "(>[a,b,c,d](in[a,S])(>[](=[c,d])(=[a,b])))",
+    )
+    # The same operator under different bound-variable names.
+    OR_B = "(>[p,q,r,s](in[p,S])(or0[p,q,r,s]))"
+    OR_B_PARENTS = (
+        "(>[p,q,r,s](in[p,S])(>[]!(=[p,q])!(=[r,s])))",
+        "(>[p,q,r,s](in[p,S])(>[](=[r,s])(=[p,q])))",
+    )
+    # The same head with a different operator: both disjuncts are equalities.
+    OR_C = "(>[e,f,g,h](in[e,S])(or0[e,f,g,h]))"
+    OR_C_PARENTS = (
+        "(>[e,f,g,h](in[e,S])(>[]!(=[e,f])(=[g,h])))",
+        "(>[e,f,g,h](in[e,S])(>[]!(=[g,h])(=[e,f])))",
+    )
+
+    @staticmethod
+    def _or_record(directory: Path, index: int, theorem: str, parents: tuple[str, str]) -> TheoremRecord:
+        path = directory / f"{index}_or_theorem.txt"
+        path.write_text(
+            "\t".join([theorem, "main", "or theorem", parents[0], "main", parents[1], "main"]) + "\n",
+            encoding="utf-8",
+        )
+        return TheoremRecord(index, parse_mpl(theorem), "or theorem", "-1",
+                             (Chapter(path, index, "or_theorem", ()),))
+
+    def _overrides(self, theorems):
+        from proof_export.certificate import binary_entries_with_overrides
+        with tempfile.TemporaryDirectory(prefix="or_definitions_") as directory:
+            root = Path(directory)
+            records = tuple(
+                self._or_record(root, index, theorem, parents)
+                for index, (theorem, parents) in enumerate(theorems)
+            )
+            binary_path = root / "GL_binary.json"
+            binary_path.write_text("{}", encoding="utf-8")
+            return binary_entries_with_overrides(records, [], binary_path)
+
+    def test_shared_head_with_different_variable_names_is_one_operator(self) -> None:
+        constructed, overrides, binary_entries = self._overrides(
+            [(self.OR_A, self.OR_A_PARENTS), (self.OR_B, self.OR_B_PARENTS)])
+        self.assertEqual(set(constructed), {"or0"})
+        self.assertEqual(constructed["or0"]["elements"], ["(=[u_1,u_2])", "!(=[u_3,u_4])"])
+        self.assertEqual(constructed["or0"]["arguments"], ["a", "b", "c", "d"])
+        self.assertEqual(binary_entries["or0"]["signature"], "(or0[u_1,u_2,u_3,u_4])")
+        self.assertIs(overrides["or0"], constructed["or0"])
+
+    def test_shared_head_with_different_operators_asserts(self) -> None:
+        with self.assertRaises(AssertionError):
+            self._overrides([(self.OR_A, self.OR_A_PARENTS), (self.OR_C, self.OR_C_PARENTS)])
+
+    def test_or_theorem_step_renders_its_own_head_arguments(self) -> None:
+        from proof_export.certificate import _chapter_certificate
+        from proof_export.graph import parse_scoped_expression
+        from proof_export.mpl import alpha_key
+        constructed, _, _ = self._overrides(
+            [(self.OR_A, self.OR_A_PARENTS), (self.OR_B, self.OR_B_PARENTS)])
+        with tempfile.TemporaryDirectory(prefix="or_step_") as directory:
+            path = Path(directory) / "1_or_theorem.txt"
+            line = "\t".join([self.OR_B, "main", "or theorem",
+                              self.OR_B_PARENTS[0], "main", self.OR_B_PARENTS[1], "main"])
+            path.write_text(line + "\n", encoding="utf-8")
+            row = ProofRow(1, parse_scoped_expression(self.OR_B), "main", "or theorem", tuple(
+                Dependency(parse_scoped_expression(parent), "main") for parent in self.OR_B_PARENTS))
+            selected = {
+                alpha_key(parse_mpl(parent)): [{"source_index": index}]
+                for index, parent in enumerate(self.OR_B_PARENTS, start=10)
+            }
+            certificate = _chapter_certificate(
+                Chapter(path, 1, "or_theorem", (row,)),
+                {"in": ("element", "set"), "or0": ("element", "element", "element", "element")},
+                selected, constructed)
+        definition = certificate["steps"][-1]["constructed_or_definition"]
+        self.assertEqual(definition["arguments"], ["p", "q", "r", "s"])
+        self.assertEqual(definition["elements"], constructed["or0"]["elements"])
+        self.assertEqual(constructed["or0"]["arguments"], ["a", "b", "c", "d"])
 
 
 if __name__ == "__main__":

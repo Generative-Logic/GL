@@ -1,0 +1,7 @@
+(in[v1,N])	main	disintegration	(&(&(&(&(implication89[V3,N,+,i0])(implication90[V3,N,+,v1]))(implication91[N,+,i0,v1,V3]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication89[V3,N,+,i0])(implication90[V3,N,+,v1]))(implication91[N,+,i0,v1,V3]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V3])	main
+(interval[N,+,i0,v1,V3])	main	disintegration	!(>[V3](interval[N,+,i0,v1,V3])!(fXY[V1,V3,N]))	main
+!(>[V3](interval[N,+,i0,v1,V3])!(fXY[V1,V3,N]))	main	expansion	(sequence[N,+,i0,v1,V1])	main
+(sequence[N,+,i0,v1,V1])	main	disintegration	(&(&(&(sequence[N,+,i0,v1,V1])(primeseq[N,+,*,i1,i2,V1]))(ordered[N,+,V1]))(fold[N,s,+,*,V1,i0,v1,v2]))	main
+(&(&(&(sequence[N,+,i0,v1,V1])(primeseq[N,+,*,i1,i2,V1]))(ordered[N,+,V1]))(fold[N,s,+,*,V1,i0,v1,v2]))	main	expansion	(primeFactorSeq[N,s,+,*,i0,i1,i2,v1,V1,v2])	main
+(primeFactorSeq[N,s,+,*,i0,i1,i2,v1,V1,v2])	main	task formulation

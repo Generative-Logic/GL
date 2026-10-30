@@ -100,7 +100,7 @@ public:
     /// @brief Account for all derived storage in arena compaction.
     /// @details Includes normalized labels and posting structures.
     /// @return Live bytes owned by the lookup.
-    int64_t liveBytes() const { return labels.liveBytes() + postings.liveBytes(); }
+    int64_t liveBytes() const { return peak_snapshot::measure("labels", labels, [&] { return labels.liveBytes(); }) + peak_snapshot::measure("postings", postings, [&] { return postings.liveBytes(); }); }
 };
 
 /// @brief Index source/scope identities to the parked keys retaining them.
@@ -159,7 +159,7 @@ public:
     /// @brief Account for source-index storage.
     /// @details This storage participates in arena compaction only.
     /// @return Live derived bytes.
-    int64_t liveBytes() const { return postings.liveBytes() + owners.liveBytes(); }
+    int64_t liveBytes() const { return peak_snapshot::measure("postings", postings, [&] { return postings.liveBytes(); }) + peak_snapshot::measure("owners", owners, [&] { return owners.liveBytes(); }); }
 };
 
 /// @brief Own the derived lookups used by existence replay and retirement.
@@ -190,9 +190,9 @@ struct ExistenceLookupIndexes {
     /// @details The canonical source-record footprint remains separately measured.
     /// @return Total live bytes of the six lookups.
     int64_t liveBytes() const {
-        return algebraDemand.liveBytes() + integrationDemand.liveBytes()
-            + integrationSet.liveBytes() + receipts.liveBytes()
-            + algebraSources.liveBytes() + integrationSources.liveBytes();
+        return peak_snapshot::measure("algebraDemand", algebraDemand, [&] { return algebraDemand.liveBytes(); }) + peak_snapshot::measure("integrationDemand", integrationDemand, [&] { return integrationDemand.liveBytes(); })
+            + peak_snapshot::measure("integrationSet", integrationSet, [&] { return integrationSet.liveBytes(); }) + peak_snapshot::measure("receipts", receipts, [&] { return receipts.liveBytes(); })
+            + peak_snapshot::measure("algebraSources", algebraSources, [&] { return algebraSources.liveBytes(); }) + peak_snapshot::measure("integrationSources", integrationSources, [&] { return integrationSources.liveBytes(); });
     }
 };
 

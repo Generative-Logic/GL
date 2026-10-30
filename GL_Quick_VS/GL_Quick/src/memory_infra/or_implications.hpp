@@ -265,9 +265,9 @@ namespace gl {
         /// @details Includes unreclaimed payload runs and pending event columns.
         /// @return Pool-backed bytes retained by this source store.
         int64_t liveBytes() const {
-            return sources.liveBytes() + leaves.liveBytes() + levels.liveBytes()
-                + pendingSources.liveBytes() + pendingFacts.liveBytes()
-                + pendingClasses.liveBytes() + retiredSources.liveBytes();
+            return peak_snapshot::measure("sources", sources, [&] { return sources.liveBytes(); }) + peak_snapshot::measure("leaves", leaves, [&] { return leaves.liveBytes(); }) + peak_snapshot::measure("levels", levels, [&] { return levels.liveBytes(); })
+                + peak_snapshot::measure("pendingSources", pendingSources, [&] { return pendingSources.liveBytes(); }) + peak_snapshot::measure("pendingFacts", pendingFacts, [&] { return pendingFacts.liveBytes(); })
+                + peak_snapshot::measure("pendingClasses", pendingClasses, [&] { return pendingClasses.liveBytes(); }) + peak_snapshot::measure("retiredSources", retiredSources, [&] { return retiredSources.liveBytes(); });
         }
     };
 }

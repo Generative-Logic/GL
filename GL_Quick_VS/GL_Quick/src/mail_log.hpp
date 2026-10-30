@@ -231,7 +231,7 @@ namespace gl {
     ///
     /// All storage lives on the dedicated, NEVER-DELOADED mail pool — the
     /// `LbArena` + `DirtyState` handed to the constructor (the
-    /// `ExpressionAnalyzer`-owned `mailArena{ &mailMemory() }`, the "local memory
+    /// `Prover`-owned `mailArena{ &mailMemory() }`, the "local memory
     /// manager"). The five cold containers are pure RUNTIME containers: never
     /// enumerated by `LbMemory::visitContainers`, so never deloaded /
     /// dirty-tracked / reshuffled (the `intToBeProved` precedent); their
@@ -295,7 +295,7 @@ namespace gl {
         /// @brief Bind the five cold containers to the mail arena.
         ///
         /// @details
-        /// All five draw their pages from `arena` (the `ExpressionAnalyzer`-owned
+        /// All five draw their pages from `arena` (the `Prover`-owned
         /// `mailArena` on the never-deloaded mail pool). `dirty` is the mail dirty
         /// flag, present only to satisfy the container constructors — it is NEVER
         /// read (these containers produce no deload image).
@@ -642,7 +642,7 @@ namespace gl {
         ///         records. Routing/index storage is deliberately excluded.
         /// @invariant No parallel pull or commit is running while pages and chain
         ///            heads are changed.
-        /// @see ExpressionAnalyzer::proveKernel for the post-phase-3 call site.
+        /// @see Prover::proveKernel for the post-phase-3 call site.
         std::uint64_t retireDeliveredBatches() {
             const std::uint64_t retiredBytes =
                 static_cast<std::uint64_t>(mailBlobPool.size())

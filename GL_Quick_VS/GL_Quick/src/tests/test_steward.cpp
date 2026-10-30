@@ -35,6 +35,8 @@
 /// dump directories land under `.debug/test_steward_*` (gitignored,
 /// recreated per run).
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
 
 #include "../infra/diagnostics_log.hpp"
@@ -120,28 +122,28 @@ TEST(steward, reports_its_ssd_policy) {
 TEST(steward, resident_only_mode_claims_without_deload_or_io_threads) {
     gl::Memory resident;
     resident.setExprKey("(test_steward_resident_only)");
-    resident.intEncodedStatements.push_back(stewardExpr(9));
+    ((resident).intEncodedStatements).push_back(stewardExpr(9));
     std::vector<gl::Memory*> order{ &resident };
     std::atomic<std::size_t> cursor{ 0 };
 
     gl::MemorySteward s(/*allowSsdDeload=*/false);
     s.start(/*workers=*/4);
-    s.beginPhaseWindow(/*phase=*/2, &cursor, &order, /*workers=*/4,
+    s.beginPhaseWindow(/*phase=*/2, &cursor, gl::MemoryOrderView(order.data(), order.size()), /*workers=*/4,
                        ".debug/deload_resident_only_forbidden");
     s.maintainWorkingSet(&cursor, &order, /*workers=*/4);
     s.claimAndLoadForWork(resident, /*phase=*/2,
                           ".debug/deload_resident_only_forbidden");
-    ASSERT_EQ(resident.stewardClaim.load(),
+    ASSERT_EQ(((resident).stewardClaim).load(),
               static_cast<uint8_t>(
                   gl::Memory::StewardClaim::WorkerOwned));
-    resident.stewardClaim.store(
+    ((resident).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
     s.endPhaseWindow();
     s.quiesce();
     s.stop();
 
-    ASSERT_TRUE(resident.lbMemory.manager.resident());
-    ASSERT_TRUE(resident.deloadFiles.empty());
+    ASSERT_TRUE(((resident).lbMemory).manager.resident());
+    ASSERT_TRUE(((resident).deloadFiles).empty());
 }
 
 TEST(steward, install_wake_drains_in_order_and_reports) {
@@ -152,9 +154,9 @@ TEST(steward, install_wake_drains_in_order_and_reports) {
     gl::Memory b;
     b.setExprKey("(test_steward_lb_b)");
     for (int16_t i = 0; i < 40; ++i)
-        a.intEncodedStatements.push_back(stewardExpr(i));
+        ((a).intEncodedStatements).push_back(stewardExpr(i));
     for (int16_t i = 0; i < 7; ++i)
-        b.intLocalEncodedStatements.push_back(stewardExpr(i));
+        ((b).intLocalEncodedStatements).push_back(stewardExpr(i));
 
     gl::MemorySteward s;
     s.start();
@@ -163,18 +165,40 @@ TEST(steward, install_wake_drains_in_order_and_reports) {
     s.wake();
     s.quiesce();
     ASSERT_TRUE(s.drainedSinceInstall());
-    ASSERT_FALSE(a.lbMemory.manager.resident());
-    ASSERT_FALSE(b.lbMemory.manager.resident());
-    ASSERT_FALSE(a.deloadFiles.empty());
-    ASSERT_FALSE(b.deloadFiles.empty());
+    ASSERT_FALSE(((a).lbMemory).manager.resident());
+    ASSERT_FALSE(((b).lbMemory).manager.resident());
+    ASSERT_FALSE(((a).deloadFiles).empty());
+    ASSERT_FALSE(((b).deloadFiles).empty());
     s.stop();
 
     // The image the steward wrote is a faithful canonical dump — the
     // normal reload path restores the exact content.
     a.ensureLoaded(dir);
-    ASSERT_EQ(a.intEncodedStatements.size(), 40);
-    ASSERT_EQ(a.intEncodedStatements[39].nameId,
+    ASSERT_EQ(((a).intEncodedStatements).size(), 40);
+    ASSERT_EQ(((a).intEncodedStatements)[39].nameId,
               static_cast<int16_t>(39));
+}
+
+TEST(steward, discharge_drain_trims_the_main_pool_once) {
+    const std::string dir =
+        freshStewardDir("test_steward_deload_trim");
+    gl::Memory a;
+    a.setExprKey("(test_steward_lb_trim)");
+    for (int16_t i = 0; i < 40; ++i)
+        ((a).intEncodedStatements).push_back(stewardExpr(i));
+    const int64_t trimsBefore = gl::staticMemory().commitment().trimCalls;
+
+    gl::MemorySteward s;
+    s.start();
+    s.installDischargeWork({ &a }, dir);
+    s.wake();
+    s.quiesce();
+    s.stop();
+
+    // The drained LB left RAM and the drain trimmed the main pool exactly
+    // once, right after it (D-486).
+    ASSERT_FALSE(((a).lbMemory).manager.resident());
+    ASSERT_EQ(gl::staticMemory().commitment().trimCalls, trimsBefore + 1);
 }
 
 TEST(steward, install_without_wake_keeps_lbs_resident) {
@@ -182,17 +206,17 @@ TEST(steward, install_without_wake_keeps_lbs_resident) {
         freshStewardDir("test_steward_deload_idle");
     gl::Memory a;
     a.setExprKey("(test_steward_lb_c)");
-    a.intEncodedStatements.push_back(stewardExpr(3));
+    ((a).intEncodedStatements).push_back(stewardExpr(3));
 
     gl::MemorySteward s;
     s.start();
     s.installDischargeWork({ &a }, dir);
     s.quiesce();                       // install alone starts nothing
-    ASSERT_TRUE(a.lbMemory.manager.resident());
+    ASSERT_TRUE(((a).lbMemory).manager.resident());
     ASSERT_FALSE(s.drainedSinceInstall());
     s.wake();                          // the below-watermark idle path
     s.quiesce();                       // ends when a later wake arrives
-    ASSERT_FALSE(a.lbMemory.manager.resident());
+    ASSERT_FALSE(((a).lbMemory).manager.resident());
     ASSERT_TRUE(s.drainedSinceInstall());
     s.stop();
 }
@@ -202,13 +226,13 @@ TEST(steward, eviction_pass_claims_planned_and_skips_worker_owned) {
         freshStewardDir("test_steward_deload_evict");
     gl::Memory planned;
     planned.setExprKey("(test_steward_lb_e)");
-    planned.intEncodedStatements.push_back(stewardExpr(5));
-    planned.stewardClaim.store(
+    ((planned).intEncodedStatements).push_back(stewardExpr(5));
+    ((planned).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Planned));
     gl::Memory workerOwned;
     workerOwned.setExprKey("(test_steward_lb_f)");
-    workerOwned.intEncodedStatements.push_back(stewardExpr(6));
-    workerOwned.stewardClaim.store(
+    ((workerOwned).intEncodedStatements).push_back(stewardExpr(6));
+    ((workerOwned).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
 
     gl::MemorySteward s;
@@ -221,26 +245,26 @@ TEST(steward, eviction_pass_claims_planned_and_skips_worker_owned) {
     // The Planned victim was claimed, dumped, released, and reports
     // Dumped; the WorkerOwned one was skipped untouched (the worker's
     // self-service owns its dump).
-    ASSERT_EQ(planned.stewardClaim.load(),
+    ASSERT_EQ(((planned).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_FALSE(planned.lbMemory.manager.resident());
-    ASSERT_FALSE(planned.deloadFiles.empty());
-    ASSERT_EQ(workerOwned.stewardClaim.load(),
+    ASSERT_FALSE(((planned).lbMemory).manager.resident());
+    ASSERT_FALSE(((planned).deloadFiles).empty());
+    ASSERT_EQ(((workerOwned).stewardClaim).load(),
               static_cast<uint8_t>(
                   gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(workerOwned.lbMemory.manager.resident());
-    ASSERT_TRUE(workerOwned.deloadFiles.empty());
+    ASSERT_TRUE(((workerOwned).lbMemory).manager.resident());
+    ASSERT_TRUE(((workerOwned).deloadFiles).empty());
 
     // The worker-side completion of the steward path: claim the Dumped
     // victim and reload it — the round-trip restores the content.
     uint8_t expected =
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped);
-    ASSERT_TRUE(planned.stewardClaim.compare_exchange_strong(
+    ASSERT_TRUE(((planned).stewardClaim).compare_exchange_strong(
         expected,
         static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned)));
     planned.ensureLoaded(dir);
-    ASSERT_EQ(planned.intEncodedStatements.size(), 1);
-    ASSERT_EQ(planned.intEncodedStatements[0].nameId,
+    ASSERT_EQ(((planned).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((planned).intEncodedStatements)[0].nameId,
               static_cast<int16_t>(5));
 }
 
@@ -253,28 +277,28 @@ TEST(steward, discharge_protocol_captures_empties_and_returns_blocks) {
     gl::LbArena scratch(&gScr);
     lb.setExprKey("(test_steward_lb_i)");
     for (int16_t i = 0; i < 100; ++i)
-        lb.intEncodedStatements.push_back(stewardExpr(i));
+        ((lb).intEncodedStatements).push_back(stewardExpr(i));
     for (int16_t i = 0; i < 50; ++i)
-        lb.intLocalEncodedStatements.push_back(stewardExpr(i));
-    ASSERT_TRUE(lb.lbMemory.manager.blocksHeld() > 0);
-    lb.isActive = false;
+        ((lb).intLocalEncodedStatements).push_back(stewardExpr(i));
+    ASSERT_TRUE(((lb).lbMemory).manager.blocksHeld() > 0);
+    ((lb).isActive) = false;
     lb.dischargeStatementContent(scratch);
     // Flagged, resident, empty, zero blocks — the protocol's contract: the
     // copying compaction in reshuffle reclaims the emptied statement storage,
     // and this LB has no cold-string survivors, so every block returns.
-    ASSERT_TRUE(lb.dischargedForever);
-    ASSERT_TRUE(lb.lbMemory.manager.resident());
-    ASSERT_EQ(lb.lbMemory.manager.blocksHeld(), static_cast<int64_t>(0));
-    ASSERT_EQ(lb.intEncodedStatements.size(), 0);
-    ASSERT_EQ(lb.intLocalEncodedStatements.size(), 0);
+    ASSERT_TRUE(((lb).dischargedForever));
+    ASSERT_TRUE(((lb).lbMemory).manager.resident());
+    ASSERT_EQ(((lb).lbMemory).manager.blocksHeld(), static_cast<int64_t>(0));
+    ASSERT_EQ(((lb).intEncodedStatements).size(), 0);
+    ASSERT_EQ(((lb).intLocalEncodedStatements).size(), 0);
     // The captured record answers exactly what the registry held:
     // stewardExpr(i) carries originalId = i + 1, validityId = 1.
-    ASSERT_EQ(lb.dischargedRegistryKeys.size(),
+    ASSERT_EQ(((lb).dischargedRegistryKeys).size(),
               static_cast<std::size_t>(100));
-    ASSERT_TRUE(lb.dischargedRegistryKeys.count(
+    ASSERT_TRUE(((lb).dischargedRegistryKeys).count(
                     gl::packStatementKey(static_cast<int16_t>(51),
                                          static_cast<int16_t>(1))) > 0);
-    ASSERT_FALSE(lb.dischargedRegistryKeys.count(
+    ASSERT_FALSE(((lb).dischargedRegistryKeys).count(
                      gl::packStatementKey(static_cast<int16_t>(101),
                                           static_cast<int16_t>(1))) > 0);
 }
@@ -285,9 +309,9 @@ TEST(steward, forward_caching_window_prefetches_dumped) {
     // A steward-dumped eviction victim, cold, awaiting its slot.
     gl::Memory dumped;
     dumped.setExprKey("(test_steward_lb_g)");
-    dumped.intEncodedStatements.push_back(stewardExpr(7));
+    ((dumped).intEncodedStatements).push_back(stewardExpr(7));
     dumped.deloadStaticContainers(dir);
-    dumped.stewardClaim.store(
+    ((dumped).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     std::vector<gl::Memory*> order = { &dumped };
@@ -304,7 +328,7 @@ TEST(steward, forward_caching_window_prefetches_dumped) {
     // holes through the copying compaction, not a steward reshuffle, so the
     // idle-LB reshuffle path is gone — see LbMemory::reshuffle.)
     for (int spin = 0; spin < 20000; ++spin) {
-        if (dumped.stewardClaim.load()
+        if (((dumped).stewardClaim).load()
             == static_cast<uint8_t>(gl::Memory::StewardClaim::Idle))
             break;
         std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -313,11 +337,11 @@ TEST(steward, forward_caching_window_prefetches_dumped) {
     s.quiesce();
     s.stop();
 
-    ASSERT_EQ(dumped.stewardClaim.load(),
+    ASSERT_EQ(((dumped).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
-    ASSERT_TRUE(dumped.lbMemory.manager.resident());
-    ASSERT_EQ(dumped.intEncodedStatements.size(), 1);
-    ASSERT_EQ(dumped.intEncodedStatements[0].nameId,
+    ASSERT_TRUE(((dumped).lbMemory).manager.resident());
+    ASSERT_EQ(((dumped).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((dumped).intEncodedStatements)[0].nameId,
               static_cast<int16_t>(7));
 }
 
@@ -326,7 +350,7 @@ TEST(steward, grant_trigger_crossing_is_a_wake_source) {
         freshStewardDir("test_steward_deload_trigger");
     gl::Memory a;
     a.setExprKey("(test_steward_lb_d)");
-    a.intEncodedStatements.push_back(stewardExpr(9));
+    ((a).intEncodedStatements).push_back(stewardExpr(9));
 
     gl::MemorySteward s;
     s.start();
@@ -340,7 +364,7 @@ TEST(steward, grant_trigger_crossing_is_a_wake_source) {
     char* b2 = g.acquireBlock();       // crossing grant wakes the steward
     s.quiesce();
     ASSERT_TRUE(s.drainedSinceInstall());
-    ASSERT_FALSE(a.lbMemory.manager.resident());
+    ASSERT_FALSE(((a).lbMemory).manager.resident());
     g.releaseBlock(b1);
     g.releaseBlock(b2);
     s.stop();
@@ -371,9 +395,9 @@ TEST(steward, pick_victim_two_tier_floor_preferred_then_floorless) {
     gl::MemorySteward s;
     auto fill = [](gl::Memory& m, const std::string& key, int count) {
         m.setExprKey(key.c_str());
-        m.isActive = true;
+        ((m).isActive) = true;
         for (int i = 0; i < count; ++i)
-            m.intEncodedStatements.push_back(
+            ((m).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(i)));
     };
     std::deque<gl::Memory> lbs;
@@ -389,8 +413,8 @@ TEST(steward, pick_victim_two_tier_floor_preferred_then_floorless) {
     gl::Memory big;
     fill(big, "(tt_big)", 8000);
     order[0] = &big;
-    const int64_t tinyHeld = lbs[2].lbMemory.manager.blocksHeld();
-    const int64_t bigHeld = big.lbMemory.manager.blocksHeld();
+    const int64_t tinyHeld = ((lbs[2]).lbMemory).manager.blocksHeld();
+    const int64_t bigHeld = ((big).lbMemory).manager.blocksHeld();
     ASSERT_TRUE(bigHeld > tinyHeld);          // the floor is meaningful
     // Floor above the tiny population: tier 1 sees only the big LB.
     s.setMinEvictBlocksForTest(bigHeld);
@@ -405,14 +429,14 @@ TEST(steward, pick_victim_two_tier_floor_preferred_then_floorless) {
     // tiny LB. This is the survival branch: the post-pager 4 GiB run died
     // because a floor-only drain found no victim in the median-2-block
     // early-batch population while grants continued.
-    big.stewardClaim.store(
+    ((big).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     ASSERT_TRUE(s.pickVictimTwoTier(&order, 4, 3, 6) == &lbs[2]);
 
     // (c) NOTHING AT ALL: every out-of-window LB in flight -> nullptr in both
     // tiers (the defined working-set-fits result, never a failure).
     for (int i : { 1, 2, 6, 7 })
-        lbs[i].stewardClaim.store(
+        ((lbs[i]).stewardClaim).store(
             static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     ASSERT_TRUE(s.pickVictimTwoTier(&order, 4, 3, 6) == nullptr);
 }
@@ -428,35 +452,35 @@ TEST(steward, claim_and_load_for_work_handshake) {
 
     gl::Memory cold;
     cold.setExprKey("(claim_cold)");
-    cold.intEncodedStatements.push_back(stewardExpr(21));
+    ((cold).intEncodedStatements).push_back(stewardExpr(21));
     cold.deloadStaticContainers(dir);   // -> not resident
-    cold.stewardClaim.store(
+    ((cold).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
     s.claimAndLoadForWork(cold, /*phase=*/1, dir);
-    ASSERT_EQ(cold.stewardClaim.load(),
+    ASSERT_EQ(((cold).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(cold.lbMemory.manager.resident());
-    ASSERT_EQ(cold.intEncodedStatements.size(), 1);
-    ASSERT_EQ(cold.intEncodedStatements[0].nameId,
+    ASSERT_TRUE(((cold).lbMemory).manager.resident());
+    ASSERT_EQ(((cold).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((cold).intEncodedStatements)[0].nameId,
               static_cast<int16_t>(21));
 
     gl::Memory warm;
     warm.setExprKey("(claim_warm)");
-    warm.intEncodedStatements.push_back(stewardExpr(22));
-    ASSERT_TRUE(warm.lbMemory.manager.resident());
+    ((warm).intEncodedStatements).push_back(stewardExpr(22));
+    ASSERT_TRUE(((warm).lbMemory).manager.resident());
     s.claimAndLoadForWork(warm, /*phase=*/1, dir);
-    ASSERT_EQ(warm.stewardClaim.load(),
+    ASSERT_EQ(((warm).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_EQ(warm.intEncodedStatements.size(), 1);
+    ASSERT_EQ(((warm).intEncodedStatements).size(), 1);
 
     // Already WorkerOwned by THIS thread (the handshake above published the
     // holder) -> the re-entry is a no-op in a writing phase too.
-    ASSERT_TRUE(warm.claimHolder.load() == std::this_thread::get_id());
+    ASSERT_TRUE(((warm).claimHolder).load() == std::this_thread::get_id());
     s.claimAndLoadForWork(warm, /*phase=*/1, dir);
-    ASSERT_EQ(warm.stewardClaim.load(),
+    ASSERT_EQ(((warm).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     s.claimAndLoadForWork(warm, /*phase=*/4, dir);
-    ASSERT_EQ(warm.stewardClaim.load(),
+    ASSERT_EQ(((warm).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
 
     // WorkerOwned by ANOTHER thread: a phase-2 split sibling returns untouched
@@ -464,19 +488,19 @@ TEST(steward, claim_and_load_for_work_handshake) {
     // two-writers contract violation and asserts (I-122) — not exercised here.
     gl::Memory sibling;
     sibling.setExprKey("(claim_sibling)");
-    sibling.intEncodedStatements.push_back(stewardExpr(23));
+    ((sibling).intEncodedStatements).push_back(stewardExpr(23));
     std::thread([&sibling, &s, &dir] {
         s.claimAndLoadForWork(sibling, /*phase=*/2, dir);
     }).join();
-    ASSERT_TRUE(sibling.claimHolder.load() != std::this_thread::get_id());
+    ASSERT_TRUE(((sibling).claimHolder).load() != std::this_thread::get_id());
     s.claimAndLoadForWork(sibling, /*phase=*/2, dir);
-    ASSERT_EQ(sibling.stewardClaim.load(),
+    ASSERT_EQ(((sibling).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
 }
 
 TEST(steward, gen_scratch_registry_has_reserved_slot) {
     // Both per-slot scratch registries carry the worker slots PLUS one reserved
-    // single-threaded slot, so a g_currentCoreId == -1 caller's fallback
+    // single-threaded slot, so a gl::WorkerContext::coreId() == -1 caller's fallback
     // (slotCount() - 1) is never a worker's arena: the gen registry used to be
     // one slot short, and its "reserved" slot was worker logicalCores-1's own
     // arena and rule-index staging pool.
@@ -522,12 +546,12 @@ TEST(steward, unified_window_prefetched_lb_survives_same_pass) {
     for (std::size_t i = 0; i < n; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(uw_" + std::to_string(i) + ")").c_str());
-        lbs.back().intEncodedStatements.push_back(
+        ((lbs.back()).intEncodedStatements).push_back(
             stewardExpr(static_cast<int16_t>(i)));
     }
     // The prefetch target: dumped + cold, at an in-window index.
     lbs[dumpedIdx].deloadStaticContainers(dir);
-    lbs[dumpedIdx].stewardClaim.store(
+    ((lbs[dumpedIdx]).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     std::vector<gl::Memory*> order;
@@ -553,19 +577,19 @@ TEST(steward, unified_window_prefetched_lb_survives_same_pass) {
 
     // The prefetched LB (inside the unified window) was reloaded and NOT
     // drained: resident + Idle, content intact.
-    ASSERT_TRUE(lbs[dumpedIdx].lbMemory.manager.resident());
-    ASSERT_EQ(lbs[dumpedIdx].stewardClaim.load(),
+    ASSERT_TRUE(((lbs[dumpedIdx]).lbMemory).manager.resident());
+    ASSERT_EQ(((lbs[dumpedIdx]).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
-    ASSERT_EQ(lbs[dumpedIdx].intEncodedStatements.size(), 1);
+    ASSERT_EQ(((lbs[dumpedIdx]).intEncodedStatements).size(), 1);
 
     // The drain really ran this pass: out-of-window victims were mass-evicted.
-    ASSERT_FALSE(lbs[0].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[n - 1].lbMemory.manager.resident());
-    ASSERT_EQ(lbs[0].stewardClaim.load(),
+    ASSERT_FALSE(((lbs[0]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[n - 1]).lbMemory).manager.resident());
+    ASSERT_EQ(((lbs[0]).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     // An in-window LB that was not the prefetch target stayed resident.
-    ASSERT_TRUE(lbs[7].lbMemory.manager.resident());
+    ASSERT_TRUE(((lbs[7]).lbMemory).manager.resident());
 
     for (char* b : held) pressure.releaseBlock(b);
 }
@@ -580,11 +604,11 @@ TEST(steward, pick_victim_behind_cursor_selects_and_skips) {
     auto fill = [](gl::Memory& m, const std::string& key, int count) {
         m.setExprKey(key.c_str());
         for (int i = 0; i < count; ++i)
-            m.intEncodedStatements.push_back(
+            ((m).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(i)));
     };
     auto claim = [](gl::Memory& m, gl::Memory::StewardClaim c) {
-        m.stewardClaim.store(static_cast<uint8_t>(c));
+        ((m).stewardClaim).store(static_cast<uint8_t>(c));
     };
 
     std::deque<gl::Memory> lbs;
@@ -620,11 +644,11 @@ TEST(steward, pick_victim_behind_cursor_selects_and_skips) {
 
     // (e) INACTIVE / SPLIT skips: index 2 inactive, index 1 split -> the scan
     // falls through to index 0.
-    lbs[2].isActive = false;
-    lbs[1].numberOfParts = 4;
+    ((lbs[2]).isActive) = false;
+    ((lbs[1]).numberOfParts) = 4;
     ASSERT_TRUE(s.pickVictimBehindCursor(&order, 4, 3, 6, 1) == &lbs[0]);
-    lbs[2].isActive = true;
-    lbs[1].numberOfParts = 1;
+    ((lbs[2]).isActive) = true;
+    ((lbs[1]).numberOfParts) = 1;
 
     // (f) FLOOR skip: a below-floor LB at the farthest position is skipped in
     // favour of a larger one further along the scan. A big LB (several blocks)
@@ -632,8 +656,8 @@ TEST(steward, pick_victim_behind_cursor_selects_and_skips) {
     gl::Memory big;
     fill(big, "(pv_big)", 8000);
     order[1] = &big;
-    const int64_t smallHeld = lbs[2].lbMemory.manager.blocksHeld();
-    const int64_t bigHeld = big.lbMemory.manager.blocksHeld();
+    const int64_t smallHeld = ((lbs[2]).lbMemory).manager.blocksHeld();
+    const int64_t bigHeld = ((big).lbMemory).manager.blocksHeld();
     ASSERT_TRUE(bigHeld > smallHeld);          // the floor is meaningful
     // Floor = bigHeld: index 2 (smallHeld < bigHeld) is skipped by the floor;
     // big at index 1 (blocksHeld == bigHeld) qualifies and is the first hit.
@@ -659,7 +683,7 @@ TEST(steward, thrash_regime_reserve_target_evicts_the_deficit_not_the_set) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(th_" + std::to_string(i) + ")").c_str());
         for (int k = 0; k < 200; ++k)
-            lbs.back().intEncodedStatements.push_back(
+            ((lbs.back()).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(k)));
     }
     std::vector<gl::Memory*> order;
@@ -667,10 +691,10 @@ TEST(steward, thrash_regime_reserve_target_evicts_the_deficit_not_the_set) {
 
     // Uniform content -> uniform block count; the deficit is exactly
     // deficitLbs whole LBs.
-    const int64_t b = lbs[0].lbMemory.manager.blocksHeld();
+    const int64_t b = ((lbs[0]).lbMemory).manager.blocksHeld();
     ASSERT_TRUE(b >= 1);
     for (std::size_t i = 0; i < n; ++i)
-        ASSERT_EQ(lbs[i].lbMemory.manager.blocksHeld(), b);
+        ASSERT_EQ(((lbs[i]).lbMemory).manager.blocksHeld(), b);
 
     gl::MemorySteward s;
     const int64_t total = gl::staticMemory().totalBlocks();
@@ -684,7 +708,7 @@ TEST(steward, thrash_regime_reserve_target_evicts_the_deficit_not_the_set) {
     auto dumpedCount = [&]() {
         int c = 0;
         for (std::size_t i = 0; i < n; ++i)
-            if (!lbs[i].lbMemory.manager.resident()) ++c;
+            if (!((lbs[i]).lbMemory).manager.resident()) ++c;
         return c;
     };
 
@@ -707,12 +731,12 @@ TEST(steward, thrash_regime_reserve_target_evicts_the_deficit_not_the_set) {
     onePass(0);
     ASSERT_EQ(gl::deloadStats().evictCount.load() - evict0,
               static_cast<int64_t>(deficitLbs));
-    ASSERT_FALSE(lbs[n - 1].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[n - 2].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[n - 3].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[n - 4].lbMemory.manager.resident());   // 4th-farthest kept
-    ASSERT_TRUE(lbs[0].lbMemory.manager.resident());       // window kept
-    ASSERT_TRUE(lbs[1].lbMemory.manager.resident());
+    ASSERT_FALSE(((lbs[n - 1]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[n - 2]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[n - 3]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[n - 4]).lbMemory).manager.resident());   // 4th-farthest kept
+    ASSERT_TRUE(((lbs[0]).lbMemory).manager.resident());       // window kept
+    ASSERT_TRUE(((lbs[1]).lbMemory).manager.resident());
     ASSERT_EQ(dumpedCount(), deficitLbs);
 
     // Sweep the cursor over the order twice more. Each pass: no LB inside that
@@ -734,7 +758,7 @@ TEST(steward, thrash_regime_reserve_target_evicts_the_deficit_not_the_set) {
             const std::size_t keepHi = c + workers
                 + gl::steward::kLookaheadWorkerMultiple * workers;
             for (std::size_t i = c; i < keepHi && i < n; ++i)
-                ASSERT_TRUE(lbs[i].lbMemory.manager.resident());
+                ASSERT_TRUE(((lbs[i]).lbMemory).manager.resident());
         }
     }
     // (c) NO pass ever evicted more than the deficit — the discriminator vs the
@@ -754,18 +778,18 @@ TEST(steward, worker_reload_healthy_reserve_does_no_eviction) {
     gl::MemorySteward s;
     gl::Memory cold;
     cold.setExprKey("(worker_healthy)");
-    cold.intEncodedStatements.push_back(stewardExpr(31));
+    ((cold).intEncodedStatements).push_back(stewardExpr(31));
     cold.deloadStaticContainersRaw(dir);        // raw -> lastRawImageBytes > 0
-    cold.stewardClaim.store(
+    ((cold).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     const int64_t emg0 = gl::deloadStats().emergencyEvictCount.load();
     s.claimAndLoadForWork(cold, /*phase=*/1, dir);
-    ASSERT_EQ(cold.stewardClaim.load(),
+    ASSERT_EQ(((cold).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(cold.lbMemory.manager.resident());
-    ASSERT_EQ(cold.intEncodedStatements.size(), 1);
-    ASSERT_EQ(cold.intEncodedStatements[0].nameId, static_cast<int16_t>(31));
+    ASSERT_TRUE(((cold).lbMemory).manager.resident());
+    ASSERT_EQ(((cold).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((cold).intEncodedStatements)[0].nameId, static_cast<int16_t>(31));
     // Zero worker-path evictions on the healthy path.
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0,
               static_cast<int64_t>(0));
@@ -788,17 +812,17 @@ TEST(steward, worker_reload_forced_exhaustion_fires_fallback_exactly_once) {
     // A resident, Idle, active, unsplit victim behind the window.
     gl::Memory victim;
     victim.setExprKey("(worker_exhaust_victim)");
-    victim.isActive = true;
-    victim.intEncodedStatements.push_back(stewardExpr(41));
-    ASSERT_TRUE(victim.lbMemory.manager.resident());
+    ((victim).isActive) = true;
+    ((victim).intEncodedStatements).push_back(stewardExpr(41));
+    ASSERT_TRUE(((victim).lbMemory).manager.resident());
 
     // The cold LB the worker must reload (raw-dumped -> lastRawImageBytes > 0).
     gl::Memory cold;
     cold.setExprKey("(worker_exhaust_cold)");
-    cold.isActive = true;
-    cold.intEncodedStatements.push_back(stewardExpr(42));
+    ((cold).isActive) = true;
+    ((cold).intEncodedStatements).push_back(stewardExpr(42));
     cold.deloadStaticContainersRaw(dir);
-    cold.stewardClaim.store(
+    ((cold).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     // Window [keepLo=1, keepHi=5) at cursor 2 over {victim, filler}: index 0
@@ -806,8 +830,8 @@ TEST(steward, worker_reload_forced_exhaustion_fires_fallback_exactly_once) {
     // keepLo - 1 = 0) selects the victim; the in-window filler is protected.
     gl::Memory filler;
     filler.setExprKey("(worker_exhaust_filler)");
-    filler.isActive = true;
-    filler.intEncodedStatements.push_back(stewardExpr(43));
+    ((filler).isActive) = true;
+    ((filler).intEncodedStatements).push_back(stewardExpr(43));
     std::vector<gl::Memory*> order = { &victim, &filler };
     std::atomic<std::size_t> cursor{ 2 };
     gl::MemorySteward s;
@@ -820,15 +844,15 @@ TEST(steward, worker_reload_forced_exhaustion_fires_fallback_exactly_once) {
     // The valve fired exactly once; the reload completed.
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0,
               static_cast<int64_t>(1));
-    ASSERT_EQ(cold.stewardClaim.load(),
+    ASSERT_EQ(((cold).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(cold.lbMemory.manager.resident());
-    ASSERT_EQ(cold.intEncodedStatements.size(), 1);
+    ASSERT_TRUE(((cold).lbMemory).manager.resident());
+    ASSERT_EQ(((cold).intEncodedStatements).size(), 1);
     // The victim was the one evicted to make room; the in-window filler kept.
-    ASSERT_FALSE(victim.lbMemory.manager.resident());
-    ASSERT_EQ(victim.stewardClaim.load(),
+    ASSERT_FALSE(((victim).lbMemory).manager.resident());
+    ASSERT_EQ(((victim).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_TRUE(filler.lbMemory.manager.resident());
+    ASSERT_TRUE(((filler).lbMemory).manager.resident());
 
     s.endPhaseWindow();
     s.setPressurePoolForTest(nullptr);
@@ -850,13 +874,13 @@ TEST(steward, worker_valve_fires_below_emergency_floor_on_pure_grant_path) {
 
     gl::Memory victim;
     victim.setExprKey("(valve_victim)");
-    victim.isActive = true;
-    victim.intEncodedStatements.push_back(stewardExpr(51));
+    ((victim).isActive) = true;
+    ((victim).intEncodedStatements).push_back(stewardExpr(51));
     gl::Memory warm;
     warm.setExprKey("(valve_warm)");
-    warm.isActive = true;
-    warm.intEncodedStatements.push_back(stewardExpr(52));
-    ASSERT_TRUE(warm.lbMemory.manager.resident());
+    ((warm).isActive) = true;
+    ((warm).intEncodedStatements).push_back(stewardExpr(52));
+    ASSERT_TRUE(((warm).lbMemory).manager.resident());
 
     gl::MemorySteward s;
     s.setPressurePoolForTest(&pressure);
@@ -868,9 +892,9 @@ TEST(steward, worker_valve_fires_below_emergency_floor_on_pure_grant_path) {
     s.claimAndLoadForWork(warm, /*phase=*/1, dir);
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0,
               static_cast<int64_t>(0));
-    ASSERT_EQ(warm.stewardClaim.load(),
+    ASSERT_EQ(((warm).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    warm.stewardClaim.store(
+    ((warm).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
 
     // (b) WINDOW OPEN: the same pure-grant claim now evicts the
@@ -883,12 +907,12 @@ TEST(steward, worker_valve_fires_below_emergency_floor_on_pure_grant_path) {
     s.claimAndLoadForWork(warm, /*phase=*/1, dir);
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0,
               static_cast<int64_t>(1));
-    ASSERT_FALSE(victim.lbMemory.manager.resident());
-    ASSERT_EQ(victim.stewardClaim.load(),
+    ASSERT_FALSE(((victim).lbMemory).manager.resident());
+    ASSERT_EQ(((victim).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_EQ(warm.stewardClaim.load(),
+    ASSERT_EQ(((warm).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(warm.lbMemory.manager.resident());
+    ASSERT_TRUE(((warm).lbMemory).manager.resident());
     s.endPhaseWindow();
     s.setPressurePoolForTest(nullptr);
     for (char* b : held) pressure.releaseBlock(b);
@@ -901,12 +925,12 @@ TEST(steward, grant_valve_evicts_one_behind_cursor_victim) {
     const std::string dir = freshStewardDir("test_steward_grant_valve");
     gl::Memory victim;
     victim.setExprKey("(grant_valve_victim)");
-    victim.isActive = true;
-    victim.intEncodedStatements.push_back(stewardExpr(61));
+    ((victim).isActive) = true;
+    ((victim).intEncodedStatements).push_back(stewardExpr(61));
     gl::Memory kept;
     kept.setExprKey("(grant_valve_kept)");
-    kept.isActive = true;
-    kept.intEncodedStatements.push_back(stewardExpr(62));
+    ((kept).isActive) = true;
+    ((kept).intEncodedStatements).push_back(stewardExpr(62));
 
     gl::MemorySteward s;
     ASSERT_EQ(s.emergencyFloorBlocks(),
@@ -917,17 +941,17 @@ TEST(steward, grant_valve_evicts_one_behind_cursor_victim) {
     const int64_t emg0 = gl::deloadStats().emergencyEvictCount.load();
     s.relieveGrantPressure(dir);
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0, int64_t(0));
-    ASSERT_TRUE(victim.lbMemory.manager.resident());
+    ASSERT_TRUE(((victim).lbMemory).manager.resident());
 
     std::vector<gl::Memory*> order = { &victim, &kept };
     std::atomic<std::size_t> cursor{ 2 };   // keepLo = 1: victim at 0 evictable
     s.beginPhaseWindow(/*phase=*/1, &cursor, &order, /*workers=*/1, dir);
     s.relieveGrantPressure(dir);
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0, int64_t(1));
-    ASSERT_FALSE(victim.lbMemory.manager.resident());
-    ASSERT_EQ(victim.stewardClaim.load(),
+    ASSERT_FALSE(((victim).lbMemory).manager.resident());
+    ASSERT_EQ(((victim).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_TRUE(kept.lbMemory.manager.resident());
+    ASSERT_TRUE(((kept).lbMemory).manager.resident());
     // Nothing left to evict: a further call is a defined no-op.
     s.relieveGrantPressure(dir);
     ASSERT_EQ(gl::deloadStats().emergencyEvictCount.load() - emg0, int64_t(1));
@@ -964,18 +988,18 @@ TEST(steward, executor_lane_priority_flips_to_low_below_emergency_floor) {
     // victim BEHIND the window -> a LOW eviction task.
     gl::Memory victim;
     victim.setExprKey("(flip_victim)");
-    victim.isActive = true;
-    victim.intEncodedStatements.push_back(stewardExpr(61));
+    ((victim).isActive) = true;
+    ((victim).intEncodedStatements).push_back(stewardExpr(61));
     gl::Memory filler;
     filler.setExprKey("(flip_filler)");
-    filler.isActive = true;
-    filler.intEncodedStatements.push_back(stewardExpr(62));
+    ((filler).isActive) = true;
+    ((filler).intEncodedStatements).push_back(stewardExpr(62));
     gl::Memory ahead;
     ahead.setExprKey("(flip_ahead)");
-    ahead.isActive = true;
-    ahead.intEncodedStatements.push_back(stewardExpr(63));
+    ((ahead).isActive) = true;
+    ((ahead).intEncodedStatements).push_back(stewardExpr(63));
     ahead.deloadStaticContainersRaw(dir);
-    ahead.stewardClaim.store(
+    ((ahead).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     // Window [keepLo=1, keepHi=5) at cursor 2 over {victim, filler, ahead}:
@@ -995,14 +1019,14 @@ TEST(steward, executor_lane_priority_flips_to_low_below_emergency_floor) {
 
     // free (0) < floor (1): the LOW lane goes first — the eviction runs.
     ASSERT_EQ(s.runOneIoTaskForTest(), 2);
-    ASSERT_FALSE(victim.lbMemory.manager.resident());
+    ASSERT_FALSE(((victim).lbMemory).manager.resident());
 
     // Pressure relieved: free (4) >= floor (1) — HIGH first again.
     for (char* b : held) pressure.releaseBlock(b);
     held.clear();
     ASSERT_EQ(s.runOneIoTaskForTest(), 1);
-    ASSERT_TRUE(ahead.lbMemory.manager.resident());
-    ASSERT_EQ(ahead.stewardClaim.load(),
+    ASSERT_TRUE(((ahead).lbMemory).manager.resident());
+    ASSERT_EQ(((ahead).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
     ASSERT_EQ(s.runOneIoTaskForTest(), 0);   // both rings empty
 
@@ -1029,8 +1053,8 @@ TEST(steward, planner_enqueue_dedups_drops_count_and_stale_tasks_drop) {
     for (std::size_t i = 0; i < n; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(ring_" + std::to_string(i) + ")").c_str());
-        lbs.back().isActive = true;
-        lbs.back().intEncodedStatements.push_back(
+        ((lbs.back()).isActive) = true;
+        ((lbs.back()).intEncodedStatements).push_back(
             stewardExpr(static_cast<int16_t>(i % 1000)));
     }
     std::vector<gl::Memory*> order;
@@ -1066,9 +1090,9 @@ TEST(steward, planner_enqueue_dedups_drops_count_and_stale_tasks_drop) {
     ASSERT_EQ(s.ioRingDepthForTest(false), static_cast<std::size_t>(0));
     ASSERT_EQ(gl::deloadStats().evictCount.load() - evict0,
               static_cast<int64_t>(0));
-    ASSERT_TRUE(lbs[0].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[100].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[296].lbMemory.manager.resident());
+    ASSERT_TRUE(((lbs[0]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[100]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[296]).lbMemory).manager.resident());
 
     s.setPressurePoolForTest(nullptr);
     for (char* b : held) pressure.releaseBlock(b);
@@ -1088,13 +1112,13 @@ TEST(steward, async_dump_publishes_dumped_only_after_blocks_returned) {
 
     gl::Memory victim;
     victim.setExprKey("(async_dump_victim)");
-    victim.isActive = true;
+    ((victim).isActive) = true;
     for (int16_t i = 0; i < 25; ++i)
-        victim.intEncodedStatements.push_back(stewardExpr(i));
+        ((victim).intEncodedStatements).push_back(stewardExpr(i));
     gl::Memory filler;
     filler.setExprKey("(async_dump_filler)");
-    filler.isActive = true;
-    filler.intEncodedStatements.push_back(stewardExpr(71));
+    ((filler).isActive) = true;
+    ((filler).intEncodedStatements).push_back(stewardExpr(71));
 
     std::vector<gl::Memory*> order = { &victim, &filler };
     std::atomic<std::size_t> cursor{ 2 };
@@ -1107,7 +1131,7 @@ TEST(steward, async_dump_publishes_dumped_only_after_blocks_returned) {
     // The live planner plans the eviction on its poll; an executor runs it.
     bool dumped = false;
     for (int spin = 0; spin < 20000; ++spin) {
-        if (victim.stewardClaim.load(std::memory_order_acquire)
+        if (((victim).stewardClaim).load(std::memory_order_acquire)
             == static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped)) {
             dumped = true;
             break;
@@ -1117,10 +1141,10 @@ TEST(steward, async_dump_publishes_dumped_only_after_blocks_returned) {
     ASSERT_TRUE(dumped);
     // Dumped observed => blocks already returned, image already recorded,
     // and this (sole) dump's in-flight accounting already unwound.
-    ASSERT_FALSE(victim.lbMemory.manager.resident());
-    ASSERT_EQ(static_cast<int>(victim.deloadFiles.size()), 1);
+    ASSERT_FALSE(((victim).lbMemory).manager.resident());
+    ASSERT_EQ(static_cast<int>(((victim).deloadFiles).size()), 1);
     ASSERT_TRUE(std::filesystem::exists(
-        std::filesystem::path(dir) / victim.deloadFiles.front()));
+        std::filesystem::path(dir) / ((victim).deloadFiles).front()));
     ASSERT_EQ(s.inFlightBlocks(), static_cast<int64_t>(0));
     ASSERT_EQ(s.inFlightBytes(), static_cast<int64_t>(0));
 
@@ -1132,8 +1156,8 @@ TEST(steward, async_dump_publishes_dumped_only_after_blocks_returned) {
     s.setPressurePoolForTest(nullptr);
 
     victim.ensureLoaded(dir);
-    ASSERT_EQ(victim.intEncodedStatements.size(), 25);
-    ASSERT_EQ(victim.intEncodedStatements[24].nameId,
+    ASSERT_EQ(((victim).intEncodedStatements).size(), 25);
+    ASSERT_EQ(((victim).intEncodedStatements)[24].nameId,
               static_cast<int16_t>(24));
     for (char* b : held) pressure.releaseBlock(b);
 }
@@ -1147,30 +1171,30 @@ TEST(steward, prefetch_head_loads_next_iteration_head) {
     const std::string dir = freshStewardDir("test_steward_prefetch_head");
     auto fill = [](gl::Memory& m, const std::string& key, int16_t seed) {
         m.setExprKey(key.c_str());
-        m.isActive = true;
-        m.intEncodedStatements.push_back(stewardExpr(seed));
+        ((m).isActive) = true;
+        ((m).intEncodedStatements).push_back(stewardExpr(seed));
     };
     gl::Memory coldHead;      // index 0: Dumped + active -> loaded
     fill(coldHead, "(ph_cold_head)", 81);
     coldHead.deloadStaticContainersRaw(dir);
-    coldHead.stewardClaim.store(
+    ((coldHead).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
     gl::Memory warm;          // index 1: resident Idle -> untouched
     fill(warm, "(ph_warm)", 82);
     gl::Memory coldInactive;  // index 2: Dumped but INACTIVE -> skipped
     fill(coldInactive, "(ph_cold_inactive)", 83);
     coldInactive.deloadStaticContainersRaw(dir);
-    coldInactive.stewardClaim.store(
+    ((coldInactive).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    coldInactive.isActive = false;
+    ((coldInactive).isActive) = false;
     gl::Memory claimed;       // index 3: WorkerOwned -> skipped
     fill(claimed, "(ph_claimed)", 84);
-    claimed.stewardClaim.store(
+    ((claimed).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     gl::Memory coldTail;      // index 4: Dumped + active but BEYOND count
     fill(coldTail, "(ph_cold_tail)", 85);
     coldTail.deloadStaticContainersRaw(dir);
-    coldTail.stewardClaim.store(
+    ((coldTail).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
 
     std::vector<gl::Memory*> order = {
@@ -1181,17 +1205,17 @@ TEST(steward, prefetch_head_loads_next_iteration_head) {
     ASSERT_EQ(s.ioRingDepthForTest(true), static_cast<std::size_t>(1));
     s.drainIoRingsForTest();
 
-    ASSERT_TRUE(coldHead.lbMemory.manager.resident());
-    ASSERT_EQ(coldHead.stewardClaim.load(),
+    ASSERT_TRUE(((coldHead).lbMemory).manager.resident());
+    ASSERT_EQ(((coldHead).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
-    ASSERT_EQ(coldHead.intEncodedStatements.size(), 1);
-    ASSERT_EQ(coldHead.intEncodedStatements[0].nameId,
+    ASSERT_EQ(((coldHead).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((coldHead).intEncodedStatements)[0].nameId,
               static_cast<int16_t>(81));
-    ASSERT_TRUE(warm.lbMemory.manager.resident());
-    ASSERT_FALSE(coldInactive.lbMemory.manager.resident());
-    ASSERT_EQ(claimed.stewardClaim.load(),
+    ASSERT_TRUE(((warm).lbMemory).manager.resident());
+    ASSERT_FALSE(((coldInactive).lbMemory).manager.resident());
+    ASSERT_EQ(((claimed).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_FALSE(coldTail.lbMemory.manager.resident());
+    ASSERT_FALSE(((coldTail).lbMemory).manager.resident());
 
     // Idempotent when the head is warm: a second call enqueues nothing.
     s.prefetchHead(&order, /*count=*/4, dir);
@@ -1213,12 +1237,12 @@ TEST(steward, prefetch_head_respects_budget) {
     for (int i = 0; i < 6; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(hb_" + std::to_string(i) + ")").c_str());
-        lbs.back().isActive = true;
+        ((lbs.back()).isActive) = true;
         for (int k = 0; k < 200; ++k)
-            lbs.back().intEncodedStatements.push_back(
+            ((lbs.back()).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(k)));
         lbs.back().deloadStaticContainersRaw(dir);
-        lbs.back().stewardClaim.store(
+        ((lbs.back()).stewardClaim).store(
             static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
         // The budget estimate comes from the raw image: one block each.
         ASSERT_TRUE(lbs.back().lastRawImageBytes() > 0);
@@ -1233,10 +1257,10 @@ TEST(steward, prefetch_head_respects_budget) {
     s.prefetchHead(&order, /*count=*/6, dir);
     ASSERT_EQ(s.ioRingDepthForTest(true), static_cast<std::size_t>(2));
     s.drainIoRingsForTest();
-    ASSERT_TRUE(lbs[0].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[1].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[2].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[5].lbMemory.manager.resident());
+    ASSERT_TRUE(((lbs[0]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[1]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[2]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[5]).lbMemory).manager.resident());
 }
 
 TEST(steward, planner_prefetch_respects_budget) {
@@ -1251,15 +1275,15 @@ TEST(steward, planner_prefetch_respects_budget) {
     for (int i = 0; i < 8; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(pb_" + std::to_string(i) + ")").c_str());
-        lbs.back().isActive = true;
+        ((lbs.back()).isActive) = true;
         for (int k = 0; k < 200; ++k)
-            lbs.back().intEncodedStatements.push_back(
+            ((lbs.back()).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(k)));
     }
     // The first six go cold; the prefetch region [0, 6) covers exactly them.
     for (int i = 0; i < 6; ++i) {
         lbs[i].deloadStaticContainersRaw(dir);
-        lbs[i].stewardClaim.store(
+        ((lbs[i]).stewardClaim).store(
             static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
     }
     std::vector<gl::Memory*> order;
@@ -1276,9 +1300,9 @@ TEST(steward, planner_prefetch_respects_budget) {
     s.maintainWorkingSet(&cursor, &order, /*workers=*/2);
     ASSERT_EQ(s.ioRingDepthForTest(true), static_cast<std::size_t>(2));
     s.drainIoRingsForTest();
-    ASSERT_TRUE(lbs[0].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[1].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[2].lbMemory.manager.resident());
+    ASSERT_TRUE(((lbs[0]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[1]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[2]).lbMemory).manager.resident());
     s.endPhaseWindow();
 }
 
@@ -1292,11 +1316,11 @@ TEST(steward, discard_queued_io_tasks_drops_everything_unstarted) {
     for (int i = 0; i < 3; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(dq_" + std::to_string(i) + ")").c_str());
-        lbs.back().isActive = true;
-        lbs.back().intEncodedStatements.push_back(
+        ((lbs.back()).isActive) = true;
+        ((lbs.back()).intEncodedStatements).push_back(
             stewardExpr(static_cast<int16_t>(60 + i)));
         lbs.back().deloadStaticContainersRaw(dir);
-        lbs.back().stewardClaim.store(
+        ((lbs.back()).stewardClaim).store(
             static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
     }
     std::vector<gl::Memory*> order;
@@ -1310,8 +1334,8 @@ TEST(steward, discard_queued_io_tasks_drops_everything_unstarted) {
     ASSERT_EQ(s.ioRingDepthForTest(false), static_cast<std::size_t>(0));
     s.drainIoRingsForTest();                 // nothing left to execute
     for (int i = 0; i < 3; ++i) {
-        ASSERT_FALSE(lbs[i].lbMemory.manager.resident());
-        ASSERT_EQ(lbs[i].stewardClaim.load(),
+        ASSERT_FALSE(((lbs[i]).lbMemory).manager.resident());
+        ASSERT_EQ(((lbs[i]).stewardClaim).load(),
                   static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
     }
 }
@@ -1330,29 +1354,29 @@ TEST(steward, seam_door_phase4_reloads_claim_correct) {
     gl::MemorySteward s;
     gl::Memory recipient;
     recipient.setExprKey("(seam_recipient)");
-    recipient.isActive = true;
-    recipient.intEncodedStatements.push_back(stewardExpr(95));
+    ((recipient).isActive) = true;
+    ((recipient).intEncodedStatements).push_back(stewardExpr(95));
     recipient.deloadStaticContainersRaw(dir);       // -> cold
-    recipient.stewardClaim.store(
+    ((recipient).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_FALSE(recipient.lbMemory.manager.resident());
+    ASSERT_FALSE(((recipient).lbMemory).manager.resident());
 
     // The door: claim + reload under phase 4 (the barrier bucket).
     s.claimAndLoadForWork(recipient, /*phase=*/4, dir);
-    ASSERT_EQ(recipient.stewardClaim.load(),
+    ASSERT_EQ(((recipient).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(recipient.lbMemory.manager.resident());
-    ASSERT_EQ(recipient.intEncodedStatements.size(), 1);
-    ASSERT_EQ(recipient.intEncodedStatements[0].nameId,
+    ASSERT_TRUE(((recipient).lbMemory).manager.resident());
+    ASSERT_EQ(((recipient).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((recipient).intEncodedStatements)[0].nameId,
               static_cast<int16_t>(95));
     // ... the seam writes its deposit here, under WorkerOwned ...
-    recipient.stewardClaim.store(
+    ((recipient).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Idle),
         std::memory_order_release);
     // Claim-correct end state: Idle + resident (evictable again).
-    ASSERT_EQ(recipient.stewardClaim.load(),
+    ASSERT_EQ(((recipient).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
-    ASSERT_TRUE(recipient.lbMemory.manager.resident());
+    ASSERT_TRUE(((recipient).lbMemory).manager.resident());
 }
 
 TEST(steward, barrier_seam_window_pinned_cursor_keeps_head_evicts_tail) {
@@ -1371,14 +1395,14 @@ TEST(steward, barrier_seam_window_pinned_cursor_keeps_head_evicts_tail) {
     for (std::size_t i = 0; i < n; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(sw_" + std::to_string(i) + ")").c_str());
-        lbs.back().isActive = true;
+        ((lbs.back()).isActive) = true;
         for (int k = 0; k < 200; ++k)
-            lbs.back().intEncodedStatements.push_back(
+            ((lbs.back()).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(k)));
     }
     std::vector<gl::Memory*> order;
     for (std::size_t i = 0; i < n; ++i) order.push_back(&lbs[i]);
-    const int64_t b = lbs[0].lbMemory.manager.blocksHeld();
+    const int64_t b = ((lbs[0]).lbMemory).manager.blocksHeld();
     ASSERT_TRUE(b >= 1);
 
     gl::MemorySteward s;
@@ -1394,21 +1418,21 @@ TEST(steward, barrier_seam_window_pinned_cursor_keeps_head_evicts_tail) {
 
     // Farthest-first from the pinned origin: the TAIL evicts, exactly the
     // deficit; the head [0, 3) — the next iteration's first LBs — is kept.
-    ASSERT_FALSE(lbs[n - 1].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[n - 2].lbMemory.manager.resident());
-    ASSERT_FALSE(lbs[n - 3].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[n - 4].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[0].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[1].lbMemory.manager.resident());
-    ASSERT_TRUE(lbs[2].lbMemory.manager.resident());
+    ASSERT_FALSE(((lbs[n - 1]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[n - 2]).lbMemory).manager.resident());
+    ASSERT_FALSE(((lbs[n - 3]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[n - 4]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[0]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[1]).lbMemory).manager.resident());
+    ASSERT_TRUE(((lbs[2]).lbMemory).manager.resident());
 
     // RECIPIENT CHURN: a random-access seam deposit door-reloads an evicted
     // tail LB, writes under WorkerOwned, releases Idle...
     s.claimAndLoadForWork(lbs[n - 1], /*phase=*/4, dir);
-    ASSERT_EQ(lbs[n - 1].stewardClaim.load(),
+    ASSERT_EQ(((lbs[n - 1]).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
-    ASSERT_TRUE(lbs[n - 1].lbMemory.manager.resident());
-    lbs[n - 1].stewardClaim.store(
+    ASSERT_TRUE(((lbs[n - 1]).lbMemory).manager.resident());
+    ((lbs[n - 1]).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Idle),
         std::memory_order_release);
 
@@ -1417,10 +1441,10 @@ TEST(steward, barrier_seam_window_pinned_cursor_keeps_head_evicts_tail) {
     // head) — the churn the design accepts as correct.
     s.maintainWorkingSet(&cursor, &order, workers);
     s.drainIoRingsForTest();
-    ASSERT_FALSE(lbs[n - 1].lbMemory.manager.resident());
-    ASSERT_EQ(lbs[n - 1].stewardClaim.load(),
+    ASSERT_FALSE(((lbs[n - 1]).lbMemory).manager.resident());
+    ASSERT_EQ(((lbs[n - 1]).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_TRUE(lbs[0].lbMemory.manager.resident());   // head still kept
+    ASSERT_TRUE(((lbs[0]).lbMemory).manager.resident());   // head still kept
 
     s.endPhaseWindow();
 }
@@ -1446,20 +1470,20 @@ TEST(steward, exhaustion_reporter_census_runs_under_pool_mutex) {
     // victim), Dumped (cold), WorkerOwned (pinned).
     gl::Memory idleLb;
     idleLb.setExprKey("(exh_idle)");
-    idleLb.isActive = true;
-    idleLb.intEncodedStatements.push_back(stewardExpr(91));
+    ((idleLb).isActive) = true;
+    ((idleLb).intEncodedStatements).push_back(stewardExpr(91));
     gl::Memory dumpedLb;
     dumpedLb.setExprKey("(exh_dumped)");
-    dumpedLb.isActive = true;
-    dumpedLb.intEncodedStatements.push_back(stewardExpr(92));
+    ((dumpedLb).isActive) = true;
+    ((dumpedLb).intEncodedStatements).push_back(stewardExpr(92));
     dumpedLb.deloadStaticContainersRaw(dir);
-    dumpedLb.stewardClaim.store(
+    ((dumpedLb).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
     gl::Memory ownedLb;
     ownedLb.setExprKey("(exh_owned)");
-    ownedLb.isActive = true;
-    ownedLb.intEncodedStatements.push_back(stewardExpr(93));
-    ownedLb.stewardClaim.store(
+    ((ownedLb).isActive) = true;
+    ((ownedLb).intEncodedStatements).push_back(stewardExpr(93));
+    ((ownedLb).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     std::vector<gl::Memory*> grid = { &idleLb, &dumpedLb, &ownedLb };
 
@@ -1517,10 +1541,10 @@ TEST(steward, stress_concurrent_dump_load_disjoint_lbs_across_executors) {
     for (std::size_t i = 0; i < n; ++i) {
         lbs.emplace_back();
         lbs.back().setExprKey(("(st_" + std::to_string(i) + ")").c_str());
-        lbs.back().isActive = true;
+        ((lbs.back()).isActive) = true;
         // Distinct content signature per LB: 10 + i rows, seeded by i.
         for (int16_t k = 0; k < static_cast<int16_t>(10 + i); ++k)
-            lbs.back().intEncodedStatements.push_back(
+            ((lbs.back()).intEncodedStatements).push_back(
                 stewardExpr(static_cast<int16_t>(i * 100 + k)));
     }
     std::vector<gl::Memory*> order;
@@ -1544,12 +1568,12 @@ TEST(steward, stress_concurrent_dump_load_disjoint_lbs_across_executors) {
                 const std::size_t i = w * 4 + k;
                 gl::Memory& lb = lbs[i];
                 s.claimAndLoadForWork(lb, /*phase=*/(round % 3) + 1, dir);
-                if (lb.intEncodedStatements.size()
+                if (((lb).intEncodedStatements).size()
                         != static_cast<int32_t>(10 + i)
-                    || lb.intEncodedStatements[0].nameId
+                    || ((lb).intEncodedStatements)[0].nameId
                            != static_cast<int16_t>(i * 100))
                     contentErrors.fetch_add(1);
-                lb.stewardClaim.store(
+                ((lb).stewardClaim).store(
                     static_cast<uint8_t>(gl::Memory::StewardClaim::Idle),
                     std::memory_order_release);
             }
@@ -1573,10 +1597,29 @@ TEST(steward, stress_concurrent_dump_load_disjoint_lbs_across_executors) {
     // Final integrity sweep: every LB reloads to its exact signature.
     for (std::size_t i = 0; i < n; ++i) {
         lbs[i].ensureLoaded(dir);
-        ASSERT_EQ(lbs[i].intEncodedStatements.size(),
+        ASSERT_EQ(((lbs[i]).intEncodedStatements).size(),
                   static_cast<int32_t>(10 + i));
-        ASSERT_EQ(lbs[i].intEncodedStatements[0].nameId,
+        ASSERT_EQ(((lbs[i]).intEncodedStatements)[0].nameId,
                   static_cast<int16_t>(i * 100));
     }
     for (char* b : held) pressure.releaseBlock(b);
+}
+
+TEST(steward, frozen_order_view_preserves_storage_and_empty_registration) {
+    gl::MemoryOrderView closed;
+    ASSERT_FALSE(closed.valid());
+    gl::MemoryOrderView empty(nullptr, 0);
+    ASSERT_TRUE(empty.valid());
+    ASSERT_EQ(empty.size(), std::size_t(0));
+    gl::Memory a, b;
+    std::vector<gl::Memory*> pointers{&a, &b};
+    gl::MemoryOrderView processor(&pointers);
+    gl::MemoryOrderView pooled(pointers.data(), pointers.size());
+    ASSERT_EQ(processor.size(), pooled.size());
+    ASSERT_EQ(processor[0], &a);
+    ASSERT_EQ(pooled[1], &b);
+    const auto captured = pooled;
+    pooled = gl::MemoryOrderView{};
+    ASSERT_FALSE(pooled.valid());
+    ASSERT_EQ(captured[0], &a);
 }

@@ -77196,6 +77196,10 @@
                 "arity": 4,
                 "category": "or",
                 "definition_source": "or_theorem_action",
+                "disjunct_positions": [
+                  0,
+                  1
+                ],
                 "elements": [
                   "(=[u_1,u_2])",
                   "!(=[u_3,u_4])"
@@ -77975,6 +77979,10 @@
                 "arity": 4,
                 "category": "or",
                 "definition_source": "or_theorem_action",
+                "disjunct_positions": [
+                  0,
+                  1
+                ],
                 "elements": [
                   "(=[u_1,u_2])",
                   "!(=[u_3,u_4])"
@@ -291181,6 +291189,10 @@
                 "arity": 4,
                 "category": "or",
                 "definition_source": "or_theorem_action",
+                "disjunct_positions": [
+                  0,
+                  1
+                ],
                 "elements": [
                   "(=[u_1,u_2])",
                   "(existence3[u_3,u_1,u_4])"
@@ -291797,6 +291809,10 @@
                 "arity": 4,
                 "category": "or",
                 "definition_source": "or_theorem_action",
+                "disjunct_positions": [
+                  0,
+                  1
+                ],
                 "elements": [
                   "(=[u_1,u_2])",
                   "(existence3[u_3,u_1,u_4])"

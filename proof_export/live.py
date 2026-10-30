@@ -25,7 +25,9 @@ import json
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 from .certificate import (
     base_form_equivalent,
@@ -44,13 +46,15 @@ from .mpl import Atom, Expression, Implication, alpha_key, expression_json, iter
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 TRACKED_LEAN_PROJECT = REPOSITORY_ROOT / "lean_export"
 EXPORT_FOLDER = "lean_export"
+LAKE_BUILD_FOLDER = ".lake"
+KERNEL_LOG = "kernel_check.log"
 PROJECT_SKELETON = (
     "lakefile.lean",
     "lean-toolchain",
     "lake-manifest.json",
     "GLExport/ProofSupport.lean",
 )
-ANCHOR_CORPORA = {"AnchorPeano": "peano", "AnchorGauss": "gauss", "AnchorFTA": "fta"}
+from .corpora import MAIN_ANCHOR_CORPORA as ANCHOR_CORPORA, MAIN_ANCHORS
 INSTALL_HINT = (
     "install Lean with `winget install --id LeanProver.Elan` (Windows) or "
     "`curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh"
@@ -100,10 +104,9 @@ def theorem_list_blocks(records: tuple[TheoremRecord, ...]) -> dict[str, tuple[i
     """
     @brief Partition the theorem list into its contiguous anchor blocks.
     @details
-    A full run writes the Peano theorems first and the Gauss theorems after
-    them; the shortcut list is FTA only. Each anchor therefore owns one
-    contiguous index run, which becomes the corpus' `source_range`. An
-    interleaved list is a broken registry and asserts.
+    Legacy range callers require one contiguous run per anchor. The shortcut
+    list is FTA only. The main export uses exact index selections instead.
+    An interleaved list is invalid for this range-only helper and asserts.
     @param records Loaded theorem registry (chapters need not be parsed).
     @return Anchor head → inclusive (first, last) source-index pair.
     """
@@ -121,6 +124,74 @@ def theorem_list_blocks(records: tuple[TheoremRecord, ...]) -> dict[str, tuple[i
         )
         blocks[head] = (first, record.source_index)
     return blocks
+
+
+def theorem_anchor_indices(records):
+    """
+    @brief Partition a possibly interleaved main registry by anchor.
+
+    @details Every record belongs to exactly one known anchor. Its original
+    source index remains its identity in selections and dependency certificates.
+
+    @param records Complete theorem registry in source-index order.
+    @return Anchor-to-sorted-source-indices mapping covering the registry exactly.
+    """
+    groups = {}
+    for index, record in enumerate(records):
+        assert record.source_index == index, "registry source indices are not contiguous"
+        groups.setdefault(anchor_head(record.expression), []).append(index)
+    return groups
+
+
+def parsed_sources(records, indices):
+    """
+    @brief Parse an explicit sorted group of theorem chapters.
+
+    @details Membership is exact; no intervening theorem is implicitly included.
+
+    @param records Complete theorem registry.
+    @param indices Nonempty sorted unique valid source indices.
+    @return Parsed theorem records in source order.
+    """
+    assert indices and indices == sorted(set(indices))
+    assert 0 <= indices[0] <= indices[-1] < len(records)
+    return [find_theorem(records, to_mpl(records[index].expression),
+                         records[index].method, index) for index in indices]
+
+
+def canonical_sources(records, indices):
+    """
+    @brief Choose the first selected proof of each equivalent proposition.
+
+    @details Book processing preserves the original canonical proof before any
+    equivalent copy, so renumbering cannot change citation identity.
+
+    @param records Complete theorem registry.
+    @param indices Sorted unique valid source indices for one nonempty anchor.
+    @return Sorted canonical citation source indices.
+    """
+    assert indices and indices == sorted(set(indices))
+    assert 0 <= indices[0] <= indices[-1] < len(records)
+    return canonical_citation_sources(
+        records, indices[0], indices[-1], selected_indices=indices)
+
+
+def imports_outside_sources(records, parsed, indices):
+    """
+    @brief Resolve same-registry imports outside an exact anchor selection.
+
+    @details Statement citations use the first proved equivalent copy. All
+    unmatched citations remain subject to the certificate's existing checks.
+
+    @param records Complete theorem registry.
+    @param parsed Parsed theorem records belonging to the selection.
+    @param indices Exact selected source indices.
+    @return Sorted distinct source indices cited outside the selection.
+    """
+    assert indices and indices == sorted(set(indices))
+    assert {record.source_index for record in parsed} == set(indices)
+    return same_list_imports(
+        records, parsed, indices[0], indices[-1], selected_indices=indices)
 
 
 def parsed_block(
@@ -146,6 +217,7 @@ def canonical_citation_sources(
     records: tuple[TheoremRecord, ...],
     first: int,
     last: int,
+    *, selected_indices=None,
 ) -> list[int]:
     """
     @brief Select one explicit citation source for each proposition in a live block.
@@ -155,13 +227,17 @@ def canonical_citation_sources(
     @param records Complete processed theorem registry.
     @param first First source index of the live block.
     @param last Last source index of the live block.
+    @param selected_indices Optional exact sorted source selection within the bounds.
     @return Sorted citation source indices with one entry per alpha-equivalent class.
     @invariant Every chosen source belongs to the requested nonempty block.
     """
 
     assert 0 <= first <= last < len(records)
+    indices = list(range(first, last + 1)) if selected_indices is None else selected_indices
+    assert indices and indices == sorted(set(indices))
+    assert all(first <= index <= last for index in indices)
     chosen: dict[str, int] = {}
-    for record in records[first:last + 1]:
+    for record in (records[index] for index in indices):
         key = alpha_key(record.expression)
         chosen[key] = min(chosen.get(key, record.source_index), record.source_index)
     return sorted(chosen.values())
@@ -172,6 +248,7 @@ def same_list_imports(
     parsed: list[TheoremRecord],
     first: int,
     last: int,
+    *, selected_indices=None,
 ) -> list[int]:
     """
     @brief Find the theorems of the same list a block cites from outside itself.
@@ -185,6 +262,7 @@ def same_list_imports(
     @param parsed Parsed theorem records of the block.
     @param first First source index of the block.
     @param last Last source index of the block.
+    @param selected_indices Optional exact selection using whole-list canonical sources.
     @return Sorted source indices outside the block that the block cites.
     """
 
@@ -197,11 +275,12 @@ def same_list_imports(
             matches = by_alpha.get(alpha_key(cited), [])
             if not matches:
                 continue
-            outside = [index for index in matches if not first <= index <= last]
-            if outside:
-                # A statement-only citation may name multiple proved copies.
-                # Pin one canonical prior proof in the dependency certificate.
-                imported.add(min(outside))
+            if selected_indices is None:
+                outside = [index for index in matches if not first <= index <= last]
+                if outside:
+                    imported.add(min(outside))
+            elif min(matches) not in selected_indices:
+                imported.add(min(matches))
     return sorted(imported)
 
 
@@ -450,30 +529,42 @@ def external_references(
 
 def _write_json(path: Path, document: dict[str, object]) -> None:
     """
-    @brief Write one selection or manifest document with stable formatting.
+    @brief Write one selection or manifest document as compact JSON.
+    @details Compact separators keep the documents small and let the C encoder
+    write them; keys keep their insertion order and one newline ends the file.
     @param path Output file; parent directories are created.
     @param document JSON-serializable document.
     @return None.
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    path.write_text(json.dumps(document, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
 
 
-def _fresh_export_directory(out_dir: Path) -> Path:
+def _fresh_export_directory(out_dir: Path, fresh_lean: bool) -> Path:
     """
-    @brief Create the mode's empty `lean_export/` folder with the Lake skeleton.
-    @details The previous export of the same mode is removed first; the project
-    files that no certificate generates (lakefile, toolchain pin, manifest,
-    proof support) are copied from the tracked project.
+    @brief Create the mode's `lean_export/` folder with the Lake skeleton.
+    @details The previous export of the same mode is removed first, except
+    Lake's build folder `.lake/` unless a fresh build is requested: Lake then
+    rebuilds exactly the modules whose sources or imports changed, judged by
+    its own content hashes. The project files that no certificate generates
+    (lakefile, toolchain pin, manifest, proof support) are copied from the
+    tracked project.
     @param out_dir The mode's `full_proof_graph` folder.
+    @param fresh_lean Whether `.lake/` is removed too, so Lake builds everything.
     @return The export folder.
     """
 
     export_dir = out_dir / EXPORT_FOLDER
     if export_dir.exists():
-        shutil.rmtree(export_dir)
-    export_dir.mkdir(parents=True)
+        for child in export_dir.iterdir():
+            if child.name == LAKE_BUILD_FOLDER and not fresh_lean:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    export_dir.mkdir(parents=True, exist_ok=True)
     for relative in PROJECT_SKELETON:
         source = TRACKED_LEAN_PROJECT / relative
         assert source.is_file(), f"tracked Lean project file missing: {source}"
@@ -512,18 +603,80 @@ def _skip_without_toolchain(out_dir: Path) -> None:
     skip_export(out_dir, f"Lean toolchain not found — Lean export skipped; {INSTALL_HINT}")
 
 
+def _lake_environment() -> dict[str, str]:
+    """
+    @brief The environment of a Lake child process.
+    @details A copy of the parent environment with explicit `ELAN_HOME` (the
+    configured override or `~/.elan`), so launcher discovery does not depend on
+    implicit user-home resolution. The parent environment is unchanged.
+    @return The child environment.
+    """
+
+    environment = dict(os.environ)
+    environment.setdefault("ELAN_HOME", str(Path.home() / ".elan"))
+    return environment
+
+
+@dataclass
+class KernelCheck:
+    """A `lake build` started by `start_kernel_check`, with its open log."""
+
+    command: list[str]
+    process: subprocess.Popen
+    handle: TextIO
+    log: Path
+    project_dir: Path
+
+
+def start_kernel_check(lake: Path, project_dir: Path) -> KernelCheck:
+    """
+    @brief Start the kernel check of an exported Lean project in the background.
+    @details `lake build` checks the connected default target, including Peano,
+    Gauss, FTA and their Nat instances. The command line opens
+    `kernel_check.log`; Lake's output follows it there. The caller continues
+    and later calls `finish_kernel_check`, which records the exit code.
+    @param lake The Lake executable.
+    @param project_dir Exported Lean project.
+    @return The running check.
+    @see finish_kernel_check
+    """
+
+    command = [str(lake), "build"]
+    log = project_dir / KERNEL_LOG
+    handle = open(log, "w", encoding="utf-8")
+    handle.write("$ " + " ".join(command) + "\n")
+    handle.flush()
+    process = subprocess.Popen(command, cwd=project_dir, env=_lake_environment(),
+                               stdout=handle, stderr=subprocess.STDOUT)
+    return KernelCheck(command, process, handle, log, project_dir)
+
+
+def finish_kernel_check(check: KernelCheck) -> None:
+    """
+    @brief Wait for a started kernel check and record its result.
+    @details Appends the exit code to `kernel_check.log`. A non-zero exit fails
+    the run with a `RuntimeError` -- an explicit raise, not an `assert`, so the
+    gate holds under `python -O` too.
+    @param check The running check of `start_kernel_check`.
+    @return None; a failing check raises `RuntimeError` after its exit code is logged.
+    """
+
+    return_code = check.process.wait()
+    check.handle.write(f"exit {return_code}\n")
+    check.handle.close()
+    if return_code != 0:
+        raise RuntimeError(
+            f"Lean kernel check failed: {' '.join(check.command)} (see {check.log})")
+    print(f"[lean-export] kernel check passed: {check.project_dir}")
+
+
 def kernel_check(lake: Path, project_dir: Path, fta_module: bool) -> None:
     """
     @brief Kernel-check an exported Lean project and record the log.
-    @details `lake build` checks the connected default target, including Peano,
-    Gauss, FTA and their Nat instances. The optional additional command compiles
-    the FTA module directly when requested. Output goes to
-    `kernel_check.log` in the project; a non-zero exit fails the run with a
-    `RuntimeError` -- an explicit raise, not an `assert`, so the gate holds
-    under `python -O` too.
-    The child receives explicit `ELAN_HOME` (the configured override or
-    `~/.elan`), so launcher discovery does not depend on implicit user-home
-    resolution. The project toolchain pin and the parent environment are unchanged.
+    @details Runs `start_kernel_check` and waits for it. The optional
+    additional command compiles the FTA module directly when requested; its
+    command line and exit code are appended to `kernel_check.log`. A non-zero
+    exit fails the run with a `RuntimeError`.
     @param lake The Lake executable.
     @param project_dir Exported Lean project.
     @param fta_module Whether `GLExport/Generated/FTA.lean` must be compiled too.
@@ -531,25 +684,21 @@ def kernel_check(lake: Path, project_dir: Path, fta_module: bool) -> None:
             is logged.
     """
 
-    environment = dict(os.environ)
-    environment.setdefault("ELAN_HOME", str(Path.home() / ".elan"))
-    commands: list[list[str]] = [[str(lake), "build"]]
-    if fta_module:
-        commands.append([str(lake), "env", "lean", os.path.join("GLExport", "Generated", "FTA.lean")])
-    log = project_dir / "kernel_check.log"
-    with open(log, "w", encoding="utf-8") as handle:
-        for command in commands:
-            handle.write("$ " + " ".join(command) + "\n")
-            handle.flush()
-            completed = subprocess.run(
-                command, cwd=project_dir, env=environment,
-                stdout=handle, stderr=subprocess.STDOUT, check=False,
-            )
-            handle.write(f"exit {completed.returncode}\n")
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    f"Lean kernel check failed: {' '.join(command)} (see {log})")
-    print(f"[lean-export] kernel check passed: {project_dir}")
+    finish_kernel_check(start_kernel_check(lake, project_dir))
+    if not fta_module:
+        return
+    command = [str(lake), "env", "lean", os.path.join("GLExport", "Generated", "FTA.lean")]
+    log = project_dir / KERNEL_LOG
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write("$ " + " ".join(command) + "\n")
+        handle.flush()
+        completed = subprocess.run(
+            command, cwd=project_dir, env=_lake_environment(),
+            stdout=handle, stderr=subprocess.STDOUT, check=False,
+        )
+        handle.write(f"exit {completed.returncode}\n")
+    if completed.returncode != 0:
+        raise RuntimeError(f"Lean kernel check failed: {' '.join(command)} (see {log})")
 
 
 def export_main_graph(
@@ -557,42 +706,72 @@ def export_main_graph(
     out_dir: Path,
     config_dir: Path,
     binaries_dir: Path,
+    fresh_lean: bool = False,
 ) -> Path | None:
     """
     @brief Export and kernel-check the connected Peano, Gauss, and FTA proofs.
+    @details Writes the export (`write_main_export`) and waits for its kernel
+    check (`kernel_check`). Without a Lean toolchain nothing is written and one
+    notice is printed.
+    @param proc_dir The main `processed_proof_graph` folder.
+    @param out_dir The main `full_proof_graph` folder.
+    @param config_dir `files/config`.
+    @param binaries_dir `files/GL_binaries` of this run.
+    @param fresh_lean Whether Lake's build folder is removed before the check.
+    @return The export folder, or None when the toolchain is absent.
+    """
+
+    export_dir = write_main_export(proc_dir, out_dir, config_dir, binaries_dir, fresh_lean=fresh_lean)
+    if export_dir is not None:
+        kernel_check(find_lake(), export_dir, fta_module=False)
+    return export_dir
+
+
+def write_main_export(
+    proc_dir: Path,
+    out_dir: Path,
+    config_dir: Path,
+    binaries_dir: Path,
+    fresh_lean: bool = False,
+) -> Path | None:
+    """
+    @brief Export the connected Peano, Gauss, and FTA proofs without checking them.
     @details
     Writes `<out_dir>/lean_export/`: three live selections, certificates with
     the exact same-run preceding proof dependencies, generated modules and
-    manifests, the shared Nat model and every public theorem's concrete
-    instance, and the single connected kernel-check log. Without a Lean toolchain
+    manifests, and the shared Nat model with every public theorem's concrete
+    instance. The kernel check is started separately (`start_kernel_check`), so
+    the pipeline renders and verifies while Lake runs. Without a Lean toolchain
     nothing is written and one notice is printed.
     @param proc_dir The main `processed_proof_graph` folder.
     @param out_dir The main `full_proof_graph` folder.
     @param config_dir `files/config`.
     @param binaries_dir `files/GL_binaries` of this run.
+    @param fresh_lean Whether Lake's build folder `.lake/` is removed too.
     @return The export folder, or None when the toolchain is absent.
+    @see export_main_graph
     """
 
-    lake = find_lake()
-    if lake is None:
+    if find_lake() is None:
         _skip_without_toolchain(out_dir)
         return None
-    export_dir = _fresh_export_directory(out_dir)
+    export_dir = _fresh_export_directory(out_dir, fresh_lean)
     records = load_theorem_records(proc_dir)
-    blocks = theorem_list_blocks(records)
-    assert set(blocks) == {"AnchorPeano", "AnchorGauss", "AnchorFTA"}, f"unexpected anchor blocks {blocks}"
+    blocks = theorem_anchor_indices(records)
+    assert set(blocks) == MAIN_ANCHORS, f"unexpected anchor blocks {blocks}"
     theorem_list_hash = sha256_file(proc_dir / "global_theorem_list.txt")
 
-    peano_first, peano_last = blocks["AnchorPeano"]
-    peano_id = f"peano_live_{peano_last - peano_first + 1}"
+    peano_indices = blocks["AnchorPeano"]
+    peano_id = f"peano_live_{len(peano_indices)}"
     peano_selection_path = export_dir / "selection_peano.json"
     _write_json(peano_selection_path, {
         "schema_version": 2,
         "id": peano_id,
         "theorem_list_sha256": theorem_list_hash,
-        "source_range": {"first": peano_first, "last": peano_last},
+        "source_indices": peano_indices,
+        "complete_anchor": "AnchorPeano",
         "excluded_sources": [],
-        "citation_source_indices": canonical_citation_sources(records, peano_first, peano_last),
+        "citation_source_indices": canonical_sources(records, peano_indices),
     })
     peano_certificate_path = export_dir / "certificates" / "peano" / "certificate.json"
     peano_certificate = build_certificate(
@@ -602,9 +781,9 @@ def export_main_graph(
     write_lean(peano_certificate, export_dir)
     print(f"[lean-export] {peano_id}: {peano_certificate['corpus']['coverage']}")
 
-    gauss_first, gauss_last = blocks["AnchorGauss"]
-    gauss_id = f"gauss_live_{gauss_last - gauss_first + 1}"
-    parsed = parsed_block(records, gauss_first, gauss_last)
+    gauss_indices = blocks["AnchorGauss"]
+    gauss_id = f"gauss_live_{len(gauss_indices)}"
+    parsed = parsed_sources(records, gauss_indices)
     gauss_selection_path = export_dir / "selection_gauss.json"
     _write_json(gauss_selection_path, {
         "schema_version": 3,
@@ -612,14 +791,15 @@ def export_main_graph(
         "theorem_id_prefix": "gauss_source",
         "theorem_name_prefix": "Gauss source",
         "theorem_list_sha256": theorem_list_hash,
-        "source_range": {"first": gauss_first, "last": gauss_last},
+        "source_indices": gauss_indices,
+        "complete_anchor": "AnchorGauss",
         "excluded_sources": [],
-        "citation_source_indices": canonical_citation_sources(records, gauss_first, gauss_last),
+        "citation_source_indices": canonical_sources(records, gauss_indices),
         "certificate_dependencies": [{
             "id": peano_id,
             "certificate": "certificates/peano/certificate.json",
             "certificate_sha256": sha256_file(peano_certificate_path),
-            "required_source_indices": same_list_imports(records, parsed, gauss_first, gauss_last),
+            "required_source_indices": imports_outside_sources(records, parsed, gauss_indices),
         }],
     })
     gauss_certificate = build_certificate(
@@ -628,33 +808,34 @@ def export_main_graph(
     write_certificate(gauss_certificate, export_dir / "certificates" / "gauss" / "certificate.json")
     write_lean(gauss_certificate, export_dir)
     print(f"[lean-export] {gauss_id}: {gauss_certificate['corpus']['coverage']}")
-    fta_first, fta_last = blocks["AnchorFTA"]
-    fta_id = f"fta_live_{fta_last - fta_first + 1}"
-    parsed = parsed_block(records, fta_first, fta_last)
-    imports = same_list_imports(records, parsed, fta_first, fta_last)
+    fta_indices = blocks["AnchorFTA"]
+    fta_id = f"fta_live_{len(fta_indices)}"
+    parsed = parsed_sources(records, fta_indices)
+    imports = imports_outside_sources(records, parsed, fta_indices)
     gauss_certificate_path = export_dir / "certificates" / "gauss" / "certificate.json"
     dependencies = []
-    for identifier, path, lower, upper in (
-        (peano_id, peano_certificate_path, peano_first, peano_last),
-        (gauss_id, gauss_certificate_path, gauss_first, gauss_last),
+    for identifier, path, indices in (
+        (peano_id, peano_certificate_path, peano_indices),
+        (gauss_id, gauss_certificate_path, gauss_indices),
     ):
         dependencies.append({
             "id": identifier,
             "certificate": str(path.relative_to(export_dir)).replace(chr(92), "/"),
             "certificate_sha256": sha256_file(path),
-            "required_source_indices": [index for index in imports if lower <= index <= upper],
+            "required_source_indices": [index for index in imports if index in indices],
         })
-    assert all(peano_first <= index <= gauss_last for index in imports)
+    assert set(imports) <= set(peano_indices + gauss_indices)
     selection_path = export_dir / "selection_fta.json"
     _write_json(selection_path, {
         "schema_version": 3, "id": fta_id,
         "theorem_id_prefix": "fta_source", "theorem_name_prefix": "FTA source",
         "theorem_list_sha256": theorem_list_hash,
-        "source_range": {"first": fta_first, "last": fta_last},
+        "source_indices": fta_indices,
+        "complete_anchor": "AnchorFTA",
         "excluded_sources": [],
-        "citation_source_indices": canonical_citation_sources(records, fta_first, fta_last),
+        "citation_source_indices": canonical_sources(records, fta_indices),
         "certificate_dependencies": dependencies,
-        "target_source_indices": list(range(fta_first, fta_last + 1)),
+        "target_source_indices": fta_indices,
     })
     fta_certificate = build_certificate(
         selection_path, proc_dir, config_dir / "ConfigFTA.json", binaries_dir / "GL_binary_FTA.json")
@@ -663,7 +844,6 @@ def export_main_graph(
     print(f"[lean-export] {fta_id}: {fta_certificate['corpus']['coverage']}")
     from proof_export.nat import write_nat_model
     write_nat_model([peano_certificate, gauss_certificate, fta_certificate], export_dir)
-    kernel_check(lake, export_dir, fta_module=False)
     return export_dir
 
 
@@ -779,7 +959,7 @@ def export_shortcut_graph(
     if lake is None:
         _skip_without_toolchain(out_dir)
         return None
-    export_dir = _fresh_export_directory(out_dir)
+    export_dir = _fresh_export_directory(out_dir, fresh_lean=False)
     dependencies = external_theorem_lists(externals_path, export_dir)
 
     records = load_theorem_records(proc_dir)

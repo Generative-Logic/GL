@@ -1,0 +1,4 @@
+(preorder[N,+,i2,v1])	main	vacuous truth	(=[v1,i0])	main	!(=[v1,i0])	main	(=[v1,i0])	main
+(=[v1,i0])	main	recursion
+!(=[v1,i0])	main	symmetry of inequality	!(=[i0,v1])	main
+!(=[i0,v1])	main	task formulation

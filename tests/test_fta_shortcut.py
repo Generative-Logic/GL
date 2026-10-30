@@ -49,6 +49,13 @@ class FtaShortcutTests(unittest.TestCase):
         (self.root / "files/definitions/Peano.mpl").write_text("changed")
         self.assertNotEqual(fingerprints, fta_shortcut.source_fingerprints(self.root))
 
+    def test_changed_goals_fail_before_cleanup(self):
+        fta_shortcut.capture(self.root)
+        (self.root / "files/shortcut/theorems/conjectures.txt").write_text("(goal)\n(new lemma)\n")
+        with self.assertRaisesRegex(AssertionError, "inputs changed"):
+            fta_shortcut.restore(self.root)
+        self.assertTrue((self.root / "files/GL_binaries/GL_binary_FTA.json").is_file())
+
     def test_compilation_state_is_captured_and_restored_with_the_registry(self):
         state = {"schema": 1, "next_counters": {"implication": 31, "existence": 20, "and": 4, "or": 18},
                  "replacements": {"existence16": {"target": "preorder", "arguments": [1, 4, 2, 3]}}}
@@ -112,7 +119,7 @@ class FtaShortcutTests(unittest.TestCase):
 
     def test_empty_goals_are_rejected(self):
         (self.root / "files/shortcut/theorems/conjectures.txt").write_text("")
-        with self.assertRaises(AssertionError):
+        with self.assertRaisesRegex(AssertionError, "FTA supplied goals"):
             fta_shortcut.source_fingerprints(self.root)
 
     def test_full_batch_captures_after_seed_before_native(self):

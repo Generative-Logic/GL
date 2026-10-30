@@ -30,10 +30,12 @@ namespace gl {
 
     /// @brief Independent lookup domains sharing one pool-backed posting index.
     /// @details Domain separation preserves full-width expression/validity keys.
+    /// CacheTokens/TokenCaches hold the tokens of an entry's canonical form;
+    /// ViewTokens/TokenViews hold the tokens a view's own spelling adds to it.
     enum class OrPostingKind : int64_t {
         CacheUsers, OwnerViews, ScopeViews, TokenCaches, ClassScopes,
         WatchKey, FactKey, WatchScopes, FactScopes, SourceCore, OwnerCores,
-        FactCore, CacheScope, CacheTokens
+        FactCore, CacheScope, CacheTokens, ViewTokens, TokenViews
     };
 
     /// @brief Exact domain and full-width key of one posting bucket.
@@ -103,18 +105,27 @@ namespace gl {
     struct OrEvaluation { int64_t owner; NameId scope; int32_t reserved = 0; };
     template<> struct Codec<OrEvaluation> : IdentityKeyCodec<OrEvaluation> {};
 
-    /// @brief Shared canonical result for one original-expression/scope pair.
-    /// @details Canonical ids belong to NameMap; template ids belong to the
-    /// rejected-map template interner. Dirty entries require the shared chooser.
+    /// @brief Shared canonical entry for one canonical-expression/scope pair.
+    /// @details The map key packs this canonical NameMap id with the effective
+    /// scope, so every spelling with this form at that scope shares the entry.
+    /// Template ids belong to the rejected-map template interner. Dirty entries
+    /// require the shared chooser before matching. The fact-carrier count is the
+    /// number of known-fact views on the entry; the entry's single fact lookup
+    /// posting exists exactly while that count is positive. No rewrite locality
+    /// is stored: a firing computes it for the spelling it considers.
     struct OrCanonicalCache {
         NameId canonicalId;
         int32_t templateId;
         int32_t dirty;
-        int32_t localEquality;
+        int32_t factCarriers;
     };
 
-    /// @brief Recyclable lookup view referencing its shared canonical cache.
-    /// @details Every link and identity is integer-valued and relocatable.
+    /// @brief Recyclable lookup view referencing its shared canonical entry.
+    /// @details Every link and identity is integer-valued and relocatable. The
+    /// original id is the spelling the view was bound with: a known fact, a
+    /// whole source OR, or a scalar complementary leaf. A known-fact view is a
+    /// carrier: it mirrors its entry's canonical and template ids and owns no
+    /// lookup posting of its own.
     struct OrIndexedView {
         OrViewIdentity identity;
         int64_t cacheKey;
@@ -122,18 +133,26 @@ namespace gl {
         int32_t live;
         NameId canonicalId;
         int32_t templateId;
+        NameId originalId;
     };
 
     /// @brief Derived indexes and deduplicated work for on-demand OR matching.
     ///
     /// @details
     /// Source state lives in OrImplications. This index groups canonical views
-    /// by exact template/validity, source owner, cache, token and scope. One
+    /// by exact template/validity, source owner, canonical entry, token and
+    /// scope. One entry exists per canonical expression and effective scope:
+    /// known-fact spellings with that form are its carriers and share one fact
+    /// lookup posting and one join, while source leaves keep one view each.
+    /// The tokens of the canonical form are posted once per entry; a view posts
+    /// only the tokens of its own spelling that the canonical form lacks. One
     /// domain-separated posting engine supplies all lookup directions without
     /// allocating a separate hash-table object for every direction on every LB.
     /// The prover supplies canonical results through its existing watch chooser.
     /// Canonical release clears this object; raw eviction preserves its pages.
     /// @invariant Lookup indexes never supply proof validity or provenance.
+    /// @invariant A live entry's key carries its own canonical id; a changed
+    ///            form moves the entry's views to another key, never in place.
     /// @see OrImplications, OrPostingIndex
     struct OrImplicationMatchIndex {
         static constexpr int32_t DerivedLeaf = 2;
@@ -150,6 +169,7 @@ namespace gl {
         TypedColdSet<int64_t> dirtyCaches;
         TypedColdSet<OrViewIdentity> projections;
         TypedColdSet<OrViewIdentity> changedViews;
+        TypedColdSet<int64_t> changedFacts;
         TypedColdSet<OrEvaluation> evaluations;
         int32_t freeView = -1;
         int32_t liveViews = 0;
@@ -167,7 +187,8 @@ namespace gl {
             : postings_(arena), viewIds(arena, &dirty), views(arena, &dirty),
               caches_(arena, &dirty), initializedCores(arena, &dirty),
               dirtyCaches(arena, &dirty), projections(arena, &dirty),
-              changedViews(arena, &dirty), evaluations(arena, &dirty) {}
+              changedViews(arena, &dirty), changedFacts(arena, &dirty),
+              evaluations(arena, &dirty) {}
 
         /// @brief Expose lookup postings without permitting partial mutations.
         /// @details Relationship writes belong to this index's lifecycle methods.
@@ -224,52 +245,168 @@ namespace gl {
             dirtyCaches.mint(key);
         }
 
-        /// @brief Publish a canonical result and update all scalar relationships.
-        /// @details Fresh publication creates the scope/token directory; rekeying
-        /// unlinks old scalar buckets and token pairs before installing the new
-        /// ones. Whole-OR leaf spelling is refreshed by bindOrSourceViews using
-        /// this same cache. Input token order is preserved, including duplicates.
-        /// @param key Original expression and effective scope.
-        /// @param value Settled canonical result from the existing chooser.
-        /// @tparam TokenVisitor Synchronous heap-free dependency-token visitor.
-        /// @param visitTokens Emits original, canonical and dependency tokens in order.
-        /// @param scratch Page-tier scratch distinct from the index's arena.
+        /// @brief Create or revive one canonical entry and post its form's tokens.
+        /// @details The key's canonical half must equal the value's canonical id
+        /// and no live entry may hold the key: an entry's form never changes in
+        /// place, a changed form moves the entry's views to another key
+        /// (moveView). A dead record of the same key is revived. The visitor
+        /// streams the substitution tokens of the canonical form in mint order.
+        /// @tparam TokenVisitor Synchronous heap-free token visitor.
+        /// @param key Canonical expression and effective scope.
+        /// @param value Settled canonical result without fact carriers.
+        /// @param visitTokens Emits the canonical form's substitution tokens.
         /// @return Void.
         template<class TokenVisitor>
-        void publishCache(int64_t key, OrCanonicalCache value,
-            TokenVisitor&& visitTokens, ScratchArena& scratch) {
-            assert(key != 0 && value.canonicalId != 0 && value.templateId != 0 && value.dirty == 0);
+        void publishCache(int64_t key, OrCanonicalCache value, TokenVisitor&& visitTokens) {
+            assert(key != 0 && value.canonicalId != 0 && value.templateId != 0
+                && value.dirty == 0 && value.factCarriers == 0);
+            assert(static_cast<NameId>(uint64_t(key) >> 32) == value.canonicalId
+                && "an OR entry is keyed by its own canonical form");
             const OrCanonicalCache* previous = caches_.find(key);
-            const bool fresh = previous == nullptr || previous->templateId == 0;
-            if (fresh) {
-                if (previous != nullptr) { assert(deadCaches > 0); --deadCaches; }
-            } else {
-                assert(postings_.containsKey(orPostingKey(OrPostingKind::CacheUsers, key)));
-                // Only other posting domains mutate; this live user chain stays intact.
-                postings_.forEach(orPostingKey(OrPostingKind::CacheUsers, key),
-                    [&](int64_t rawId) {
-                        const int32_t id = static_cast<int32_t>(rawId);
-                        if ((views[id].live & DerivedLeaf) == 0)
-                            detachCanonical(id, views[id].templateId);
-                    });
-                eraseCacheTokens(key, scratch);
-            }
+            assert(previous == nullptr || previous->templateId == 0);
+            if (previous != nullptr) { assert(deadCaches > 0); --deadCaches; }
             caches_.upsert(key, value);
             visitTokens([&](NameId token) {
                 assert(token != 0);
                 postings_.insert(orPostingKey(OrPostingKind::TokenCaches, token), key);
                 postings_.insert(orPostingKey(OrPostingKind::CacheTokens, key), token);
             });
-            if (fresh)
-                postings_.insert(orPostingKey(OrPostingKind::CacheScope,
-                    static_cast<NameId>(uint64_t(key))), key);
-            if (!fresh) postings_.forEach(orPostingKey(OrPostingKind::CacheUsers, key),
-                [&](int64_t rawId) {
-                    const int32_t id = static_cast<int32_t>(rawId);
-                    if ((views[id].live & DerivedLeaf) == 0)
-                        attachCanonical(id, value.templateId);
-                    changedViews.mint(views[id].identity);
-                });
+            postings_.insert(orPostingKey(OrPostingKind::CacheScope,
+                static_cast<NameId>(uint64_t(key))), key);
+        }
+
+        /// @brief Whether a live canonical entry holds this key.
+        /// @details A retired entry keeps a dead record until maintenance, which
+        /// is not live.
+        /// @param key Canonical expression and effective scope.
+        /// @return True when the entry exists with a template.
+        bool cacheLive(int64_t key) const {
+            const OrCanonicalCache* found = caches_.find(key);
+            return found != nullptr && found->templateId != 0;
+        }
+
+        /// @brief Clear a dirty entry whose canonical form did not change.
+        /// @details A class change can alter a spelling's rewrite locality
+        /// without moving the form, so every user is queued for matching again:
+        /// source and scalar views through changedViews, the fact carriers once
+        /// through changedFacts.
+        /// @param key Live dirty entry.
+        /// @return Void.
+        void settleCache(int64_t key) {
+            const OrCanonicalCache* found = caches_.find(key);
+            assert(found != nullptr && found->templateId != 0 && found->dirty == 1);
+            OrCanonicalCache settled = *found;
+            settled.dirty = 0;
+            caches_.upsert(key, settled);
+            postings_.forEach(orPostingKey(OrPostingKind::CacheUsers, key), [&](int64_t rawId) {
+                const OrIndexedView view = views[static_cast<int32_t>(rawId)];
+                assert(view.live);
+                if (view.identity.isFact()) changedFacts.mint(key);
+                else changedViews.mint(view.identity);
+            });
+        }
+
+        /// @brief Move one live view to another live entry at its scope.
+        /// @details Its entry's canonical form moved under a class change. The
+        /// view leaves the old user list and joins the target's. A fact carrier
+        /// moves its count and the entry-level fact posting and queues the
+        /// target's fact role; a scalar view rekeys its own lookup bucket. A
+        /// derived source leaf keeps its leaf bucket until its source rebinds
+        /// it. Rewritten-token postings are the caller's (eraseViewTokens,
+        /// addViewTokens).
+        /// @param id Live view slot.
+        /// @param target Live entry key at the view's effective scope.
+        /// @return Void.
+        void moveView(int32_t id, int64_t target) {
+            assert(id >= 0 && id < views.size() && views[id].live);
+            OrIndexedView view = views[id];
+            assert(view.cacheKey != target && cacheLive(target));
+            assert(static_cast<NameId>(uint64_t(target)) == view.identity.scope);
+            const bool derived = (view.live & DerivedLeaf) != 0;
+            if (!derived) detachCanonical(id, view.templateId);
+            const bool erased = postings_.erase(orPostingKey(OrPostingKind::CacheUsers, view.cacheKey), id);
+            assert(erased && "OR view missing from its entry's users");
+            postings_.insert(orPostingKey(OrPostingKind::CacheUsers, target), id);
+            view.cacheKey = target;
+            views.setAt(id, view);
+            if (derived) return;
+            attachCanonical(id, caches_.find(target)->templateId);
+            if (view.identity.isFact()) changedFacts.mint(target);
+            else changedViews.mint(view.identity);
+        }
+
+        /// @brief Retire an entry that no view uses any more.
+        /// @details Removes the entry's token and scope postings and leaves a
+        /// dead record for amortized compaction. Its fact posting has already
+        /// left with its last carrier.
+        /// @param key Live entry without users.
+        /// @param scratch Page-tier temporary storage.
+        /// @return Void.
+        void retireCache(int64_t key, ScratchArena& scratch) {
+            const OrCanonicalCache* found = caches_.find(key);
+            assert(found != nullptr && found->templateId != 0 && found->factCarriers == 0);
+            assert(!postings_.containsKey(orPostingKey(OrPostingKind::CacheUsers, key)));
+            eraseCacheTokens(key, scratch);
+            const bool scopeRemoved = postings_.erase(orPostingKey(OrPostingKind::CacheScope,
+                static_cast<NameId>(uint64_t(key))), key);
+            assert(scopeRemoved);
+            caches_.upsert(key, OrCanonicalCache{0, 0, 0, 0});
+            ++deadCaches;
+        }
+
+        /// @brief Post the rewritten tokens of one view's own spelling.
+        /// @details These are the substitution tokens of the view's original
+        /// expression that its entry's canonical form lacks. A class change on
+        /// one of them dirties the entry or projects this view alone.
+        /// @tparam TokenVisitor Synchronous heap-free token visitor.
+        /// @param id Live view slot.
+        /// @param visitTokens Emits the view's rewritten tokens.
+        /// @return Void.
+        template<class TokenVisitor>
+        void addViewTokens(int32_t id, TokenVisitor&& visitTokens) {
+            assert(id >= 0 && id < views.size() && views[id].live);
+            visitTokens([&](NameId token) {
+                assert(token != 0);
+                postings_.insert(orPostingKey(OrPostingKind::ViewTokens, id), token);
+                postings_.insert(orPostingKey(OrPostingKind::TokenViews, token), id);
+            });
+        }
+
+        /// @brief Remove all rewritten-token postings of one view slot.
+        /// @details Both directions leave together; a slot without rewritten
+        /// tokens (a canonical spelling) is the defined empty case.
+        /// @param id View slot whose postings are removed.
+        /// @param scratch Page-tier temporary storage.
+        /// @return Void.
+        void eraseViewTokens(int32_t id, ScratchArena& scratch) {
+            ScratchScope work(scratch);
+            DirtyState temporaryDirty = DirtyState::Clean;
+            PagedVector<NameId> tokens(&scratch, &temporaryDirty);
+            postings_.forEach(orPostingKey(OrPostingKind::ViewTokens, id),
+                [&](int64_t token) { tokens.push_back(static_cast<NameId>(token)); });
+            for (int32_t i = 0; i < tokens.size(); ++i) {
+                const bool reverse = postings_.erase(orPostingKey(OrPostingKind::TokenViews, tokens[i]), id);
+                const bool forward = postings_.erase(orPostingKey(OrPostingKind::ViewTokens, id), tokens[i]);
+                assert(reverse && forward && "OR view token postings disagree");
+            }
+        }
+
+        /// @brief Dirty every live entry at one scope that a class member reaches.
+        /// @details The member reaches an entry as a token of its canonical form
+        /// or as a rewritten token of one of its views. Repeated hits
+        /// deduplicate.
+        /// @param member Class member whose representative or rewrite locality changed.
+        /// @param scope Exact scope of the refreshed class view.
+        /// @return Void.
+        void markTokenUsersDirty(NameId member, NameId scope) {
+            assert(member != 0 && scope != 0);
+            postings_.forEach(orPostingKey(OrPostingKind::TokenCaches, member), [&](int64_t key) {
+                if (static_cast<NameId>(uint64_t(key)) == scope) markCacheDirty(key);
+            });
+            postings_.forEach(orPostingKey(OrPostingKind::TokenViews, member), [&](int64_t rawId) {
+                const int64_t key = views[static_cast<int32_t>(rawId)].cacheKey;
+                if (static_cast<NameId>(uint64_t(key)) == scope) markCacheDirty(key);
+            });
         }
 
         /// @brief Remove a fact's lookup state while retaining any OR-source role.
@@ -355,76 +492,108 @@ namespace gl {
             for (int32_t i = 0; i < ids.size(); ++i) eraseView(ids[i], scratch);
         }
 
-        /// @brief Add a view to its exact canonical bucket and scope directory.
-        /// @details The caller has populated a canonical cache. A staged dirty
-        /// cache keeps its previous buckets until the canonical drain rekeys it.
+        /// @brief Add a view to its canonical lookup role.
+        /// @details The caller has populated a canonical entry. A known-fact
+        /// view joins its entry's fact role: the entry is posted under its
+        /// template and scope when its first carrier arrives. A watch view is
+        /// posted itself under its own template. A staged dirty entry keeps its
+        /// postings until the canonical drain settles or moves it.
         /// @param id Live view slot.
         /// @param templateId Canonical complementary/fact template id.
-        /// @param canonicalId Derived leaf spelling; zero selects the scalar cache spelling.
+        /// @param canonicalId Derived leaf spelling; zero selects the scalar entry spelling.
         /// @return Void.
         void attachCanonical(int32_t id, int32_t templateId, NameId canonicalId = 0) {
             assert(id >= 0 && id < views.size() && views[id].live);
             assert(templateId != 0);
             OrIndexedView view = views[id];
+            const OrCanonicalCache* cache = caches_.find(view.cacheKey);
+            assert(cache != nullptr && cache->templateId != 0);
             if ((view.live & DerivedLeaf) != 0) {
                 assert(canonicalId != 0);
                 view.canonicalId = canonicalId;
             } else {
-                const OrCanonicalCache* cache = caches_.find(view.cacheKey);
-                assert(cache != nullptr);
                 view.canonicalId = cache->canonicalId;
             }
             view.templateId = templateId;
             views.setAt(id, view);
-            const bool fact = view.identity.isFact();
-            postings_.insert(orPostingKey(fact ? OrPostingKind::FactKey
-                                             : OrPostingKind::WatchKey,
+            if (view.identity.isFact()) {
+                assert((view.live & DerivedLeaf) == 0 && templateId == cache->templateId);
+                OrCanonicalCache counted = *cache;
+                if (++counted.factCarriers == 1) {
+                    postings_.insert(orPostingKey(OrPostingKind::FactKey,
+                        packInt32Pair(templateId, view.identity.scope)), view.cacheKey);
+                    postings_.insert(orPostingKey(OrPostingKind::FactScopes, templateId),
+                        view.identity.scope);
+                }
+                caches_.upsert(view.cacheKey, counted);
+                return;
+            }
+            postings_.insert(orPostingKey(OrPostingKind::WatchKey,
                 packInt32Pair(templateId, view.identity.scope)), id);
-            postings_.insert(orPostingKey(fact ? OrPostingKind::FactScopes
-                                             : OrPostingKind::WatchScopes,
-                templateId), view.identity.scope);
+            postings_.insert(orPostingKey(OrPostingKind::WatchScopes, templateId),
+                view.identity.scope);
         }
 
-        /// @brief Remove a view from its old canonical lookup bucket.
-        /// @details An emptied bucket also leaves the canonical scope directory.
-        /// Other owners sharing either bucket remain indexed.
+        /// @brief Remove a view from its canonical lookup role.
+        /// @details A known-fact view leaves its entry's carrier count; the last
+        /// carrier takes the entry's fact posting and its scope directory edge
+        /// with it. A watch view leaves its own bucket, and an emptied bucket
+        /// leaves the scope directory. Other owners sharing a bucket remain.
         /// @param id Live view slot.
-        /// @param templateId The old canonical template id.
+        /// @param templateId The view's current canonical template id.
         /// @return Void.
         void detachCanonical(int32_t id, int32_t templateId) {
             assert(id >= 0 && id < views.size() && views[id].live);
             const OrIndexedView view = views[id];
-            const bool fact = view.identity.isFact();
-            const OrPostingKey bucket = orPostingKey(
-                fact ? OrPostingKind::FactKey : OrPostingKind::WatchKey,
+            if (view.identity.isFact()) {
+                const OrCanonicalCache* cache = caches_.find(view.cacheKey);
+                assert(cache != nullptr && cache->factCarriers > 0 && cache->templateId == templateId);
+                OrCanonicalCache counted = *cache;
+                if (--counted.factCarriers == 0) {
+                    const OrPostingKey bucket = orPostingKey(OrPostingKind::FactKey,
+                        packInt32Pair(templateId, view.identity.scope));
+                    const bool erased = postings_.erase(bucket, view.cacheKey);
+                    assert(erased && "OR entry missing its fact posting");
+                    assert(!postings_.containsKey(bucket) && "one OR entry per template and scope");
+                    const bool scopeErased = postings_.erase(orPostingKey(
+                        OrPostingKind::FactScopes, templateId), view.identity.scope);
+                    assert(scopeErased && "OR fact bucket missing its scope directory");
+                }
+                caches_.upsert(view.cacheKey, counted);
+                return;
+            }
+            const OrPostingKey bucket = orPostingKey(OrPostingKind::WatchKey,
                 packInt32Pair(templateId, view.identity.scope));
             const bool erased = postings_.erase(bucket, id);
             assert(erased && "OR view missing its canonical posting");
             if (!postings_.containsKey(bucket)) {
                 const bool scopeErased = postings_.erase(orPostingKey(
-                    fact ? OrPostingKind::FactScopes : OrPostingKind::WatchScopes,
-                    templateId), view.identity.scope);
+                    OrPostingKind::WatchScopes, templateId), view.identity.scope);
                 assert(scopeErased && "OR bucket missing its scope directory");
             }
         }
 
     public:
-        /// @brief Bind one unique owner/leaf/scope identity to a canonical cache.
+        /// @brief Bind one unique owner/leaf/scope identity to a canonical entry.
         /// @details Existing identities keep their slot; a removed slot is
-        /// reused. The new view is queued for exact-match checking.
+        /// reused. A new watch view is queued for exact-match checking, a new
+        /// fact carrier queues its entry's fact role.
         /// @param identity Original owner, effective scope, and leaf/fact role.
-        /// @param cacheKey Packed original expression and effective scope.
+        /// @param cacheKey Packed canonical expression and effective scope.
+        /// @param originalId The spelling bound: known fact, whole source OR or scalar leaf.
         /// @param canonicalId Derived complementary leaf id, or zero for a scalar view.
         /// @param leafTemplateId Derived complementary template, paired with canonicalId.
         /// @return The live view slot for this identity.
-        int32_t bindView(OrViewIdentity identity, int64_t cacheKey,
+        int32_t bindView(OrViewIdentity identity, int64_t cacheKey, NameId originalId,
             NameId canonicalId = 0, int32_t leafTemplateId = 0) {
             assert(identity.owner != 0 && identity.scope != 0 && identity.leaf >= OrViewIdentity::FactLeaf);
+            assert(originalId != 0 && (!identity.isFact() || canonicalId == 0));
+            assert(static_cast<NameId>(uint64_t(cacheKey)) == identity.scope);
             const int32_t* existing = viewIds.find(identity);
             if (existing != nullptr && *existing >= 0) {
                 const int32_t id = *existing;
                 const OrIndexedView view = views[id];
-                assert(view.live && view.cacheKey == cacheKey);
+                assert(view.live && view.cacheKey == cacheKey && view.originalId == originalId);
                 if (canonicalId != 0) {
                     assert((view.live & DerivedLeaf) != 0 && leafTemplateId != 0);
                     if (canonicalId != view.canonicalId || leafTemplateId != view.templateId) {
@@ -451,7 +620,7 @@ namespace gl {
                 id = views.size();
                 views.push_back(OrIndexedView{});
             }
-            views.setAt(id, OrIndexedView{identity, cacheKey, -1, flags, 0, 0});
+            views.setAt(id, OrIndexedView{identity, cacheKey, -1, flags, 0, 0, originalId});
             viewIds.upsert(identity, id);
             if (reactivated) { assert(deadIdentities > 0); --deadIdentities; }
             ++liveViews;
@@ -459,23 +628,25 @@ namespace gl {
             postings_.insert(orPostingKey(OrPostingKind::OwnerViews, identity.owner), id);
             postings_.insert(orPostingKey(OrPostingKind::ScopeViews, identity.scope), id);
             attachCanonical(id, templateId, canonicalId);
-            changedViews.mint(identity);
+            if (identity.isFact()) changedFacts.mint(cacheKey);
+            else changedViews.mint(identity);
             return id;
         }
 
         /// @brief Unlink and recycle one active lookup view.
-        /// @details Every canonical, ownership, scope and cache-user posting is
-        /// removed immediately. The last user also retires the cache and its
-        /// token/scope postings; canonical source state is untouched.
+        /// @details Every canonical, rewritten-token, ownership, scope and
+        /// entry-user posting is removed immediately. The last user also
+        /// retires the entry and its token/scope postings; canonical source
+        /// state is untouched.
         /// @param id A live view slot whose owner is being removed or wiped.
         /// @param scratch Page-tier temporary storage for token removal.
         /// @return Void.
         void eraseView(int32_t id, ScratchArena& scratch) {
             assert(id >= 0 && id < views.size() && views[id].live);
             const OrIndexedView view = views[id];
-            const OrCanonicalCache* cache = caches_.find(view.cacheKey);
-            assert(cache != nullptr);
+            assert(cacheLive(view.cacheKey));
             detachCanonical(id, view.templateId);
+            eraseViewTokens(id, scratch);
             const bool cacheErased = postings_.erase(
                 orPostingKey(OrPostingKind::CacheUsers, view.cacheKey), id);
             const bool ownerErased = postings_.erase(
@@ -489,12 +660,7 @@ namespace gl {
             --liveViews;
             ++deadIdentities;
             if (postings_.containsKey(orPostingKey(OrPostingKind::CacheUsers, view.cacheKey))) return;
-            eraseCacheTokens(view.cacheKey, scratch);
-            const bool scopeRemoved = postings_.erase(orPostingKey(OrPostingKind::CacheScope,
-                static_cast<NameId>(uint64_t(view.cacheKey))), view.cacheKey);
-            assert(scopeRemoved);
-            caches_.upsert(view.cacheKey, OrCanonicalCache{0, 0, 0});
-            ++deadCaches;
+            retireCache(view.cacheKey, scratch);
         }
 
         /// @brief Amortize dead identity/key cleanup after a matching drain.
@@ -541,6 +707,7 @@ namespace gl {
             dirtyCaches.resetToFresh();
             projections.resetToFresh();
             changedViews.resetToFresh();
+            changedFacts.resetToFresh();
             evaluations.resetToFresh();
             freeView = -1;
             liveViews = 0;
@@ -554,10 +721,11 @@ namespace gl {
         /// @details Includes cache and queue bytes as well as posting storage.
         /// @return Total pool-backed bytes retained by this matching index.
         int64_t liveBytes() const {
-            return postings_.liveBytes() + viewIds.liveBytes() + views.liveBytes()
-                + caches_.liveBytes() + initializedCores.liveBytes()
-                + dirtyCaches.liveBytes() + projections.liveBytes()
-                + changedViews.liveBytes() + evaluations.liveBytes();
+            return peak_snapshot::measure("postings_", postings_, [&] { return postings_.liveBytes(); }) + peak_snapshot::measure("viewIds", viewIds, [&] { return viewIds.liveBytes(); }) + peak_snapshot::measure("views", views, [&] { return views.liveBytes(); })
+                + peak_snapshot::measure("caches_", caches_, [&] { return caches_.liveBytes(); }) + peak_snapshot::measure("initializedCores", initializedCores, [&] { return initializedCores.liveBytes(); })
+                + peak_snapshot::measure("dirtyCaches", dirtyCaches, [&] { return dirtyCaches.liveBytes(); }) + peak_snapshot::measure("projections", projections, [&] { return projections.liveBytes(); })
+                + peak_snapshot::measure("changedViews", changedViews, [&] { return changedViews.liveBytes(); }) + peak_snapshot::measure("changedFacts", changedFacts, [&] { return changedFacts.liveBytes(); })
+                + peak_snapshot::measure("evaluations", evaluations, [&] { return evaluations.liveBytes(); });
         }
     };
 }

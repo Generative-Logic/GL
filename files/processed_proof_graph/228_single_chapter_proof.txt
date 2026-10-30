@@ -1,0 +1,5 @@
+!(=[v1,v3])	main	contradiction	!(preorder[N,+,v3,v2])	main	(preorder[N,+,v3,v2])	main	(=[v1,v3])	main
+!(preorder[N,+,v3,v2])	main	task formulation
+(preorder[N,+,v3,v2])	main	equality1	(preorder[N,+,v1,v2])	main	(=[v1,v3])	main
+(preorder[N,+,v1,v2])	main	task formulation
+(=[v1,v3])	main	task formulation

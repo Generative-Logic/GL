@@ -1,0 +1,78 @@
+(sequence[N,+,i0,i0,V1])	main	implication	(>[V2](interval[N,+,i0,i0,V2])(>[](implication0[V1,V2])(>[](implication1[V1,N])(>[](implication6[V2,N,V1])(>[](implication7[V2,V1])(sequence[N,+,i0,i0,V1]))))))	main	(implication0[V1,V3])	main	(implication1[V1,N])	main	(implication6[V3,N,V1])	main	(implication7[V3,V1])	main	(interval[N,+,i0,i0,V3])	main
+(implication0[V1,V3])	main	validity name	(in[v2,V3])	main_boundary_(implication0[V1,V3])
+(implication7[V3,V1])	main	validity name	(=[v14,v15])	main_boundary_(implication7[V3,V1])
+(implication6[V3,N,V1])	main	validity name	(existence0[N,v9,V1])	main_boundary_(implication6[V3,N,V1])
+(implication1[V1,N])	main	validity name	(in[v7,N])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])
+(>[V2](interval[N,+,i0,i0,V2])(>[](implication0[V1,V2])(>[](implication1[V1,N])(>[](implication6[V2,N,V1])(>[](implication7[V2,V1])(sequence[N,+,i0,i0,V1]))))))	main	expansion	(implication97[N,+,i0,i0,V1])	main
+(implication97[N,+,i0,i0,V1])	main	reformulation for integration flattened	(sequence[N,+,i0,i0,V1])_integration_goal	main
+(in[v2,V3])	main_boundary_(implication0[V1,V3])	equality1	(in[i0,V3])	main	(=[i0,v2])	main_boundary_(implication0[V1,V3])
+(=[i0,v2])	main_boundary_(implication0[V1,V3])	symmetry of equality	(=[v2,i0])	main_boundary_(implication0[V1,V3])
+(=[v2,i0])	main_boundary_(implication0[V1,V3])	implication	(>[w1,w2](in2[w1,w2,V1])(=[w1,i0]))	main	(in2[v2,v6,V1])	main_boundary_(implication0[V1,V3])
+(in2[v2,v6,V1])	main_boundary_(implication0[V1,V3])	premise element	(>[v2,v6](in2[v2,v6,V1])(in[v2,V3]))_integration_goal	main
+(in[i0,V3])	main	equality1	(in[i0_copy,V3])	main	(=[i0_copy,i0])	main
+(=[i0_copy,i0])	main	symmetry of equality	(=[i0,i0_copy])	main
+(in[i0_copy,V3])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[w1,W1](interval[N,+,i0,w1,W1])(in[w1,W1])))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(interval[N,+,i0,i0_copy,V3])	main
+(interval[N,+,i0,i0_copy,V3])	main	equality1	(interval[N,+,i0,i0,V3])	main	(=[i0,i0_copy])	main
+(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(>[](in2[i1,i2,s])(>[](identity[N,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id])))))	main	(NaturalNumbers[N,i0,s,+,*])	main	(identity[N,id])	main	(in2[i0,i1,s])	main	(in2[i1,i2,s])	main
+(in2[i1,i2,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(identity[N,id])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(>[](in2[i1,i2,s])(>[](identity[N,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id])))))	main	expansion	(implication40[N,i0,s,+,*,i1,i2,id])	main
+(implication40[N,i0,s,+,*,i1,i2,id])	main	reformulation for integration and	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))_integration_goal	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))_integration_goal	main	expansion for integration	(AnchorGauss[N,i0,s,+,*,i1,i2,id])_integration_goal	main
+(existence0[N,v9,V1])	main_boundary_(implication6[V3,N,V1])	equality1	(existence0[N,i0,V1])	main_boundary_(implication6[V3,N,V1])	(=[i0,v9])	main_boundary_(implication6[V3,N,V1])
+(=[i0,v9])	main_boundary_(implication6[V3,N,V1])	symmetry of equality	(=[v9,i0])	main_boundary_(implication6[V3,N,V1])
+(existence0[N,i0,V1])	main_boundary_(implication6[V3,N,V1])	implication	(>[v10](in[v10,N])(>[](in2[i0,v10,V1])(existence0[N,i0,V1])))	main_boundary_(implication6[V3,N,V1])	(in2[i0,v1,V1])	main	(in[v1,N])	main
+(>[v10](in[v10,N])(>[](in2[i0,v10,V1])(existence0[N,i0,V1])))	main_boundary_(implication6[V3,N,V1])	expansion	(implication4[N,i0,V1])	main_boundary_(implication6[V3,N,V1])
+(implication4[N,i0,V1])	main_boundary_(implication6[V3,N,V1])	equality1	(implication4[N,v9,V1])	main_boundary_(implication6[V3,N,V1])	(=[v9,i0])	main_boundary_(implication6[V3,N,V1])
+(implication4[N,v9,V1])	main_boundary_(implication6[V3,N,V1])	reformulation for integration >[bound]	!(>[v11](in[v11,N])!(in2[v9,v11,V1]))_integration_goal	main_boundary_(implication6[V3,N,V1])
+!(>[v11](in[v11,N])!(in2[v9,v11,V1]))_integration_goal	main_boundary_(implication6[V3,N,V1])	expansion for integration	(existence0[N,v9,V1])_integration_goal	main_boundary_(implication6[V3,N,V1])
+(=[v9,i0])	main_boundary_(implication6[V3,N,V1])	implication	(>[w1](in[w1,V3])(=[w1,i0]))	main	(in[v9,V3])	main_boundary_(implication6[V3,N,V1])
+(in[v9,V3])	main_boundary_(implication6[V3,N,V1])	premise element	(>[v9](in[v9,V3])(existence0[N,v9,V1]))_integration_goal	main
+(interval[N,+,i0,i0,V3])	main	disintegration	!(>[V3](EnumerationSet1[i0,V3])!(interval[N,+,i0,i0,V3]))	main
+(>[w1](in[w1,V3])(=[w1,i0]))	main	expansion	(implication2441[V3,i0])	main
+(implication2441[V3,i0])	main	disintegration	(&(implication2441[V3,i0])(implication2442[i0,V3]))	main
+(&(implication2441[V3,i0])(implication2442[i0,V3]))	main	expansion	(EnumerationSet1[i0,V3])	main
+(EnumerationSet1[i0,V3])	main	disintegration	!(>[V3](EnumerationSet1[i0,V3])!(interval[N,+,i0,i0,V3]))	main
+!(>[V3](EnumerationSet1[i0,V3])!(interval[N,+,i0,i0,V3]))	main	expansion	(existence28[i0,N,+])	main
+(existence28[i0,N,+])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(existence28[i0,N,+]))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(=[v14,v15])	main_boundary_(implication7[V3,V1])	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,W1](EnumerationRelationSet1[i0,w1,W1])(>[w2,w3](in2[w2,w3,W1])(=[w3,w1]))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(EnumerationRelationSet1[i0,v15,V1])	main_boundary_(implication7[V3,V1])	(in2[i0_copy,v14,V1])	main_boundary_(implication7[V3,V1])
+(EnumerationRelationSet1[i0,v15,V1])	main_boundary_(implication7[V3,V1])	equality1	(EnumerationRelationSet1[i0,v1,V1])	main	(=[v1,v15])	main_boundary_(implication7[V3,V1])
+(=[v1,v15])	main_boundary_(implication7[V3,V1])	symmetry of equality	(=[v15,v1])	main_boundary_(implication7[V3,V1])
+(=[v15,v1])	main_boundary_(implication7[V3,V1])	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,W1](EnumerationRelationSet1[i0,w1,W1])(>[w2,w3](in2[w2,w3,W1])(=[w3,w1]))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(EnumerationRelationSet1[i0,v1,V1])	main	(in2[v16,v15,V1])	main_boundary_(implication7[V3,V1])
+(in2[v16,v15,V1])	main_boundary_(implication7[V3,V1])	premise element	(>[v16](in[v16,V3])(>[v14](in2[v16,v14,V1])(>[v15](in2[v16,v15,V1])(=[v14,v15]))))_integration_goal	main
+(in2[i0_copy,v14,V1])	main_boundary_(implication7[V3,V1])	equality1	(in2[v12,v1,V1])	main	(=[v12,i0_copy])	main	(=[v1,v14])	main_boundary_(implication7[V3,V1])
+(=[v1,v14])	main_boundary_(implication7[V3,V1])	symmetry of equality	(=[v14,v1])	main_boundary_(implication7[V3,V1])
+(=[v14,v1])	main_boundary_(implication7[V3,V1])	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,W1](EnumerationRelationSet1[i0,w1,W1])(>[w2,w3](in2[w2,w3,W1])(=[w3,w1]))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(EnumerationRelationSet1[i0,v1,V1])	main	(in2[v16,v14,V1])	main_boundary_(implication7[V3,V1])
+(in2[v16,v14,V1])	main_boundary_(implication7[V3,V1])	premise element	(>[v16](in[v16,V3])(>[v14](in2[v16,v14,V1])(>[v15](in2[v16,v15,V1])(=[v14,v15]))))_integration_goal	main
+(=[v12,i0_copy])	main	equality2	(=[v12,i0])	main	(=[i0,i0_copy])	main
+(=[i0,i0_copy])	main	variable copy
+(in2[i0,v1,V1])	main	equality1	(in2[v12,v1,V1])	main	(=[v12,i0])	main
+(=[v12,i0])	main	implication	(>[w1,w2](in2[w1,w2,V1])(=[w1,i0]))	main	(in2[v12,v1,V1])	main
+(in[v7,N])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])	equality1	(in[v1,N])	main	(=[v1,v7])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])
+(=[v1,v7])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])	symmetry of equality	(=[v7,v1])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])
+(=[v7,v1])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])	implication	(>[w1,w2](in2[w1,w2,V1])(=[w2,v1]))	main	(in2[v8,v7,V1])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])
+(in2[v8,v7,V1])	main_boundary_(sequence[N,+,i0,i0,V1])_subproof_(implication1[V1,N])	premise element	(>[v8,v7](in2[v8,v7,V1])(in[v7,N]))_integration_goal	main
+(in2[v12,v1,V1])	main	disintegration	!(>[v12](in[v12,N])!(in2[v12,v1,V1]))	main
+!(>[v12](in[v12,N])!(in2[v12,v1,V1]))	main	expansion	(inSequence[N,v1,V1])	main
+(inSequence[N,v1,V1])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,W1](EnumerationRelationSet1[i0,w1,W1])(>[w2](=[w1,w2])(inSequence[N,w2,W1]))))	main	(=[v1_copy,v1])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(EnumerationRelationSet1[i0,v1_copy,V1])	main
+(=[v1_copy,v1])	main	symmetry of equality	(=[v1,v1_copy])	main
+(EnumerationRelationSet1[i0,v1_copy,V1])	main	equality1	(EnumerationRelationSet1[i0,v1,V1])	main	(=[v1,v1_copy])	main
+(=[v1,v1_copy])	main	variable copy
+(>[w1,w2](in2[w1,w2,V1])(=[w1,i0]))	main	expansion	(implication2437[V1,i0])	main
+(implication2437[V1,i0])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(>[w1,w2](in2[w1,w2,V1])(=[w2,v1]))	main	expansion	(implication2438[V1,v1])	main
+(implication2438[V1,v1])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main	expansion	(EnumerationRelationSet1[i0,v1,V1])	main
+(>[v2,v6](in2[v2,v6,V1])(in[v2,V3]))_integration_goal	main	expansion for integration	(implication0[V1,V3])_integration_goal	main
+(>[v8,v7](in2[v8,v7,V1])(in[v7,N]))_integration_goal	main	expansion for integration	(implication1[V1,N])_integration_goal	main
+(>[v9](in[v9,V3])(existence0[N,v9,V1]))_integration_goal	main	expansion for integration	(implication6[V3,N,V1])_integration_goal	main
+(>[v16](in[v16,V3])(>[v14](in2[v16,v14,V1])(>[v15](in2[v16,v15,V1])(=[v14,v15]))))_integration_goal	main	expansion for integration	(implication7[V3,V1])_integration_goal	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(existence28[i0,N,+]))	main	theorem
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,V1](EnumerationRelationSet1[i0,v1,V1])(>[v2](=[v1,v2])(inSequence[N,v2,V1]))))	main	theorem
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(EnumerationRelationSet1[i0,v1,V1])	main	task formulation
+(in[v1,N])	main	task formulation
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,V1](EnumerationRelationSet1[i0,v1,V1])(>[v2,v3](in2[v2,v3,V1])(=[v3,v1]))))	main	theorem

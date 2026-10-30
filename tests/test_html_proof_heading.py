@@ -35,6 +35,18 @@ class SingleChapterProofHeadingTests(unittest.TestCase):
             "Direct Proof",
         )
 
+    def test_debug_chapter_selects_layout_from_its_supplied_theorem(self):
+        from unittest.mock import patch
+        from generate_full_proof_graph import debugging
+        for anchor, hierarchical in (('AnchorPeano', True), ('AnchorIncubator', False)):
+            theorem = f'(>[N]({anchor}[N])(in[x,N]))'
+            rows = [['(in[x,N])', 'main', 'task formulation']]
+            with patch('generate_full_proof_graph.read_stack', return_value=rows) as read:
+                with patch('generate_full_proof_graph.render_stack_with_subproofs', return_value='rendered') as render:
+                    self.assertEqual(debugging(theorem, 'debug.txt', 'debug_'), 'rendered')
+                    read.assert_called_once_with('debug.txt', 'debugging')
+                    render.assert_called_once_with(rows, 'debug_', hierarchical=hierarchical)
+
     def test_empty_chapter_asserts(self):
         with self.assertRaises(AssertionError):
             self._heading("")

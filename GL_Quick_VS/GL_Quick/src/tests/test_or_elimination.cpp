@@ -23,11 +23,17 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 /// @file
-/// @brief Tests for `ExpressionAnalyzer::constructOrEliminationInRun` —
+/// @brief Tests for `gl::tests::ProverFixture::constructOrEliminationInRun` —
 ///        the in-run pre-split merge: guard-pair detection, or-theorem
 ///        licensing, pending-pair retry, dedup, and literal polarity.
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "theorem_publisher_fixture.hpp"
+
 
 #include "../prover.hpp"
 
@@ -62,17 +68,17 @@ const char* kMerged =
 // "or elimination", both variants as aux citations, the or theorem in
 // the citation ledger, and a queued broadcast.
 TEST(or_elimination, merges_pair_under_minted_or_license) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
     const std::string orThm = std::get<0>(ea.globalTheoremList.back());
     ASSERT_TRUE(std::get<1>(ea.globalTheoremList.back()) == std::string("or theorem"));
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
     const std::size_t compactionsBefore = ea.pendingCompactionQueue.size();
 
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     const auto& last = ea.globalTheoremList.back();
     ASSERT_TRUE(std::get<0>(last) == std::string(kMerged));
@@ -88,20 +94,44 @@ TEST(or_elimination, merges_pair_under_minted_or_license) {
     ASSERT_TRUE(ea.orElimPendingPairs.empty());
 }
 
+// The merged theorem's broadcast is documented like any proved theorem: the
+// root's mailOut holds ("theorem", []) at main for it, beside the licensing
+// or theorem's own documentation from the or seam.
+TEST(or_elimination, merge_broadcast_carries_theorem_origin) {
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    const std::string orThm = std::get<0>(ea.globalTheoremList.back());
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
+
+    ea.orEliminationBuilder.constructOrEliminationInRun();
+
+    const gl::Mail mail = gl::routingMailOutToHeap(((ea.body).mailOut), ((ea.body).mailOutInterner));
+    ASSERT_EQ(static_cast<int>(((mail).exprOriginMap).size()), 2);
+    for (const std::string& theorem : { std::string(kMerged), orThm }) {
+        const auto it = ((mail).exprOriginMap).find(gl::ExpressionWithValidity(theorem, "main"));
+        ASSERT_TRUE(it != ((mail).exprOriginMap).end());
+        ASSERT_EQ(static_cast<int>(it->second.size()), 1);
+        ASSERT_TRUE(it->second[0].first == std::string("theorem"));
+        ASSERT_TRUE(it->second[0].second.empty());
+    }
+}
+
 // A pair whose license has not been minted yet parks and merges on a
 // LATER seam invocation once the or theorem exists — the retry contract.
 TEST(or_elimination, license_pending_until_or_arrives) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
 
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
     ASSERT_EQ(static_cast<int>(ea.orElimPendingPairs.size()), 1);
     ASSERT_TRUE(std::get<1>(ea.globalTheoremList.back()) != std::string("or elimination"));
 
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
-    ea.constructOrEliminationInRun();
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     ASSERT_TRUE(ea.orElimPendingPairs.empty());
     const auto& last = ea.globalTheoremList.back();
@@ -112,16 +142,16 @@ TEST(or_elimination, license_pending_until_or_arrives) {
 // Re-invoking the seam after a merge changes nothing: the scanned-row
 // set, the pair ledger, and the append door each block a repeat.
 TEST(or_elimination, rescan_is_idempotent) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
-    ea.constructOrEliminationInRun();
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     const std::size_t rows = ea.globalTheoremList.size();
     const std::size_t compactions = ea.pendingCompactionQueue.size();
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), static_cast<int>(rows));
     ASSERT_EQ(static_cast<int>(ea.pendingCompactionQueue.size()), static_cast<int>(compactions));
     ASSERT_TRUE(ea.orElimPendingPairs.empty());
@@ -131,15 +161,15 @@ TEST(or_elimination, rescan_is_idempotent) {
 // append door's string dedup refuses: no mirror row, no citation, no
 // broadcast — and the pair is recorded so it is never re-attempted.
 TEST(or_elimination, dedup_when_merged_row_preexists) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kMerged, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kMerged, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
     const std::size_t compactionsBefore = ea.pendingCompactionQueue.size();
 
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     ASSERT_TRUE(std::get<1>(ea.globalTheoremList.back()) != std::string("or elimination"));
     ASSERT_TRUE(ea.orElimCitedOrByMerged.find(kMerged) == ea.orElimCitedOrByMerged.end());
@@ -153,17 +183,17 @@ TEST(or_elimination, dedup_when_merged_row_preexists) {
 // or theorem's un-negated disjunct, so no merge fires and the pair
 // stays parked.
 TEST(or_elimination, polarity_literal_negated_guard_refused) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string variantBNeg =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
         "(>[9,10](preorder[1,5,9,10])(>[](preorder[1,5,10,9])"
         "(>[]!(=[2,10])(=[9,10])))))";
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(variantBNeg, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(variantBNeg, "single chapter proof", "-1", "-1"));
 
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     ASSERT_TRUE(std::get<1>(ea.globalTheoremList.back()) != std::string("or elimination"));
     ASSERT_EQ(static_cast<int>(ea.orElimPendingPairs.size()), 1);
@@ -173,9 +203,9 @@ TEST(or_elimination, polarity_literal_negated_guard_refused) {
 // with the marker method, no broadcast, no reformulation, and the or seam
 // never folds ors from tier rows (zero circulation).
 TEST(or_elimination, level_refused_registration_lands_in_tier) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::size_t compactionsBefore = ea.pendingCompactionQueue.size();
-    ea.updateGlobalSingleChapter(kVariantB, /*coreId=*/-1, &ea.body,
+    gl::tests::TheoremPublisherFixture::updateGlobalSingleChapter(ea.theoremPublisher, kVariantB, /*coreId=*/-1, &ea.body,
                           /*registerGlobally=*/false);
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
     const auto& last = ea.globalTheoremList.back();
@@ -185,10 +215,10 @@ TEST(or_elimination, level_refused_registration_lands_in_tier) {
               static_cast<int>(compactionsBefore));
 
     // A tier row carrying a negated premise must not seed the or seam.
-    ea.updateGlobalSingleChapter(kBridge, /*coreId=*/-1, &ea.body,
+    gl::tests::TheoremPublisherFixture::updateGlobalSingleChapter(ea.theoremPublisher, kBridge, /*coreId=*/-1, &ea.body,
                           /*registerGlobally=*/false);
     const std::size_t rows = ea.globalTheoremList.size();
-    ea.constructOrTheoremsInRun();
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()),
               static_cast<int>(rows));
 }
@@ -197,14 +227,14 @@ TEST(or_elimination, level_refused_registration_lands_in_tier) {
 // first-class, 13b proved-not-broadcast, the or license minted normally —
 // the merged theorem lands as a first-class derived row.
 TEST(or_elimination, merge_consumes_tier_variant) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ea.updateGlobalSingleChapter(kVariantB, /*coreId=*/-1, &ea.body,
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    gl::tests::TheoremPublisherFixture::updateGlobalSingleChapter(ea.theoremPublisher, kVariantB, /*coreId=*/-1, &ea.body,
                           /*registerGlobally=*/false);
 
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     const auto& last = ea.globalTheoremList.back();
     ASSERT_TRUE(std::get<0>(last) == std::string(kMerged));
@@ -219,13 +249,13 @@ TEST(or_elimination, merge_consumes_tier_variant) {
 // a `theorem` origin row so the chapter walk terminates. Rule 16:
 // completing missing process documentation, never a proof input.
 TEST(or_elimination, tier_registration_repairs_dangling_citation) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
 
     // Seed the producer's history: a derived head citing the registered
     // theorem as an implication dependency — with no history line of the
     // theorem's own.
-    gl::addOriginEncoded(ea.body.exprOriginMap, ea.body.originInterner,
+    gl::addOriginEncoded(((ea.body).exprOriginMap), ((ea.body).originInterner),
         gl::ExpressionWithValidity("(=[7,8])", "main"),
         std::make_pair(std::string("implication"),
             std::vector<gl::ExpressionWithValidity>{
@@ -233,33 +263,33 @@ TEST(or_elimination, tier_registration_repairs_dangling_citation) {
         5);
     {
         int64_t pk = 0;
-        const bool hasKey = gl::lookupOriginKey(ea.body.originInterner,
+        const bool hasKey = gl::lookupOriginKey(((ea.body).originInterner),
                                                 kVariantA, "main", pk);
-        ASSERT_TRUE(!hasKey || ea.body.exprOriginMap.lookup(pk) == 0);
+        ASSERT_TRUE(!hasKey || ((ea.body).exprOriginMap).lookup(pk) == 0);
     }
 
-    ea.updateGlobalSingleChapter(kVariantB, /*coreId=*/-1, &ea.body,
+    gl::tests::TheoremPublisherFixture::updateGlobalSingleChapter(ea.theoremPublisher, kVariantB, /*coreId=*/-1, &ea.body,
                           /*registerGlobally=*/false);
 
     int64_t pk = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(ea.body.originInterner, kVariantA,
+    ASSERT_TRUE(gl::lookupOriginKey(((ea.body).originInterner), kVariantA,
                                     "main", pk));
-    const int32_t oid = ea.body.exprOriginMap.lookup(pk);
+    const int32_t oid = ((ea.body).exprOriginMap).lookup(pk);
     ASSERT_TRUE(oid != 0);
-    ASSERT_TRUE(ea.body.exprOriginMap.runLen(oid) > 0);
+    ASSERT_TRUE(((ea.body).exprOriginMap).runLen(oid) > 0);
 }
 
 // Compressor mode is a defined no-op, exactly like the or seam: nothing
 // is scanned, filed, or merged.
 TEST(or_elimination, compressor_mode_noop) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
-    ea.constructOrTheoremsInRun();
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
-    ASSERT_TRUE(ea.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kBridge, "single chapter proof", "-1", "-1"));
+    ea.orTheoremBuilder.constructOrTheoremsInRun();
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantA, "single chapter proof", "-1", "-1"));
+    ASSERT_TRUE(ea.theoremPublisher.appendGlobalTheorem(kVariantB, "single chapter proof", "-1", "-1"));
 
     ea.parameters.compressor_mode = true;
-    ea.constructOrEliminationInRun();
+    ea.orEliminationBuilder.constructOrEliminationInRun();
 
     ASSERT_TRUE(ea.orElimInRunScannedRows.empty());
     ASSERT_TRUE(ea.orElimPendingPairs.empty());

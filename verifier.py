@@ -101,7 +101,8 @@ class TagCounter:
     chapter-level meta counter (``self-reference``,
     ``anchor handling trace``,
     ``contradiction trace``, ``vacuous truth trace``, ``origin``,
-    ``definition set consistency``, ``origin chain termination``) and
+    ``definition set consistency``, ``bound variable uniqueness``,
+    ``origin chain termination``) and
     every global meta counter (``operator registry consistency``,
     ``theorem usage termination``) —
     aggregates outcomes into one of these counters via
@@ -208,6 +209,10 @@ class VerifierState:
 
     # Input indices: core_name → list of 0-based indices of input arguments
     input_indices: Dict[str, List[int]] = field(default_factory=dict)
+
+    # Names of the configured expressions (every ConfigVisu.json entry with a
+    # signature); their non-input positions disqualify an induction variable
+    configured_cores: Set[str] = field(default_factory=set)
 
     # GL binaries: tag → { name → { "category", "elements", "signature", "definedSet", ... } }
     gl_binaries: Dict[str, dict] = field(default_factory=dict)
@@ -444,17 +449,19 @@ def load_global_theorem_list(base_dir: str) -> Tuple[Dict[str, dict],
 #  Build chapter → theorem mapping
 #
 #  Every theorem of global_theorem_list owns the chapter files its proof
-#  method names, numbered consecutively in list order: "induction" theorems
-#  own 3 (induction_typing + check_zero + check_induction_condition, in that
-#  exact order — typing first because both the zero-case and the
-#  successor-step proofs cite (in[ind_var, N]) and that typing must be
-#  established before either citation makes sense); every other method owns 1.
+#  method names, numbered consecutively in list order: "induction" and
+#  "strong induction" theorems own 3 (induction_typing + check_zero +
+#  check_induction_condition, in that exact order — typing first because both
+#  the zero-case and the successor-step proofs cite (in[ind_var, N]) and that
+#  typing must be established before either citation makes sense); every other
+#  method owns 1.
 # ---------------------------------------------------------------------------
 
 # The chapter files process_proof_graphs.py (_build_fname_list) writes for each
 # proof method, mirrored here: the verifier imports nothing from the producer.
 _CHAPTER_SUFFIXES: Dict[str, Tuple[str, ...]] = {
     "induction": ("induction_typing", "check_zero", "check_induction_condition"),
+    "strong induction": ("induction_typing", "check_zero", "check_induction_condition"),
     "single chapter proof": ("single_chapter_proof",),
     "debug": ("debug",),
     "reformulated statement": ("reformulated_statement",),
@@ -1790,8 +1797,9 @@ def load_input_indices(config_dir: str) -> Dict[str, List[int]]:
 
     - **Digit args** = the SET of all input-position arg names
       across every expression in the theorem, minus anchor args,
-      minus output-position arg names. These are the variables
-      that index induction.
+      minus every name that also occupies a non-input position of a
+      configured expression (``load_configured_cores``). These are
+      the variables that index induction.
     - **Immutable args** = digit args minus the induction variable,
       then propagated through outputs where all inputs are
       immutable. These are variables whose values don't change
@@ -1832,45 +1840,100 @@ def load_input_indices(config_dir: str) -> Dict[str, List[int]]:
     return result
 
 
+def load_configured_cores(config_dir: str) -> Set[str]:
+    """@brief Load the names of the configured expressions.
+
+    @details
+    A configured expression is an entry of ``ConfigVisu.json`` with a
+    signature (``short_mpl``): the atomic operators and relations and
+    the named definitions, the verifier-side counterpart of the
+    prover's ``coreConfig`` lookup. Every position of a configured
+    expression is an input position (``load_input_indices``), its
+    output position (``load_output_indices``), or neither. The
+    recursion checker's digit-arg analysis (``_find_digit_args``)
+    reads this set to recognise the non-input positions that
+    disqualify an induction variable. Compiled compacts
+    (``existence<N>``, ``and<N>`` and the like) have no entry, so
+    they are not configured.
+
+    @param config_dir  Directory containing ``ConfigVisu.json``.
+    @return  Set of configured expression names; empty if the file
+             is absent.
+
+    @see _find_digit_args
+    @see load_input_indices
+    """
+    import json
+    config_path = os.path.join(config_dir, "ConfigVisu.json")
+    if not os.path.isfile(config_path):
+        return set()
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    return {name for name, spec in config.items()
+            if isinstance(spec, dict) and spec.get("short_mpl")}
+
+
 def _find_digit_args(all_exprs: List[str],
                      anchor_expr: str,
                      input_indices: Dict[str, List[int]],
-                     output_indices: Dict[str, int]) -> set:
+                     configured_cores: Set[str],
+                     resolved_defsets: Dict[str, Dict[str, str]]) -> set:
     """@brief Find the digit-arg set for an induction theorem.
 
     @details
-    Python port of the C++ ``findDigitArgs`` from
-    ``conjecturer.cpp`` (and the structurally analogous routine in
-    ``prover.cpp`` that spawns recursion sub-blocks). The "digit
-    args" are the variable names that index induction — the prover
-    spawns one recursion sub-block per digit-arg.
+    Python port of the prover's ``ScopeTypeResolver::findDigitArgs``
+    (``logical_block/scope_type_resolver.hpp``), which spawns one
+    recursion sub-block per digit-arg. The "digit args" are the
+    variable names that index induction.
 
-    Definition: ``digit_args = (all_input_args - anchor_args) - all_output_args``
-    where:
+    Definition: ``digit_args = (typed_input_args - anchor_args) -
+    non_input_args`` where:
 
-    - ``all_input_args`` = union over every expression in
-      ``all_exprs`` of the arg values found at the operator's
-      input positions (per ``input_indices``).
+    - ``typed_input_args`` = union over every expression in
+      ``all_exprs`` of the arg values at the operator's input
+      positions (per ``input_indices``) that are typed ``(1)``: an
+      ordinary input by its position's label (D-413), an ``=``
+      argument by the typing of the whole chain (I-267: an operator
+      slot fixes its argument, ``=`` joins its two arguments, a group
+      nothing fixes takes ``=``'s own label).
     - ``anchor_args`` = the args of the theorem's anchor row (the
       anchor's variables are externally fixed; not induction
       variables).
-    - ``all_output_args`` = union over every expression of arg
-      values at the operator's output position.
+    - ``non_input_args`` = union over every configured expression
+      (``configured_cores``) of its arg values at every position
+      that is not one of its input positions: the output position
+      and every position that is neither input nor output. An
+      induction variable is always an input
+      (D-580); a property's
+      non-input arguments are never digit args (D-565 retired).
 
-    The subtraction is set-based. Operators not in
-    ``input_indices`` / ``output_indices`` contribute nothing to
-    their respective unions.
+    The subtraction is set-based. Expressions that are not configured
+    contribute nothing.
 
-    @param all_exprs       Premises + head of an induction theorem.
-    @param anchor_expr     The theorem's anchor row (first premise
-                           of the induction implication).
-    @param input_indices   Atomic-operator input-position index map.
-    @param output_indices  Atomic-operator output-position index map.
+    @param all_exprs         Premises + head of an induction theorem.
+    @param anchor_expr       The theorem's anchor row (first premise
+                             of the induction implication).
+    @param input_indices     Atomic-operator input-position index map.
+    @param configured_cores  Names of the configured expressions
+                             (``load_configured_cores``).
+    @param resolved_defsets  The chapter's resolved definition sets
+                             (``state.current_resolved_defsets``):
+                             operator → 1-based position → type label.
     @return  Set of digit-arg variable names.
+    @throws  _DefsetMismatch when the chain gives one variable two types.
 
     @see _find_immutable_args — extends this set by propagation.
     @see check_recursion — primary consumer.
     """
+    # Type the whole chain once, as the prover's typeLeafInto pass does.
+    groups = _DefsetGroups()
+    for expr in all_exprs:
+        leaf = expr[1:] if expr.startswith('!(') else expr
+        assert leaf.startswith('(') and leaf.endswith(')'), (
+            f"_find_digit_args: {expr!r} is not a leaf")
+        _process_leaf(leaf[1:-1], {}, groups, resolved_defsets)
+    equality_start = resolved_defsets['=']['1']
+
     all_input_args: set = set()
     for expr in all_exprs:
         core = _extract_core_name(expr)
@@ -1883,25 +1946,124 @@ def _find_digit_args(all_exprs: List[str],
                 assert idx < len(args), (
                     f"_find_digit_args: input index {idx} >= arity "
                     f"{len(args)} for core {core!r} in {expr!r}")
+                if core == '=':
+                    label = groups.label.get(groups.find(args[idx]),
+                                             equality_start)
+                else:
+                    label = resolved_defsets[core].get(str(idx + 1))
+                    assert label is not None, (
+                        f"_find_digit_args: input slot {idx + 1} of "
+                        f"{core!r} has no definition set")
+                if label != "(1)":
+                    continue
                 all_input_args.add(args[idx])
 
     # Remove anchor args
     for a in _extract_args(anchor_expr):
         all_input_args.discard(a)
 
-    # Subtract output args
-    all_output_args: set = set()
+    # An induction variable is always an input: subtract every arg at a
+    # non-input position (output, or neither input nor output) of a
+    # configured expression.
+    non_input_args: set = set()
     for expr in all_exprs:
         core = _extract_core_name(expr)
-        if core in output_indices:
-            args = _extract_args(expr)
-            out_idx = output_indices[core]
-            assert out_idx < len(args), (
-                f"_find_digit_args: output index {out_idx} >= arity "
-                f"{len(args)} for core {core!r} in {expr!r}")
-            all_output_args.add(args[out_idx])
+        if core not in configured_cores:
+            continue
+        inputs = set(input_indices.get(core, []))
+        for position, arg in enumerate(_extract_args(expr)):
+            if position not in inputs:
+                non_input_args.add(arg)
 
-    return all_input_args - all_output_args
+    return all_input_args - non_input_args
+
+
+def _twin_induction_partner(thm_premises: List[str], thm_head: str,
+                            ind_var: str, digit_args: set) -> Optional[str]:
+    """@brief The twin partner of ``ind_var``, or ``None``
+    (D-587).
+
+    @details
+    Python mirror of the C++ ``ProofGridBuilder::twinInductionPartners``.
+    Two non-anchor premises are twins when they are the only two premises
+    of one predicate and polarity, no other predicate repeats, and the
+    theorem is symmetric in them: exchanging the two premises gives the
+    same lemma after normalization (arguments renumbered in first-occurrence
+    order over the premises and the head, premise order kept). An equality
+    head, positive or negated, reads unordered.
+
+    ``ind_var`` has the partner ``l`` when ``ind_var`` occurs in the first
+    twin, the second twin holds ``l`` at the same argument slot, ``l`` is a
+    digit argument different from ``ind_var``, ``ind_var`` does not occur in
+    the second twin and ``l`` does not occur in the first. The first such
+    slot decides, as in the C++ map. The prover builds no induction on the
+    partner and its weak hypothesis leaves the partner universal, so the
+    recursion check must not count the partner as immutable.
+
+    @param thm_premises  Premises of the induction theorem, anchor first.
+    @param thm_head      Head of the induction theorem.
+    @param ind_var       The induction variable.
+    @param digit_args    Digit arguments from ``_find_digit_args``.
+    @return  The partner of ``ind_var``, or ``None`` when the theorem has no
+             twin premises or ``ind_var`` has no partner.
+
+    @see check_recursion
+    @see _find_immutable_args
+    """
+    def predicate(expr: str) -> str:
+        match = re.match(r'!?\(([^\[\]()>]+)\[', expr)
+        assert match, (
+            f"_twin_induction_partner: an element without a predicate: {expr!r}")
+        return ('!' if expr.startswith('!') else '') + match.group(1)
+
+    def normal_form(premises: List[str], head: str) -> Tuple[List[str], str]:
+        renaming: Dict[str, str] = {}
+        for element in list(premises) + [head]:
+            for argument in _extract_args(element):
+                if argument not in renaming:
+                    renaming[argument] = f"t{len(renaming) + 1}"
+        return ([_replace_arg_safe_multi(e, renaming) for e in premises],
+                _replace_arg_safe_multi(head, renaming))
+
+    anchor = predicate(thm_premises[0])
+    by_predicate: Dict[str, List[int]] = {}
+    for index, premise in enumerate(thm_premises):
+        name = predicate(premise)
+        if name == anchor:
+            continue
+        by_predicate.setdefault(name, []).append(index)
+    repeated = [indices for indices in by_predicate.values() if len(indices) > 1]
+    if len(repeated) != 1 or len(repeated[0]) != 2:
+        return None
+    first, second = repeated[0]
+
+    original = normal_form(thm_premises, thm_head)
+    exchanged = list(thm_premises)
+    exchanged[first], exchanged[second] = exchanged[second], exchanged[first]
+    symmetric = normal_form(exchanged, thm_head) == original
+    if not symmetric and predicate(thm_head).lstrip('!') == '=':
+        head_args = _extract_args(thm_head)
+        assert len(head_args) == 2, (
+            f"_twin_induction_partner: an equality head has two arguments: {thm_head!r}")
+        mirrored = (('!' if thm_head.startswith('!') else '')
+                    + f"(=[{head_args[1]},{head_args[0]}])")
+        symmetric = normal_form(exchanged, mirrored) == original
+    if not symmetric:
+        return None
+
+    first_args = _extract_args(thm_premises[first])
+    second_args = _extract_args(thm_premises[second])
+    assert len(first_args) == len(second_args), (
+        "_twin_induction_partner: twins of one predicate differ in arity")
+    for k, l in zip(first_args, second_args):
+        if k != ind_var or k == l:
+            continue
+        if k not in digit_args or l not in digit_args:
+            continue
+        if k in second_args or l in first_args:
+            continue
+        return l
+    return None
 
 
 def _find_immutable_args(chain_exprs: List[str],
@@ -3277,7 +3439,13 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
        ``(implication<N>[args])`` — the existence-implication product
        statement the prover emits — is first expanded through its
        implication binary entry (``_expand_implication_compact``).
-    5. **General case.** Otherwise dispatch to ``_try_expand`` with
+    5. **OR introduction from a full implication.** A cited full
+       implication chain (the flat rule of a root integration goal) admits
+       exactly the OR introductions ``match_or_introduction`` derives from
+       an OR premise of its chain (D-492). An introduction stated as its
+       compact and citing the compact of the rule it serves is expanded
+       through its binary entry first (D-503).
+    6. **General case.** Otherwise dispatch to ``_try_expand`` with
        the compact's binary entry; accept on any matching category.
 
     @param line     The expansion row.
@@ -3321,6 +3489,28 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
     # Right expression must exist as a left-side expression in chapter
     if not any(ch_line.expression == right_expr for ch_line in chapter):
         return False
+
+    # --- An introduction compact citing the compact of the rule it serves
+    # (D-503): expanded through its binary
+    # entry, it must be an OR introduction of the cited rule.
+    introduction_rule = _expand_implication_compact(line.expression, state.binaries_for_chapter())
+    if (introduction_rule is not None
+            and _expand_implication_compact(right_expr, state.binaries_for_chapter()) is not None):
+        from proof_export.or_introduction import match_or_introduction
+        target = parse_mpl(introduction_rule)
+        source = parse_mpl(right_expr)
+        return any(match_or_introduction(target, source, registry) is not None
+                   for registry in state.binaries_for_chapter())
+
+    # --- OR introduction citing a full implication: the a -> a || b rule of
+    # a flattened root integration goal's OR premise cites the flat rule
+    # whose premise the OR is (D-492).
+    if right_expr.startswith('(>['):
+        from proof_export.or_introduction import match_or_introduction
+        target = parse_mpl(line.expression)
+        source = parse_mpl(right_expr)
+        return any(match_or_introduction(target, source, registry) is not None
+                   for registry in state.binaries_for_chapter())
 
     # --- Negated existence expansion: !(name[args]) ---
     if right_expr.startswith('!'):
@@ -3705,15 +3895,18 @@ def _expand_implication_compact(expr: str,
     rule through its binary entry; ``None`` for anything else.
 
     @details
-    Mirror of the prover's compact-expansion path (``prepareIntegrationCore``
-    substituting the signature's ``u_`` tokens by the instance arguments
-    positionally, then ``reconstructImplicationFullBind`` over the
-    elements): the entry's elements are substituted with the compact's
-    actual arguments (repeated arguments are legal) and rebuilt with
-    ``_build_implication_from_elements``, every actual argument
-    unchangeable. Returns ``None`` when ``expr`` is not a positive simple
-    compact, no binary defines its core, or the entry is not an
-    implication.
+    Mirror of the prover's compact-expansion path (the signature's ``u_``
+    tokens substituted by the instance arguments positionally, the bound
+    placeholders named fresh, then ``reconstructImplicationFullBind`` over
+    the elements): in one pass, every signature formal takes the compact's
+    actual argument at its position (repeated arguments are legal) and
+    every bound placeholder (an element argument that is not a formal) a
+    fresh name ``__b<k>`` absent from the actual arguments, so an actual
+    argument that reads like a placeholder never merges with it; the
+    elements are rebuilt with ``_build_implication_from_elements``, every
+    actual argument unchangeable. Returns ``None`` when ``expr`` is not a
+    positive simple compact, no binary defines its core, or the entry is
+    not an implication.
 
     @param expr      The candidate compact.
     @param binaries  The chapter's GL binaries.
@@ -3730,13 +3923,45 @@ def _expand_implication_compact(expr: str,
         actual_args = _extract_args(expr)
         if len(sig_args) != len(actual_args):
             continue
-        subst = dict(zip(sig_args, actual_args))
-        elements = [_replace_arg_safe_multi(e, subst)
-                    for e in entry.get('elements', [])]
-        if not elements:
+        entry_elements = entry.get('elements', [])
+        if not entry_elements:
             continue
+        subst = dict(zip(sig_args, actual_args))
+        taken = set(actual_args)
+        counter = 0
+        for element in entry_elements:
+            for arg in _extract_args(element):
+                if arg in subst:
+                    continue
+                counter += 1
+                while f'__b{counter}' in taken:
+                    counter += 1
+                subst[arg] = f'__b{counter}'
+        elements = [_replace_arg_safe_multi(e, subst) for e in entry_elements]
         return _build_implication_from_elements(elements, set(actual_args))
     return None
+
+
+def _integration_rule_line(line: ProofLine, state: VerifierState) -> ProofLine:
+    """@brief The rule an integration-tag row states.
+
+    @details
+    An integration rule's history row states its compact
+    (D-503): the compact takes the tag and
+    the citation the rule took, the rule follows as an ``expansion`` row
+    citing the compact. The row's checks run on the compact's expansion
+    through its binary entry (``_expand_implication_compact``); a row that
+    states the rule itself is returned unchanged.
+
+    @param line   A ``reformulation for integration`` row.
+    @param state  Reads ``binaries_for_chapter``.
+    @return  The row with its expression replaced by the expanded rule, or
+             the row itself.
+    """
+    rule = _expand_implication_compact(line.expression, state.binaries_for_chapter())
+    if rule is None:
+        return line
+    return dataclasses.replace(line, expression=rule)
 
 
 def _check_or_subset_exclusion(line: ProofLine, disjuncts,
@@ -4264,6 +4489,66 @@ def check_symmetry_of_inequality(line: ProofLine, chapter: List[ProofLine],
     return result_args[0] == source_args[1] and result_args[1] == source_args[0]
 
 
+def _strong_induction_hypothesis(thm_expr: str, ind_var: str) -> str:
+    """@brief Rebuild the hypothesis a strong-induction step chapter asserts.
+
+    @details
+    The prover's strong step hypothesis
+    (``ProofGridBuilder::createStrongAuxyImplication``) is the theorem at
+    every value ``m`` below the induction variable ``n``:
+
+    - a fresh variable ``m`` replaces ``n`` in every non-anchor premise and
+      in the head;
+    - two leading premises bound it with atomic expressions only:
+      ``(in3[m,y,n,+])`` (some ``y`` with ``m+y=n``) and ``!(=[m,n])``;
+    - only ``n`` and the anchor arguments are fixed; every other argument
+      is bound at the first premise that names it (the full-bind rule of
+      ``reconstructImplicationFullBind``), the once-occurring offset ``y``
+      included.
+
+    The fresh names are ``v``-form names past every numbered name of the
+    theorem, so they collide with no theorem name; the caller compares
+    under ``_alpha_canonicalize_bound_vars``, which renames bound names
+    only, so the free names (``n``, the anchor arguments) must agree
+    exactly. ``+`` is the anchor's addition name, as ``s`` and ``i0`` are
+    in the weak checks.
+
+    @param thm_expr  The processed theorem (anchor first premise).
+    @param ind_var   The theorem's induction variable (third field of its
+                     global theorem list row).
+    @return  The expected hypothesis implication text.
+    @see check_recursion — the consumer.
+    """
+    thm_premises, thm_head = disintegrate_implication_full(thm_expr)
+    fixed = set(_extract_args(thm_premises[0]))
+    fixed.add(ind_var)
+
+    largest = 0
+    for match in re.finditer(r'[vVwW](\d+)', thm_expr):
+        largest = max(largest, int(match.group(1)))
+    bound_var = f'v{largest + 1}'
+    offset_var = f'v{largest + 2}'
+
+    chain = [f'(in3[{bound_var},{offset_var},{ind_var},+])',
+             f'!(=[{bound_var},{ind_var}])']
+    chain.extend(_replace_arg_safe(e, ind_var, bound_var) for e in thm_premises[1:])
+    head = _replace_arg_safe(thm_head, ind_var, bound_var)
+
+    placed: set = set()
+    when_bound: List[List[str]] = [[] for _ in chain]
+    for idx, expr in enumerate(chain):
+        for a in _extract_args(expr):
+            if a in fixed or a in placed:
+                continue
+            placed.add(a)
+            when_bound[idx].append(a)
+
+    result = head
+    for i in range(len(chain) - 1, -1, -1):
+        result = f'(>[{",".join(when_bound[i])}]{chain[i]}{result})'
+    return result
+
+
 def check_recursion(line: ProofLine, chapter: List[ProofLine],
                     state: VerifierState) -> bool:
     """@brief Verify a ``recursion`` row matches the induction zero / step shape.
@@ -4290,13 +4575,27 @@ def check_recursion(line: ProofLine, chapter: List[ProofLine],
        - Disintegrates the theorem; extracts anchor args.
        - Computes ``digit_args`` (via ``_find_digit_args``) and the
          immutable set ``untouchables = anchor_args ∪ {x_var} ∪
-         immutables``.
+         immutables``. A twin partner of ``ind_var``
+         (``_twin_induction_partner``) is left out of the immutables
+         and bound at its first occurrence even when only one premise
+         holds it: the prover's weak hypothesis is universal in it,
+         and the prover binds every name that is not fixed
+         (``ImplicationBuilder::reconstructImplicationFullBind``,
+         D-587).
        - Substitutes ``ind_var → x_var`` in every non-anchor
          premise and the head.
        - Reconstructs the implication with bound-var optimization
          (``reconstructImplication`` rule).
        - Normalizes both the reconstructed expression and
          ``line.expression``; compares via ``_normalize_expr_list``.
+
+       For a ``strong induction`` theorem the expected implication is
+       ``_strong_induction_hypothesis`` instead: the theorem at a fresh
+       ``m`` bounded by ``(in3[m,y,ind_var,+])`` and ``!(=[m,ind_var])``,
+       with only ``ind_var`` and the anchor arguments fixed; the two are
+       compared up to renaming of bound names
+       (``_alpha_canonicalize_bound_vars``). Each kind rejects the other
+       kind's hypothesis.
 
     Any other chapter type → False.
 
@@ -4337,6 +4636,21 @@ def check_recursion(line: ProofLine, chapter: List[ProofLine],
                 return False
             return args[1] == ind_var and args[2] == "s"
         if line.expression.startswith("(>["):
+            # A strong induction's hypothesis is the theorem at every value
+            # below ind_var (D-500); it names no
+            # predecessor, so the companion in2 row plays no part in it.
+            if thm_type.lower() == "strong induction":
+                thm_premises, _ = disintegrate_implication_full(
+                    state.current_chapter_thm[0])
+                if len(thm_premises) < 1:
+                    return False
+                expected = _strong_induction_hypothesis(
+                    state.current_chapter_thm[0], ind_var)
+                # Bound names are compared up to renaming; every free name
+                # (ind_var, the anchor arguments) must match exactly.
+                return (_alpha_canonicalize_bound_vars(expected)
+                        == _alpha_canonicalize_bound_vars(line.expression))
+
             # Find x from the companion in2[x, ind_var, s] recursion line
             x_var = None
             for ch_line in chapter:
@@ -4365,10 +4679,16 @@ def check_recursion(line: ProofLine, chapter: List[ProofLine],
             all_thm_exprs = list(thm_premises) + [thm_head]
             digit_args = _find_digit_args(
                 all_thm_exprs, thm_premises[0],
-                state.input_indices, state.output_indices)
+                state.input_indices, state.configured_cores,
+                state.current_resolved_defsets)
+            # A twin partner of ind_var is universal in the weak hypothesis
+            # (D-587).
+            partner = _twin_induction_partner(
+                list(thm_premises), thm_head, ind_var, digit_args)
             immutables = _find_immutable_args(
-                all_thm_exprs, digit_args, ind_var,
-                state.input_indices, state.output_indices)
+                all_thm_exprs,
+                digit_args - {partner} if partner is not None else digit_args,
+                ind_var, state.input_indices, state.output_indices)
 
             untouchables = set(anchor_args)
             untouchables.add(x_var)
@@ -4390,6 +4710,11 @@ def check_recursion(line: ProofLine, chapter: List[ProofLine],
                         continue
                     counter[a] = counter.get(a, 0) + 1
             multi_vars = {a for a, c in counter.items() if c > 1}
+            # The twin partner is universal in the weak hypothesis, also
+            # when it occurs in its own premise only
+            # (D-587).
+            if partner is not None and partner in counter:
+                multi_vars.add(partner)
 
             placed: set = set()
             when_removed: List[List[str]] = [[] for _ in range(len(chain_exprs))]
@@ -4937,11 +5262,15 @@ def check_reformulation_for_integration_and(line: ProofLine,
     an AND compact at integration time gets unfolded into a chain
     of single-premise implications (one per AND element).
 
+    A row that states the rule's compact is checked on the compact's
+    expansion (``_integration_rule_line``).
+
     @param line     The row.
     @param chapter  All chapter rows.
     @param state    Global state.
     @return  True iff the structural check passes.
     """
+    line = _integration_rule_line(line, state)
     preamble = _reformulation_integration_preamble(line, chapter, state)
     if preamble is None:
         return False
@@ -4978,8 +5307,10 @@ def check_reformulation_for_integration_bound(line: ProofLine,
     @return  True iff the structural check passes.
 
     @see check_reformulation_for_integration_empty — the empty-binder
-    sibling (witness already consumed).
+    sibling (witness already consumed); _integration_rule_line — a row
+    that states the rule's compact is checked on its expansion.
     """
+    line = _integration_rule_line(line, state)
     preamble = _reformulation_integration_preamble(line, chapter, state)
     if preamble is None:
         return False
@@ -5025,8 +5356,10 @@ def check_reformulation_for_integration_empty(line: ProofLine,
     @return  True iff the structural check passes.
 
     @see check_reformulation_for_integration_bound — the explicit-
-    binder sibling.
+    binder sibling; _integration_rule_line — a row that states the rule's
+    compact is checked on its expansion.
     """
+    line = _integration_rule_line(line, state)
     preamble = _reformulation_integration_preamble(line, chapter, state)
     if preamble is None:
         return False
@@ -5111,7 +5444,7 @@ def _flat_instantiate(entry: dict, compact: str, fresh) -> Optional[List[str]]:
 def _flat_unfold_variants(compact: str, entry: dict,
                           binaries: List[dict]) -> List[List[str]]:
     """@brief Enumerate every intact/extended premise list of a compact's
-    definition tree — the verifier twin of ``emitFlatIntegrationVariants``.
+    definition tree — the verifier twin of ``forEachFlatIntegrationVariant``.
 
     @details
     The root is always dissolved into its instantiated elements. Each
@@ -5131,8 +5464,14 @@ def _flat_unfold_variants(compact: str, entry: dict,
     extended parent; sibling choices cross-multiply). Instantiation is
     memoised per compact occurrence so a compound reached twice shares
     one witness set, as the prover's one-entity-per-signature table
-    does (I-186). A cyclic definition graph is impossible for compiled
-    definitions; a depth beyond the element budget raises.
+    does (I-186). A leaf identical to one already on the current list
+    is not added again (an existence's binder premise that is also the
+    first conjunct of the bundle it binds, as in
+    ``hasPrimeFactorization``): the prover's walk names such a premise
+    once, since a rule naming it twice could never fire, and the
+    construction uses that one premise for both leaves. A cyclic
+    definition graph is impossible for compiled definitions; a depth
+    beyond the element budget raises.
 
     @param compact   The root compact (``(core[args])``).
     @param entry     Its binary entry (category ``existence`` / ``and``).
@@ -5167,10 +5506,17 @@ def _flat_unfold_variants(compact: str, entry: dict,
         element_entry = _flat_entry_for(core, binaries)
         container = (element_entry is not None
                      and element_entry.get('category') in ('existence', 'and'))
-        if not container:
+
+        def keep_leaf() -> None:
+            if element in acc:
+                rec(rest, acc, depth + 1)
+                return
             acc.append(element)
             rec(rest, acc, depth + 1)
             acc.pop()
+
+        if not container:
+            keep_leaf()
             return
         children = children_of(element, element_entry)
         if children is None:
@@ -5178,9 +5524,7 @@ def _flat_unfold_variants(compact: str, entry: dict,
         if _FLAT_ADHOC_CORE_RE.match(core):
             rec(children + rest, acc, depth + 1)
             return
-        acc.append(element)
-        rec(rest, acc, depth + 1)
-        acc.pop()
+        keep_leaf()
         rec(children + rest, acc, depth + 1)
 
     root_children = children_of(compact, entry)
@@ -5254,6 +5598,56 @@ def _flat_match_premises(expected: List[str], actual: List[str],
     return backtrack(0, {})
 
 
+def _flat_template_renaming(rule: str, head: str, template: str,
+                            binders: set) -> Optional[Dict[str, str]]:
+    """@brief Rename a flat rule's head binders onto its goal template's
+    arguments.
+
+    @details
+    A disjunct's flat rule (D-508) binds the
+    disjunct's open arguments, which stand at argument positions of the
+    rule's head; its goal template (the ``<disjunct>_integration_goal``
+    citation) names them by its own names, and an expanded compact names
+    them freshly (D-503). The head must equal
+    the template up to a renaming of those binders: the same signed core
+    and arity, every other argument literally equal, the renaming
+    consistent and injective, and no binder renamed onto a name the rule
+    already uses. A root flat rule binds nothing in its head: its renaming
+    is empty.
+
+    @param rule      The rule text (every name it uses).
+    @param head      Its head.
+    @param template  The goal template.
+    @param binders   The rule's bound names.
+    @return  The renaming (empty when the head is the template), or
+             ``None`` when the head is not the template up to its binders.
+    """
+    if head.startswith('!') != template.startswith('!'):
+        return None
+    if _extract_core_name(head) != _extract_core_name(template):
+        return None
+    head_args = _extract_args(head)
+    template_args = _extract_args(template)
+    if len(head_args) != len(template_args):
+        return None
+    renaming: Dict[str, str] = {}
+    for h, t in zip(head_args, template_args):
+        if h in binders:
+            if renaming.setdefault(h, t) != t:
+                return None
+        elif h != t:
+            return None
+    targets = list(renaming.values())
+    if len(set(targets)) != len(targets):
+        return None
+    used = {name for group in re.findall(r'\[([^\]]*)\]', rule)
+            for name in group.split(',') if name}
+    for h, t in renaming.items():
+        if t != h and t in used:
+            return None
+    return {h: t for h, t in renaming.items() if h != t}
+
+
 def check_reformulation_for_integration_flattened(line: ProofLine,
                                                   chapter: List[ProofLine],
                                                   state: VerifierState) -> bool:
@@ -5262,26 +5656,33 @@ def check_reformulation_for_integration_flattened(line: ProofLine,
     @details
     A flat integration-rule variant: the compact's definition tree
     unfolded through several levels in one implication (the prover's
-    ``emitFlatIntegrationVariants``, the Case B addon of
-    ``prepareIntegrationCore2``). Unlike the three one-level
+    ``forEachFlatIntegrationVariant``, compiled into the entity's
+    integration set and installed by ``prepareIntegrationCore2`` Case B). Unlike the three one-level
     ``reformulation for integration`` tags there is no
     ``expansion for integration`` row to pair with — the row cites the
     compact directly.
 
     **Algorithm.**
 
+    0. A row that states the rule's compact is checked on the
+       compact's expansion (``_integration_rule_line``).
     1. ``len(rest) >= 2`` required; ``line.namespace == rest[1]``.
     2. ``rest[0]`` must carry the ``_integration_goal`` postfix; strip
        it to get the compact. Its core must have a binary entry of
        category ``existence`` or ``and``.
-    3. ``disintegrate_implication_full(line.expression)``: the head
-       must equal the compact; at least one premise.
+    3. ``disintegrate_implication_full(line.expression)``: at least one
+       premise.
     4. Collect the row's bound variables from every ``(>[...]`` list.
-    5. Enumerate the compact's intact/extended unfoldings
+    5. The head must equal the compact up to a renaming of the binders
+       standing at its argument positions (``_flat_template_renaming``
+       — a disjunct rule binds the disjunct's open arguments); the rule
+       is renamed accordingly.
+    6. Enumerate the compact's intact/extended unfoldings
        (``_flat_unfold_variants``); drop the one-level list (that is
        Case B's own rule, never emitted under this tag); accept iff
-       some remaining variant matches the premises modulo witness
-       renaming (``_flat_match_premises``).
+       some remaining variant matches the premises modulo a renaming of
+       the definition witnesses onto the binders outside the head
+       (``_flat_match_premises``).
 
     @param line     The row.
     @param chapter  All chapter rows (unused — the compact is a forward
@@ -5293,6 +5694,7 @@ def check_reformulation_for_integration_flattened(line: ProofLine,
     existence sibling; _flat_unfold_variants — the prover-twin
     enumeration.
     """
+    line = _integration_rule_line(line, state)
     if len(line.rest) < 2:
         return False
     if line.namespace != line.rest[1]:
@@ -5307,7 +5709,7 @@ def check_reformulation_for_integration_flattened(line: ProofLine,
         return False
 
     premises, head = disintegrate_implication_full(line.expression)
-    if head != compact or not premises:
+    if not premises:
         return False
 
     binders = set()
@@ -5315,6 +5717,21 @@ def check_reformulation_for_integration_flattened(line: ProofLine,
         for name in group.split(','):
             if name:
                 binders.add(name)
+
+    # A disjunct's flat rule binds the disjunct's open arguments at head
+    # positions; its template names them by its own names.
+    renaming = _flat_template_renaming(line.expression, head, compact, binders)
+    if renaming is None:
+        return False
+    if renaming:
+        premises = [_replace_arg_safe_multi(p, renaming) for p in premises]
+        head = _replace_arg_safe_multi(head, renaming)
+        binders = {renaming.get(b, b) for b in binders}
+    if head != compact:
+        return False
+    # The head's binders are literal in the unfolded template; only the
+    # definition witnesses map onto the remaining binders.
+    witness_binders = binders - set(_extract_args(head))
 
     variants = _flat_unfold_variants(compact, entry, binaries)
     if not variants:
@@ -5326,11 +5743,14 @@ def check_reformulation_for_integration_flattened(line: ProofLine,
         return f"{_FLAT_WITNESS_PREFIX}{counter[0]}"
 
     one_level = _flat_instantiate(entry, compact, fresh)
+    if one_level is not None:
+        # A repeated element is named once, as on every variant.
+        one_level = list(dict.fromkeys(one_level))
     for variant in variants:
         if one_level is not None and len(variant) == len(one_level) \
                 and sorted(variant) == sorted(one_level):
             continue
-        if _flat_match_premises(variant, premises, binders):
+        if _flat_match_premises(variant, premises, witness_binders):
             return True
     return False
 
@@ -6103,6 +6523,9 @@ def check_externally_provided_theorem(line: ProofLine, chapter: List[ProofLine],
     return False
 
 
+_TWIN_PREDECESSOR_ALIAS = "rec2"
+
+
 def check_variable_copy(line: ProofLine,
                         chapter: List[ProofLine],
                         state: VerifierState) -> bool:
@@ -6121,10 +6544,20 @@ def check_variable_copy(line: ProofLine,
     shape with an empty origin vector; they differ only in WHEN the
     prover chose to introduce the copy.
 
+    A twin weak step block names its twin partner's predecessor q with
+    the copy ``(=[q, rec2])`` (``AdmissionMemory::fileTwinSecondGoal``,
+    D-581). ``rec2`` is a second name of one
+    source as ``Y_copy`` is: it is accepted as the alias when every
+    ``variable copy`` row of the chapter that declares ``rec2`` names
+    the same source, so the alias cannot equate two objects, and its
+    uses trace back as for ``Y_copy``.
+
     **Structural checks.**
 
     1. ``line.expression`` is ``(=[a, b])`` with arity exactly 2 and
-       ``b == a + "_copy"`` byte-exactly.
+       ``b == a + "_copy"`` byte-exactly, or ``b`` is ``rec2``, ``a`` is
+       not, and no ``variable copy`` row of the chapter declares
+       ``rec2`` for another source.
     2. ``rest`` is empty (dead-end axiom — no origin refs).
     3. Every non-equality chapter row whose expression mentions ``b``
        in its args can reach a ``variable copy`` declaration for
@@ -6132,7 +6565,12 @@ def check_variable_copy(line: ProofLine,
        (``_trace_back_to``). This enforces that ``b`` cannot be
        smuggled into the proof graph without an explicit declaration
        — any line that uses ``b`` must have an origin chain rooted in
-       the copy declaration.
+       the copy declaration. The walk also ends at a row whose source
+       is an integration goal (``_integration_goal`` suffix) holding
+       ``b`` as a variable: a goal is filed without a derivation, and
+       the rows the integration derives from it carry its names
+       (the second twin goal is filed with ``rec2``,
+       D-589).
 
     The trace uses ``_extract_args`` (top-level only) for the outer
     scan — nested ``b`` mentions inside compound sub-expressions are
@@ -6153,7 +6591,17 @@ def check_variable_copy(line: ProofLine,
     if len(eq_args) != 2:
         return False
     a, b = eq_args[0], eq_args[1]
-    if b != a + "_copy":
+    if b == _TWIN_PREDECESSOR_ALIAS:
+        if a == b:
+            return False
+        # One source per chapter: the alias names a single object.
+        for ch_line in chapter:
+            if ch_line.tag != "variable copy" or not ch_line.expression.startswith("(=["):
+                continue
+            other = _extract_args(ch_line.expression)
+            if len(other) == 2 and other[1] == b and other[0] != a:
+                return False
+    elif b != a + "_copy":
         return False
     if line.rest:                        # dead-end: no origin refs
         return False
@@ -6164,8 +6612,13 @@ def check_variable_copy(line: ProofLine,
         expr_to_lines.setdefault(ch_line.expression, []).append(ch_line)
 
     the_equality = line.expression
-    is_target = lambda cl: (cl.expression == the_equality
-                            and cl.tag == "variable copy")
+    # A filed integration goal holding b ends the walk as the declaration
+    # does: the goal has no derivation of its own.
+    is_target = lambda cl: ((cl.expression == the_equality
+                             and cl.tag == "variable copy")
+                            or any(cl.rest[i].endswith(_INTEGRATION_GOAL_SUFFIX)
+                                   and b in _extract_all_args(cl.rest[i])
+                                   for i in range(0, len(cl.rest), 2)))
     # Compound sources (e.g. negated implications) hide the copy var inside
     # nested ``[..]`` groups; use the recursive extractor so the trace-back
     # walker keeps following edges that still carry b.
@@ -6541,7 +6994,11 @@ def check_or_disintegration(line: ProofLine, chapter: List[ProofLine],
        so the row's contract stays auditable.
     2. ``rest[0]`` is a known compiled OR ``(or<N>[…])`` whose
        recursively substituted contiguous OR tree yields at least two
-       ordered non-OR leaves (matching arity at every node).
+       ordered non-OR leaves (matching arity at every node), or a
+       negated conjunction ``!(name[…])`` of category ``"and"`` whose
+       cases are its complemented conjuncts — the prover splits one only
+       as the premise of an implication being integrated
+       (D-460; ``_case_split_disjuncts``).
     3. ``line.expression`` is one of those leaves (modulo equality
        symmetry); an intermediate compiled OR is not a leaf.
     4. ``line.namespace`` is EXACTLY
@@ -6579,8 +7036,7 @@ def check_or_disintegration(line: ProofLine, chapter: List[ProofLine],
     parent_ns = line.rest[1]
     branch_ns = line.namespace
 
-    disjuncts = _or_disjuncts_from_compiled(
-        or_expr, state.binaries_for_chapter(), flatten_nested=True)
+    disjuncts = _case_split_disjuncts(or_expr, state.binaries_for_chapter())
     if disjuncts is None:
         return False
     if not _disjunct_matches(asserted, disjuncts):
@@ -6662,8 +7118,11 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
     2. **Parent-scope match.** ``line.namespace == rest[1]``.
     3. **OR is real.** ``rest[0]`` is a compiled ``(or<N>[…])`` with
        a known GL-binary entry of category ``"or"`` whose recursive
-       contiguous-OR expansion yields at least two leaves; leaf count
-       ``K`` matches the entry count.
+       contiguous-OR expansion yields at least two leaves, or a negated
+       conjunction integration premise whose cases are its complemented
+       conjuncts (``_case_split_disjuncts``,
+       D-460); leaf count ``K`` matches the
+       entry count.
     4. **Entry classification + coverage.** Every entry matches one
        uncovered disjunct — a survivor entry by the disjunct payload
        embedded in its ``_ordis_`` branch scope, a retired entry by
@@ -6691,9 +7150,9 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
     if line.namespace != parent_ns:
         return False
 
-    # 3. OR is real; count disjuncts via GL-binary lookup
-    disjuncts = _or_disjuncts_from_compiled(
-        or_expr, state.binaries_for_chapter(), flatten_nested=True)
+    # 3. OR is real; count disjuncts via GL-binary lookup (a compiled OR,
+    # or a negated conjunction integration premise)
+    disjuncts = _case_split_disjuncts(or_expr, state.binaries_for_chapter())
     if disjuncts is None or len(disjuncts) < 2:
         return False
     k = len(disjuncts)
@@ -6857,6 +7316,55 @@ def _or_disjuncts_from_compiled(
         return None
 
     return decode(or_expr, (), True)
+
+
+def _case_split_disjuncts(source: str, binaries: List[dict]) -> Optional[List[str]]:
+    """@brief Decode the ordered cases of an ``_ordis_`` case-split source.
+
+    @details
+    A case split consumes one of two sources. A compiled OR
+    ``(or<N>[…])`` yields its recursively flattened non-OR leaves
+    (``_or_disjuncts_from_compiled``). A negated conjunction
+    ``!(name[args])`` whose GL-binary entry has category ``"and"`` yields
+    its conjuncts, substituted with the instance arguments and
+    complemented with double-negation cancellation (``_negate_expr``), in
+    definition order and without further flattening: the De Morgan
+    disjunction the negated conjunction denotes. The prover splits a
+    negated conjunction only when it is the premise of an implication
+    being integrated (D-460); the producer
+    builds the same complemented conjuncts, so the case payloads embedded
+    in the branch scopes match these texts exactly.
+
+    Returns ``None`` when the source is neither shape, no loaded binary
+    holds a matching entry with the instance's arity, or fewer than two
+    cases result.
+
+    @param source    The case-split source cited in ``rest[0]``.
+    @param binaries  GL binary dicts to search (typically
+                     ``state.binaries_for_chapter()``).
+    @return  The ordered case disjuncts on success; ``None`` on failure.
+    """
+    if not source.startswith('!('):
+        return _or_disjuncts_from_compiled(source, binaries, flatten_nested=True)
+    match = re.match(r'^!\(([^\[\]()!&>]+)\[([^\]]*)\]\)$', source)
+    if not match:
+        return None
+    core = match.group(1)
+    actual_args = match.group(2).split(',') if match.group(2) else []
+    for binary in binaries:
+        entry = binary.get(core)
+        if entry is None or entry.get('category') != 'and':
+            continue
+        sig_args = _extract_args(entry.get('signature', ''))
+        if len(sig_args) != len(actual_args):
+            continue
+        elements = entry.get('elements', [])
+        if len(elements) < 2:
+            return None
+        subst = dict(zip(sig_args, actual_args))
+        return [_negate_expr(_replace_arg_safe_multi(element, subst))
+                for element in elements]
+    return None
 
 
 def _disjunct_matches(candidate: str, disjuncts: List[str]) -> bool:
@@ -7293,10 +7801,12 @@ _ORIGIN_EXEMPT_TAGS = frozenset({
 
 def check_implication_composition(line: ProofLine, chapter: List[ProofLine],
                                  state: VerifierState) -> bool:
-    """@brief Verify an ordered producer chain composed with one unary consumer.
+    """@brief Verify a producer chain composed with one unary consumer.
 
     @details The endpoint and intermediate matches determine explicit source
-    substitutions for every producer premise and binder group. Fixed arguments, polarity, repeated variables and the exact
+    substitutions for every producer premise and binder group. The conclusion
+    may list the producer premises in any order; each producer premise is
+    paired with one conclusion premise. Fixed arguments, polarity, repeated variables and the exact
     joined validity are checked. Normal origin checking still requires both
     source derivations; composition adds no origin exemption.
     @param line Claimed composition row.
@@ -7351,6 +7861,39 @@ def check_contraposition_auxiliary(line: ProofLine, chapter: List[ProofLine],
     return True
 
 
+def check_definition_projection(line: ProofLine, chapter: List[ProofLine],
+                                state: VerifierState) -> bool:
+    """
+    @brief Verify a direct positive definition projection from one existing fact.
+
+    @details The source must occur explicitly in the same namespace. Only named
+    conjunction unfolding and binary conjunction projection are admitted; no
+    implication, negation, OR or existential elimination occurs. Existing global
+    origin, acyclicity, goal and scope checks remain mandatory.
+
+    @param line Claimed definition projection with one source/namespace pair.
+    @param chapter Actual rows supplying the source derivation.
+    @param state Matching compiled-definition registry for this chapter.
+    @return True exactly for an existing source and a valid positive projection.
+    """
+    from proof_export.definition_projection import build_definition_projection_plan
+    from proof_export.mpl import parse_mpl
+    if len(line.rest) != 2 or line.rest[1] != line.namespace:
+        return False
+    if not any(row is not line and row.expression == line.rest[0]
+               and row.namespace == line.namespace for row in chapter):
+        return False
+    definitions = {}
+    for binary in reversed(state.binaries_for_chapter()):
+        definitions.update(binary)
+    try:
+        build_definition_projection_plan(parse_mpl(line.expression),
+                                         parse_mpl(line.rest[0]), definitions)
+    except (AssertionError, ValueError, KeyError):
+        return False
+    return True
+
+
 # Tag name → checker function
 TAG_CHECKERS = {
     "zoom in":                         check_zoom_in,
@@ -7361,6 +7904,7 @@ TAG_CHECKERS = {
     "expansion":                        check_expansion,
     "compilation":                      check_compilation,
     "disintegration":                   check_disintegration,
+    "definition projection":            check_definition_projection,
     "task formulation":                 check_task_formulation,
     "equality1":                        check_equality1,
     "equality2":                        check_equality2,
@@ -7469,6 +8013,11 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
        run through ``check_defset_consistency`` (the D-41
        variable-port type-consistency meta-check). Record under
        ``counter_for("definition set consistency")``.
+
+    8b. **Bound-variable uniqueness (I-29).** Every chapter row is run
+       through ``check_bound_variable_uniqueness``: no cell binds a name
+       that an enclosing binder of the same scope chain already binds.
+       Record under ``counter_for("bound variable uniqueness")``.
 
     9. **Origin chain termination (cycle detection).** Build the
         chapter's origin graph, run iterative DFS-color cycle
@@ -7729,6 +8278,15 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
     for line in lines:
         state.counter_for("definition set consistency").record(
             check_defset_consistency(line, state))
+
+    # 10b. Bound-variable uniqueness (I-29). No cell of any row may bind a
+    #      name that an enclosing binder of the same scope chain (or an
+    #      earlier entry of the same binder list) already binds; a rebound
+    #      name is an independent variable, so the text would state another
+    #      rule than the one GL applied.
+    for line in lines:
+        state.counter_for("bound variable uniqueness").record(
+            check_bound_variable_uniqueness(line))
 
     # 11. Origin chain termination (cycle detection).
     #    Every row's origin chain must terminate at a foundation (a row
@@ -8376,6 +8934,92 @@ def check_defset_consistency(line: ProofLine, state: VerifierState) -> bool:
     return True
 
 
+def _rebound_variables(expr: str) -> Optional[List[str]]:
+    """@brief Names a binder list binds while an enclosing binder already binds them.
+
+    @details
+    Walks the expression once, tracking the open implications by
+    parenthesis depth: an implication ``(>[names](premise)(conclusion))``
+    binds its names until the ``)`` that closes it. A name in a
+    ``(>[...]`` list that an enclosing open implication — or an earlier
+    entry of the same list — already binds is reported. Sibling
+    implications (two operands of one conjunction) bind independently,
+    so reusing a name there is not reported.
+
+    Under I-29 a rebound name is a new, independent variable; GL's
+    prover and the rule checkers read a chain's names as one set, so a
+    rebinding makes the text state a different rule than the one GL
+    applied (the multiplied-copy defect: ``(>[w1](...)(>[w1](...)...))``).
+
+    @param expr  One MPL cell (an ``_integration_goal`` suffix is
+                 harmless — it follows the expression).
+    @return The rebound names in order of occurrence (empty when every
+            name is bound once per scope chain), or None for a malformed
+            cell: an unterminated binder list or unbalanced parentheses.
+    """
+    rebound: List[str] = []
+    bound: List[str] = []
+    scopes: List[Tuple[int, int]] = []   # (depth outside, len(bound) at open)
+    depth = 0
+    i = 0
+    while i < len(expr):
+        if expr.startswith("(>[", i):
+            close = expr.find("]", i + 3)
+            if close < 0:
+                return None
+            scopes.append((depth, len(bound)))
+            depth += 1
+            for name in expr[i + 3:close].split(","):
+                if not name:
+                    continue
+                if name in bound:
+                    rebound.append(name)
+                else:
+                    bound.append(name)
+            i = close + 1
+            continue
+        if expr[i] == "(":
+            depth += 1
+        elif expr[i] == ")":
+            if depth == 0:
+                return None
+            depth -= 1
+            if scopes and depth == scopes[-1][0]:
+                del bound[scopes[-1][1]:]
+                scopes.pop()
+        i += 1
+    if depth != 0:
+        return None
+    return rebound
+
+
+def check_bound_variable_uniqueness(line: ProofLine) -> bool:
+    """@brief Per-row check that no cell binds a name twice along a scope chain.
+
+    @details
+    Every expression of the row — the derived expression and each
+    ``rest[i]`` dependency at even indices — must bind every name at
+    most once along each chain of nested implications
+    (``_rebound_variables``). A rebinding is a producer bug: under I-29
+    the text then says something else than the rule GL used, and can be
+    false although GL's flat reading of the chain is a true instance.
+
+    @param line  The chapter row.
+    @return True iff every cell is well-formed and binds each name once
+            per scope chain.
+    @invariant I-29 — a rebound name is an independent variable, so a
+               proof-graph cell never rebinds a name its enclosing
+               binders bind.
+    """
+    cells: List[str] = [line.expression]
+    for i in range(0, len(line.rest), 2):
+        cells.append(line.rest[i])
+    for cell in cells:
+        if _rebound_variables(cell) != []:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 #  Main driver
 # ---------------------------------------------------------------------------
@@ -8733,6 +9377,7 @@ def run_verifier(base_dir: str,
     config_dir = os.path.join(script_dir, "files", "config")
     state.output_indices = load_output_indices(config_dir)
     state.input_indices = load_input_indices(config_dir)
+    state.configured_cores = load_configured_cores(config_dir)
     state.definition_sets = load_definition_sets(config_dir)
 
     # Load GL binaries — look next to the processed proof graph first,
@@ -8815,8 +9460,8 @@ def get_totals(state: VerifierState) -> tuple[int, int]:
     Sums ``state.goal_reached`` (the standalone theorem-goal-reached
     counter), every ``TAG_CHECKERS``-registered counter, and every
     chapter-level meta-counter (``"self-reference"``, ``"origin"``,
-    ``"definition set consistency"``, ``"origin chain termination"``,
-    ``"operator registry consistency"``,
+    ``"definition set consistency"``, ``"bound variable uniqueness"``,
+    ``"origin chain termination"``, ``"operator registry consistency"``,
     ``"theorem usage termination"``,
     ``"anchor handling trace"``, ``"contradiction trace"``,
     ``"vacuous truth trace"``, ``"chapter coverage"``). All three groups

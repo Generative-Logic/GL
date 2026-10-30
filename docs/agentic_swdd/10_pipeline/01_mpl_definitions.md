@@ -15,10 +15,118 @@ and a commercial license — see https://generative-logic.com/license.
 
 > **Input:** `files/definitions/*.mpl` (user-authored MPL) + `files/config/Config<Tag>.json`.
 > **Output:** compiled `CoreExpressionConfig` in-memory; `files/GL_binaries/GL_binary_<Tag>.json` on disk.
-> **Owner:** `compiler.cpp` / `compiler.hpp`.
+> **Owner:** `compiler.cpp` / `compiler.hpp` for configuration input; focused classes under `compiler/` for definition compilation.
 > **Pipeline position:** runs once at the start of every `gl_quick.exe` invocation; conjecturer and prover both rely on the compiled output.
 
 ---
+
+The component boundary follows [D-474](../40_decisions.md#d-474).
+
+## Expression syntax component
+
+`compiler/expression_parser.hpp` / `ExpressionParser` owns MPL tree parsing,
+conjunction-premise normalization, ordered conclusion splitting, binder reading,
+and compiler-witness renaming. Its recursive parse and serialization helpers are
+private. The compiler and prover call the syntax operations without giving the
+parser proof state. `compiler.cpp` / `ce::parseExpr` retains its existing public
+entry point and delegates to `ExpressionParser::parse`.
+
+The extraction preserves tree ownership, traversal order, expression spelling,
+and the existing caller-visible parse contracts. Compilation registry ownership
+and definition expansion remain separate responsibilities.
+
+## Compilation normalization component
+
+`compiler/compilation_normalizer.hpp` / `CompilationNormalizer` owns the
+compiler's string-key normalization, unchangeable-argument mapping, retained
+argument-list construction, and ordered reuse permutations. It has no prover
+state. The Cartesian-product helper is private. Existing key modes, sign bits,
+first-occurrence naming and the seven-element permutation limit are unchanged.
+These compiler operations remain separate from the heap-free integer request
+key builder used by inference.
+
+## Compilation reuse ownership
+
+`compiler/compilation_reuse.hpp` / `CompilationReuse` owns the normalized reuse
+maps, public registration order, OR argument mappings, replacement metadata and
+public-name freeze state. Its public operations register identities, reuse a
+definition, resolve an OR, restore replacements and finalize retirement. Readers
+receive const views. Key splitting, identity enumeration and retirement helpers
+are private. The component borrows only the definition/configuration stores,
+prepared permutations and pending definition-family sets it updates.
+
+The definition stores belong to `CompiledDefinitionRegistry`; its constructor
+binding gives `CompilationReuse` only the stores and pending sets it already
+uses. Registration, replacement composition and iteration order remain unchanged.
+
+## Definition expansion and binding operations
+
+`compiler/definition_expansion.hpp` / `DefinitionExpansion` borrows read-only
+configuration and compiled-definition tables for source and base-form expansion.
+Its argument-prefix, negation and expression-side operations are independent of
+prover state. Allocation-free counterparts keep their original inline boundaries
+and write only into caller-owned scratch arenas. Compiler operations that already
+return owning strings retain their existing allocation contract.
+
+`proof/worker_context.hpp` / `WorkerContext` owns the existing thread-local worker
+identity behind read and write operations. Workers assign it at the same entry
+points; -1 retains the single-threaded seam meaning. Each scratch caller still
+selects the reserved slot from the registry it actually indexes.
+
+## Definition ownership and compilation operations
+
+`compiler/compiled_definition_registry.hpp` / `CompiledDefinitionRegistry` owns
+source configurations, compiled entities, operator membership, configured-name
+membership, typed-equality entities, pending rule-family sets and name counters.
+Runtime callers receive const views or use the existing allocation-free point
+readers. Only compiler owners can mutate these stores; test-only fixtures can
+assemble synthetic registries without adding mutable production accessors.
+
+`compiler/structural_compiler.hpp` / `StructuralCompiler` compiles source structure,
+validates registered definitions, derives type metadata and prepares typed equality.
+Its `compileExpression` operation owns counter use: callers request a compilation
+without passing counter references. Recursive calls preserve their original order.
+The configured-name snapshot still occurs before generated configurations are added.
+
+`compiler/or_rule_compiler.hpp` / `OrRuleCompiler` prepares OR closure, symmetry,
+mutual exclusions and subset exclusions. `compiler/existence_rule_compiler.hpp` /
+`ExistenceRuleCompiler` prepares existence implications. Both request compact
+implication compilation from `StructuralCompiler`. `compiler/supporting_rule_compiler.hpp`
+/ `SupportingRuleCompiler` prepares contraposition, conjunction-refutation and
+supporting families. The mutual component references are bound without invoking
+operations during construction; compilation begins after every component exists.
+
+`compiler/compilation_persistence.hpp` / `CompilationPersistence` loads and saves
+the existing registry and compilation-state formats. It borrows the batch identity
+and preserves name-order serialization and counter restoration. The visualizer
+requests persistence instead of implementing it.
+
+`compiler/implication_builder.hpp` / `ImplicationBuilder` owns the shared first-premise
+binder-placement rule in owning-string and caller-arena forms. Its inline boundaries,
+fixed stack bounds and result bytes remain unchanged.
+
+## Argument-type analysis
+
+`compiler/argument_analyzer.hpp` / `ArgumentAnalyzer` exposes expression analysis,
+configuration consistency checking and set-definition recognition. Its structural
+comparison and membership-recognition helpers are private. It delegates tree
+construction to `compiler/argument_type_parser.hpp` / `ArgumentTypeParser`, which
+reads the configured argument types directly and owns recursive parsing, type-map
+merging and binder removal. It has no analyzer or prover back-reference.
+`compiler/analysis_node.hpp` / `AnalysisNode` retains the existing child ownership
+and free-argument metadata. Parsing order, optional-input behavior and all existing
+assertions are unchanged.
+
+Every logical entity carries two implication sets, each compiled when the entity
+is created: the disintegration set `LogicalEntity::implications` (an or's K-rules
+and subset exclusions, an existence's two negation rules) and the integration set
+`LogicalEntity::integrationImplications` (every rule `prepareIntegration` installs
+for an and or existence instance). `compiler/integration_rule_compiler.cpp` /
+`IntegrationRuleCompiler::compileIntegrationImplications` runs at every and and
+existence mint of `StructuralCompiler::compileExpression` and for the
+extensionality entity in `ensureTypedEqualityEntity`. No pass completes a list
+later: an entity loaded from a GL binary carries both sets from the binary
+([D-503](../40_decisions.md#d-503)).
 
 ## What happens here
 
@@ -205,9 +313,11 @@ Each conjunct is a Peano axiom:
 - `(>[n](in[n,N])!(in2[n,i0,s]))` — 0 is not a successor.
 - `(>[m](in[m,N])(>[n1,n2](&(in2[n1,m,s])(in2[n2,m,s]))(=[n1,n2])))` — successor is injective.
 - `(fXYZ[+,N,N,N])` — `+` is a function N × N → N.
-- `(>[a](in[a,N])(>[b](in3[a,i0,b,+])(=[a,b])))` — `+` has identity `i0 = 0` (the "and (=[a,b]) implies in3[a,i0,b,+]" direction is the iff pair).
+- `(>[a](in[a,N])(>[b](in3[a,i0,b,+])(=[a,b])))` and its converse `(>[a,b](&(=[a,b])(&(in[a,N])(in[b,N])))(in3[a,i0,b,+]))` — `+` has identity `i0 = 0`. The converse builds the fact `a + 0 = a` for every natural `a`.
 - `(>[b](in[b,N])(>[a,c,d](...)(...)))` — the successor rule for `+`: if `s(b) = c` and `a + b = d`, then for every `e = s(d)`, `a + c = e` and vice versa.
-- Analogous conjuncts for `*`.
+- `(fXYZ[*,N,N,N])` — `*` is a function N × N → N.
+- `(>[a](in[a,N])(>[b](in3[a,i0,b,*])(=[b,i0])))` and its converse `(>[a,b](&(=[b,i0])(&(in[a,N])(in[b,N])))(in3[a,i0,b,*]))` — `0` absorbs under `*`. The converse builds the product fact `a * 0 = 0` for every natural `a`, as the `+` converse builds `a + 0 = a`; without it a product `a * 0` exists only when an admission builds it ([D-505](../40_decisions.md#d-505)).
+- The successor rule for `*`: if `s(b) = c` and `a * b = d`, then for every `e`, `d + a = e` exactly when `a * c = e`.
 
 The structure is dense but mechanical. The compiler parses it into a tree of `LogicalEntity` records, flattening the `and` tree into `elements`.
 
@@ -315,13 +425,17 @@ The public signature is `fold[N,s,+,op,f,n,m,p]`. Addition defines the interval 
 
 ---
 
+### Sequence membership definition
+
+FTA registers `inSequence[N,p,P]` from [`inSequence.mpl`](../../files/definitions/inSequence.mpl). It is the typed existence of an index `i` in `N` with `in2[i,p,P]`. Only `i` is existential; `N`, `p` and `P` stay fixed parameters. The definition is category `existence` and exposes no operator output. Public-name promotion uses the ordinary normalized-definition reuse mechanism, so matching anonymous membership existences in FTA become `inSequence` with their argument correspondence preserved; generated compact numbering may change. The sequence property remains a separate hypothesis.
+
 ## Compiled form — `CoreExpressionConfig` & `LogicalEntity`
 
 After the compiler reads a definition, it produces two in-memory records per expression name:
 
 ### `CoreExpressionConfig` — the configuration surface
 
-Defined at [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp). Fields:
+Defined at [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp). Fields:
 
 | Field | Meaning |
 |---|---|
@@ -334,7 +448,7 @@ Defined at [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp). Fields
 
 ### `LogicalEntity` — the metadata per definition
 
-Defined at [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp). Fields:
+Defined at [`memory.hpp`](../../../GL_Quick_VS/GL_Quick/src/memory.hpp). Fields:
 
 | Field | Meaning |
 |---|---|
@@ -356,7 +470,7 @@ The `category` field is the switch that determines how an expression is handled 
 - `or` — ordered signed disjuncts supply exclusion on demand and admitted case branches. Symmetry shares a processing identity while original statements and proof spellings remain distinct.
 - `and` — expanded/disintegrated into its elements. `(&(P1)(P2))` admitted ⇒ P1 admitted + P2 admitted.
 - `existence` — expanded into left (with new bound variable) + right elements. Requires a fresh variable binding on disintegration.
-- `implication` — terminal. Stored as hash-table rules: premise-signature → conclusion-template.
+- `implication` — terminal. Stored as hash-table rules: premise-signature → conclusion-template. A public definition whose whole body is one implication (`primeseq`) is registered under its own name with this category: `StructuralCompiler::compileCoreExpressionMap` forces the definition's signature through `excludeRepetitions`, which returns that full signature, exactly like the single-existence and single-or definitions.
 
 The distinction matters for **every** subsequent stage. A type mismatch in the GL binary (wrong `category` for an expression) silently corrupts the proof graph.
 
@@ -432,30 +546,24 @@ Batch-level fields (outside per-expression records) control things like the anch
 
 ## `files/GL_binaries/GL_binary_<Tag>.json` — the compiled artefact
 
-The compiler's output, and — since [D-22](../40_decisions.md#d-22) — also one of its **inputs**. Maps expression name to `{arity, category, elements, signature, definedSet}` — plus, on **or and existence entries**, `implications`: for an or, its K mutual-exclusion and subset-exclusion rules as `(implication<N>[u_…])` compacts over the or's own `u_` tokens (K-rules in leaf order, then the subset-exclusion rules in the disintegrator's enumeration order; the argument order is the projection onto the or's tokens — [D-309](../40_decisions.md#d-309)); for a two-element existence, its two existence implications `left → !right` then `right → !left` as compacts over the existence's own tokens ([D-310](../40_decisions.md#d-310)). The writer omits the key when the list is empty, so every other entry keeps the earlier layout byte-for-byte; an or or existence loaded without it is completed at the next `preMintReducedOrs` seam. Generated at every run; **gitignored**.
+The compiler's output, and — since [D-22](../40_decisions.md#d-22) — also one of its **inputs**. Maps expression name to `{arity, category, elements, signature, definedSet}` — plus, on **or and existence entries**, `implications`: for an or, its K mutual-exclusion and subset-exclusion rules as `(implication<N>[u_…])` compacts over the or's own `u_` tokens (K-rules in leaf order, then the subset-exclusion rules in the disintegrator's enumeration order; the argument order is the projection onto the or's tokens — [D-309](../40_decisions.md#d-309)); for a two-element existence, its two existence implications `left → !right` then `right → !left` as compacts over the existence's own tokens ([D-310](../40_decisions.md#d-310)). The writer always writes the key for an or or existence (an empty list included) and never for another category. **And and existence entries** also carry `integration_implications`: the entity's integration set as objects `{"compact": "(implication<N>[u_…])", "kind": "one_level" | "occupied" | "flat" | "or_introduction" | "disjunct_flat", "cites": <index or -1>}` in install order ([D-503](../40_decisions.md#d-503)). The loader reads both keys verbatim and asserts each present exactly for its categories; a binary from an older executable is stale and asserts — a full run regenerates every binary. Generated at every run; **gitignored**.
 
 **Cross-batch shared registry.** Spontaneous compact operator names (`implication<N>`, `existence<N>`, `or<N>`, `and<N>`) live in a sibling file `files/GL_binaries/GL_binary_shared.json`. This shared file is the cross-batch source of truth for spontaneous identifiers. Per-batch lifecycle:
 
 1. **Pre-batch (Python).** [`run_modes.py::_seed_per_batch_binary`](../../run_modes.py) copies `GL_binary_shared.json` into `GL_binary_<Tag>.json` immediately before invoking `gl_quick.exe <Tag>`. On a clean run when shared does not exist yet, an empty `{}` is written. Python is the sole writer of shared and the sole creator of the per-batch file at this step.
-2. **C++ startup.** The `ExpressionAnalyzer` constructor calls [`loadGlBinary`](../../GL_Quick_VS/GL_Quick/src/visualizer.cpp) on the per-batch file its `glBinaryFile` parameter names — the batch driver in [`run_modes.cpp`](../../GL_Quick_VS/GL_Quick/src/run_modes.cpp) passes `files/GL_binaries/GL_binary_<Tag>.json`; a constructor without a file (every unit test) reads nothing and compiles the registry from the config alone. Every entry is inserted into `compiledExpressions`. The current loader registers `repetitionExclusionMap` only after its category-name-prefix and numeric-suffix checks, so named logical predicates such as `preorder` are incorrectly omitted from that reuse cache. Numbered spontaneous entries get a row keyed by `(elements, category)` — both fields drawn from the JSON entry; the elements vector IS the `splitNK` exactly as `excludeRepetitions` stored it at allocation time. The category is part of the key because two structurally-identical bodies under different categories must allocate distinct names — see [D-60](../40_decisions.md#d-60) for the dormant cross-batch collision this guards against. The four shared counter members (`implCounter`, `existenceCounter`, `andCounter`, `orCounter`) are seeded from `max(N) + 1` so newly-allocated names start above the highest already in use.
+2. **C++ startup.** The `Prover` constructor calls [`loadGlBinary`](../../../GL_Quick_VS/GL_Quick/src/compiler/compilation_persistence.cpp) (`CompilationPersistence::loadGlBinary`) on the per-batch file its `glBinaryFile` parameter names — the batch driver in [`run_modes.cpp`](../../../GL_Quick_VS/GL_Quick/src/run_modes.cpp) passes `files/GL_binaries/GL_binary_<Tag>.json`; a constructor without a file (every unit test) reads nothing and compiles the registry from the config alone. Every entry is inserted into `compiledExpressions`. The loader first installs every definition, then restores public predicates through `registerLoadedNamedCompilation` and finishes argument-correct generated-name retirement through `finalizeCompilationReplacements`. Public predicates therefore participate in normalized reuse. Numbered spontaneous entries get one row keyed like a fresh registration: the canonical form of their stored elements under their category (`CompilationReuse::registerStoredCompilation` → `canonicalReuseKey`, [I-323](../30_invariants.md#i-323)), so a later body is found whatever the order its elements were stored in. The category is part of the key because two structurally-identical bodies under different categories must allocate distinct names — see [D-60](../40_decisions.md#d-60) for the dormant cross-batch collision this guards against. The four shared counter members (`implCounter`, `existenceCounter`, `andCounter`, `orCounter`) are seeded from `max(N) + 1` so newly-allocated names start above the highest already in use.
 3. **C++ shutdown.** `exportCompiledExpressionsJSON` writes the entire `compiledExpressions` map to the same per-batch path. Because shared entries were preloaded, the resulting file contains the inherited shared entries plus this batch's new spontaneous allocations. The path is computed from the running executable through `project_paths.cpp`, `projectRoot` and is identical for every batch (incubator and main alike) — see [D-54](../40_decisions.md#d-54) for the unification of the writer path that previously diverged into `files/incubator/GL_binaries/` for incubator batches.
 4. **Post-batch (Python).** [`run_modes.py::_merge_into_shared`](../../run_modes.py) reads the per-batch file and adds any name not already in shared whose `category` is in `{implication, existence, or, and}` (atomic entries are excluded). Applies to EVERY tag — incubator and main alike. The shared file grows monotonically over the run.
 
-**Known loader weakness — named predicate reuse.** `loadGlBinary` in `visualizer.cpp`
-lets the counter-name filter skip reuse registration as well. The later
-`compileCoreExpressionMapCore` returns immediately for an already-loaded named
-entity, leaving that entry absent. In the full FTA input this makes strictOrder
-compile through a duplicate `existence16` instead of the loaded `preorder`.
-Negated strict-order expansion then refutes the duplicate predicate while OR
-branch closure probes the public predicate name. The resulting live false
-branches trigger the measured burst-16 cost. The permanent loader correction
-is pending; diagnostic evidence is in [`rt_restoration_plan.md`](../../GPU/rt_restoration_plan.md).
+**Canonical reuse key.** Every definition, public or numbered, is registered under exactly one key: its body with the premises in canonical order (operator names in string order; inside each same-name group the order whose normalized token sequence is lexicographically smallest, bound variables before `u_` ones, numbers compared numerically; an implication's head last and part of the comparison), normalized in mode 2 (`CompilationNormalizer::canonicalCombination`, `CompilationReuse::canonicalReuseKey`, [D-523](../40_decisions.md#d-523)). A lookup computes the canonical key of the body at hand, so bodies that differ only in premise order and variable names share one name. The stored element order is the one compiled, not the canonical one.
+
+**Named predicate reuse.** Loaded public definitions retain their normalized reuse identities. The first public registration wins an equivalent body; numbered equivalents are retired with argument-correct reference migration before proof consumers start. The counter high-water marks survive retirement. See `compiler/compilation_reuse.cpp` / `CompilationReuse::registerLoadedNamedCompilation` and `CompilationReuse::finalizeCompilationReplacements`.
 
 **`implication<N>` signature shape.** A spontaneous entry's `signature` is `"(name[u_1,…,u_K])"` where `K` is the count of distinct free (unchangeable) arguments. On this branch the mail-broadcast compaction wrapper (`compileImplicationToCompact`, see [prover chapter](04_prover.md#compileimplicationtocompact)) is the first path that compiles a *fully-bound* implication — a proved theorem binds every variable ([D-75](../40_decisions.md#d-75)), so `K = 0` and the signature is `"(implication<N>[])"` (no arguments). An implication carrying genuinely-free arguments yields `"(implication<N>[u_1,…])"`. The `K = 0` form is well-formed only because `excludeRepetitions` no longer unconditionally strips a trailing comma (it would otherwise emit the malformed `"(implication<N>])"`); see the prover chapter Weaknesses entry.
 
 This guarantees [I-23](../30_invariants.md#i-23) for cross-batch allocations across the entire run: the same logical operator carries the same compact name in every batch of a run, so `compiled_theorems.txt`, `raw_proof_graph/global_theorem_list.txt`, and the proof-graph chapters all agree. Pre-2026-05-13 the merge early-returned for incubator-prefixed tags (per the original [D-54](../40_decisions.md#d-54)); that skip is now superseded by [D-61](../40_decisions.md#d-61), enabled by the C++ category-aware `repetitionExclusionMap` key per [D-60](../40_decisions.md#d-60).
 
-Because the binary is regenerated, this document cannot quote a byte-exact example from a fresh checkout. A representative schema (verifiable against [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp) and post-run binaries):
+Because the binary is regenerated, this document cannot quote a byte-exact example from a fresh checkout. A representative schema (verifiable against [`memory.hpp`](../../../GL_Quick_VS/GL_Quick/src/memory.hpp) and post-run binaries):
 
 ```json
 {
@@ -477,14 +585,9 @@ Because the binary is regenerated, this document cannot quote a byte-exact examp
     },
     "fXY": {
         "arity": 3,
-        "category": "existence",
-        "elements": ["(...)","(...)"],
-        "signature": "(fXY[u_0,u_1,u_2])",
-        "definedSet": 0,
-        "implications": [
-            "(implication34[u_0,u_1,u_2])",
-            "...left → !right, then right → !left, over the existence's tokens..."
-        ]
+        "category": "and",
+        "elements": ["(...typing...)","(...totality...)","(...functionality...)"],
+        "signature": "(fXY[u_0,u_1,u_2])"
     },
     "or6": {
         "arity": 6,
@@ -508,12 +611,12 @@ The verifier also consults this binary — see [`10_pipeline/08_verifier.md`](08
 
 | Step | Function | File |
 |---|---|---|
-| 1. Config read | `ce::modifyCoreExpressionMap` | [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp) |
-| 2. Anchor key discovery | `ce::findAnchorKey` | [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp) |
-| 3. Anchor signature minting | `ce::makeAnchorSignature` | [`compiler.hpp`](../../GL_Quick_VS/GL_Quick/src/compiler.hpp) |
+| 1. Config read | `ce::modifyCoreExpressionMap` | [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp) |
+| 2. Anchor key discovery | `ce::findAnchorKey` | [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp) |
+| 3. Anchor signature minting | `ce::makeAnchorSignature` | [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp) |
 | 4. Definition-file loading | Inside `modifyCoreExpressionMap` — reads from path under `files/definitions/` if `full_mpl` ends in `.mpl` | |
 | 5. Compile into `CoreExpressionConfig` + `LogicalEntity` | `modifyCoreExpressionMap` + populated in per-entity sites | |
-| 6. Serialisation to JSON | Visualiser — `exportCompiledExpressionsJSON` | [`visualizer.cpp`](../../GL_Quick_VS/GL_Quick/src/visualizer.cpp) |
+| 6. Serialisation to JSON | `CompilationPersistence::exportCompiledExpressionsJSON` | `compiler/compilation_persistence.cpp` |
 
 ---
 
@@ -534,6 +637,8 @@ Take the atomic expression `(in3[a,b,c,+])` — "`a + b = c`".
 ### Known & tracked
 
 - **Generated binary identity is run-specific.** `files/GL_binaries/*` contains ignored generated artifacts; each batch rewrites its registry. Pair saved proofs with the matching archived registry rather than assuming the current generated files match `HEAD`. Examples of binary structure in this document are hand-written and verified against the parsing code.
+- **Compiler bug, open: a universal with a nested premise inside a supplied row's existence or conjunction crashes the compile.** The FTA2 I2 draft (2026-10-18) had the head `!(>[p](p|n)!(&(2<=p)(>[d](d|n)(>[](2<=d)(p<=d)))))`. A caller outside [`compiler/structural_compiler.cpp`](../../../GL_Quick_VS/GL_Quick/src/compiler/structural_compiler.cpp), `StructuralCompiler::compileExpression`, compiles the negated body; the negated universal takes the existence branch, its witness `d` is renamed, and the toggled remainder `!(>[](2<=d)(p<=d))` re-enters the existence branch with an empty binder, where the single-witness assertion in [`compiler/expression_parser.cpp`](../../../GL_Quick_VS/GL_Quick/src/compiler/expression_parser.cpp), `ExpressionParser::renameLastRemoved`, fires. The form is valid MPL and must be processed (maintainer, 2026-10-18); the fix is deferred. Mitigation until then: keep such a universal inside a predicate's definition ([MPL cookbook](../03b_mpl_cookbook.md), section 5). Definitions with the same nesting (`prime`, `ordered`) compile.
+- **Bug, open: an existence in a supplied row whose body is a conjunction of several predicates crashes the FTA batch's admission pass.** The FTA2 I4 draft (2026-10-18) had the head `∃k∈N ∃P: sequence ∧ primeseq ∧ ordered ∧ fold`. The integration rule of the head's existence carries the conjunction as a negated numbered OR, `!(or17[…])`; `or17` has a compiled entry but no core configuration, so `AdmissionMarkerBuilder::makeNormalizedKeysForAdmission` asserts (`cfg && "Core expression not found"`; trap-confirmed in run `fta_i4_short_02`). Mechanism by code reading: compiled entities get configurations from `StructuralCompiler::extendCoreExpressionMap`, which runs once at the end of definition compilation; `OrRuleCompiler::findOrMintOrOperator` registers a configuration when it mints, but the OR branch of `StructuralCompiler::compileExpression` mints through `CompilationReuse::excludeRepetitions` without one, so an OR first minted while compiling a conjecture stays unconfigured. Mitigation: bundle the properties in a definition (cookbook section 2, the `nontrivialFactor` pattern); I4 states its head through `hasPrimeFactorization`, a typed existence over the bundle `primeFactorSeq` ([configuration reference](../04_configs.md#fta-prime-factorizations)).
 
 ### Suspected fragility
 
@@ -543,6 +648,7 @@ Take the atomic expression `(in3[a,b,c,+])` — "`a + b = c`".
 
 ### Not exercised by tests
 
+- **Public implication definitions downstream.** `primeseq` is the first registered definition whose body is a single implication; until it, the compiler branch for that shape asserted on every input. Its downstream handling (premise disintegration, goal integration, verifier, Lean export) is exercised only by the FTA F7 rows of the full pipeline, not by a dedicated unit test. Exception: an inherited (status-3) instance is a rule carrier like a numbered compact implication, with its own unit tests (`status_gate` suite; [D-467](../40_decisions.md#d-467)).
 - **Malformed MPL error messages.** A definition file with a missing bracket or a typo produces a parse failure deep in the compiler. The error message does not always cite the file or line. A regression test that intentionally breaks each definition file and asserts the specific error is absent.
 - **GL-binary schema stability across versions.** No test verifies that `GL_binary_Peano.json` matches a golden reference across commits. Silent field-name drift would not be detected until downstream code broke.
 
@@ -550,7 +656,7 @@ Take the atomic expression `(in3[a,b,c,+])` — "`a + b = c`".
 
 ## Open questions
 
-- **OPEN-7 — RESOLVED.** `fXY` and `fXYZ` have category `and`. `ExpressionAnalyzer::compileCoreExpressionMapCore` compiles their conjunctions of defining conditions; existence conditions remain separate constituent entities.
+- **OPEN-7 — RESOLVED.** `fXY` and `fXYZ` have category `and`. `StructuralCompiler::compileExpression` compiles their conjunctions of defining conditions; existence conditions remain separate constituent entities.
 
 ---
 
@@ -571,13 +677,17 @@ Take the atomic expression `(in3[a,b,c,+])` — "`a + b = c`".
 
 Compilation installs no runtime rules. Ordinary disintegration of a unary implication publishes its prepared direct compositions, with checked helper expansion followed by ordinary implication-composition history and compact compilation. The helper remains proof-only and the original implication remains installed. Owners outside the unary-consumer shape publish their guarded helpers as before. Direct OR admission publishes only the concrete alternative's direct rules. See [I-259](../30_invariants.md#i-259).
 
+**When the passes run ([D-524](../40_decisions.md#d-524)).** `compileContrapositionFamilies` runs at the end of every structural compile (and at the registry-completion seam) and calls the two other passes; every call walks the whole registry. A pass records the entity address of every entry while it collects its owners and, after preparing them, marks the entries it added through `SupportingRuleCompiler::forEachEntryWithAdded` — one walk alongside the recorded addresses, the answer a set of the names present gives, without copying a name. The covered-source set behind the uncovered-source assert is built only when a standalone source is incomplete; refutation helpers are found through the map's transparent comparator.
+
 ### Prepared reversals
 
-`contraposition.cpp`, `compileContrapositionFamilies`, retains the compiler's split forward rules and prepares every binder-covering subset of compatible heads sharing a complete signed premise within one conjunction family. A singleton produces direct contraposition; a larger subset produces an auxiliary conjunction, grouped source implication and its reversal. Definition parameters stay fixed and the complete bound-variable set aligns through the premise.
+`compiler/supporting_rule_compiler.cpp`, `compileContrapositionFamilies`, retains the compiler's split forward rules and prepares every binder-covering subset of compatible heads sharing a complete signed premise within one conjunction family. A singleton produces direct contraposition; a larger subset produces an auxiliary conjunction, grouped source implication and its reversal. Definition parameters stay fixed and the complete bound-variable set aligns through the premise.
 
 `LogicalEntity::contrapositives` records the exact source compact instances plus grouped-source and reversed compact templates. The GL binary carries a versioned `contraposition` object with preparation state and source correspondence. These fields are independent of `elements` and definition identity; canonical compilation-name replacement rewrites their references. Missing legacy metadata is completed before workers at the registry-completion seam. Generated auxiliaries do not recursively generate new grouping families. A grouped source carries its prepared direct reversal for independent activation after mail or rewriting. Conjunction compaction returns bare argument names; restore fixed-parameter prefixes before forming the source and reverse binder lists. At disintegration, each auxiliary becomes its own statement compact through `prepareIntegrationCore` and ordinary implication disintegration, following the attached-implication pattern used by existences. See [I-260](../30_invariants.md#i-260).
 
-**D-382 exception.** The maintainer excludes negated-existence body-rule contraposition: a unary source whose head denies membership of its sole bound variable in a fixed set. `contraposition.cpp`, `isContrapositionTypingExclusion`, recognizes this structural class before grouping or direct reversal. The forward body rule remains; its typing-to-negative-body converse remains absent. Positive typing heads, negative relation heads, fixed-element negatives and multiple-bound-variable rules are not this exception.
+**D-382 exception.** The maintainer excludes negated-existence body-rule contraposition: a unary source whose head denies membership of its sole bound variable in a fixed set. `compiler/supporting_rule_compiler.cpp`, `isContrapositionTypingExclusion`, recognizes this structural class before grouping or direct reversal. The forward body rule remains; its typing-to-negative-body converse remains absent. Positive typing heads, negative relation heads, fixed-element negatives and multiple-bound-variable rules are not this exception.
+
+**D-468 exception.** A configured definition whose whole body is one implication and whose head does not mention every variable its premise binds (`primeseq`: `P(i)=x` implies `prime(x)`, the index `i` absent from the head) has no binder-covering contrapositive: the reversed rule would leave that variable unbound. `compiler/supporting_rule_compiler.cpp`, `isContrapositionUncoveredDefinition`, recognizes it before grouping or direct reversal; "configured" is `expressionsFromConfig` membership, so generated implication compacts of the same shape keep the coverage assert. The forward rule remains installed; no reversed rule is prepared.
 
 ---
 

@@ -1,0 +1,6 @@
+{"version": "1.2.0",
+ "packagesDir": ".lake/packages",
+ "packages": [],
+ "name": "gl_peano_export",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

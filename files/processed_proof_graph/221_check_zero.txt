@@ -1,0 +1,2 @@
+(=[i0,v1])	main	symmetry of equality	(=[v1,i0])	main
+(=[v1,i0])	main	recursion

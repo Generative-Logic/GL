@@ -29,23 +29,27 @@
 ///
 /// @details
 /// Covers the registration-time creation block in
-/// `ExpressionAnalyzer::addTheoremToMemory`: complement key / seed /
+/// `gl::tests::ProverFixture::addTheoremToMemory`: complement key / seed /
 /// theorem-id wiring, independence from the verbatim `try_contradiction`
 /// branch, the skip-on-exists dedup when opposite-head conjectures share
 /// a chain, and the config parse (default false; IncubatorPeano2 true).
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../prover.hpp"
 
 TEST(contradiction_negated_head, creation_complement_lb) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.try_contradiction = false;
     ea.parameters.try_contradiction_negated_head = true;
 
     const std::string conj =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
-    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
 
     gl::Memory* anchorLB =
         ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -61,25 +65,25 @@ TEST(contradiction_negated_head, creation_complement_lb) {
     ASSERT_TRUE(ea.simpleMapStore.findChild(innerLB, "__contradiction__(=[7,8])")
                 == nullptr);
 
-    ASSERT_TRUE(contra->primedForContradiction);
+    ASSERT_TRUE(((*(contra)).primedForContradiction));
     ASSERT_TRUE(contra->exprKey() == std::string("__contradiction__!(=[7,8])"));
-    ASSERT_TRUE(contra->parentMemory == innerLB);
+    ASSERT_TRUE(((*(contra)).parentMemory) == innerLB);
 
     // The stored theorem is the conjecture itself.
-    ASSERT_NE(contra->contradictionTheoremId, 0);
-    ASSERT_TRUE(contra->nameMap.decode(contra->contradictionTheoremId) == conj);
+    ASSERT_NE(((*(contra)).contradictionTheoremId), 0);
+    ASSERT_TRUE(((*(contra)).nameMap).decode(((*(contra)).contradictionTheoremId)) == conj);
 
     // The negated head is seeded as a known main-scope statement.
-    const gl::NameId seedId = contra->nameMap.lookup("!(=[7,8])");
+    const gl::NameId seedId = ((*(contra)).nameMap).lookup("!(=[7,8])");
     ASSERT_NE(seedId, 0);
-    const gl::StatementFlags* fl = contra->intKnownStatements.find(
+    const gl::StatementFlags* fl = ((*(contra)).intKnownStatements).find(
         gl::StatementKey{ seedId, gl::NameMap::MAIN_ID });
     ASSERT_TRUE(fl != nullptr);
     ASSERT_TRUE(fl != nullptr);
 }
 
 TEST(contradiction_negated_head, dedup_collision_opposite_heads) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.try_contradiction = true;
     ea.parameters.try_contradiction_negated_head = true;
 
@@ -88,7 +92,7 @@ TEST(contradiction_negated_head, dedup_collision_opposite_heads) {
     const std::string conjNeg =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])!(=[7,8])))";
 
-    ea.addTheoremToMemory(conjPos, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conjPos, ea.body, 0, false, ea.globalDependencies);
 
     gl::Memory* anchorLB =
         ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -107,7 +111,7 @@ TEST(contradiction_negated_head, dedup_collision_opposite_heads) {
     // conjNeg's verbatim and complement keys both collide with conjPos's LBs;
     // the byte-identical seed/theorem make skip-on-exists lossless, so both
     // children stay pointer-stable.
-    ea.addTheoremToMemory(conjNeg, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conjNeg, ea.body, 0, false, ea.globalDependencies);
     ASSERT_TRUE(ea.simpleMapStore.findChild(innerLB, "__contradiction__(=[7,8])")
                 == verbatimLB);
     ASSERT_TRUE(ea.simpleMapStore.findChild(innerLB, "__contradiction__!(=[7,8])")
@@ -124,7 +128,7 @@ TEST(contradiction_negated_head, config_parse_defaults_and_incubator_peano2) {
         ASSERT_FALSE(defaults.try_contradiction_negated_head);
     }
     {
-        gl::ExpressionAnalyzer ea(std::string("IncubatorPeano2"));
+        gl::tests::ProverFixture ea(std::string("IncubatorPeano2"));
         ASSERT_TRUE(ea.parameters.try_contradiction_negated_head);
         ASSERT_TRUE(ea.parameters.try_contradiction);
     }

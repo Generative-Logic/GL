@@ -200,7 +200,7 @@ namespace gl {
         ///
         /// @details Includes reusable holes and directory pages retained by the store.
         /// @return Allocated bytes on the owning arena.
-        int64_t liveBytes() const { return slots_.liveBytes() + index_.liveBytes(); }
+        int64_t liveBytes() const { return peak_snapshot::measure("slots_", slots_, [&] { return slots_.liveBytes(); }) + peak_snapshot::measure("index_", index_, [&] { return index_.liveBytes(); }); }
         /// @brief Account retained record slots without their page rounding.
         ///
         /// @details Includes metadata and reusable slots; list references are separate.
@@ -390,7 +390,7 @@ namespace gl {
         ///
         /// @details The owner reports the store separately, once per logic block.
         /// @return Physical reference storage bytes.
-        int64_t liveBytes() const { return ids_.liveBytes(); }
+        int64_t liveBytes() const { return peak_snapshot::measure("ids_", ids_, [&] { return ids_.liveBytes(); }); }
         /// @brief Account reference content instead of expanded canonical records.
         ///
         /// @details Canonical deload keeps the full-record value_type; resident

@@ -56,6 +56,16 @@ namespace gl {
     /// per-container page overhead low (`dirCap = pageBytes / sizeof(int32)`
     /// data-page vids per directory page — a power of two, e.g. 512 at 2 KiB):
     ///   - EMPTY: `rootVid_ == kNoVid`, zero pages.
+    ///   - ONE sub-page slot (`subPageClass_ != 0`, only on an arena with
+    ///     `LbArena::enableSubPages`): `rootVid_` is the vid of the arena page
+    ///     that holds the slot and `firstOffset_` the slot's byte offset in it;
+    ///     `shift_` / `mask_` give the slot's power-of-two element capacity, so
+    ///     the page-and-slot split is unchanged. A vector starts in the
+    ///     smallest slot that holds its first growth (64 bytes up to half a
+    ///     page), moves to a larger slot as it grows, and moves to one whole
+    ///     data page once it outgrows the largest slot
+    ///     (D-464). `firstOffset_` is zero in every other
+    ///     shape.
     ///   - ONE data page (`numPages_ == 1`): `rootVid_` IS that data page's vid
     ///     — no directory page at all.
     ///   - `2 .. dirCap` data pages: `rootVid_` is a single directory page
@@ -161,6 +171,8 @@ namespace gl {
                 rootVid_ = kNoVid;
                 size_ = 0;
                 numPages_ = 0;
+                firstOffset_ = 0;
+                subPageClass_ = 0;
                 return;
             }
             clear();
@@ -197,7 +209,8 @@ namespace gl {
         /// @details
         /// One shift + one mask to split the index into (data page, slot), one
         /// directory lookup when there is more than one page, and one `pageAt`
-        /// to resolve the data page. Asserts range and — via `pageAt` —
+        /// to resolve the data page (plus the sub-page offset, zero unless the
+        /// vector lives in a sub-page slot). Asserts range and — via `pageAt` —
         /// residency. In-place writes are impossible through the public
         /// surface, which keeps the skip-unchanged deload contract airtight.
         ///
@@ -206,10 +219,7 @@ namespace gl {
         ///         preceding element is erased.
         GL_FORCEINLINE const T& operator[](int32_t i) const {
             assert(i >= 0 && i < size_);
-            const int32_t dataVid = dataVidOf(i >> shift_);
-            return *reinterpret_cast<const T*>(
-                arena_->pageAt(dataVid)
-                + static_cast<std::size_t>(i & mask_) * sizeof(T));
+            return *reinterpret_cast<const T*>(slotAddress(i));
         }
 
         /// @brief In-place overwrite of element `i` — the one controlled mutable
@@ -315,12 +325,11 @@ namespace gl {
             const int32_t within = i & mask_;
             const int32_t toPageEnd = (mask_ + 1) - within;
             runLen = (toPageEnd < size_ - i) ? toPageEnd : (size_ - i);
-            return reinterpret_cast<const T*>(
-                arena_->pageAt(dataVidOf(i >> shift_))
-                + static_cast<std::size_t>(within) * sizeof(T));
+            return reinterpret_cast<const T*>(slotAddress(i));
         }
 
-        /// @brief Append one element, growing by one page on a boundary.
+        /// @brief Append one element, growing on a capacity boundary (a larger
+        ///        sub-page slot, a whole page, or one more page).
         ///
         /// @param value Element to copy in.
         void push_back(const T& value) {
@@ -330,7 +339,7 @@ namespace gl {
                 *dirty_ = DirtyState::AppendedOnly;
             ensureGeometry();
             if (size_ == (static_cast<int64_t>(numPages_) << shift_))
-                appendDataVid(arena_->allocPage());
+                growCapacity(static_cast<int64_t>(size_) + 1);
             writeSlot(size_, value);
             ++size_;
         }
@@ -420,7 +429,7 @@ namespace gl {
             *dirty_ = DirtyState::Restructured;
             ensureGeometry();
             if (size_ == (static_cast<int64_t>(numPages_) << shift_))
-                appendDataVid(arena_->allocPage());
+                growCapacity(static_cast<int64_t>(size_) + 1);
             ++size_;
             blockMove(i, i + 1, size_ - 1 - i);
             writeSlot(i, copy);
@@ -535,7 +544,7 @@ namespace gl {
                 const int32_t oldSize = size_;
                 for (int32_t k = 0; k < delta; ++k) {     // extend pages + size_
                     if (size_ == (static_cast<int64_t>(numPages_) << shift_))
-                        appendDataVid(arena_->allocPage());
+                        growCapacity(static_cast<int64_t>(oldSize) + delta);
                     ++size_;
                 }
                 blockMove(pos + oldLen, pos + oldLen + delta,
@@ -633,7 +642,7 @@ namespace gl {
             ensureGeometry();
             while (size_ < newSize) {
                 if (size_ == (static_cast<int64_t>(numPages_) << shift_))
-                    appendDataVid(arena_->allocPage());
+                    growCapacity(newSize);
                 const int32_t room = static_cast<int32_t>(std::min<int64_t>(
                     newSize - size_, (static_cast<int64_t>(numPages_) << shift_) - size_));
                 size_ += room;
@@ -726,7 +735,10 @@ namespace gl {
         void clear() {
             *dirty_ = DirtyState::Restructured;
             const int32_t dirCap = dirMask_ + 1;
-            if (numPages_ == 1) {
+            if (subPageClass_ != 0) {
+                freeLastDataPage();
+                assert(numPages_ == 0);
+            } else if (numPages_ == 1) {
                 arena_->freePage(rootVid_);
             } else if (numPages_ > 1 && numPages_ <= dirCap) {   // single directory page
                 const int32_t* dir = reinterpret_cast<const int32_t*>(
@@ -819,9 +831,7 @@ namespace gl {
                 const int32_t slot = row & mask_;
                 const int32_t epp = mask_ + 1;
                 const int32_t rows = std::min(epp - slot, size_ - row);
-                const char* span =
-                    arena_->pageAt(dataVidOf(row >> shift_))
-                    + static_cast<std::size_t>(slot) * sizeof(T);
+                const char* span = slotAddress(row);
                 const std::size_t bytes =
                     static_cast<std::size_t>(rows) * sizeof(T);
                 const std::size_t base = out.size();
@@ -898,6 +908,12 @@ namespace gl {
         int32_t appendRunNoStraddle(const T* src, int32_t n) {
             assert(n >= 0);
             ensureGeometry();
+            // A sub-page slot is one run: a vector in a slot that cannot take
+            // the whole run first moves to a slot (or a whole page) that can,
+            // and the page rule below then applies to the new shape.
+            if (subPageClass_ != 0
+                && static_cast<int64_t>(size_) + n > (int64_t(1) << shift_))
+                growCapacity(static_cast<int64_t>(size_) + n);
             const int32_t epp = mask_ + 1;
             assert(n <= epp
                 && "PagedVector::appendRunNoStraddle run exceeds one page — "
@@ -913,10 +929,8 @@ namespace gl {
                 // filler is never read (the index records the post-pad start)
                 // nor deloaded (the content dump walks per element).
                 const int32_t pad = epp - within;
-                std::memset(
-                    arena_->pageAt(dataVidOf(size_ >> shift_))
-                        + static_cast<std::size_t>(within) * sizeof(T),
-                    0, static_cast<std::size_t>(pad) * sizeof(T));
+                std::memset(slotPtr(size_), 0,
+                    static_cast<std::size_t>(pad) * sizeof(T));
                 if (*dirty_ == DirtyState::Clean)
                     *dirty_ = DirtyState::AppendedOnly;
                 size_ += pad;
@@ -935,11 +949,29 @@ namespace gl {
         /// The third level adds `ceil(numPages_ / dirCap²)` L2 pages and uses
         /// the root as L3. Multiply the total page count by `pageBytes`. Unlike `ArenaVector::liveBytes` (a logical element
         /// measure) this is the PHYSICAL pages the container pins, which is what
-        /// the page-tier reclamation reasons about.
+        /// the page-tier reclamation reasons about. A vector in a sub-page slot
+        /// pins the slot's bytes.
         ///
         /// @return Held-page bytes; 0 when empty.
         int64_t liveBytes() const {
             if (numPages_ == 0) return 0;
+            if (subPageClass_ != 0) {
+                const int32_t bytes = LbArena::subPageBytes(subPageClass_ - 1);
+                if (peak_snapshot::active()) {
+                    const char* slot = arena_->pageAt(rootVid_) + firstOffset_;
+                    peak_snapshot::note(slot, static_cast<std::size_t>(bytes), 1);
+                    peak_snapshot::note(slot, static_cast<std::size_t>(size_) * sizeof(T), 3);
+                }
+                return bytes;
+            }
+            if (peak_snapshot::active()) {
+                peak_snapshot::observePagedPages(*arena_, rootVid_, numPages_, dirShift_,
+                    [&](int32_t page, const char* address) {
+                        const int64_t first = static_cast<int64_t>(page) * (int64_t(1) << shift_);
+                        const int64_t used = std::max<int64_t>(0, std::min<int64_t>((int64_t(1) << shift_), size_ - first));
+                        peak_snapshot::note(address, static_cast<std::size_t>(used) * sizeof(T), 3);
+                    });
+            }
             const int32_t dirCap = dirMask_ + 1;
             int64_t held = numPages_;                       // data pages
             if (numPages_ > 1 && numPages_ <= dirCap) {
@@ -997,9 +1029,7 @@ namespace gl {
         /// @param i     Slot in `[0, size_]` (one past the end on append).
         /// @param value Element to store.
         GL_FORCEINLINE void writeSlot(int32_t i, const T& value) {
-            const int32_t dataVid = dataVidOf(i >> shift_);
-            *reinterpret_cast<T*>(arena_->pageAt(dataVid)
-                + static_cast<std::size_t>(i & mask_) * sizeof(T)) = value;
+            *reinterpret_cast<T*>(slotPtr(i)) = value;
         }
 
         /// @brief Append `count` elements from raw bytes across page spans —
@@ -1017,14 +1047,12 @@ namespace gl {
             int64_t done = 0;
             while (done < count) {
                 if (size_ == (static_cast<int64_t>(numPages_) << shift_))
-                    appendDataVid(arena_->allocPage());
+                    growCapacity(static_cast<int64_t>(size_) + (count - done));
                 const int32_t slot = size_ & mask_;
                 const int32_t epp = mask_ + 1;
                 const int32_t rows = static_cast<int32_t>(
                     std::min<int64_t>(epp - slot, count - done));
-                std::memcpy(
-                    arena_->pageAt(dataVidOf(size_ >> shift_))
-                        + static_cast<std::size_t>(slot) * sizeof(T),
+                std::memcpy(slotPtr(size_),
                     bytes + static_cast<std::size_t>(done) * sizeof(T),
                     static_cast<std::size_t>(rows) * sizeof(T));
                 size_ += rows;
@@ -1042,7 +1070,22 @@ namespace gl {
         /// @param i Slot whose page is allocated.
         /// @return Writable pointer to element `i` (valid for one element).
         GL_FORCEINLINE char* slotPtr(int32_t i) {
-            return arena_->pageAt(dataVidOf(i >> shift_))
+            return arena_->pageAt(dataVidOf(i >> shift_)) + firstOffset_
+                + static_cast<std::size_t>(i & mask_) * sizeof(T);
+        }
+
+        /// @brief Read-only byte pointer to slot `i` — the resolve every reader
+        ///        shares.
+        ///
+        /// @details
+        /// The page-and-slot split of `slotPtr`: one shift, one mask, one
+        /// `dataVidOf` resolve, and the sub-page offset, which is zero unless
+        /// the vector lives in a sub-page slot (then `i >> shift_` is always 0).
+        ///
+        /// @param i Slot whose page is allocated.
+        /// @return Pointer to element `i` (valid for one element).
+        GL_FORCEINLINE const char* slotAddress(int32_t i) const {
+            return arena_->pageAt(dataVidOf(i >> shift_)) + firstOffset_
                 + static_cast<std::size_t>(i & mask_) * sizeof(T);
         }
 
@@ -1210,8 +1253,19 @@ namespace gl {
         /// page empties frees that L1 page; at the `dirCap+1 -> dirCap` boundary
         /// it collapses back to a single directory page (L1 page 0, already
         /// holding exactly `dirCap` entries, becomes the directory page; the L2
-        /// root and the emptied last L1 page are freed).
+        /// root and the emptied last L1 page are freed). A vector in a sub-page
+        /// slot returns the slot and leaves with the whole-page geometry.
         void freeLastDataPage() {
+            if (subPageClass_ != 0) {
+                arena_->freeSubPage(LbArena::SubPage{ rootVid_, firstOffset_ },
+                                    subPageClass_ - 1);
+                rootVid_ = kNoVid;
+                numPages_ = 0;
+                firstOffset_ = 0;
+                subPageClass_ = 0;
+                setPageGeometry();
+                return;
+            }
             arena_->freePage(dataVidOf(numPages_ - 1));
             const int32_t dirCap = dirMask_ + 1;
             if (numPages_ == 1) {                 // single page -> empty
@@ -1278,6 +1332,152 @@ namespace gl {
         /// exact, one shift + one mask like the within-page element split.
         void ensureGeometry() {
             if (shift_ >= 0) return;
+            setPageGeometry();
+        }
+
+        /// @brief Add capacity for a vector that will hold `needed` elements,
+        ///        when its current shape cannot.
+        ///
+        /// @details
+        /// The one growth door every append path takes at a capacity boundary.
+        /// An empty vector takes the smallest sub-page slot that holds `needed`
+        /// elements when its arena offers sub-pages, else its first whole page.
+        /// A vector in a sub-page slot moves to the smallest larger slot that
+        /// holds `needed`, or to one whole page when no slot does
+        /// (`moveSubPage`); the callers' page loops then add further pages as
+        /// before. A whole-page vector gains one data page. Single-threaded
+        /// write side only (I-83).
+        ///
+        /// @param needed Elements the vector must hold after the caller's
+        ///               append; more than the current capacity.
+        /// @return Nothing.
+        void growCapacity(int64_t needed) {
+            assert(shift_ >= 0
+                && needed > (static_cast<int64_t>(numPages_) << shift_)
+                && "PagedVector::growCapacity without a capacity shortfall");
+            if (numPages_ == 0) {
+                const int32_t cls = subPageClassFor(needed);
+                if (cls >= 0) {
+                    adoptSubPage(arena_->allocSubPage(cls), cls);
+                    return;
+                }
+                appendDataVid(arena_->allocPage());
+                return;
+            }
+            if (subPageClass_ != 0) {
+                moveSubPage(subPageClassFor(needed));
+                return;
+            }
+            assert(size_ == (static_cast<int64_t>(numPages_) << shift_)
+                && "PagedVector::growCapacity: a page is added only when the last is full");
+            appendDataVid(arena_->allocPage());
+        }
+
+        /// @brief log2 of the element capacity of a sub-page slot of size class
+        ///        `cls`, or -1 when one element of `T` does not fit the slot.
+        ///
+        /// @details
+        /// The slot holds the largest power-of-two element count that fits its
+        /// bytes, matching the whole-page split, so `shift_` / `mask_` address
+        /// it unchanged.
+        ///
+        /// @param cls Size class, `0 <= cls < LbArena::kSubPageMaxClasses`.
+        /// @return The element-count exponent, or -1.
+        static int32_t subPageShift(int32_t cls) {
+            const int32_t fit = LbArena::subPageBytes(cls) / static_cast<int32_t>(sizeof(T));
+            if (fit < 1) return -1;
+            int32_t s = 0;
+            while ((2 << s) <= fit) ++s;
+            return s;
+        }
+
+        /// @brief The smallest sub-page size class whose slot holds `needed`
+        ///        elements, or -1 when the arena offers no sub-pages or no slot
+        ///        holds them.
+        ///
+        /// @param needed Element count to hold; positive.
+        /// @return The size class, or -1 for whole pages.
+        int32_t subPageClassFor(int64_t needed) const {
+            assert(needed > 0);
+            if (!arena_->subPagesEnabled()) return -1;
+            const int32_t classes = arena_->subPageClassCount();
+            for (int32_t cls = 0; cls < classes; ++cls) {
+                const int32_t s = subPageShift(cls);
+                if (s >= 0 && (int64_t(1) << s) >= needed) return cls;
+            }
+            return -1;
+        }
+
+        /// @brief Point the vector at sub-page slot `slot` of size class `cls`
+        ///        and switch to the slot's element geometry.
+        ///
+        /// @details
+        /// Sets the root vid and byte offset, the class tag, one held "page",
+        /// and `shift_` / `mask_` to the slot's power-of-two capacity. Copies
+        /// nothing; the caller moves any elements first.
+        ///
+        /// @param slot A slot from `LbArena::allocSubPage(cls)`; its offset fits
+        ///             16 bits.
+        /// @param cls  The slot's size class.
+        /// @return Nothing.
+        void adoptSubPage(LbArena::SubPage slot, int32_t cls) {
+            assert(slot.offset >= 0 && slot.offset <= 0xFFFF
+                && "PagedVector: sub-page offset exceeds 16 bits");
+            const int32_t s = subPageShift(cls);
+            assert(s >= 0);
+            rootVid_ = slot.vid;
+            firstOffset_ = static_cast<uint16_t>(slot.offset);
+            subPageClass_ = static_cast<uint8_t>(cls + 1);
+            numPages_ = 1;
+            shift_ = s;
+            mask_ = (1 << s) - 1;
+        }
+
+        /// @brief Move a sub-page vector's elements to a slot of size class
+        ///        `cls`, or to one whole data page when `cls` is -1, and free
+        ///        the old slot.
+        ///
+        /// @details
+        /// Allocates the new storage first, copies the `size_` elements with one
+        /// `memcpy`, then returns the old slot, so the move never reads freed
+        /// bytes. A whole-page move ends with the whole-page geometry and one
+        /// data page, the shape the page loops continue from.
+        ///
+        /// @param cls Target size class larger than the current one, or -1.
+        /// @return Nothing.
+        void moveSubPage(int32_t cls) {
+            assert(subPageClass_ != 0 && numPages_ == 1);
+            assert(cls == -1 || cls > subPageClass_ - 1);
+            const LbArena::SubPage old{ rootVid_, firstOffset_ };
+            const int32_t oldClass = subPageClass_ - 1;
+            const std::size_t bytes = static_cast<std::size_t>(size_) * sizeof(T);
+            if (cls >= 0) {
+                const LbArena::SubPage slot = arena_->allocSubPage(cls);
+                std::memcpy(arena_->pageAt(slot.vid) + slot.offset,
+                            arena_->pageAt(old.vid) + old.offset, bytes);
+                arena_->freeSubPage(old, oldClass);
+                adoptSubPage(slot, cls);
+                return;
+            }
+            const int32_t vid = arena_->allocPage();
+            std::memcpy(arena_->pageAt(vid), arena_->pageAt(old.vid) + old.offset, bytes);
+            arena_->freeSubPage(old, oldClass);
+            rootVid_ = vid;
+            firstOffset_ = 0;
+            subPageClass_ = 0;
+            setPageGeometry();
+        }
+
+        /// @brief Set the whole-page element split and the directory fan-out
+        ///        from the pool's page size.
+        ///
+        /// @details
+        /// The body of the lazy first-use geometry, also run when a vector
+        /// leaves a sub-page slot (its `shift_` / `mask_` then described the
+        /// slot).
+        ///
+        /// @return Nothing.
+        void setPageGeometry() {
             const int32_t fit =
                 arena_->pageBytes() / static_cast<int32_t>(sizeof(T));
             assert(fit >= 1
@@ -1305,6 +1505,11 @@ namespace gl {
         int32_t mask_ = 0;           // elemsPerPage - 1
         int32_t dirShift_ = 0;       // log2(dirCap); directory-page-index split
         int32_t dirMask_ = 0;        // dirCap - 1
+        uint16_t firstOffset_ = 0;   // sub-page slot offset in its page; 0 otherwise
+        uint8_t subPageClass_ = 0;   // sub-page size class + 1; 0 = whole pages
     };
+
+    static_assert(sizeof(PagedVector<int32_t>) == 48,
+        "PagedVector's sub-page fields must stay inside the 48-byte header");
 
 }

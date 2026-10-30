@@ -44,6 +44,7 @@ import re
 import shutil
 
 import expression_utils
+from proof_hierarchy import hierarchical_scope_items, is_reader_theorem, theorem_alpha_keys
 from expression_utils import disintegrate_implication, replace_keys_in_string
 from typing import Dict
 
@@ -61,8 +62,8 @@ LICENSE_SOURCE_COMMENT = """<!--
   Generative Logic proof output
   Copyright © 2025-2026 Generative Logic UG
   Licensed under GNU AGPLv3: https://www.gnu.org/licenses/agpl-3.0.html
-  Commercial use for AI model training, dataset construction, or
-  commercial redistribution requires a commercial license:
+  Use outside AGPLv3 obligations, including AI model training,
+  dataset construction, or redistribution, requires a commercial license:
   https://generative-logic.com/license/
 -->"""
 
@@ -88,7 +89,7 @@ LICENSE_HEAD_META = """  <!-- License metadata -->
   }
   </script>"""
 
-LICENSE_FOOTER = """  <div style="margin-top:2em; padding-top:1em; border-top:1px solid #3A3D4A; font-size:0.8em; color:#8B8FA5; display:flex; align-items:center; gap:0.9em;">
+LICENSE_FOOTER = """  <div style="margin-top:2em; padding-top:1em; border-top:1px solid var(--gl-rule); font-size:0.8em; color:var(--gl-text-muted); display:flex; align-items:center; gap:0.9em;">
     <a href="https://generative-logic.com" style="display:inline-flex; align-items:center; flex-shrink:0;" aria-label="Generative Logic homepage">
       <img src="gl-logo.png" alt="Generative Logic" width="40" height="40" style="display:block;" />
     </a>
@@ -96,14 +97,100 @@ LICENSE_FOOTER = """  <div style="margin-top:2em; padding-top:1em; border-top:1p
       Proof graph structure, presentation, and provenance chains
       © 2025-2026 Generative Logic UG. Licensed under
       <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPLv3</a>.
-      Commercial use for AI model training, dataset construction, or
-      commercial redistribution requires a
+      Use outside AGPLv3 obligations, including AI model training,
+      dataset construction, or redistribution, requires a
       <a href="https://generative-logic.com/license/">commercial license</a>.
     </span>
   </div>"""
 
 import visu_helpers
 import lean_pages
+import proof_theme
+
+# Style of the grey readable captions, shared by the chapter, index and Lean
+# pages: the caption block, its labels (RULE: / APPLIED: / …), the sentence
+# keywords (from / follows), the stacked sum and product, and the
+# blackboard-bold ℕ. The Unicode ℕ glyph in Arial / system sans-serif is a
+# fixed-weight stylistic character (font-weight has no effect: the font carries
+# one weight for U+2115), so text-stroke plus text-shadow thicken it.
+# No bracketed group, conjunct column, premise group or conclusion shrinks
+# below its unbreakable content (min-content), or a bracket or the arrow would
+# cross the text. Formulas break only between words: break-word, unlike
+# anywhere, never lowers a box's narrowest width, so no column collapses to
+# single characters. For the wrap decision an implication's premise group
+# claims its natural width but at most half the line, and the conclusion its
+# narrowest width; the premises then take the free space first, up to their
+# natural width, and the conclusion the rest. So a long row narrows before it
+# wraps, and short premises are never squeezed by a wide conclusion, which
+# moves with its arrow onto the next line instead. On phone widths, formula
+# pieces may wrap between words, brackets and indents tighten and the
+# statement title shrinks, so a statement fits without sideways scrolling.
+_READABLE_CAPTION_CSS = """
+      .readable-grey { color: var(--gl-text-muted); font-weight: normal; font-size: 0.95em; line-height: 1.6; margin-top: 0.25em; overflow-wrap: normal; word-break: normal; }
+      .readable-grey.readable-title { font-weight: bold; font-size: 2.2em; margin: 0.15em 0 1.1em 20px; line-height: 1.45; }
+      .readable-grey.readable-index { font-size: 1.15em; margin: 0.1em 0 0.2em 20px; }
+      .readable-grey.reads { color: var(--gl-text-quiet); }
+      .readable-grey.subproof-reads { margin: 0.1em 0 0.4em 0; }
+      .rf-implication { display:inline-flex; flex-wrap:wrap; align-items:stretch; gap:0.35em 0.65em; max-width:100%; vertical-align:middle; white-space:normal; }
+      /* Premise group and conclusion share the line two to one, each at most
+         its natural width (a premise group is a column of formulas, which
+         wrapping makes tall); the conclusion moves below only when their
+         narrowest forms do not fit beside the arrow. */
+      .rf-implication > :first-child { flex:2 1 0%; min-width:min-content; max-width:max-content; }
+      .rf-conjunction { display:inline-flex; flex-direction:column; gap:0.45em; padding-left:0.2em; max-width:100%; box-sizing:border-box; vertical-align:middle; }
+      .rf-conjunct { display:grid; grid-template-columns:1em minmax(min-content,1fr); gap:0.35em; align-items:baseline; }
+      .rf-conjunct-body { min-width:0; white-space:normal; overflow-wrap:break-word; }
+      .rf-premises { display:flex; flex:0 1 auto; flex-direction:column; justify-content:center; padding-left:0.3em; gap:0.45em; min-width:0; }
+      .rf-premise, .rf-conclusion { white-space:normal; overflow-wrap:break-word; min-width:0; }
+      .rf-arrow { display:flex; align-items:center; flex:0 0 auto; line-height:1; font-size:2.2em; font-weight:700; padding:0 0.1em; }
+      .rf-conclusion { display:flex; align-items:center; flex:1 1 0%; min-width:min-content; max-width:max-content; }
+      .rf-conclusion-content { display:block; min-width:0; max-width:100%; }
+      .rf-parentheses { display:inline-grid; grid-template-columns:0.6em minmax(min-content,1fr) 0.6em; align-items:stretch; gap:0.15em; max-width:100%; vertical-align:middle; }
+      .rf-paren-content { align-self:center; min-width:0; }
+      .rf-lines { display:inline-flex; flex-direction:column; gap:0.2em; max-width:100%; vertical-align:middle; }
+      .rf-continued { padding-left:1.6em; }
+      .rf-fence { display:block; position:relative; min-height:1.4em; align-self:stretch; }
+      .rf-fence svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+      .rf-fence path { fill:none; stroke:currentColor; stroke-width:1.6; vector-effect:non-scaling-stroke; }
+      .rf-fence-text { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+
+      .readable-grey sub { font-size: 0.7em; }
+      .rf-nb { white-space: nowrap; }
+      .rf-unit { white-space: nowrap; }
+      .rf-negation { display:inline-flex; align-items:center; max-width:100%; vertical-align:middle; }
+      .rf-label { font-size: 0.72em; letter-spacing: 0.08em; color: var(--gl-text-faint); margin: 0 0.55em 0 1.4em; vertical-align: 0.08em; }
+      .rf-kw { font-weight: normal; font-style: italic; color: var(--gl-text-quiet); margin: 0 0.4em; }
+      .rf-label.rf-lead, .rf-kw.rf-lead { margin-left: 0; }
+      .rf-big { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; margin: 0 2px; line-height: 1; }
+      .rf-big-hi, .rf-big-lo { font-size: 0.6em; }
+      .rf-big-sym { font-size: 1.8em; line-height: 0.8; margin: 2px 0 6px 0; }
+      .rf-big-lo { margin-top: 2px; }
+      .rf-bigparen { font-size: 2em; vertical-align: middle; font-weight: normal; }
+     .bb-N {
+     font-weight: 900;
+     font-size: 1.1em;
+     letter-spacing: 0.02em;
+     -webkit-text-stroke: 0.6px currentColor;
+     text-shadow:
+       0.4px 0 0 currentColor,
+       -0.4px 0 0 currentColor,
+       0 0.4px 0 currentColor,
+       0 -0.4px 0 currentColor;
+     }
+      @media (max-width: 480px) {
+        .rf-nb { white-space: normal; }
+        /* Formula pieces now wrap between words, so a side squeezed beside the
+           arrow could shrink to one word per line: each side claims at least
+           its natural width or its share of the line (6em at least), and the
+           conclusion moves below when both claims do not fit. */
+        .rf-implication > :first-child { flex-basis:max(40%, 6em); }
+        .rf-conclusion { flex-basis:max(50%, 6em); }
+        .rf-parentheses { grid-template-columns:0.45em minmax(min-content,1fr) 0.45em; gap:0.05em; }
+        .rf-conjunct { grid-template-columns:0.8em minmax(min-content,1fr); gap:0.2em; }
+        .readable-grey.readable-title { font-size: 1.3em; margin-left: 4px; }
+        .readable-grey.readable-index { margin-left: 4px; }
+      }
+"""
 from visu_helpers import expand_expr
 from pathlib import Path
 
@@ -120,6 +207,15 @@ theorem_shape_to_file = {}
 # expression beside the symbolic name (so the reader sees the full
 # !(&!E1!E2) De-Morgan form right next to the abbreviated `(orK[..])`).
 _gl_binary_map_for_render: dict = {}
+
+# Readable-caption renderer of the graph being rendered, created by
+# _generate_proof_graph_pages from the same GL binaries; every grey
+# "Readable version" line goes through it.
+_readable_form_for_render: visu_helpers.ReadableForm = visu_helpers.ReadableForm({}, {})
+_known_theorems_for_reader = ()
+# Alpha keys of exactly `_known_theorems_for_reader`, computed once per render
+# so a reader chapter adds only the keys of its own theorem rows.
+_known_theorem_keys_for_reader = frozenset()
 
 # Sibling-batch (cross-pipeline) lookup. Populated when
 # generate_proof_graph_pages receives a `sibling_graphs` parameter so an
@@ -165,6 +261,11 @@ TAG_DESCRIPTIONS = {
         "stored in hash memory, and the conclusion was emitted. "
         "The first dependency is the rule itself; the remaining dependencies are "
         "the expressions that matched the rule's premises."
+    ),
+    "definition projection": (
+        "Property from a definition",
+        "The stated property is a conjunct of the cited fact, after unfolding "
+        "its named conjunction definitions. The source stays in this proof scope."
     ),
     "expansion": (
         "Named expression expanded",
@@ -239,7 +340,11 @@ TAG_DESCRIPTIONS = {
         "<code>check_induction_condition</code> chapters, the successor form is "
         "asserted as the inductive step's premise &mdash; <code>s(v_prev) = v_current</code> "
         "&mdash; identifying the current step variable as the successor of the "
-        "previous-step variable to which the hypothesis applies."
+        "previous-step variable to which the hypothesis applies. A weak induction's "
+        "hypothesis is the theorem at that previous-step variable; a strong "
+        "induction's hypothesis is the theorem at every value <code>m</code> below the "
+        "current step variable <code>n</code>, bounded by <code>m + x = n</code> and "
+        "<code>m &ne; n</code>."
     ),
     "theorem": (
         "Previously proved theorem",
@@ -328,10 +433,15 @@ TAG_DESCRIPTIONS = {
         "would force the same variable into two slots of the same expression) "
         "so that the disintegration and hash-burst machinery can treat the "
         "two positions independently. The equality is then reused via "
-        "equality1 rewrites to glue them back together. The verifier enforces "
-        "that every occurrence of a _copy variable elsewhere in the chapter "
-        "has a provenance chain ending at a variable copy declaration for "
-        "that exact equality."
+        "equality1 rewrites to glue them back together. In the weak induction "
+        "step of a conjecture with two twin premises, GL also introduces "
+        "(=[q, rec2]): q is the predecessor of the second premise's length, "
+        "and rec2 stands beside rec, the predecessor of the induction "
+        "variable; a chapter declares rec2 for one name only. The verifier "
+        "enforces that every occurrence of the copy name elsewhere in the "
+        "chapter has a provenance chain ending at the variable copy "
+        "declaration for that exact equality, or at an integration goal that "
+        "holds the name, since a goal is filed without a derivation."
     ),
     "externally provided theorem": (
         "External theorem (not proved by GL)",
@@ -435,6 +545,11 @@ TAG_DESCRIPTIONS = {
         "of the OR. Row layout: the negated-other-disjunct paired with the "
         "subproof namespace, with the parent-scope OR expression cited as "
         "<code>&lt;or-expr&gt;_integration_goal</code>."
+    ),
+    "zoom in": (
+        "Inherited statement",
+        "An unchanged expression is reused in a descendant scope. Its single dependency cites "
+        "the identical expression at the exact strict-ancestor scope where it was established."
     ),
 }
 
@@ -597,144 +712,116 @@ def wrap_clickable(text):
     return result
 
 
-# Order-relation symbols for the readable captions, keyed by (operator,
-# operation slot). `preorder[N,op,a,b]` is the witness form `∃k: a op k = b`:
-# with `+` it is the natural order a ≤ b, with `*` it is divisibility a ∣ b.
-# `strictOrder[N,op,a,b]` adds `a ≠ b`: with `+` the strict order a < b, with
-# `*` the proper-divisor relation. Each entry is (positive, negated) — the
-# negated form is the crossed symbol so `!(preorder[...])` reads a ≰ b, never
-# `!a ≤ b`. Unicode throughout; `_htmlify_readable` escapes afterwards, so `<`
-# arrives in the page as `&lt;`.
-_ORDER_SYMBOLS = {
-    ("preorder", "+"): ("≤", "≰"),      # ≤  ≰
-    ("preorder", "*"): ("∣", "∤"),      # ∣  ∤
-    ("strictOrder", "+"): ("<", "≮"),        # <  ≮
-}
-_ORDER_ATOM_RE = re.compile(
-    r'(!?)\((preorder|strictOrder)\[([^,\]]+),([^,\]]+),([^,\]]+),([^\]]+)\]\)')
-
-
-def _apply_order_symbols(text: str) -> str:
+def _anchor_signatures() -> dict[str, tuple[str, ...]]:
     """
-    @brief Rewrite every order-relation atom of a readable caption to its
-    mathematical symbol.
-    @details
-    Matches `(preorder[S,op,a,b])` and `(strictOrder[S,op,a,b])`, with an
-    optional leading `!`, anywhere in the plain-text caption and replaces the
-    atom by `a SYMBOL b` from `_ORDER_SYMBOLS`. The proper-divisor relation
-    (`strictOrder` with `*`) has no single glyph and renders as
-    `a ∣ b, a ≠ b` (negated: `¬(a ∣ b, a ≠ b)`). The set slot is dropped —
-    the caption's reader knows the carrier. An operation slot other than `+`
-    or `*` is a contract violation of the caller (every anchor renames its
-    slots to those two names before the caption is built) and asserts.
-    @param text Plain-text readable caption (before HTML escaping).
-    @return The caption with every order atom replaced.
+    @brief Canonical slot names of every anchor in the current configuration.
+
+    @details Read from each `Anchor…` entry's short MPL, e.g. `AnchorFTA` →
+    `(N, i0, s, +, *, i1, i2, id)`. The readable captions give these names to
+    the anchor slots of compiled theorems.
+
+    @return Anchor name → slot names.
     """
-
-    def repl(match):
-        negated, operator, _carrier, operation, left, right = match.groups()
-        assert operation in ("+", "*"), (
-            f"order atom with unknown operation slot {operation!r}: "
-            f"{match.group(0)}")
-        if (operator, operation) == ("strictOrder", "*"):
-            body = f"{left} ∣ {right}, {left} ≠ {right}"
-            return f"¬({body})" if negated else body
-        positive, crossed = _ORDER_SYMBOLS[(operator, operation)]
-        return f"{left} {crossed if negated else positive} {right}"
-
-    return _ORDER_ATOM_RE.sub(repl, text)
+    return {name: tuple(expression_utils.get_args(entry.short_mpl_raw))
+            for name, entry in expression_utils.get_configuration_data().items()
+            if name.startswith("Anchor")}
 
 
-@lru_cache(maxsize=16384)
-def _htmlify_readable(text):
-    """Convert plain-text readable title to HTML with mathematical notation."""
-    # Order relations first, on the plain text: `<` (strict order) must go
-    # through html.escape like every other character.
-    h = html.escape(_apply_order_symbols(text))
-    # (interval[N,+,start,end,set]) -> set = [start,end]
-    # !(interval[N,+,start,end,set]) -> set ≠ [start,end]
-    h = re.sub(
-        r'(!?)\(interval\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(6)} {"&ne;" if m.group(1) else "="} [{m.group(4)},{m.group(5)}]',
-        h)
-    # (EnumerationSetN[a,...,M]) -> M = {a,...} for every arity N
-    # !(EnumerationSetN[a,...,M]) -> M ≠ {a,...}
-    def _fmt_enum_set(m):
-        args = m.group(2).split(',')
-        rel = '&ne;' if m.group(1) else '='
-        return f'{args[-1]} {rel} {{{",".join(args[:-1])}}}'
-    h = re.sub(r'(!?)\(EnumerationSet\d+\[([^\]]+)\]\)', _fmt_enum_set, h)
-    # (fXY[a,B,C]) -> a: B -> C
-    h = re.sub(
-        r'\(fXY\[([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(1)}: {m.group(2)} \u2192 {m.group(3)}',
-        h)
-    # (sequence[N,+,c,a,b]) -> b is a sequence (b^i)_{i in [c,a]}
-    h = re.sub(
-        r'\(sequence\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(5)} is a sequence ({m.group(5)}<sup>i</sup>)<sub>i\u2208[{m.group(3)},{m.group(4)}]</sub>',
-        h)
-    # Sums and products share vertical bounds and retain the folded function.
-    def _fmt_fold(m):
-        """@brief Format a readable sum or product with vertical bounds.
+def _readable_theorem(theorem: str, as_html: bool = True) -> str:
+    """
+    @brief Grey readable caption of a theorem for the current graph.
 
-        @details The matched accumulation kind chooses the symbol, while the
-        optional function supplies the term; an omitted function denotes the
-        identity. Bounds have already passed through ordinary HTML escaping.
+    @details Delegates to the graph's `visu_helpers.ReadableForm`, created by
+    `_generate_proof_graph_pages` from the graph's GL binaries: the chapter
+    title, the index entry, the Lean twin page and the browser-tab title all
+    show the same caption.
 
-        @param m Match containing kind, lower bound, upper bound and function.
-        @return HTML for the accumulation symbol, bounds and term.
-        """
-        kind, lo, hi, fn = m.group(1), m.group(2), m.group(3), m.group(4)
-        symbol = '\u2211' if kind == 'sum' else '\u220f'
-        body = f'{fn}(i)' if fn else 'i'
-        symbol_html = (
-            '<span class="sm" style="display:inline-flex;flex-direction:column;'
-            'align-items:center;vertical-align:middle;margin:0 2px;line-height:1">'
-            f'<span style="font-size:0.6em">{hi}</span>'
-            f'<span style="font-size:1.8em;line-height:0.8;margin-bottom:8px">{symbol}</span>'
-            f'<span style="font-size:0.6em;margin-top:8px">i={lo}</span>'
-            '</span>'
-        )
-        return f'{symbol_html} {body}'
-    h = re.sub(r'(sum|prod)\(i=([^.]+)\.\.([^)]+)\)(?: (\w+)\(i\))?', _fmt_fold, h)
-    # Enlarge parentheses that directly wrap a sum or product block.
-    h = re.sub(
-        r'\(([^()]*?<span class="sm".*?</span>[^()]*?)\)',
-        lambda m: (
-            '<span style="font-size:2em;vertical-align:middle;font-weight:normal">(</span>'
-            + m.group(1) +
-            '<span style="font-size:2em;vertical-align:middle;font-weight:normal">)</span>'
-        ), h)
-    # Space around '=' in text segments only (skip HTML tags/attributes)
-    parts = re.split(r'(<[^>]+>)', h)
-    h = ''.join(
-        re.sub(r'(?<!=)\s*=\s*(?!=)', ' = ', p) if not p.startswith('<') else p
-        for p in parts
-    )
-    # v/V/w/W N → letter<sub>N</sub> in text segments only (case-preserving).
-    parts = re.split(r'(<[^>]+>)', h)
-    h = ''.join(
-        re.sub(r'([vVwW])(\d+)', r'\1<sub>\2</sub>', p) if not p.startswith('<') else p
-        for p in parts
-    )
-    # Standalone `N` (the natural-numbers anchor slot) -> blackboard-bold
-    # ℕ (the LaTeX \mathbb{N} convention). Word-boundary match avoids
-    # touching `N` embedded in operator names like `NaturalNumbers`,
-    # `inN`, or attribute values inside HTML tags. Wrapped in a `bb-N`
-    # span styled by CSS to render heavier and slightly larger than
-    # surrounding text — Arial's bare ℕ glyph reads thin and small
-    # against the bold readable-text weight.
-    parts = re.split(r'(<[^>]+>)', h)
-    h = ''.join(
-        re.sub(r'\bN\b', '<span class="bb-N">ℕ</span>', p) if not p.startswith('<') else p
-        for p in parts
-    )
-    # Add breathing room around scaffolding keywords
-    for kw in ['RULE:', 'IMPLIES:', 'from', 'follows', 'and',
-               'reformulated from', 'back-reformulated from', 'is a sequence']:
-        h = h.replace(kw, f'&ensp;{kw}&ensp;')
-    return h
+    @param theorem Theorem in MPL, as listed in `global_theorem_list.txt`.
+    @param as_html True for page HTML, False for plain text (tab title).
+    @return The caption.
+    """
+    return _readable_form_for_render.theorem(theorem, as_html)
+
+
+def _row_caption_html(entry: list[str]) -> str:
+    """
+    @brief Grey readable caption of one chapter row, or the empty string.
+
+    @details An `implication` row shows its rule, the instantiation that
+    turns the rule into the row and, when the derived expression is not a
+    plain relation, its reading; a `reformulated from` / `incubator back
+    reformulation` row shows both forms; any other row shows "READS:" with
+    its expression in mathematical notation (an integration goal without its
+    `_integration_goal` marker) unless that expression is a plain relation.
+    An `expansion` row shows no reading when it would repeat the reading of
+    the expression it expands, or when it unfolds an anchor or the Peano
+    axioms (a long constant readout). Subproof-title (`validity name`) and
+    broadcast-theorem rows carry no caption; that is their defined rendering.
+
+    @param entry Processed chapter row: expression, validity, tag, then
+    (dependency, validity) pairs.
+    @return `<div class='readable-grey …'>…</div>` or "".
+    """
+    readable = _readable_form_for_render
+    tag = entry[2] if len(entry) > 2 else ""
+    if tag in ("validity name", "theorem"):
+        return ""
+    if len(entry) <= 3 or tag not in ("implication", "reformulated from",
+                                      "incubator back reformulation"):
+        expression = entry[0]
+        if expression.endswith("_integration_goal"):
+            expression = expression[:-len("_integration_goal")]
+        body = readable.reading(expression)
+        if body and tag == "expansion" and len(entry) > 3:
+            source = entry[3]
+            if source.endswith("_integration_goal"):
+                source = source[:-len("_integration_goal")]
+            if (re.match(r'^!?\((Anchor\w+|NaturalNumbers)\[', source)
+                    or readable.reading(source) == body):
+                return ""
+        return f"<div class='readable-grey reads'>{body}</div>" if body else ""
+    if tag == "implication":
+        premises = [entry[k] for k in range(5, len(entry), 2)]
+        body = readable.rule_application(entry[0], entry[3], premises)
+        derived = entry[0]
+        if derived.endswith("_integration_goal"):
+            derived = derived[:-len("_integration_goal")]
+        reading = readable.reading(derived)
+        if reading:
+            body += f"<br>{reading}"
+        return f"<div class='readable-grey implication'>{body}</div>"
+    if tag == "reformulated from":
+        body = readable.reformulation(entry[0], entry[3], "REFORMULATED FROM:")
+        return f"<div class='readable-grey reformulated'>{body}</div>"
+    if tag == "incubator back reformulation":
+        body = readable.reformulation(entry[0], entry[3], "BACK-REFORMULATED FROM:")
+        return f"<div class='readable-grey reformulated'>{body}</div>"
+    return ""
+
+
+def _subproof_title_reading(info: dict) -> str:
+    """
+    @brief Grey reading of a subproof card's title, or the empty string.
+
+    @details An implication subproof reads as the implication it proves
+    (theorem style); an OR-introduction subproof as the disjunct it asserts
+    and the OR it belongs to; an OR-elimination branch as its case and the
+    OR; any other scope carries no reading, which is its defined rendering.
+
+    @param info Title metadata from `_scope_title_info`.
+    @return HTML of the reading, or "".
+    """
+    readable = _readable_form_for_render
+    kind = info["kind"]
+    if kind == "subproof" and info.get("implication_expr"):
+        return ("<span class='rf-label rf-lead'>PROVES:</span>"
+                + readable.theorem(info["implication_expr"]))
+    if kind in ("_orint_ subproof", "_ordis_ branch"):
+        first = "ASSERTS:" if kind == "_orint_ subproof" else "CASE:"
+        return (f"<span class='rf-label rf-lead'>{first}</span>"
+                f"{readable.formula(info['disjunct'])}"
+                f"<span class='rf-label'>OF:</span>{readable.formula(info['or_expr'])}")
+    return ""
 
 
 def _format_validity_tag(validity: str, namespace_anchor_map: dict | None = None) -> str:
@@ -760,8 +847,30 @@ def _format_validity_tag(validity: str, namespace_anchor_map: dict | None = None
     return f' {body}'
 
 
-def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=True, external_anchor_map=None, goal_key_norm=None, global_counter=None, global_total=None, namespace_anchor_map=None, chapter_ns_map=None):
+def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=True, external_anchor_map=None, goal_key_norm=None, global_counter=None, global_total=None, namespace_anchor_map=None, chapter_ns_map=None, entry_indices=None, highlight_position=None, local_anchor_map=None):
     """
+    @brief Render proof rows with stable scoped anchors and display numbering.
+
+    @details Complete-scope calls derive their indices and goal highlight.
+    Fragment calls retain caller-supplied scope indices, anchors and highlight
+    while a shared counter follows the expanded nested proof.
+
+    @param stack Proof rows belonging to one exact scope.
+    @param prefix Stable anchor prefix for that scope and induction section.
+    @param cursor_index Optional scope row to emphasize for navigation.
+    @param reverse_entries Whether to reverse stored rows before rendering.
+    @param external_anchor_map Existing nonlocal expression anchors.
+    @param goal_key_norm Optional normalized scope conclusion.
+    @param global_counter Shared mutable visible-row counter.
+    @param global_total Expanded visible-row count for this proof section.
+    @param namespace_anchor_map Existing scope-title anchor mapping.
+    @param chapter_ns_map Complete scoped expression-to-row-anchor mapping.
+    @param entry_indices Optional original scope indices for a row fragment.
+    @param highlight_position Optional original scope index to highlight; -1 selects none.
+    @param local_anchor_map Complete same-scope anchors when rendering fragments.
+    @return Proof-row HTML, preserving references and continuous step numbers.
+    @invariant Rendering changes no proof expression, premise or namespace.
+
     Convert a proof-stack (list of [key, validity, explanation, ing1, val1, ...]) into HTML.
 
     New Format Structure:
@@ -786,11 +895,14 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
     # Reverse so the earliest step is first in the output (legacy behavior)
     rev = list(stack)[::-1] if reverse_entries else list(stack)
 
+    indices = list(range(len(rev))) if entry_indices is None else list(entry_indices)
+    assert len(indices) == len(rev) and len(set(indices)) == len(indices)
+
     # Map each key (normalized) to a unique anchor ID
-    key_map = {}
+    key_map = dict(local_anchor_map or {})
     external_anchor_map = external_anchor_map or {}
-    for idx, entry in enumerate(rev):
-        if not entry:
+    for idx, entry in zip(indices, rev):
+        if not entry or 'theorem' in entry:
             continue
         key = entry[0]
         norm = re.sub(r'\s+', '', key).lower()
@@ -833,7 +945,10 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
             highlight_idx = i
             break
 
-    for idx, entry in enumerate(rev):
+    if highlight_position is not None:
+        highlight_idx = highlight_position
+
+    for idx, entry in zip(indices, rev):
         if 'theorem' in entry:
             continue
         if not entry:
@@ -859,11 +974,11 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
             if first_html.startswith('<a '):
                 first_html = first_html.replace(
                     '<span class="clickable"',
-                    '<span class="clickable" style="color:#EF9F27 !important; font-weight:bold !important;"',
+                    '<span class="clickable" style="color:var(--gl-goal) !important; font-weight:bold !important;"',
                     1
                 )
             else:
-                first_html = f'<span class="clickable" style="color:#EF9F27; font-weight:bold">{first_html}</span>'
+                first_html = f'<span class="clickable" style="color:var(--gl-goal); font-weight:bold">{first_html}</span>'
 
             if rest:
                 rest_html = wrap_clickable(rest[0])
@@ -925,7 +1040,7 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
             content_html = "&nbsp;&nbsp;".join(parts)
             if cursor_index is not None and idx == cursor_index:
                 content_html = (
-                    f"<span style='background-color:#3A3520; padding:4px; "
+                    f"<span style='background-color:var(--gl-goal-bg); padding:4px; "
                     f"border-radius:4px'>{content_html}</span>"
                 )
             if anchor:
@@ -952,7 +1067,7 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
                 clean_text = re.sub(r'<[^>]+>', '', ref_html)
 
                 # 2. Re-wrap in magenta span, right-clickable for integration goal explanation
-                ref_html = f'<span class="integration-goal-label" style="color:#E879F9 !important; font-weight:bold !important;">"{clean_text}"</span>'
+                ref_html = f'<span class="integration-goal-label" style="color:var(--gl-target) !important; font-weight:bold !important;">"{clean_text}"</span>'
             # -----------------------------------------
 
             # Unified link rule: any expression citation jumps to the row
@@ -994,7 +1109,7 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
         content_html = "&nbsp;&nbsp;".join(parts)
         if cursor_index is not None and idx == cursor_index:
             content_html = (
-                f"<span style='background-color:#3A3520; padding:4px; "
+                f"<span style='background-color:var(--gl-goal-bg); padding:4px; "
                 f"border-radius:4px'>{content_html}</span>"
             )
 
@@ -1011,43 +1126,12 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
             )
         else:
             step_badge_html = step_badge
-        line_html = f"<div class='proof-line'>{step_badge_html}<span class='proof-line-content'>{content_html}</span></div>"
+        # The grey readable caption sits inside the row's content column,
+        # directly under the row it explains.
+        caption_html = _row_caption_html(entry)
+        line_html = (f"<div class='proof-line'>{step_badge_html}<span class='proof-line-content'>"
+                     f"{content_html}{caption_html}</span></div>")
         lines.append(line_html)
-
-        if len(entry) > 2 and entry[2] == 'implication':
-            if len(entry) > 3:
-                helper_list = [entry[0], "implication", entry[3]]
-                for k in range(5, len(entry), 2):
-                    helper_list.append(entry[k])
-
-                impl_text = visu_helpers.format_implication(helper_list)
-                if impl_text:
-                    impl_html = (
-                        f"<div class='implication readable-grey'>"
-                        f"{_htmlify_readable(_strip_i_prefix(impl_text))}</div>"
-                    )
-                    lines.append(impl_html)
-
-        if len(entry) > 2 and entry[2] == 'reformulated from':
-            if len(entry) > 3:
-                helper_list = [entry[0], "reformulated from", entry[3]]
-                reformulated_text = visu_helpers.format_reformulation(helper_list)
-                reformulated_html = (
-                    f"<div class='reformulated readable-grey'>"
-                    f"{_htmlify_readable(_strip_i_prefix(reformulated_text))}</div>"
-                )
-                lines.append(reformulated_html)
-
-        if len(entry) > 2 and entry[2] == 'incubator back reformulation':
-            if len(entry) > 3:
-                source_readable = visu_helpers.make_readable_title(entry[3])
-                back_ref_readable = visu_helpers.make_readable_title(entry[0])
-                back_ref_text = f"{back_ref_readable} back-reformulated from {source_readable}"
-                back_ref_html = (
-                    f"<div class='readable-grey'>"
-                    f"{_htmlify_readable(_strip_i_prefix(back_ref_text))}</div>"
-                )
-                lines.append(back_ref_html)
 
     return "\n".join(lines)
 
@@ -1567,8 +1651,8 @@ def _scope_title_info(child_ns: str, parent_ns: str,
       - `_boundary_ordis_<OR>_(<disjunct>)` \u2192 OR-elimination branch.
         Goal alias is the convergence target (the conclusion every
         branch must derive), looked up by OR expression in
-        or_convergence_map; falls back to the disjunct as a label
-        for the case being analysed when no convergence row is found.
+        or_convergence_map. Refuted cases receive their contradiction
+        metadata from the actual parent proof in _partition_stack_subproofs.
       - anything else \u2192 fall back to raw payload as title.
     """
     sep = "_boundary_"
@@ -1599,13 +1683,17 @@ def _scope_title_info(child_ns: str, parent_ns: str,
         info["goal_norm"] = _norm_expr(m.group(2))
         info["kind"] = "_orint_ subproof"
         info["title_html"] = (
-            f"OR-introduction subproof \u2014 branch where "
-            f"{wrap_clickable(m.group(2))} is asserted "
+            f"OR-introduction subproof \u2014 prove "
+            f"{wrap_clickable(m.group(2))} "
             f"(of OR {wrap_clickable(m.group(1))})"
         )
         return info
 
-    m = re.match(r'^ordis_(\(or\d+\[[^\]]*\]\))_\((.+)\)$', payload)
+    # The case-split source is a compiled OR, or a negated conjunction
+    # integration premise split into its complemented conjuncts
+    # (D-460).
+    m = re.match(r'^ordis_(\(or\d+\[[^\]]*\]\)|!\([^\[\]()!&>]+\[[^\]]*\]\))_\((.+)\)$',
+                 payload)
     if m:
         info["or_expr"] = m.group(1)
         info["disjunct"] = m.group(2)
@@ -1613,12 +1701,11 @@ def _scope_title_info(child_ns: str, parent_ns: str,
         # OR-elimination: the branch's goal is the convergence target
         # (the conclusion every branch must derive). Look it up by OR
         # expression in or_convergence_map (built from `or convergence`
-        # rows in the parent scope). Falls back to the disjunct so the
-        # Goal-alias line still appears \u2014 labelled as the case being
-        # analysed when no convergence row is available yet.
+        # rows in the parent scope). Refuted cases are identified separately
+        # from their recorded parent-scope contradiction.
         or_norm = _norm_expr(m.group(1))
         converged = (or_convergence_map or {}).get(or_norm)
-        info["goal_expr"] = converged if converged else m.group(2)
+        info["goal_expr"] = converged
         info["goal_norm"] = _norm_expr(info["goal_expr"]) if info["goal_expr"] else None
         info["title_html"] = (
             f"OR-elimination branch \u2014 case "
@@ -1718,6 +1805,23 @@ def _partition_stack_subproofs(stack: list[list[str]],
         title_info = _scope_title_info(
             child_ns, scope_ns, vn_lookup.get(_norm_expr(child_ns)),
             or_convergence_map=or_convergence_map)
+        if title_info["kind"] == "_orint_ subproof":
+            title_info["case_expressions"] = list(dict.fromkeys(
+                row[0] for row in reversed(nested_own)
+                if row[2] == "or branch assumption"))
+        elif title_info["kind"] == "_ordis_ branch":
+            case = title_info["disjunct"]
+            title_info["case_expressions"] = [case]
+            if title_info["goal_expr"] is None:
+                negated_case = case[1:] if case.startswith("!") else "!" + case
+                refutations = [row for row in stack
+                               if row[1] == scope_ns and row[2] == "contradiction"
+                               and _norm_expr(row[0]) == _norm_expr(negated_case)
+                               and child_ns in row[4::2]]
+                assert refutations, f"OR case has neither convergence nor refutation: {child_ns}"
+                title_info["goal_kind"] = "contradiction"
+                title_info["refuted_case"] = refutations[0][0]
+                title_info["refutation_namespace"] = scope_ns
         sp = {
             "ns": child_ns,
             "namespace_expr": child_ns,
@@ -1899,6 +2003,11 @@ def _subproof_explanation(title_info: dict) -> str:
         if or_expanded and or_expanded != or_expr else ""
     )
     if kind == "_orint_ subproof":
+        assumptions = title_info.get("case_expressions", [])
+        case_prose = (
+            "The case assumes the negated premises "
+            + ", ".join(wrap_clickable(expression) for expression in assumptions)
+            + ". " if assumptions else "No additional branch assumption is recorded. ")
         return (
             "<div class='subproof-explanation'>"
             "<b>OR-introduction.</b> A disjunction is established when "
@@ -1906,13 +2015,20 @@ def _subproof_explanation(title_info: dict) -> str:
             "of the falsity of the others. "
             "<span class='symbolic-example'>Symbolically: from "
             "<i>¬A &#x22A2; B</i> follows <i>A &#x2228; B</i>.</span> "
-            "This branch asserts the disjunct "
+            + case_prose
+            + "This branch proves the disjunct "
             f"{wrap_clickable(disjunct)} of "
-            f"{wrap_clickable(or_expr)}{or_expanded_html} and assumes "
-            "the negation of every remaining disjunct. On closure the "
+            f"{wrap_clickable(or_expr)}{or_expanded_html}. On closure the "
             "disjunction is asserted at the parent scope."
             "</div>"
         )
+    if kind == "_ordis_ branch" and title_info.get("goal_kind") == "contradiction":
+        return (
+            "<div class='subproof-explanation'><b>OR-disintegration: refuted case.</b> "
+            f"Assume {wrap_clickable(disjunct)} from {wrap_clickable(or_expr)}. "
+            "The proof derives a contradiction under that assumption. "
+            f"This refutes the case and establishes {wrap_clickable(title_info['refuted_case'])} "
+            "at the parent scope.</div>")
     if kind == "_ordis_ branch":
         goal_html = (wrap_clickable(goal_expr) if goal_expr
                      else "<em>convergence target</em>")
@@ -1937,13 +2053,86 @@ def _subproof_explanation(title_info: dict) -> str:
     return ""
 
 
+def _render_scope_contents(own_rows, subproofs, namespace, prefix, depth,
+                           scope_items, external_anchor_map, global_counter,
+                           global_total, namespace_anchor_map, chapter_ns_map,
+                           goal_key_norm=None):
+    """
+    @brief Interleave ordinary rows with collapsed child cards in stored order.
+
+    @details Row identifiers retain their scope-local indices while the common
+    display counter advances through the recursively expanded proof. Highlight
+    only the scope's achieved goal; a one-row rendering call is not a new proof.
+
+    @param own_rows Reverse-stored rows at this exact namespace.
+    @param subproofs Immediate child card records with assigned anchor prefixes.
+    @param namespace Exact scope whose ordered items are being rendered.
+    @param prefix Row-anchor prefix for this scope.
+    @param depth Depth of child cards below the main scope.
+    @param scope_items Validated namespace-to-row/card order from processed rows.
+    @param external_anchor_map Existing expression-to-external-anchor map.
+    @param global_counter Mutable expanded visible-row counter.
+    @param global_total Total visible rows in this physical proof section.
+    @param namespace_anchor_map Existing namespace title anchors.
+    @param chapter_ns_map Complete scoped expression-to-row-anchor map.
+    @param goal_key_norm Optional normalized scope conclusion for highlighting.
+    @return HTML whose expanded row order equals the processed artifact.
+    @invariant Collapse state changes visibility only, never scope or row order.
+    """
+    reader = list(reversed(own_rows))
+    children = {sp['ns']:sp for sp in subproofs}
+    assert len(children) == len(subproofs)
+    local = {_norm_expr(row[0]):f'{prefix}-entry{i}' for i,row in enumerate(reader)
+             if row and 'theorem' not in row}
+    highlighted = next((i for i in range(len(reader)-1,-1,-1)
+                        if reader[i] and 'theorem' not in reader[i]
+                        and (not goal_key_norm or _norm_expr(reader[i][0]) == goal_key_norm)), -1)
+    blocks = []
+    for kind,key in scope_items[namespace]:
+        if kind == 'row':
+            blocks.append(format_stack_entries(
+                [reader[key]], prefix=prefix, reverse_entries=False,
+                entry_indices=[key], highlight_position=highlighted,
+                local_anchor_map=local, external_anchor_map=external_anchor_map,
+                global_counter=global_counter, global_total=global_total,
+                namespace_anchor_map=namespace_anchor_map, chapter_ns_map=chapter_ns_map))
+        else:
+            assert kind == 'scope' and key in children
+            child = children[key]
+            blocks.append(_render_subproof_card(
+                child, child['_anchor_prefix'], depth,
+                external_anchor_map=external_anchor_map, global_counter=global_counter,
+                global_total=global_total, namespace_anchor_map=namespace_anchor_map,
+                chapter_ns_map=chapter_ns_map, scope_items=scope_items))
+    return ''.join(blocks)
+
+
 def _render_subproof_card(sp: dict, prefix: str, depth: int,
                           external_anchor_map: dict | None = None,
                           global_counter: list | None = None,
                           global_total: int | None = None,
                           namespace_anchor_map: dict | None = None,
-                          chapter_ns_map: dict | None = None) -> str:
+                          chapter_ns_map: dict | None = None,
+                          scope_items: dict | None = None) -> str:
     """
+    @brief Render one intact collapsed subproof with recursive child cards.
+
+    @details Main-book cards follow the expanded processed order. Other books
+    retain separate nested sections. Shared row counters and anchor mappings
+    remain valid through every recursion level.
+
+    @param sp Parsed child-scope record and its own rows.
+    @param prefix Unique card-anchor prefix.
+    @param depth Nesting depth below main.
+    @param external_anchor_map Nonlocal expression anchors.
+    @param global_counter Shared expanded visible-row counter.
+    @param global_total Expanded visible-row count for this proof section.
+    @param namespace_anchor_map Existing scope-title anchors.
+    @param chapter_ns_map Complete scoped expression-to-row-anchor mapping.
+    @param scope_items Hierarchical stored order, or None for separate sections.
+    @return One complete collapsed card including its nested proof bodies.
+    @invariant No child assumption or proof row leaves its owning card.
+
     Render one subproof card (collapsed by default), recursing into
     nested sub-sub-proofs to produce the matryoshka structure.
     `depth` is 1 for top-level subproofs of main, 2 for sub-sub, etc.
@@ -1964,6 +2153,9 @@ def _render_subproof_card(sp: dict, prefix: str, depth: int,
         f"<span id='{anchor_id}'>{title_html}</span> "
         f"<span class='subproof-label'>{kind_label}</span></div>")
     blocks.append("<div class='subproof-body'>")
+    title_reading = _subproof_title_reading(sp["title_info"])
+    if title_reading:
+        blocks.append(f"<div class='readable-grey subproof-reads'>{title_reading}</div>")
 
     # Textual explanation under the title \u2014 for OR-introduction and
     # OR-elimination branches only. Empty string for plain implication
@@ -1975,50 +2167,60 @@ def _render_subproof_card(sp: dict, prefix: str, depth: int,
 
     goal_expr = sp["title_info"].get("goal_expr")
     if goal_expr:
+        goal_plain = (goal_expr[:-len("_integration_goal")]
+                      if goal_expr.endswith("_integration_goal") else goal_expr)
+        goal_reading = _readable_form_for_render.formula(goal_plain)
         blocks.append(
             f"<div class='subproof-meta'>Goal alias: "
             f"<span class='subproof-goal'>{html.escape(goal_expr)}</span>"
-            f"{_format_validity_tag(sp['ns'])}</div>")
+            f"{_format_validity_tag(sp['ns'])}"
+            f"<span class='readable-grey'> &nbsp;{goal_reading}</span></div>")
     else:
         blocks.append(
             f"<div class='subproof-meta'>"
             f"{_format_validity_tag(sp['ns'])}</div>")
 
-    if sp["display_stack"]:
-        blocks.append(
-            format_stack_entries(
-                sp["display_stack"],
-                prefix=f"{prefix}body",
-                # reverse_entries defaults to True so subproof rows
-                # render in the same earliest->latest order as the
-                # main proof body. The earlier explicit `False` here
-                # produced latest->earliest order inside subproof
-                # cards, which read inverted from the surrounding
-                # main stack.
-                goal_key_norm=sp["title_info"].get("goal_norm"),
-                external_anchor_map=external_anchor_map,
-                global_counter=global_counter,
-                global_total=global_total,
-                namespace_anchor_map=namespace_anchor_map,
-                chapter_ns_map=chapter_ns_map,
-            ))
-    elif not sp["nested_subproofs"]:
-        blocks.append("<div class='proof-empty'>No subproof steps detected.</div>")
+    if scope_items is not None:
+        blocks.append(_render_scope_contents(
+            sp['display_stack'], sp['nested_subproofs'], sp['ns'], f'{prefix}body',
+            depth + 1, scope_items, external_anchor_map, global_counter, global_total,
+            namespace_anchor_map, chapter_ns_map, sp['title_info'].get('goal_norm')))
+    else:
+        if sp["display_stack"]:
+            blocks.append(
+                format_stack_entries(
+                    sp["display_stack"],
+                    prefix=f"{prefix}body",
+                    # reverse_entries defaults to True so subproof rows
+                    # render in the same earliest->latest order as the
+                    # main proof body. The earlier explicit `False` here
+                    # produced latest->earliest order inside subproof
+                    # cards, which read inverted from the surrounding
+                    # main stack.
+                    goal_key_norm=sp["title_info"].get("goal_norm"),
+                    external_anchor_map=external_anchor_map,
+                    global_counter=global_counter,
+                    global_total=global_total,
+                    namespace_anchor_map=namespace_anchor_map,
+                    chapter_ns_map=chapter_ns_map,
+                ))
+        elif not sp["nested_subproofs"]:
+            blocks.append("<div class='proof-empty'>No subproof steps detected.</div>")
 
-    # Recurse: nested sub-sub-proofs render at the END of the body,
-    # each as its own collapsed card. Depth increments per level. The
-    # nested card's anchor prefix is sourced from sp["_anchor_prefix"]
-    # (assigned by render_stack_with_subproofs's _walk_assign_anchors)
-    # so the rendered id matches the namespace_anchor_map exactly.
-    for nested in sp["nested_subproofs"]:
-        nested_prefix = nested["_anchor_prefix"]
-        blocks.append(
-            _render_subproof_card(nested, nested_prefix, depth + 1,
-                                  external_anchor_map=external_anchor_map,
-                                  global_counter=global_counter,
-                                  global_total=global_total,
-                                  namespace_anchor_map=namespace_anchor_map,
-                                  chapter_ns_map=chapter_ns_map))
+        # Recurse: nested sub-sub-proofs render at the END of the body,
+        # each as its own collapsed card. Depth increments per level. The
+        # nested card's anchor prefix is sourced from sp["_anchor_prefix"]
+        # (assigned by render_stack_with_subproofs's _walk_assign_anchors)
+        # so the rendered id matches the namespace_anchor_map exactly.
+        for nested in sp["nested_subproofs"]:
+            nested_prefix = nested["_anchor_prefix"]
+            blocks.append(
+                _render_subproof_card(nested, nested_prefix, depth + 1,
+                                      external_anchor_map=external_anchor_map,
+                                      global_counter=global_counter,
+                                      global_total=global_total,
+                                      namespace_anchor_map=namespace_anchor_map,
+                                      chapter_ns_map=chapter_ns_map))
 
     blocks.append("</div>")  # close subproof-body
     blocks.append("</div>")  # close subproof-card
@@ -2041,11 +2243,24 @@ def _count_visible_in_subproof_tree(subproofs: list[dict]) -> int:
 
 
 def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
-                                main_goal: str | None = None) -> str:
+                                main_goal: str | None = None, hierarchical: bool = False) -> str:
     """
-    Top-level renderer: main stack at the top, subproofs at the bottom
-    (collapsed by default). Each subproof's body recursively renders its
-    own sub-sub-proofs as nested collapsed cards (matryoshka).
+    @brief Render a complete proof section with preserved nested scope ownership.
+
+    @details Supported-book hierarchical mode follows the reverse-stored expanded
+    artifact exactly. Legacy mode retains separate subproof sections. Collapse
+    controls affect visibility, never the recorded row order or total.
+
+    @param stack Complete processed proof rows with the main goal first.
+    @param prefix Unique induction-section prefix, or empty for a single proof.
+    @param main_goal Optional theorem or typing target for the goal label.
+    @param hierarchical Whether to interleave intact cards in processed order.
+    @return Complete proof-section HTML with stable links and line numbering.
+    @invariant Hierarchical input must contain each scope as one contiguous block.
+
+    Render a proof with collapsed recursive subproof cards. Supported-book
+    hierarchical mode interleaves cards according to processed row order;
+    other books retain their separate subproof sections.
 
     `main_goal`, when given, is used to render a "Goal alias: ..."
     meta-line at the top of the main proof section — same format as
@@ -2054,7 +2269,15 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
     sub-sub-proof) carries an explicit Goal alias line so the reader
     sees the section's target up front.
     """
+    if hierarchical:
+        import sys
+        from proof_reader_html import render_reader_proof
+        chapter_theorems = [row[0] for row in stack if row[2] == "theorem"]
+        known = list(_known_theorems_for_reader) + chapter_theorems
+        known_keys = _known_theorem_keys_for_reader | theorem_alpha_keys(chapter_theorems)
+        return render_reader_proof(stack, prefix, sys.modules[__name__], known, known_keys)
     main_stack, subproofs = _partition_stack_subproofs(stack, scope_ns="main")
+    scope_items = hierarchical_scope_items(stack) if hierarchical else None
 
     # Build cross-reference anchor map: each subproof (any depth) gets a
     # unique anchor ID. The map is keyed by normalised implication
@@ -2070,7 +2293,7 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
 
     def _walk_assign_anchors(sps: list[dict], parent_prefix: str = "") -> None:
         # Mirrors the renderer's id-naming convention exactly:
-        #   top-level subproof k        -> "sp<k>"
+        #   top-level subproof k        -> "<section>sp<k>"
         #   nested subproof k of <P>    -> "<P>n<k>"
         #   nested-nested subproof k    -> "<P>n<k>n<m>"  (etc.)
         # The maps below are kept for namespace-tag chip clicks (yellow
@@ -2080,7 +2303,7 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
         # priority block in format_stack_entries.
         for j, sp in enumerate(sps, start=1):
             if parent_prefix == "":
-                anchor_prefix = f"sp{j}"
+                anchor_prefix = f"{prefix}sp{j}"
             else:
                 anchor_prefix = f"{parent_prefix}n{j}"
             sp["_anchor_prefix"] = anchor_prefix
@@ -2100,7 +2323,7 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
     main_rev = list(main_stack)[::-1]
     main_key_map: dict[str, str] = {}
     for midx, mentry in enumerate(main_rev):
-        if not mentry:
+        if not mentry or "theorem" in mentry:
             continue
         main_key_map[_norm_expr(mentry[0])] = f"{main_prefix_str}-entry{midx}"
 
@@ -2118,7 +2341,7 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
         return re.sub(r'\s+', '', s or '').lower()
 
     for midx, mentry in enumerate(main_rev):
-        if not mentry:
+        if not mentry or "theorem" in mentry:
             continue
         norm_expr_m = _norm(mentry[0])
         norm_ns_m = _norm(mentry[1] if len(mentry) > 1 else '')
@@ -2130,7 +2353,7 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
             body_prefix = f"{sp_prefix}body"
             sp_rev = list(sp["display_stack"])[::-1]
             for s_idx, sentry in enumerate(sp_rev):
-                if not sentry:
+                if not sentry or "theorem" in sentry:
                     continue
                 norm_expr_s = _norm(sentry[0])
                 norm_ns_s = _norm(sentry[1] if len(sentry) > 1 else '')
@@ -2152,7 +2375,8 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
     global_counter = [0]
 
     blocks: list[str] = []
-    blocks.append("<div class='proof-section main-proof-section'>")
+    scope_class = " subproofs-section" if hierarchical else ""
+    blocks.append(f"<div class='proof-section main-proof-section{scope_class}'>")
     blocks.append("<div class='proof-section-title'>Main stack</div>")
     # Mirror the per-subproof-card meta-line: "Goal alias: <expr> (ns)".
     # For the main section, ns is "main" and expr is the chapter's
@@ -2195,7 +2419,26 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
         blocks.append(
             f"<div class='subproof-meta'>"
             f"{_format_validity_tag('main')}</div>")
-    if main_stack:
+    if hierarchical:
+        if subproofs:
+            blocks.append(
+                "<div class='subproof-controls'>"
+                "<button type='button' onclick=\""
+                "this.closest('.subproofs-section').querySelectorAll("
+                "'.subproof-card.collapsed').forEach(function(c){"
+                "c.classList.remove('collapsed');});\">"
+                "Expand all</button>"
+                "<button type='button' onclick=\""
+                "this.closest('.subproofs-section').querySelectorAll("
+                "'.subproof-card').forEach(function(c){"
+                "c.classList.add('collapsed');});\">"
+                "Collapse all</button>"
+                "</div>")
+        blocks.append(_render_scope_contents(
+            main_stack, subproofs, 'main', main_prefix_str, 1, scope_items,
+            subproof_external_map, global_counter, global_total,
+            namespace_anchor_map, chapter_ns_map))
+    elif main_stack:
         blocks.append(format_stack_entries(
             main_stack, prefix=main_prefix_str,
             external_anchor_map=subproof_anchor_map,
@@ -2206,7 +2449,7 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "",
         blocks.append("<div class='proof-empty'>No main-stack entries.</div>")
     blocks.append("</div>")
 
-    if subproofs:
+    if subproofs and not hierarchical:
         blocks.append("<div class='proof-section subproofs-section'>")
         blocks.append("<div class='proof-section-title'>Subproofs</div>")
         # Expand-all / collapse-all toggles. The two buttons act on
@@ -2251,25 +2494,25 @@ def check_variable_typing(theorem, file_path, induction_var, prefix=''):
     stack = read_stack(file_path, "check_variable_typing")
     rename_stack(stack, theorem)
     typing_goal = f"(in[{induction_var},N])"
-    return render_stack_with_subproofs(stack, prefix, main_goal=typing_goal)
+    return render_stack_with_subproofs(stack, prefix, main_goal=typing_goal, hierarchical=is_reader_theorem(theorem))
 
 
 def check_zero(theorem, file_path, induction_var, prefix=''):
     stack = read_stack(file_path, "check_zero")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def check_induction_condition(theorem, file_path, induction_var, prefix=''):
     stack = read_stack(file_path, "check_induction_condition")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def single_chapter_proof(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "single chapter proof")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def single_chapter_proof_heading(file_path):
@@ -2309,31 +2552,31 @@ def split_at_plus(s: str) -> tuple[str, str]:
 
 def debugging(path_plus_end, file_path, prefix=''):
     stack = read_stack(file_path, "debugging")
-    return render_stack_with_subproofs(stack, prefix)
+    return render_stack_with_subproofs(stack, prefix, hierarchical=is_reader_theorem(path_plus_end))
 
 
 def reformulated(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "reformulated statement")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def back_reformulated(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "incubator back reformulation")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def or_theorem(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "or theorem")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def or_elimination(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "or elimination")
     rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem, hierarchical=is_reader_theorem(theorem))
 
 
 def _compute_chapter_stats(*file_paths):
@@ -2417,7 +2660,7 @@ def makes_file_path_map(theorem_list, base_dir=None):
         m = (method or "").lower()
         files = []
 
-        if m == "induction":
+        if m in ("induction", "strong induction"):
             files.append(base_dir / f"{idx}_induction_typing.txt")
             files.append(base_dir / f"{idx + 1}_check_zero.txt")
             files.append(base_dir / f"{idx + 2}_check_induction_condition.txt")
@@ -2516,107 +2759,171 @@ def _gl_make_conjunction(elements):
 
 
 def build_gl_binary_map(gl_binaries_dir):
-    """Read per-tag JSON files from GL_binaries/ and build gl_binary_map for popup display."""
+    """
+    @brief Build the right-click popup's definition map from the shared registry.
+
+    @details Every non-atomic compiled name and user definition of the run is
+    read from `GL_binary_shared.json` (`visu_helpers.read_shared_definition_registry`)
+    and rendered as its signature over `x<k>` arguments and its expanded MPL over
+    `y<k>` bound variables. Atomic relations and entries without elements have no
+    expansion and are left out.
+
+    @param gl_binaries_dir Directory holding the GL binary JSON files.
+    @return Mapping from compiled name to its `signature` and `mpl` strings.
+    @see embed_page_definitions
+    """
     gl_binary_map = {}
-    gl_binaries_path = Path(gl_binaries_dir)
-    if not gl_binaries_path.exists():
-        return gl_binary_map
+    for core, entry in visu_helpers.read_shared_definition_registry(gl_binaries_dir).items():
+        category = entry.get('category', '')
+        signature = entry.get('signature', '')
+        elements_list = entry.get('elements', [])
 
-    for json_file in sorted(gl_binaries_path.glob("GL_binary_*.json")):
-        with open(json_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        if category == 'atomic' or not elements_list:
+            continue
 
-        for core, entry in data.items():
-            category = entry.get('category', '')
-            signature = entry.get('signature', '')
-            elements_list = entry.get('elements', [])
+        # Parse signature args -> u_ to x mapping
+        sig_args = []
+        m = re.search(r'\[([^\]]*)\]', signature)
+        if m:
+            sig_args = [a.strip() for a in m.group(1).split(',')]
+        u_to_x = {}
+        xi = 1
+        for arg in sig_args:
+            if arg.startswith('u_') and arg not in u_to_x:
+                u_to_x[arg] = f'x{xi}'
+                xi += 1
 
-            if category == 'atomic' or not elements_list:
-                continue
+        # Elements are already a list from JSON
+        elements = elements_list
 
-            # Parse signature args -> u_ to x mapping
-            sig_args = []
-            m = re.search(r'\[([^\]]*)\]', signature)
-            if m:
-                sig_args = [a.strip() for a in m.group(1).split(',')]
-            u_to_x = {}
-            xi = 1
-            for arg in sig_args:
-                if arg.startswith('u_') and arg not in u_to_x:
-                    u_to_x[arg] = f'x{xi}'
-                    xi += 1
+        # Find bound vars (non-u_ tokens) across all elements -> y mapping
+        bound_to_y = {}
+        yi = 1
+        for elem in elements:
+            for tok in _gl_get_bracket_tokens(elem):
+                if tok not in u_to_x and tok not in bound_to_y:
+                    bound_to_y[tok] = f'y{yi}'
+                    yi += 1
 
-            # Elements are already a list from JSON
-            elements = elements_list
+        # Combined variable mapping
+        var_map = {**u_to_x, **bound_to_y}
 
-            # Find bound vars (non-u_ tokens) across all elements -> y mapping
-            bound_to_y = {}
-            yi = 1
-            for elem in elements:
-                for tok in _gl_get_bracket_tokens(elem):
-                    if tok not in u_to_x and tok not in bound_to_y:
-                        bound_to_y[tok] = f'y{yi}'
-                        yi += 1
+        # Rename signature and elements
+        renamed_sig = _gl_rename_vars(signature, var_map)
+        renamed_elems = [_gl_rename_vars(e, var_map) for e in elements]
 
-            # Combined variable mapping
-            var_map = {**u_to_x, **bound_to_y}
+        # Collect bound var names (yN) for quantifiers
+        if category == 'existence':
+            qvars = []
+            for tok in _gl_get_bracket_tokens(elements[0]):
+                if tok in bound_to_y and bound_to_y[tok] not in qvars:
+                    qvars.append(bound_to_y[tok])
+        else:
+            qvars = list(bound_to_y.values())
 
-            # Rename signature and elements
-            renamed_sig = _gl_rename_vars(signature, var_map)
-            renamed_elems = [_gl_rename_vars(e, var_map) for e in elements]
+        bound_str = ','.join(qvars)
 
-            # Collect bound var names (yN) for quantifiers
-            if category == 'existence':
-                qvars = []
-                for tok in _gl_get_bracket_tokens(elements[0]):
-                    if tok in bound_to_y and bound_to_y[tok] not in qvars:
-                        qvars.append(bound_to_y[tok])
+        # Reconstruct MPL based on category
+        if category == 'and':
+            mpl = _gl_make_conjunction(renamed_elems)
+        elif category == 'existence':
+            first = renamed_elems[0]
+            second = renamed_elems[1] if len(renamed_elems) > 1 else ''
+            if second.startswith('!'):
+                neg_second = second[1:]
             else:
-                qvars = list(bound_to_y.values())
-
-            bound_str = ','.join(qvars)
-
-            # Reconstruct MPL based on category
-            if category == 'and':
-                mpl = _gl_make_conjunction(renamed_elems)
-            elif category == 'existence':
-                first = renamed_elems[0]
-                second = renamed_elems[1] if len(renamed_elems) > 1 else ''
-                if second.startswith('!'):
-                    neg_second = second[1:]
-                else:
-                    neg_second = '!' + second
-                mpl = '!(>[' + bound_str + ']' + first + neg_second + ')'
-            elif category == 'implication':
-                premises = renamed_elems[:-1]
-                conclusion = renamed_elems[-1]
-                premises_conj = _gl_make_conjunction(premises)
-                mpl = '(>[' + bound_str + ']' + premises_conj + conclusion + ')'
-            elif category == 'or':
-                # Mirror prover.cpp expandSignature CASE 4 (OR). Elements
-                # carry each disjunct's true polarity; the conjunct form is
-                # the element's negation WITH double-negation cancellation
-                # (a negated disjunct contributes its bare positive core).
-                def _neg(e):
-                    return e[1:] if e.startswith('!') else '!' + e
-                if not renamed_elems:
-                    mpl = renamed_sig
-                elif len(renamed_elems) == 1:
-                    mpl = renamed_elems[0]
-                else:
-                    mpl = ('!(&' + _neg(renamed_elems[0])
-                           + _neg(renamed_elems[1]) + ')')
-                    for i in range(2, len(renamed_elems)):
-                        mpl = '!(&' + mpl + _neg(renamed_elems[i]) + ')'
+                neg_second = '!' + second
+            mpl = '!(>[' + bound_str + ']' + first + neg_second + ')'
+        elif category == 'implication':
+            premises = renamed_elems[:-1]
+            conclusion = renamed_elems[-1]
+            premises_conj = _gl_make_conjunction(premises)
+            mpl = '(>[' + bound_str + ']' + premises_conj + conclusion + ')'
+        elif category == 'or':
+            # Mirror prover.cpp expandSignature CASE 4 (OR). Elements
+            # carry each disjunct's true polarity; the conjunct form is
+            # the element's negation WITH double-negation cancellation
+            # (a negated disjunct contributes its bare positive core).
+            def _neg(e):
+                return e[1:] if e.startswith('!') else '!' + e
+            if not renamed_elems:
+                mpl = renamed_sig
+            elif len(renamed_elems) == 1:
+                mpl = renamed_elems[0]
             else:
-                mpl = _gl_make_conjunction(renamed_elems)
+                mpl = ('!(&' + _neg(renamed_elems[0])
+                       + _neg(renamed_elems[1]) + ')')
+                for i in range(2, len(renamed_elems)):
+                    mpl = '!(&' + mpl + _neg(renamed_elems[i]) + ')'
+        else:
+            mpl = _gl_make_conjunction(renamed_elems)
 
-            gl_binary_map[core] = {
-                'signature': renamed_sig,
-                'mpl': mpl
-            }
+        gl_binary_map[core] = {
+            'signature': renamed_sig,
+            'mpl': mpl
+        }
 
     return gl_binary_map
+
+
+
+_PAGE_DEFINITIONS_MARKER = "/*GL_PAGE_DEFINITIONS*/"
+_DATA_PARTS = re.compile(r'data-parts="([^"]*)"')
+
+
+def embed_page_definitions(page, gl_binary_map):
+    """
+    @brief Embed the definitions a page's expressions name into its popup script.
+
+    @details The right-click popup expands only the compiled names listed in the
+    clicked expression's `data-parts` attribute. A page therefore needs exactly
+    the definitions its own `data-parts` attributes name; they replace the popup
+    script's single marker as one JSON object in name order, so every page stays
+    self-contained without carrying the whole registry. Names without a definition
+    (atomic relations) are left out, as the popup skips them.
+
+    @param page Complete page HTML holding the popup script's marker exactly once.
+    @param gl_binary_map Mapping from compiled name to its popup entry.
+    @return The page with the marker replaced by its definition map.
+    @invariant The marker occurs exactly once in the page (asserted).
+    @see build_gl_binary_map
+    """
+    assert page.count(_PAGE_DEFINITIONS_MARKER) == 1, "popup definition marker must occur exactly once"
+    names = sorted({name for parts in _DATA_PARTS.findall(page)
+                    for name in html.unescape(parts).split(",") if name in gl_binary_map})
+    definitions = json.dumps({name: gl_binary_map[name] for name in names}, ensure_ascii=False)
+    return page.replace(_PAGE_DEFINITIONS_MARKER, definitions)
+
+
+_READABLE_NOTATION_ROWS = (
+    ("RULE / APPLIED WITH", "The cited rule in notation, then the renaming of its variables that turns it into the row."),
+    ("READS", "The row's own expression in notation."),
+    ("REFORMULATED FROM", "Both forms of a reformulation, written out without substitution."),
+    ("from A, B follows C", "An implication with premises A and B. A variable that a premise defines is replaced by its value when nothing is lost: values of s, + and · always, values of other functions only when another premise restricts the argument; quotient and remainder never."),
+    ("f(a) = b, a + b = c", "The pair (a, b) belongs to the relation f; the operation + maps (a, b) to c."),
+    ("F ⊆ G", "Every pair of the relation F is a pair of G."),
+    ("∀ x ∈ S: A ⇒ B,  ∃ y ∈ S: …,  ∄", "Quantified statements inside a formula."),
+    ("y₁, Y₁", "Names introduced when a compiled definition is written out: lowercase for elements, uppercase for sets and functions."),
+    ("∑, ∏ with bounds", "Sum or product from the lower to the upper bound, both included."),
+    ("≤, <, ∣ and ≰, ≮, ∤", "Order, strict order and divisibility, crossed when negated; a div d and a mod d are quotient and remainder."),
+    ("[n, m], f: X → Y, f|≤n", "Interval, function type, restriction of f to arguments ≤ n."),
+    ("g = f ∪ {n ↦ a}", "The sequence f extended by the value a at n."),
+    ("∃ primes p₀ ≥ p₁ ≥ … ≥ pₖ: n = ∏ᵢ₌₀ᵏ pᵢ", "n is the product of the primes p₀, …, pₖ, listed in non-increasing order: a prime factorization of n."),
+    ("gcd(a, b) = 1,  min M,  ∅", "Coprime numbers, the least element of a set, the empty set. Every defined notion reads in its own standard notation; letters it introduces itself (d, k, m, n, p) are never names of the proof. Right-click an expression for its definition."),
+    ("x̃", "A fresh copy of x made for a subproof (anchor handling)."),
+)
+
+_READABLE_NOTATION_HTML = (
+    '<h2 id="readable-notation" style="margin-top:0.5em;">Readable version</h2>\n'
+    '  <p style="color:var(--gl-text-muted); margin-bottom:0.8em;">The grey lines translate each row into '
+    'mathematical notation.</p>\n'
+    '  <table class="notation-table" style="border-collapse:collapse; width:100%; margin-bottom:2em;">\n'
+    + "\n".join(
+        f'    <tr><td style="white-space:nowrap; vertical-align:top; padding:0.4em 1.2em 0.4em 0; '
+        f'color:var(--gl-text-muted);">{html.escape(notation)}</td>'
+        f'<td style="vertical-align:top; padding:0.4em 0;">{html.escape(meaning)}</td></tr>'
+        for notation, meaning in _READABLE_NOTATION_ROWS)
+    + '\n  </table>')
 
 
 def _generate_tags_page(out_dir, common_style):
@@ -2628,7 +2935,7 @@ def _generate_tags_page(out_dir, common_style):
             f'<tr id="{html.escape(anchor)}">'
             f'<td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;">'
             f'<b>{html.escape(tag_key)}</b></td>'
-            f'<td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">'
+            f'<td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:var(--gl-link);">'
             f'{html.escape(short_desc)}</td>'
             f'<td style="vertical-align:top; padding:0.6em 0;">'
             f'{long_desc}</td></tr>'
@@ -2646,23 +2953,32 @@ def _generate_tags_page(out_dir, common_style):
 {LICENSE_HEAD_META}
   {common_style}
   <style>
-    tr:target {{ background: #3A3520; }}
+    tr:target {{ background: var(--gl-goal-bg); }}
     tr:target td {{ padding-top: 0.8em; padding-bottom: 0.8em; }}
+    /* phones: one entry per block instead of columns that cannot fit */
+    @media (max-width: 640px) {{
+      .rules-table, .rules-table tbody, .rules-table tr, .rules-table td,
+      .notation-table, .notation-table tbody, .notation-table tr, .notation-table td {{ display: block; width: auto; }}
+      .rules-table thead {{ display: none; }}
+      .rules-table tr, .notation-table tr {{ padding: 0.6em 0; border-bottom: 1px solid var(--gl-rule); }}
+      .rules-table td, .notation-table td {{ white-space: normal !important; padding: 0.15em 0 !important; overflow-wrap: anywhere; }}
+    }}
   </style>
 </head>
 <body>
   <nav><a href="index.html">Index</a></nav>
   <h1>Reasoning Rules Reference</h1>
-  <p style="color:#8B8FA5; margin-bottom:1.5em;">
+  <p style="color:var(--gl-text-muted); margin-bottom:1.5em;">
     Each step in a proof chapter is annotated with a reasoning rule that describes how the
     expression was derived. Click a rule name in any chapter to jump here; right-click
     for a quick popup.
   </p>
-  <table style="border-collapse:collapse; width:100%;">
+  {_READABLE_NOTATION_HTML}
+  <table class="rules-table" style="border-collapse:collapse; width:100%;">
     <thead>
-      <tr style="border-bottom:2px solid #3A3D4A;">
+      <tr style="border-bottom:2px solid var(--gl-rule);">
         <th style="text-align:left; padding:0.5em 1.2em 0.5em 0;">Reasoning rule</th>
-        <th style="text-align:left; padding:0.5em 1.2em 0.5em 0; color:#5DCAA5;">Short</th>
+        <th style="text-align:left; padding:0.5em 1.2em 0.5em 0; color:var(--gl-link);">Short</th>
         <th style="text-align:left; padding:0.5em 0;">Description</th>
       </tr>
     </thead>
@@ -2678,7 +2994,31 @@ def _generate_tags_page(out_dir, common_style):
         f.write(tags_page)
 
 
-def _build_used_by(theorem_list, file_path_map, leading_nums):
+def book_chapter_numbers(theorem_list):
+    """@brief Number a book's chapter pages: one consecutive number per theorem.
+
+    @details
+    The processed proof graph stores an induction theorem as three chapter
+    files (variable typing, zero case, induction condition), so its file
+    numbers advance by three, while the book renders the theorem as one page
+    whose parts read N.1 to N.3 (`induction_part_numbers`). A page is therefore
+    numbered by its theorem's position in `global_theorem_list.txt`, from 0:
+    the heading, the file name `chapter<N>.html`, the navigation, theorem
+    citations, "used by" lists, sibling-book links and the Lean twin page all
+    read this number, and consecutive theorems have consecutive chapters.
+    The processed chapter files, the verifier and the Lean code keep their
+    file numbers.
+
+    @param theorem_list Records of `global_theorem_list.txt` in book order.
+    @return The chapter number of each record, `0` to `len(theorem_list) - 1`.
+    @invariant The numbers depend only on the record count, never on methods.
+    @see induction_part_numbers
+    """
+    assert isinstance(theorem_list, list)
+    return list(range(len(theorem_list)))
+
+
+def _build_used_by(theorem_list, file_path_map, chapter_nums):
     """@brief Index the chapters that cite each local theorem.
 
     @details
@@ -2688,18 +3028,19 @@ def _build_used_by(theorem_list, file_path_map, leading_nums):
 
     @param theorem_list Ordered theorem, method, and variable records.
     @param file_path_map Theorem identity to ordered processed chapter paths.
-    @param leading_nums First chapter number for each theorem record.
+    @param chapter_nums Book chapter number of each theorem record
+           (`book_chapter_numbers`).
     @return Mapping from cited chapter number to its set of citing numbers.
     @invariant Indexing does not change first-match or chapter-order semantics.
     @see generate_proof_graph_pages
     """
-    assert len(theorem_list) == len(leading_nums)
+    assert len(theorem_list) == len(chapter_nums)
     candidates = {}
     for position, (name, _, _) in enumerate(theorem_list):
         candidates.setdefault(rename_theorem(name), []).append(position)
     used_by = {}
     for citing_pos, (citing_name, _, _) in enumerate(theorem_list):
-        citing_num = leading_nums[citing_pos]
+        citing_num = chapter_nums[citing_pos]
         for path in file_path_map.get(citing_name, []):
             if not os.path.exists(path):
                 continue
@@ -2709,14 +3050,14 @@ def _build_used_by(theorem_list, file_path_map, leading_nums):
                 matches = candidates.get(rename_theorem(entry[0]), ())
                 for source_pos in matches:
                     if source_pos != citing_pos:
-                        used_by.setdefault(leading_nums[source_pos], set()).add(citing_num)
+                        used_by.setdefault(chapter_nums[source_pos], set()).add(citing_num)
                         break
     return used_by
 
 
 def generate_proof_graph_pages(config: configuration_reader,
                                proc_dir=None, out_dir=None,
-                               sibling_graphs=None):
+                               sibling_graphs=None, lean_kernel_check_running=False):
     """@brief Render a proof graph with caches confined to this invocation.
 
     @details
@@ -2728,20 +3069,23 @@ def generate_proof_graph_pages(config: configuration_reader,
     @param proc_dir Processed chapter directory, or the main graph default.
     @param out_dir HTML destination, or the main graph default.
     @param sibling_graphs Peer graph directories for cross-graph links.
+    @param lean_kernel_check_running Whether the Lean export's kernel check is
+           still running while the pages are rendered (the pipeline's main HTML).
     @return None.
     @invariant Cached links and chapter contents never survive a render call.
     @see _generate_proof_graph_pages
     """
     token = _RENDER_CACHE.set({"clickable": {}, "chapters": {}})
     try:
-        return _generate_proof_graph_pages(config, proc_dir, out_dir, sibling_graphs)
+        return _generate_proof_graph_pages(config, proc_dir, out_dir, sibling_graphs,
+                                           lean_kernel_check_running)
     finally:
         _RENDER_CACHE.reset(token)
 
 
 def _generate_proof_graph_pages(config: configuration_reader,
                                 proc_dir=None, out_dir=None,
-                                sibling_graphs=None):
+                                sibling_graphs=None, lean_kernel_check_running=False):
     """@brief Generate all index, legend, proof, and Lean twin pages.
 
     @details
@@ -2753,6 +3097,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
     @param proc_dir Processed chapter directory, or the main graph default.
     @param out_dir HTML destination, or the main graph default.
     @param sibling_graphs Peer graph directories for cross-graph links.
+    @param lean_kernel_check_running Whether the Lean export's kernel check is
+           still running (`lean_pages.load_lean_export`).
     @return None.
     @invariant Page order, chapter identities, and citation targets are stable.
     @see generate_proof_graph_pages
@@ -2809,31 +3155,29 @@ def _generate_proof_graph_pages(config: configuration_reader,
     theorem_list = read_theorem_list(proc_dir / "global_theorem_list.txt")
     file_path_map = makes_file_path_map(theorem_list, base_dir=proc_dir)
 
-    # Per-theorem leading filename number — the integer prefix of the
-    # chapter file on disk (e.g. `1210` for `1210_reformulated_statement.txt`).
-    # HTML chapter URLs use this number directly so the URL matches the
-    # filename one-to-one. Mirrors makes_file_path_map's idx-counting logic:
-    # induction triads consume 3 raw filenames but produce a single HTML
-    # chapter at the smallest of the three indices, with sub-anchors for
-    # the other two.
-    leading_nums: list[int] = []
-    _file_idx = 0
-    for _name, _method, _var in theorem_list:
-        leading_nums.append(_file_idx)
-        if (_method or "").lower() == "induction":
-            _file_idx += 3
-        else:
-            _file_idx += 1
+    # One book chapter number per theorem (D-591):
+    # an induction theorem's three processed files make one page.
+    chapter_nums = book_chapter_numbers(theorem_list)
 
-    # Build "used by" reverse-dependency map: leading_num -> list of citing leading_nums
-    used_by = _build_used_by(theorem_list, file_path_map, leading_nums)
+    # Build "used by" reverse-dependency map: chapter number -> citing chapter numbers
+    used_by = _build_used_by(theorem_list, file_path_map, chapter_nums)
 
     # Build GL binary map from per-tag JSON files (check next to proc_dir first, then default)
     gl_binaries_dir = Path(proc_dir).parent / "GL_binaries"
     if not gl_binaries_dir.exists():
         gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
     gl_binary_map = build_gl_binary_map(gl_binaries_dir)
-    gl_binary_json = json.dumps(gl_binary_map, ensure_ascii=False)
+    global _known_theorems_for_reader
+    _known_theorems_for_reader = tuple(rename_theorem(t[0]) for t in theorem_list)
+    external_path = proc_dir / "external_theorems.txt"
+    if external_path.is_file():
+        _known_theorems_for_reader += tuple(rename_theorem(t) for t in external_path.read_text(encoding="utf-8").splitlines() if t)
+    global _known_theorem_keys_for_reader
+    _known_theorem_keys_for_reader = theorem_alpha_keys(_known_theorems_for_reader)
+    global _readable_form_for_render
+    _readable_form_for_render = visu_helpers.ReadableForm(
+        visu_helpers.load_compiled_definitions(gl_binaries_dir), _anchor_signatures(),
+        structured_implications=any(is_reader_theorem(t[0]) for t in theorem_list))
     # Expose to module-level for _expand_or_to_mpl (used by
     # _subproof_explanation in _render_subproof_card).
     global _gl_binary_map_for_render
@@ -2842,7 +3186,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
     # JavaScript for left-click/right-click expansion; popup named "Expression" with deep-navy styling
     popup_script = """
     <script>
-    const GL_BINARY_MAP = """ + gl_binary_json + """;
+    const GL_BINARY_MAP = """ + _PAGE_DEFINITIONS_MARKER + """;
 
     function processText(input) {
       const indentChar = "  ";
@@ -2907,8 +3251,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
     document.addEventListener('DOMContentLoaded', function() {
       // Inject a reusable dialog into the body
       document.body.insertAdjacentHTML('beforeend', `
-        <dialog id="expr-modal" style="border:1px solid #3A3D4A; border-radius:6px; background:#262938; color:#F0E8DC; padding:1em; max-width:80%; max-height:80vh; overflow:auto; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
-          <pre id="expr-content" style="white-space:pre-wrap; font-family:monospace; margin:0;"></pre>
+        <dialog id="expr-modal" style="border:1px solid var(--gl-rule); border-radius:6px; background:var(--gl-surface); color:var(--gl-text); padding:1em; max-width:80%; max-height:80vh; overflow:auto; box-shadow: 0 4px 12px var(--gl-shadow);">
+          <pre id="expr-content" style="white-space:pre-wrap; font-family:var(--gl-font-mono); margin:0;"></pre>
         </dialog>
       `);
       
@@ -2983,7 +3327,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
 
       // Tag popup dialog
       document.body.insertAdjacentHTML('beforeend', `
-        <dialog id="tag-modal" style="border:1px solid #3A3D4A; border-radius:6px; background:#262938; color:#F0E8DC; padding:1.2em 1.5em; max-width:500px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+        <dialog id="tag-modal" style="border:1px solid var(--gl-rule); border-radius:6px; background:var(--gl-surface); color:var(--gl-text); padding:1.2em 1.5em; max-width:500px; box-shadow: 0 4px 12px var(--gl-shadow);">
           <div id="tag-content"></div>
         </dialog>
       `);
@@ -3002,8 +3346,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
         const info = TAG_INFO[tagKey];
         if (info) {
           tagContent.innerHTML =
-            '<b style="font-size:1.15em; color:#5DCAA5;">' + escapeHtml(tagKey) + '</b>' +
-            '<div style="color:#8B8FA5; margin:0.3em 0 0.6em 0; font-size:0.92em;">' + escapeHtml(info.short) + '</div>' +
+            '<b style="font-size:1.15em; color:var(--gl-link);">' + escapeHtml(tagKey) + '</b>' +
+            '<div style="color:var(--gl-text-muted); margin:0.3em 0 0.6em 0; font-size:0.92em;">' + escapeHtml(info.short) + '</div>' +
             '<div style="line-height:1.5;">' + info.long + '</div>';
         } else {
           tagContent.innerHTML = '<b>' + escapeHtml(tagKey) + '</b>';
@@ -3018,8 +3362,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
         e.preventDefault();
         e.stopPropagation();
         tagContent.innerHTML =
-          '<b style="font-size:1.15em; color:#E879F9;">Integration goal</b>' +
-          '<div style="color:#8B8FA5; margin:0.3em 0 0.6em 0; font-size:0.92em;">Operational target, not a derived result</div>' +
+          '<b style="font-size:1.15em; color:var(--gl-target);">Integration goal</b>' +
+          '<div style="color:var(--gl-text-muted); margin:0.3em 0 0.6em 0; font-size:0.92em;">Operational target, not a derived result</div>' +
           '<div style="line-height:1.5;">' +
           'An integration goal does not need to be justified &mdash; it only must make sense structurally. ' +
           'GL can, for various reasons, decide to try to integrate a compound logical structure. ' +
@@ -3031,12 +3375,53 @@ def _generate_proof_graph_pages(config: configuration_reader,
       });
 
       // --- Collapsible subproofs ---
+      window.setProofCardOpen = function(card, open) {
+        card.classList.toggle('collapsed', !open);
+        var title = card.querySelector(':scope > .subproof-title');
+        if (title && title.hasAttribute('aria-expanded')) title.setAttribute('aria-expanded', String(open));
+      };
       document.querySelectorAll('.subproof-title').forEach(function(title) {
         title.style.cursor = 'pointer';
-        title.addEventListener('click', function() {
-          title.closest('.subproof-card').classList.toggle('collapsed');
+        title.addEventListener('click', function(e) {
+          if (e.target.closest('a')) return;
+          var card = title.closest('.subproof-card');
+          window.setProofCardOpen(card, card.classList.contains('collapsed'));
+        });
+        title.addEventListener('keydown', function(e) {
+          if (e.target !== title || (e.key !== 'Enter' && e.key !== ' ')) return;
+          e.preventDefault();
+          var card = title.closest('.subproof-card');
+          window.setProofCardOpen(card, card.classList.contains('collapsed'));
         });
       });
+      function revealProofHash() {
+        if (!window.location.hash) return;
+        var target = document.getElementById(decodeURIComponent(window.location.hash.slice(1)));
+        if (!target) return;
+        var node = target.hasAttribute('data-closed-result')
+          ? target.closest('.subproof-card').parentElement : target;
+        while (node) {
+          var card = node.closest('.subproof-card');
+          if (!card) break;
+          window.setProofCardOpen(card, true);
+          node = card.parentElement;
+        }
+        placeBelowHeader(target);
+      }
+      // A jump target sits below the floating reader header: a row or block
+      // header that fits is centred in the space below it, anything taller
+      // (or a section heading) starts just below it.
+      function placeBelowHeader(target) {
+        var toolbar = document.querySelector('.reader-toolbar');
+        var header = toolbar ? toolbar.getBoundingClientRect().height : 0;
+        var room = window.innerHeight - header;
+        var rect = target.getBoundingClientRect();
+        var centred = target.matches('.proof-line, .subproof-title') && rect.height < room;
+        var offset = centred ? header + (room - rect.height) / 2 : header + 16;
+        window.scrollTo(0, window.scrollY + rect.top - offset);
+      }
+      window.addEventListener('hashchange', revealProofHash);
+      revealProofHash();
 
       // --- In-page anchor clicks (capture phase): when the link's
       //     target lives inside a collapsed subproof card, uncollapse
@@ -3065,20 +3450,18 @@ def _generate_proof_graph_pages(config: configuration_reader,
         if (!targetEl.closest('.subproof-card')) return;
         // Walk up from the target through every ancestor subproof-card
         // and uncollapse it.
-        var node = targetEl;
+        var node = targetEl.hasAttribute('data-closed-result')
+          ? targetEl.closest('.subproof-card').parentElement : targetEl;
         while (node) {
           var card = node.closest('.subproof-card');
           if (!card) break;
-          card.classList.remove('collapsed');
+          window.setProofCardOpen(card, true);
           node = card.parentElement;
         }
-        // Brief highlight flash on the directly-targeted card so the
+        // Brief highlight flash on the cited row or header itself, so the
         // user can see WHERE the click landed.
-        var targetCard = targetEl.closest('.subproof-card');
-        if (targetCard) {
-          targetCard.classList.add('jump-flash');
-          setTimeout(function() { targetCard.classList.remove('jump-flash'); }, 1100);
-        }
+        targetEl.classList.add('jump-flash');
+        setTimeout(function() { targetEl.classList.remove('jump-flash'); }, 1100);
         // Don't preventDefault — let the browser do its native anchor
         // navigation now that the target is visible.
       }, true);
@@ -3122,28 +3505,32 @@ def _generate_proof_graph_pages(config: configuration_reader,
     # Common CSS for chapter pages — dark theme matching generative-logic.com
     common_style = """
     <style>
-      body { font-family: Arial, sans-serif; margin: 2rem; background: #181B27; color: #F0E8DC; padding-bottom: 200em;}
-      nav a { text-decoration: none; color: #5DCAA5; margin-right: 1em; }
+""" + proof_theme.THEME_TOKENS_CSS + """
+      body { font-family: var(--gl-font-ui); margin: 2rem; background: var(--gl-bg); color: var(--gl-text); }
+      /* One viewport of tail space lets the last rows scroll to the top; it
+         lies inside the body, so the floating reader header stays visible. */
+      body::after { content: ""; display: block; height: 100vh; }
+      nav a { text-decoration: none; color: var(--gl-link); margin-right: 1em; }
       /* enforce same color & no underline for all links, visited or not */
       a, a:link, a:visited {
-        color: #5DCAA5;
+        color: var(--gl-link);
         text-decoration: none;
       }
       .var-highlight { font-style: italic; margin-bottom: 1em; display: block; }
-      .step-output { margin: 1em 0; padding: 0.5em; background: #262938; border-radius: 4px; }
+      .step-output { margin: 1em 0; padding: 0.5em; background: var(--gl-surface); border-radius: 4px; }
       .clickable    { cursor: pointer; }   /* no color overridden here */
+      h1 .clickable { overflow-wrap: anywhere; }
       .integration-goal-label { cursor: pointer; }
       .proof-line { display: flex; align-items: flex-start; margin-bottom: 1.8em; }
-      .step-badge { color: #6B6F82; font-size: 0.75em; white-space: nowrap; min-width: 5em; flex-shrink: 0; text-align: right; margin-right: 0.7em; padding-top: 0.15em; }
+      .step-badge { color: var(--gl-text-faint); font-size: 0.75em; white-space: nowrap; min-width: 5em; flex-shrink: 0; text-align: right; margin-right: 0.7em; padding-top: 0.15em; }
       .proof-line-content { flex: 1; min-width: 0; }
-      .readable-grey { margin-left: calc(5em + 0.7em); color: #8B8FA5; font-weight: bold; font-size: 1.3em; }
-      .chapter-stats { margin-top: 2em; padding: 0.6em 1em; background: #262938; border-top: 1px solid #3A3D4A; color: #8B8FA5; font-size: 0.9em; }
-      .dep-glow { background: linear-gradient(90deg, rgba(232,121,249,0.15), rgba(239,159,39,0.12) 60%, transparent); border-left: 2px solid rgba(232,121,249,0.6); padding-left: 6px; border-radius: 4px; box-shadow: 0 0 8px rgba(239,159,39,0.15), inset 0 0 12px rgba(232,121,249,0.06); transition: all 0.2s ease; }
-      .arg-changed { color: #F97316; text-decoration: underline; text-decoration-style: wavy; }
+      .chapter-stats { margin-top: 2em; padding: 0.6em 1em; background: var(--gl-surface); border-top: 1px solid var(--gl-rule); color: var(--gl-text-muted); font-size: 0.9em; }
+      .dep-glow { background: linear-gradient(90deg, rgb(var(--gl-target-rgb) / 0.15), rgb(var(--gl-goal-rgb) / 0.12) 60%, transparent); border-left: 2px solid rgb(var(--gl-target-rgb) / 0.6); padding-left: 6px; border-radius: 4px; box-shadow: 0 0 8px rgb(var(--gl-goal-rgb) / 0.15), inset 0 0 12px rgb(var(--gl-target-rgb) / 0.06); transition: all 0.2s ease; }
+      .arg-changed { color: var(--gl-changed); text-decoration: underline; text-decoration-style: wavy; }
       .subproof-toggle { cursor: pointer; user-select: none; margin-right: 0.3em; display: inline-block; transition: transform 0.2s; }
       .subproof-card.collapsed .subproof-body { display: none; }
       .subproof-card.collapsed .subproof-toggle { transform: rotate(-90deg); }
-      .goal-highlight { color: #EF9F27; font-weight: bold; }
+      .goal-highlight { color: var(--gl-goal); font-weight: bold; }
        /* only kill underlines on our autogenerated theorem links */
       a.theorem-link,
       a.theorem-link .clickable {
@@ -3153,19 +3540,19 @@ def _generate_proof_graph_pages(config: configuration_reader,
      }
      /* make inter-page theorem links mint green */
      a.theorem-link[href$=".html"] .clickable {
-     color: #5DCAA5 !important;
+     color: var(--gl-link) !important;
      }
      /* cross-batch external-theorem links open in a new tab; render in
         a distinct lavender so the reader sees at a glance it goes to a
         sibling pipeline (e.g. incubator -> main, or main -> incubator) */
      a.theorem-link.external-link[href$=".html"] .clickable {
-     color: #B084EB !important;
-     border-bottom: 1px dotted #B084EB;
+     color: var(--gl-external) !important;
+     border-bottom: 1px dotted var(--gl-external);
      }
      a.theorem-link.external-link[href$=".html"]::after {
      content: " ↗";
      font-size: 0.85em;
-     color: #B084EB;
+     color: var(--gl-external);
      vertical-align: super;
      margin-left: 1px;
      }
@@ -3174,8 +3561,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
         the cross-batch link, but dashed-underline + no ↗ icon to signal
         "click won't navigate; right-click for explanation". */
      .clickable.external-orphan {
-     color: #B084EB !important;
-     border-bottom: 1px dashed #B084EB;
+     color: var(--gl-external) !important;
+     border-bottom: 1px dashed var(--gl-external);
      cursor: help;
      }
      /* Namespace-tag jump links: explicit affordance so the user sees
@@ -3188,16 +3575,16 @@ def _generate_proof_graph_pages(config: configuration_reader,
      transition: background 0.12s;
      }
      a.ns-jump:hover {
-     background: rgba(232, 212, 77, 0.18);
+     background: rgb(var(--gl-namespace-rgb) / 0.18);
      }
      /* Brief flash on the directly-targeted subproof card right after
         an ns-jump click, to make the destination visually obvious. */
      @keyframes nsJumpFlash {
-       0%   { box-shadow: 0 0 0 0 rgba(232, 212, 77, 0.0); }
-       12%  { box-shadow: 0 0 12px 2px rgba(232, 212, 77, 0.55); }
-       100% { box-shadow: 0 0 0 0 rgba(232, 212, 77, 0.0); }
+       0%   { box-shadow: 0 0 0 0 rgb(var(--gl-namespace-rgb) / 0.0); }
+       12%  { box-shadow: 0 0 12px 2px rgb(var(--gl-namespace-rgb) / 0.55); }
+       100% { box-shadow: 0 0 0 0 rgb(var(--gl-namespace-rgb) / 0.0); }
      }
-     .subproof-card.jump-flash {
+     .jump-flash {
      animation: nsJumpFlash 1s ease-out;
      }
      /* Textual explanation paragraph under the title of an OR-
@@ -3206,14 +3593,14 @@ def _generate_proof_graph_pages(config: configuration_reader,
      .subproof-explanation {
      margin: 0.4em 0 0.6em 0;
      padding: 0.55em 0.8em;
-     background: rgba(255,255,255,0.04);
-     border-left: 2px solid #6B6F82;
+     background: var(--gl-tint);
+     border-left: 2px solid var(--gl-text-faint);
      font-size: 0.92em;
      line-height: 1.45;
-     color: #C8CDD8;
+     color: var(--gl-text-soft);
      }
      .subproof-explanation b {
-     color: #E8D44D;
+     color: var(--gl-namespace);
      }
      /* Inline symbolic example block — slightly tinted background +
         a hairline rule above and below to visually separate the
@@ -3222,9 +3609,9 @@ def _generate_proof_graph_pages(config: configuration_reader,
      display: inline-block;
      padding: 0.05em 0.45em;
      margin: 0 0.1em;
-     background: rgba(232,212,77,0.07);
+     background: rgb(var(--gl-namespace-rgb) / 0.07);
      border-radius: 3px;
-     color: #E0E4EE;
+     color: var(--gl-text-soft);
      }
      .symbolic-example i {
      font-style: normal;
@@ -3236,7 +3623,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
         square brackets right after the symbolic name. Slightly
         de-emphasised vs the surrounding prose. */
      .or-expansion {
-     color: #9aa1b3;
+     color: var(--gl-text-quiet);
      font-size: 0.92em;
      }
      /* Step-badge as a permalink. The cursor change makes the
@@ -3248,8 +3635,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
      cursor: pointer;
      }
      a.step-badge-link:hover .step-badge {
-     color: #C8CDD8 !important;
-     background: rgba(255,255,255,0.04);
+     color: var(--gl-text-soft) !important;
+     background: var(--gl-tint);
      border-radius: 3px;
      }
      /* Defensive wrapping for long expressions. The 13-conjunct
@@ -3269,9 +3656,9 @@ def _generate_proof_graph_pages(config: configuration_reader,
      gap: 0.5em;
      }
      .subproof-controls button {
-     background: #262938;
-     color: #C8CDD8;
-     border: 1px solid #3A3D4A;
+     background: var(--gl-surface);
+     color: var(--gl-text-soft);
+     border: 1px solid var(--gl-rule);
      border-radius: 4px;
      padding: 0.25em 0.7em;
      cursor: pointer;
@@ -3279,29 +3666,13 @@ def _generate_proof_graph_pages(config: configuration_reader,
      font-size: 0.88em;
      }
      .subproof-controls button:hover {
-     background: #2F3346;
-     border-color: #5DCAA5;
-     color: #5DCAA5;
+     background: var(--gl-surface-hover);
+     border-color: var(--gl-link);
+     color: var(--gl-link);
      }
-     /* LaTeX-style blackboard-bold ℕ (Unicode U+2115). The Unicode
-        glyph in Arial / system sans-serif is a fixed-weight stylistic
-        character — font-weight has no effect because the font carries
-        only one weight for U+2115. Use text-stroke (modern engines)
-        + text-shadow (universal fallback) to thicken the stroke
-        visually. */
-     .bb-N {
-     font-weight: 900;
-     font-size: 1.1em;
-     letter-spacing: 0.02em;
-     -webkit-text-stroke: 0.6px currentColor;
-     text-shadow:
-       0.4px 0 0 currentColor,
-       -0.4px 0 0 currentColor,
-       0 0.4px 0 currentColor,
-       0 -0.4px 0 currentColor;
-     }
+""" + _READABLE_CAPTION_CSS + """
      .validity-tag {
-       color: #E8D44D !important;
+       color: var(--gl-namespace) !important;
        font-size: 0.78em;
        margin-left: 0.45em;
        white-space: nowrap;
@@ -3311,69 +3682,79 @@ def _generate_proof_graph_pages(config: configuration_reader,
        vertical-align: baseline;
      }
      a.proof-tag, a.proof-tag:link, a.proof-tag:visited {
-       color: #F0E8DC;
+       color: var(--gl-text);
        text-decoration: none;
        cursor: pointer;
-       border-bottom: 1px dotted #5DCAA5;
+       border-bottom: 1px dotted var(--gl-link);
      }
      a.proof-tag:hover {
-       color: #5DCAA5;
+       color: var(--gl-link);
      }
 
      .proof-section { margin-top: 0.8em; }
      .proof-section-title {
        font-size: 1.05em;
        font-weight: 700;
-       color: #8B8FA5;
+       color: var(--gl-text-muted);
        margin: 0.2em 0 0.8em 0;
        text-transform: uppercase;
        letter-spacing: 0.03em;
      }
      .main-proof-section { margin-bottom: 1.2em; }
-     .subproofs-section { border-top: 1px solid #3A3D4A; padding-top: 0.8em; }
+     .subproofs-section { border-top: 1px solid var(--gl-rule); padding-top: 0.8em; }
      .subproof-card {
        margin: 0.8em 0 1.1em 0;
        padding: 0.7em 0.8em;
-       background: #262938;
-       border: 1px solid #3A3D4A;
-       border-left: 4px solid #5DCAA5;
+       background: var(--gl-surface);
+       border: 1px solid var(--gl-rule);
+       border-left: 4px solid var(--gl-link);
        border-radius: 6px;
      }
      /* Matryoshka depth — each nesting level shifts hue + indents.
         Depth 1 = direct subproof of main; deeper = sub-sub-…-proofs. */
-     .subproof-depth-1 { border-left-color: #5DCAA5; background: #262938; }
-     .subproof-depth-2 { border-left-color: #C7B86A; background: #2C2A2E; margin-left: 0.6em; }
-     .subproof-depth-3 { border-left-color: #C77FB0; background: #322A2C; margin-left: 1.2em; }
-     .subproof-depth-4 { border-left-color: #7FA8C7; background: #2A2D32; margin-left: 1.8em; }
-     .subproof-depth-5 { border-left-color: #C77F7F; background: #312A2A; margin-left: 2.4em; }
+     .subproof-depth-1 { border-left-color: var(--gl-link); background: var(--gl-surface); }
+     .subproof-depth-2 { border-left-color: var(--gl-depth-2); background: var(--gl-depth-2-bg); margin-left: 0.6em; }
+     .subproof-depth-3 { border-left-color: var(--gl-depth-3); background: var(--gl-depth-3-bg); margin-left: 1.2em; }
+     .subproof-depth-4 { border-left-color: var(--gl-depth-4); background: var(--gl-depth-4-bg); margin-left: 1.8em; }
+     .subproof-depth-5 { border-left-color: var(--gl-depth-5); background: var(--gl-depth-5-bg); margin-left: 2.4em; }
      .subproof-card[class*="subproof-depth-"]:not(.subproof-depth-1):not(.subproof-depth-2):not(.subproof-depth-3):not(.subproof-depth-4):not(.subproof-depth-5) {
-       border-left-color: #8B8FA5;
-       background: #2A2D38;
+       border-left-color: var(--gl-text-muted);
+       background: var(--gl-depth-6-bg);
        margin-left: 3em;
      }
      .subproof-title {
        font-weight: 700;
        margin-bottom: 0.35em;
-       color: #F0E8DC;
+       color: var(--gl-text);
      }
      .subproof-label {
-       color: #8B8FA5;
+       color: var(--gl-text-muted);
        font-weight: 600;
        margin-left: 0.15em;
      }
      .subproof-meta {
        margin-bottom: 0.55em;
-       color: #8B8FA5;
+       color: var(--gl-text-muted);
        font-size: 0.95em;
      }
-     .subproof-goal { color: #5DCAA5; }
-     .proof-empty { color:#6B6F82; font-style: italic; }
+     .subproof-goal { color: var(--gl-link); }
+     .proof-empty { color:var(--gl-text-faint); font-style: italic; }
+     @media (max-width: 480px) {
+       .validity-tag { white-space: normal; max-width: 100%; }
+       .subproof-card { padding: 0.5em 0.35em; }
+     }
 
     </style>
     """
 
+    from proof_reader_html import STYLE as reader_style, notation_toggle_html, notation_preference_script, induction_part_numbers
+
+    reader_navigation = notation_preference_script(any(is_reader_theorem(t[0]) for t in theorem_list))
+    common_style += reader_navigation
+
     # --- Index page ---
-    lean_export_view = lean_pages.load_lean_export(Path(out_dir), Path(proc_dir))
+    lean_export_view = lean_pages.load_lean_export(Path(out_dir), Path(proc_dir),
+                                                   lean_kernel_check_running)
     lean_summary_html = lean_pages.render_index_summary(lean_export_view)
     index_head = f"""<!DOCTYPE html>
 {LICENSE_SOURCE_COMMENT}
@@ -3385,23 +3766,34 @@ def _generate_proof_graph_pages(config: configuration_reader,
   <link rel="icon" type="image/png" href="favicon.png">
 {LICENSE_HEAD_META}
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 2rem; background: #181B27; color: #F0E8DC; }}
+{proof_theme.THEME_TOKENS_CSS}
+    body {{ font-family: var(--gl-font-ui); margin: 2rem; background: var(--gl-bg); color: var(--gl-text); }}
+    /* One viewport of tail space, as on chapter pages: a notation switch at
+       the end of the list keeps the reading position instead of clamping. */
+    body::after {{ content: ""; display: block; height: 100vh; }}
     ul {{ list-style: none; padding: 0; }}
     ul ul {{ padding-left: 1.5rem; font-size: 0.9em; }}
     li {{ margin-bottom: 0.5em; }}
-    a, a:link, a:visited {{ text-decoration: none; color: #5DCAA5; }}
+    a, a:link, a:visited {{ text-decoration: none; color: var(--gl-link); }}
     .clickable {{ cursor: pointer; }}
+{_READABLE_CAPTION_CSS}
+{reader_style if any(is_reader_theorem(t[0]) for t in theorem_list) else ''}
+{proof_theme.THEME_SKIN_CSS}
   </style>
   {popup_script}
+  {reader_navigation}
 </head>
 <body>
+  {'<header class="reader-toolbar">' if any(is_reader_theorem(t[0]) for t in theorem_list) else ''}
   <nav><a href="tags.html">Reasoning rules</a></nav>
   <h1>Proof Graph</h1>
+  {notation_toggle_html(any(is_reader_theorem(t[0]) for t in theorem_list))}
+  {'</header>' if any(is_reader_theorem(t[0]) for t in theorem_list) else ''}
 {lean_summary_html}
   <h2>Table of Contents</h2>
   <input type="text" id="theorem-search" placeholder="Filter theorems..."
-         style="width:100%; max-width:600px; padding:0.5em; margin-bottom:1em; background:#262938; color:#F0E8DC;
-                border:1px solid #3A3D4A; border-radius:4px; font-size:1em; outline:none;">
+         style="width:100%; max-width:600px; box-sizing:border-box; padding:0.5em; margin-bottom:1em; background:var(--gl-surface); color:var(--gl-text);
+                border:1.5px solid var(--gl-rule-strong); border-radius:999px; padding:0.6em 1.1em; font-size:1em; font-family:inherit; outline:none;">
   <ul id="theorem-list">"""
     index_tail = f"""  </ul>
   <script>
@@ -3417,12 +3809,10 @@ def _generate_proof_graph_pages(config: configuration_reader,
 </html>"""
 
     toc = []
-    # build mapping from each displayed theorem title → its chapter file.
-    # Chapter URL uses the leading filename number (e.g. `chapter1210.html`
-    # for `1210_reformulated_statement.txt`) so HTML chapter ID matches the
-    # processed-graph filename one-to-one.
+    # build mapping from each displayed theorem title → its chapter file,
+    # named by the book chapter number (book_chapter_numbers).
     theorem_to_file = {
-        rename_theorem(name): f"chapter{leading_nums[i]}.html"
+        rename_theorem(name): f"chapter{chapter_nums[i]}.html"
         for i, (name, *_) in enumerate(theorem_list)
     }
 
@@ -3435,7 +3825,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
         shape = _alpha_normalize_theorem_expr(disp)
         if not shape:
             continue
-        _shape_buckets.setdefault(shape, set()).add(f"chapter{leading_nums[i]}.html")
+        _shape_buckets.setdefault(shape, set()).add(f"chapter{chapter_nums[i]}.html")
     theorem_shape_to_file = {
         shape: next(iter(files))
         for shape, files in _shape_buckets.items()
@@ -3481,16 +3871,8 @@ def _generate_proof_graph_pages(config: configuration_reader,
             sib_thms = read_theorem_list(sib_proc_dir / "global_theorem_list.txt")
             if not sib_thms:
                 continue
-            # Recompute leading_nums for the sibling (same idx-counting
-            # logic as makes_file_path_map / leading_nums above).
-            sib_leading: list[int] = []
-            _sib_idx = 0
-            for _n, _m, _v in sib_thms:
-                sib_leading.append(_sib_idx)
-                if (_m or "").lower() == "induction":
-                    _sib_idx += 3
-                else:
-                    _sib_idx += 1
+            # The sibling book numbers its pages the same way.
+            sib_chapter_nums = book_chapter_numbers(sib_thms)
             # Relative URL prefix from this run's out_dir to the sibling's
             # out_dir, e.g. ../../full_proof_graph from
             # files/incubator/full_proof_graph/.
@@ -3499,7 +3881,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
             except ValueError:
                 rel = str(sib_out_dir).replace(os.sep, "/")
             for j, (sib_name, *_) in enumerate(sib_thms):
-                sib_url = f"{rel}/chapter{sib_leading[j]}.html"
+                sib_url = f"{rel}/chapter{sib_chapter_nums[j]}.html"
                 disp = rename_theorem(sib_name)
                 if disp not in sibling_theorem_to_file:
                     sibling_theorem_to_file[disp] = sib_url
@@ -3512,7 +3894,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
                 sibling_theorem_shape_to_file[shape] = next(iter(urls))
 
     for i, (name, method, _) in enumerate(chapter_theorem_list_idx):
-        chapter_num = leading_nums[i]
+        chapter_num = chapter_nums[i]
         filename = f"chapter{chapter_num}.html"
         theorem_display = rename_theorem(name)
         theorem_esc = html.escape(theorem_display, quote=True)
@@ -3524,40 +3906,46 @@ def _generate_proof_graph_pages(config: configuration_reader,
         # truth as wrap_clickable's chapter-cell expansion.
         theorem_parts = html.escape(_extract_expr_parts(theorem_display), quote=True)
         parts_attr = f' data-parts="{theorem_parts}"' if theorem_parts else ''
-        theorem_span = f'<span class="clickable" data-text="{theorem_esc}"{parts_attr}>{display_stripped}</span>'
+        theorem_span = f'<span class="clickable mpl-only" data-text="{theorem_esc}"{parts_attr}>{display_stripped}</span>'
         toc.append(f"    <li>{chapter_num}. <a href='{filename}' style='text-decoration:none'>{theorem_span}</a>{lean_pages.toc_link(lean_export_view, i, chapter_num)}")
         # force a new line and style it
         if not debug:
+            common_entry = _readable_theorem(rename_theorem(name))
+            if is_reader_theorem(name):
+                common_entry = f"<a class='common-index-link' href='{filename}'>{common_entry}</a>"
             toc.append(
-                f"    <div style=\"margin-left:20px; color:#8B8FA5; font-weight:bold; font-size:1.3em;\">"
-                f"{_htmlify_readable(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name))))}</div>"
+                f"    <div class='readable-grey readable-index'>{common_entry}</div>"
             )
 
-        if method.lower() == "induction":
+        if method.lower() in ("induction", "strong induction"):
+            part_numbers = induction_part_numbers(chapter_num)
             toc.append("      <ul>")
-            toc.append(f"        <li>{chapter_num}.0. <a href='{filename}#sub0'>Induction variable typing</a></li>")
-            toc.append(f"        <li>{chapter_num + 1}. <a href='{filename}#sub1'>Check for 0</a></li>")
-            toc.append(f"        <li>{chapter_num + 2}. <a href='{filename}#sub2'>Check induction condition</a></li>")
+            toc.append(f"        <li>{part_numbers[0]} <a href='{filename}#sub0'>Induction variable typing</a></li>")
+            toc.append(f"        <li>{part_numbers[1]} <a href='{filename}#sub1'>Check for 0</a></li>")
+            toc.append(f"        <li>{part_numbers[2]} <a href='{filename}#sub2'>Check induction condition</a></li>")
             toc.append("      </ul>")
         citing = sorted(used_by.get(chapter_num, set()))
         if citing:
-            links = ", ".join(f"<a href='chapter{c}.html' style='color:#EF9F27; font-weight:bold;'>{c}</a>" for c in citing)
-            toc.append(f"    <div style='margin-left:20px; color:#6B6F82; font-size:0.85em;'>Used by: {links}</div>")
+            links = ", ".join(f"<a href='chapter{c}.html' style='color:var(--gl-goal); font-weight:bold;'>{c}</a>" for c in citing)
+            toc.append(f"    <div style='margin-left:20px; color:var(--gl-text-faint); font-size:0.85em;'>Used by: {links}</div>")
         toc.append("    </li>")
 
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
-        f.write("\n".join([index_head] + toc + [index_tail]))
+        f.write(embed_page_definitions("\n".join([index_head] + toc + [index_tail]), gl_binary_map))
 
     # --- Tags reference page ---
-    _generate_tags_page(out_dir, common_style)
+    _generate_tags_page(out_dir, common_style + '<style>' + proof_theme.THEME_SKIN_CSS + '</style>')
+
+    common_style += '<style>' + reader_style + '</style>'
+    common_style += '<style>' + proof_theme.THEME_SKIN_CSS + '</style>'
 
     # --- Chapter pages ---
     chapter_theorem_list = [(name, method, var) for name, method, var in theorem_list]
     for i, (name, method, var) in enumerate(chapter_theorem_list):
-        chapter_num = leading_nums[i]
+        chapter_num = chapter_nums[i]
         filename = f"chapter{chapter_num}.html"
-        prev_chapter_num = leading_nums[i - 1] if i > 0 else None
-        next_chapter_num = leading_nums[i + 1] if i + 1 < len(chapter_theorem_list) else None
+        prev_chapter_num = chapter_nums[i - 1] if i > 0 else None
+        next_chapter_num = chapter_nums[i + 1] if i + 1 < len(chapter_theorem_list) else None
         prev_link = f"<a href='chapter{prev_chapter_num}.html'>Previous</a>" if prev_chapter_num is not None else ""
         next_link = f"<a href='chapter{next_chapter_num}.html'>Next</a>" if next_chapter_num is not None else ""
         lean_link = lean_pages.nav_link(lean_export_view, i, chapter_num)
@@ -3570,33 +3958,36 @@ def _generate_proof_graph_pages(config: configuration_reader,
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{html.escape(_strip_i_prefix(rename_theorem(name)))}</title>
-  {f'<title>{html.escape(_apply_order_symbols(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name)))))}</title>' if not debug else ''}
+  {f'<title>{html.escape(_readable_theorem(rename_theorem(name), as_html=False))}</title>' if not debug else ''}
   <link rel="icon" type="image/png" href="favicon.png">
 {LICENSE_HEAD_META}
   {common_style}
   {popup_script}
 </head>
 <body>
+  {'<header class="reader-toolbar">' if is_reader_theorem(name) else ''}
   <div style="display:flex; justify-content:space-between; align-items:center;">
     <nav>
       <a href="index.html">Index</a> <a href="tags.html">Reasoning rules</a> {nav_links}
     </nav>
     <div style="display:grid; grid-template-columns:repeat(3, auto); column-gap:1.2em; row-gap:0.35em; justify-items:end; align-items:center;">
-      <span style="color:#EF9F27; font-weight:bold;">Goal of the proof</span>
-      <span style="color:#5DCAA5;">Has justification link</span>
-      <span style="color:#B084EB; border-bottom:1px dotted #B084EB;">External (sibling pipeline) <span style="vertical-align:super; font-size:0.85em;">↗</span></span>
-      <span style="color:#B084EB; border-bottom:1px dashed #B084EB;">External (no proof graph)</span>
-      <span style="color:#8B8FA5; font-weight:bold; font-size:1.3em;">Readable version</span>
-      <span style="color:#E8D44D;">(Namespace)</span>
-      <span style="color:#E879F9; font-weight:bold;">Integration goal</span>
-      <span style="border-bottom:1px dotted #5DCAA5;"><b>Reasoning rule</b></span>
+      <span style="color:var(--gl-goal); font-weight:bold;">Goal of the proof</span>
+      <span style="color:var(--gl-link);">Has justification link</span>
+      <span style="color:var(--gl-external); border-bottom:1px dotted var(--gl-external);">External (sibling pipeline) <span style="vertical-align:super; font-size:0.85em;">↗</span></span>
+      <span style="color:var(--gl-external); border-bottom:1px dashed var(--gl-external);">External (no proof graph)</span>
+      <a href="tags.html#readable-notation" style="color:var(--gl-text-muted); font-size:1.1em; text-decoration:none; border-bottom:1px dotted var(--gl-text-muted);">Common notation</a>
+      <span style="color:var(--gl-namespace);">(Namespace)</span>
+      <span style="color:var(--gl-target); font-weight:bold;">Integration goal</span>
+      <span style="border-bottom:1px dotted var(--gl-link);"><b>Reasoning rule</b></span>
       <span>Right-click to expand</span>
     </div>
   </div>
-  <h1>Chapter {chapter_num}: <span class="clickable" data-text="{html.escape(rename_theorem(name), quote=True)}" data-parts="{html.escape(_extract_expr_parts(rename_theorem(name)), quote=True)}">{html.escape(_strip_i_prefix(rename_theorem(name)))}</span></h1>
-  {f'''<div style="margin-left:20px; color:#8B8FA5; font-weight:bold; font-size:3em;">
-    {_htmlify_readable(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name))))}
-  </div><br><br>''' if not debug else ''}
+  {notation_toggle_html(is_reader_theorem(name), proof_controls=True)}
+  {'</header>' if is_reader_theorem(name) else ''}
+  <h1>Chapter {chapter_num}: <span class="clickable mpl-only" data-text="{html.escape(rename_theorem(name), quote=True)}" data-parts="{html.escape(_extract_expr_parts(rename_theorem(name)), quote=True)}">{html.escape(_strip_i_prefix(rename_theorem(name)))}</span></h1>
+  {f'''<div class="readable-grey readable-title">
+    {_readable_theorem(rename_theorem(name))}
+  </div>''' if not debug else ''}
 """
 
         body = [head]
@@ -3608,26 +3999,27 @@ def _generate_proof_graph_pages(config: configuration_reader,
         citers = sorted(used_by.get(chapter_num, set()))
         if citers:
             citer_links = ", ".join(
-                f"<a href='chapter{c}.html' style='color:#EF9F27; "
+                f"<a href='chapter{c}.html' style='color:var(--gl-goal); "
                 f"font-weight:bold; text-decoration:none;'>{c}</a>"
                 for c in citers
             )
             body.append(
                 "  <div class='used-by-panel' style='margin: 0.4em 0 1em 0; "
-                "padding: 0.55em 0.8em; background: rgba(239,159,39,0.08); "
-                "border-left: 2px solid #EF9F27; color: #C8CDD8; "
+                "padding: 0.55em 0.8em; background: rgb(var(--gl-goal-rgb) / 0.08); "
+                "border-left: 2px solid var(--gl-goal); color: var(--gl-text-soft); "
                 "font-size: 0.92em; line-height: 1.45;'>"
-                f"<b style='color:#EF9F27;'>Used by:</b> {citer_links}"
+                f"<b style='color:var(--gl-goal);'>Used by:</b> {citer_links}"
                 "</div>"
             )
-        if method.lower() == "induction":
+        if method.lower() in ("induction", "strong induction"):
+            part_prefixes = tuple(number + " " for number in induction_part_numbers(chapter_num)) if is_reader_theorem(name) else ("", "", "")
             body.extend([
-                f"  <span class=\"var-highlight\">Induction variable: {html.escape(var)}</span>",
-                "  <h2 id=\"sub0\">Induction variable typing</h2>",
+                f"  <span class=\"var-highlight\">{'Strong induction' if method.lower() == 'strong induction' else 'Induction'} variable: {html.escape(var)}</span>",
+                f"  <h2 id=\"sub0\">{part_prefixes[0]}Induction variable typing</h2>",
                 f"  <div class=\"step-output\">{check_variable_typing(name, file_path_map[name][0], var, f'c{chapter_num}s0')}</div>",
-                "  <h2 id=\"sub1\">Check for 0</h2>",
+                f"  <h2 id=\"sub1\">{part_prefixes[1]}Check for 0</h2>",
                 f"  <div class=\"step-output\">{check_zero(name, file_path_map[name][1], var, f'c{chapter_num}s1')}</div>",
-                "  <h2 id=\"sub2\">Check induction condition</h2>",
+                f"  <h2 id=\"sub2\">{part_prefixes[2]}Check induction condition</h2>",
                 f"  <div class=\"step-output\">{check_induction_condition(name, file_path_map[name][2], var, f'c{chapter_num}s2')}</div>",
             ])
 
@@ -3635,49 +4027,54 @@ def _generate_proof_graph_pages(config: configuration_reader,
             proof_heading = single_chapter_proof_heading(file_path_map[name][0])
             body.extend([
                 f"  <h2>{proof_heading}</h2>",
-                "  <div class='step-output'>", single_chapter_proof(name, file_path_map[name][0]), "  </div>",
+                "  <div class='step-output'>", single_chapter_proof(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''), "  </div>",
             ])
         elif method.lower() == "debug":
             body.extend([
                 "  <h2>Debugging</h2>",
-                "  <div class='step-output'>", debugging(name, file_path_map[name][0]), "  </div>",
+                "  <div class='step-output'>", debugging(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''), "  </div>",
             ])
         elif method.lower() == "reformulated statement":
             body.extend([
                 "  <h2>Reformulated</h2>",
                 "  <div class='step-output'>",
-                reformulated(name, file_path_map[name][0]),
+                reformulated(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''),
                 "  </div>",
             ])
         elif method.lower() == "incubator back reformulation":
             body.extend([
                 "  <h2>Back-Reformulated</h2>",
                 "  <div class='step-output'>",
-                back_reformulated(name, file_path_map[name][0]),
+                back_reformulated(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''),
                 "  </div>",
             ])
         elif method.lower() == "or theorem":
             body.extend([
                 "  <h2>OR Theorem</h2>",
                 "  <div class='step-output'>",
-                or_theorem(name, file_path_map[name][0]),
+                or_theorem(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''),
                 "  </div>",
             ])
         elif method.lower() == "or elimination":
             body.extend([
                 "  <h2>OR Elimination (pre-split merge)</h2>",
                 "  <div class='step-output'>",
-                or_elimination(name, file_path_map[name][0]),
+                or_elimination(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''),
                 "  </div>",
             ])
         elif method.lower() == "proved not broadcast":
             body.extend([
                 "  <h2>Proved, not broadcast (level-refused registration)</h2>",
                 "  <div class='step-output'>",
-                single_chapter_proof(name, file_path_map[name][0]),
+                single_chapter_proof(name, file_path_map[name][0], f'c{chapter_num}s0' if is_reader_theorem(name) else ''),
                 "  </div>",
             ])
         # Chapter statistics footer
+        if is_reader_theorem(name):
+            rendered = ''.join(body)
+            reader_rows = sum(map(int, re.findall(r'data-main-rows="([0-9]+)"', rendered)))
+            formal_rows = sum(map(int, re.findall(r'data-proof-steps="([0-9]+)"', rendered)))
+            body.append(f'<div id="chapter-reader-counts" class="chapter-stats">Collapsed main rows: {reader_rows} · All proof steps: {formal_rows}</div>')
         stats_text = _compute_chapter_stats(*file_path_map[name])
         body.append(f"  <div class='chapter-stats'>{stats_text}</div>")
 
@@ -3686,7 +4083,7 @@ def _generate_proof_graph_pages(config: configuration_reader,
         body.append("</html>")
 
         with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
-            f.write("\n".join(body))
+            f.write(embed_page_definitions("\n".join(body), gl_binary_map))
 
         # The chapter's Lean twin (only when the run exported this theorem).
         if lean_export_view is not None and i in lean_export_view.theorems:
@@ -3695,6 +4092,6 @@ def _generate_proof_graph_pages(config: configuration_reader,
                 lean_pages.render_lean_page(
                     lean_export_view.theorems[i], lean_export_view, chapter_num, filename,
                     html.escape(_strip_i_prefix(rename_theorem(name))),
-                    _htmlify_readable(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name)))),
+                    _readable_theorem(rename_theorem(name)),
                     common_style, LICENSE_SOURCE_COMMENT, LICENSE_HEAD_META, LICENSE_FOOTER),
                 chapter_num)

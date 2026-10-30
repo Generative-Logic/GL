@@ -347,8 +347,8 @@ namespace gl {
         ///
         /// @return Held bytes across the interner and the three columns.
         int64_t liveBytes() const {
-            return normKeys_.liveBytes() + headById_.liveBytes()
-                 + nodeOwner_.liveBytes() + nodeNext_.liveBytes();
+            return peak_snapshot::measure("normKeys_", normKeys_, [&] { return normKeys_.liveBytes(); }) + peak_snapshot::measure("headById_", headById_, [&] { return headById_.liveBytes(); })
+                 + peak_snapshot::measure("nodeOwner_", nodeOwner_, [&] { return nodeOwner_.liveBytes(); }) + peak_snapshot::measure("nodeNext_", nodeNext_, [&] { return nodeNext_.liveBytes(); });
         }
 
     private:

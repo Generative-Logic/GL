@@ -218,13 +218,13 @@ namespace gl {
     /// @param directory The deload directory for reloads / deloads.
     void MemorySteward::beginPhaseWindow(
         int phase, const std::atomic<std::size_t>* cursor,
-        const std::vector<Memory*>* order, unsigned workers,
+        MemoryOrderView order, unsigned workers,
         const std::string& directory) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             assert(windowCursor_ == nullptr
                 && "beginPhaseWindow over an open window");
-            assert(cursor != nullptr && order != nullptr);
+            assert(cursor != nullptr && order.valid());
             windowCursor_ = cursor;
             windowOrder_ = order;
             windowWorkers_ = workers;
@@ -246,7 +246,7 @@ namespace gl {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             windowCursor_ = nullptr;
-            windowOrder_ = nullptr;
+            windowOrder_ = MemoryOrderView{};
             windowWorkers_ = 0;
             // Invalidate the closed window's queued tasks: they drop on the
             // generation check at execution (loads bound to the window
@@ -273,11 +273,11 @@ namespace gl {
     /// @param order     The active vector whose head to warm.
     /// @param count     Head slots to warm; clamped to the order size.
     /// @param directory The deload directory the loads read from.
-    void MemorySteward::prefetchHead(const std::vector<Memory*>* order,
+    void MemorySteward::prefetchHead(MemoryOrderView order,
                                      std::size_t count,
                                      const std::string& directory) {
         if (!allowSsdDeload_) return;
-        assert(order != nullptr);
+        assert(order.valid());
         const int64_t blockBytes =
             static_cast<int64_t>(staticMemory().blockBytes());
         const int64_t budget =
@@ -298,10 +298,10 @@ namespace gl {
                             / blockBytes;
             }
         }
-        const std::size_t n = order->size();
+        const std::size_t n = order.size();
         const std::size_t limit = count < n ? count : n;
         for (std::size_t i = 0; i < limit; ++i) {
-            Memory* lb = (*order)[i];
+            Memory* lb = order[i];
             if (!lb->isActive) continue;   // discharged heads never reload
             if (lb->stewardClaim.load(std::memory_order_acquire)
                     != static_cast<uint8_t>(Memory::StewardClaim::Dumped))
@@ -336,7 +336,7 @@ namespace gl {
     bool MemorySteward::evictOneForReload(const std::string& directory) {
         if (!allowSsdDeload_) return false;
         const std::atomic<std::size_t>* cursor;
-        const std::vector<Memory*>* order;
+        MemoryOrderView order;
         unsigned workers;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -344,7 +344,7 @@ namespace gl {
             order = windowOrder_;
             workers = windowWorkers_;
         }
-        if (cursor == nullptr || order == nullptr) return false;
+        if (cursor == nullptr || !order.valid()) return false;
         const std::size_t cur = cursor->load(std::memory_order_relaxed);
         const std::size_t margin = static_cast<std::size_t>(workers);
         // Unified working set: in-flight margin behind the cursor plus the
@@ -588,9 +588,9 @@ namespace gl {
     /// @param minBlocks The size floor.
     /// @return The farthest-behind eligible victim, or `nullptr`.
     Memory* MemorySteward::pickVictimBehindCursor(
-        const std::vector<Memory*>* order, std::size_t cur,
+        MemoryOrderView order, std::size_t cur,
         std::size_t keepLo, std::size_t keepHi, int64_t minBlocks) const {
-        const std::size_t n = order->size();
+        const std::size_t n = order.size();
         if (n == 0) return nullptr;
         // The cursor lies inside its own kept window by construction (keepLo =
         // max(0, cur - workers) <= cur < keepHi = cur + ... ). A violation
@@ -605,7 +605,7 @@ namespace gl {
         for (std::size_t scanned = 0; scanned < n;
              ++scanned, i = (i == 0 ? n - 1 : i - 1)) {
             if (i >= keepLo && i < keepHi) break;   // re-entered the window
-            Memory* lb = (*order)[i];
+            Memory* lb = order[i];
             if (!lb->isActive || lb->numberOfParts > 1) continue;
             if (!lb->lbMemory.manager.resident()) continue;
             if (lb->stewardClaim.load(std::memory_order_acquire)
@@ -637,7 +637,7 @@ namespace gl {
     /// @return The farthest-behind eligible victim (floor-preferred), or
     ///         `nullptr` when not even a one-block victim exists.
     Memory* MemorySteward::pickVictimTwoTier(
-        const std::vector<Memory*>* order, std::size_t cur,
+        MemoryOrderView order, std::size_t cur,
         std::size_t keepLo, std::size_t keepHi) const {
         Memory* victim = pickVictimBehindCursor(order, cur, keepLo, keepHi,
                                                 minEvictBlocks_);
@@ -659,10 +659,10 @@ namespace gl {
     /// exactly once across passes.
     void MemorySteward::maintainWorkingSet(
         const std::atomic<std::size_t>* cursor,
-        const std::vector<Memory*>* order, unsigned workers) {
+        MemoryOrderView order, unsigned workers) {
         if (!allowSsdDeload_) return;
         const std::size_t cur = cursor->load(std::memory_order_relaxed);
-        const std::size_t n = order->size();
+        const std::size_t n = order.size();
         const int64_t blockBytes =
             static_cast<int64_t>(staticMemory().blockBytes());
         uint64_t gen;
@@ -717,7 +717,7 @@ namespace gl {
         const int64_t loadBudget =
             reserveBlocks_ / steward::kPrefetchBudgetDivisor;
         for (std::size_t i = cur; i < keepHi && i < n; ++i) {
-            Memory* lb = (*order)[i];
+            Memory* lb = order[i];
             if (!lb->isActive) continue;
             const uint8_t c =
                 lb->stewardClaim.load(std::memory_order_acquire);
@@ -767,7 +767,7 @@ namespace gl {
                  scanned < n && projected < reserveBlocks_;
                  ++scanned, i = (i == 0 ? n - 1 : i - 1)) {
                 if (i >= keepLo && i < keepHi) break;   // re-entered the window
-                Memory* lb = (*order)[i];
+                Memory* lb = order[i];
                 if (!lb->isActive || lb->numberOfParts > 1) continue;
                 if (!lb->lbMemory.manager.resident()) continue;
                 if (lb->stewardClaim.load(std::memory_order_acquire)
@@ -834,7 +834,7 @@ namespace gl {
                 if (windowCursor_ != nullptr) {
                     const std::atomic<std::size_t>* cursor =
                         windowCursor_;
-                    const std::vector<Memory*>* order = windowOrder_;
+                    MemoryOrderView order = windowOrder_;
                     const unsigned workers = windowWorkers_;
                     busy_ = true;
                     lock.unlock();
@@ -861,6 +861,12 @@ namespace gl {
             // possible, cheapest relief.
             for (Memory* lb : work)
                 lb->deloadStaticContainers(directory);
+            // The drained LBs returned whole blocks no live owner holds; give
+            // their backing beyond the reuse reserve back now rather than at
+            // the next phase-3 completion (D-486,
+            // I-297: the pool mutex serializes this with concurrent grants).
+            if (!work.empty())
+                staticMemory().trimRecycledBlocks(kRecycledWarmBytes);
 
             // Eviction pass — claim-or-skip (I-122):
             // a failed claim means the victim's phase-1 worker got there

@@ -302,7 +302,7 @@ namespace gl {
         /// @brief Approximate live byte footprint.
         ///
         /// @return Live bytes the container occupies.
-        int64_t liveBytes() const { return inner_.liveBytes(); }
+        int64_t liveBytes() const { return peak_snapshot::measure("inner_", inner_, [&] { return inner_.liveBytes(); }); }
 
         // ---- Key accessors (all shapes) ------------------------------------
 

@@ -9,16 +9,51 @@
 from .mpl import Atom, Expression, Negation, map_arguments, parse_mpl, to_mpl
 
 
-def convergence_cases(compact: Atom, parent: str, definitions: dict) -> list[tuple[Expression, str]]:
-    """@brief Instantiate the exact ordered cases of a compiled disjunction.
+def case_split_cases(compact: Expression, definitions: dict) -> tuple[Atom, list[Expression]]:
+    """@brief Instantiate the immediate cases of one case-split source.
+    @details A compiled disjunction yields its definition elements. A negated
+    conjunction, which GL splits only as the premise of an implication being
+    integrated (D-460), yields its conjuncts
+    complemented with double-negation cancellation: the De Morgan disjunction
+    it denotes. Positional ``u_<i>`` parameters take the source arguments.
+    @param compact The cited case-split source.
+    @param definitions Matching raw or typed compiled definitions.
+    @return The definition atom and its ordered immediate cases.
+    @invariant A negated source has category ``and``; any other source has
+    category ``or``; both have at least two cases.
+    """
+    negated = isinstance(compact, Negation)
+    atom = compact.inner if negated else compact
+    assert isinstance(atom, Atom) and atom.head in definitions, (
+        "case-split source must be a compiled definition")
+    definition = definitions[atom.head]
+    assert definition.get('category') == ('and' if negated else 'or'), (
+        "a negated case-split source is a conjunction; a positive one a disjunction")
+    parameters = {f'u_{index + 1}': argument for index, argument in enumerate(atom.arguments)}
+    cases = [map_arguments(parse_mpl(str(element)), lambda name: parameters.get(name, name))
+             for element in definition['elements']]
+    if negated:
+        cases = [case.inner if isinstance(case, Negation) else Negation(case) for case in cases]
+    assert len(cases) >= 2, "a case split has at least two cases"
+    return atom, cases
+
+
+def convergence_cases(compact: Expression, parent: str, definitions: dict) -> list[tuple[Expression, str]]:
+    """@brief Instantiate the exact ordered cases of a case-split source.
     @details Positive nested OR definitions flatten recursively. Signed leaves
-    retain their polarity and the outer compact supplies every case scope.
-    @param compact The cited outer disjunction.
+    retain their polarity and the outer compact supplies every case scope. A
+    negated conjunction source yields its complemented conjuncts without
+    further flattening (``case_split_cases``).
+    @param compact The cited outer disjunction or negated conjunction.
     @param parent Its exact parent scope.
     @param definitions Matching raw or typed compiled definitions.
     @return Ordered leaf expressions and their exact case scopes.
     @invariant No intermediate case or fresh binder is introduced.
     """
+    if isinstance(compact, Negation):
+        _, cases = case_split_cases(compact, definitions)
+        return [(case, parent + '_boundary_ordis_' + to_mpl(compact) + '_(' + to_mpl(case) + ')')
+                for case in cases]
     result = []
 
     def visit(expression: Expression, ancestry: tuple[str, ...]) -> None:

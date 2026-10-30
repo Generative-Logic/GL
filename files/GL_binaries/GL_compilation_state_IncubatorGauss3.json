@@ -1,0 +1,26 @@
+{
+  "next_counters": {
+    "and": 30,
+    "existence": 38,
+    "implication": 3235,
+    "or": 17
+  },
+  "replacements": {
+    "existence3": {
+      "arguments": [
+        1,
+        2,
+        3
+      ],
+      "target": "inSequence"
+    },
+    "implication140": {
+      "arguments": [
+        1,
+        2
+      ],
+      "target": "subset"
+    }
+  },
+  "schema": 1
+}

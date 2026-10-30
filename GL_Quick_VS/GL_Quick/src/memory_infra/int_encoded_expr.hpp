@@ -162,21 +162,12 @@ namespace gl {
     /// The marker that sets it never creates rows — it flags the row admission
     /// created, or does nothing.
     ///
-    /// `integrated` — true when the row arrived as the head of an integration
-    /// rule's firing in this LB (the fired rule copy is owned by an
-    /// integration task), or by mail carrying the sender's integrated bit.
-    /// The finished-task wipe counts a root as finished only through such a
-    /// row (`integrationRootKnownAtOrAbove`, D-444).
-    /// Set through `markStatementIntegrated`, never cleared.
-    ///
-    /// @see ExpressionAnalyzer::checkForEquivalence
-    /// @see ExpressionAnalyzer::disintegrateExpr2
+    /// @see EquivalenceQueries::checkForEquivalence
+    /// @see DisintegrationProcessor::disintegrateExpr2
     /// @see upsertStatementKey — the insert-or-merge write door.
-    /// @see markStatementIntegrated — the integrated-bit write door.
     struct StatementFlags {
         bool local = false;
         bool fullyDisintegrated = false;
-        bool integrated = false;
     };
 
 }

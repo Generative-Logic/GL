@@ -231,5 +231,49 @@ def test_flattened_rejects_unknown_compact():
     assert_failure(check_reformulation_for_integration_flattened, line, [line], state)
 
 
+# The hasPrimeFactorization shape: the inner existence binds P by
+# seq(k,P), and seq(k,P) is also the first conjunct of the bundle it binds.
+SHARED = {
+    "hasPF": {"category": "existence", "signature": "(hasPF[u_1])",
+              "elements": ["(in[1,u_1])", "(existence36[u_1,1])"]},
+    "existence36": {"category": "existence", "signature": "(existence36[u_1,u_2])",
+                    "elements": ["(seq[u_2,1])", "(bundle[u_2,1])"]},
+    "bundle": {"category": "and", "signature": "(bundle[u_1,u_2])",
+               "elements": ["(seq[u_1,u_2])", "(ord[u_2])"]},
+}
+SHARED_RULE = "(>[k](in[k,N])(>[P](seq[k,P])(>[](ord[P])(hasPF[N]))))"
+
+
+def _shared_state():
+    state = make_state_minimal()
+    state.current_gl_binary = SHARED
+    return state
+
+
+@register
+def test_flattened_unfold_names_a_shared_premise_once():
+    """Extending the bundle adds its seq conjunct no second time: bundle
+    intact, bundle extended (the ad-hoc inner existence always dissolves)."""
+    variants = _flat_unfold_variants("(hasPF[N])", SHARED["hasPF"], [SHARED])
+    assert [len(v) for v in variants] == [3, 3], variants
+    assert all(len(set(v)) == len(v) for v in variants), variants
+    assert any(e.startswith("(bundle[") for e in variants[0])
+    assert any(e.startswith("(ord[") for e in variants[1])
+
+
+@register
+def test_flattened_accepts_shared_premise_once():
+    line = _row(SHARED_RULE, ref="(hasPF[N])_integration_goal")
+    assert_pass(check_reformulation_for_integration_flattened, line, [line], _shared_state())
+
+
+@register
+def test_flattened_rejects_shared_premise_twice():
+    """The rule the prover no longer emits: seq(k,P) named twice."""
+    twice = "(>[k](in[k,N])(>[P](seq[k,P])(>[](seq[k,P])(>[](ord[P])(hasPF[N])))))"
+    line = _row(twice, ref="(hasPF[N])_integration_goal")
+    assert_failure(check_reformulation_for_integration_flattened, line, [line], _shared_state())
+
+
 if __name__ == "__main__":
     sys.exit(run_all_tests())

@@ -216,7 +216,7 @@ closed. **Root cause — proven end-to-end with the dump retargeted at
  the level-1 premise `(in[9,1])` (assume `a<b` → `a≤b ∧ a≠b` → collision
  with `a=b`; no membership needed).
 2. `dischargeToBeProved`'s non-recursion gate
- (`isProved(...) && allLevelsInvolved`, `prover.hpp`) requires the head's
+ (`isProved(...) && allLevelsInvolved`, `logical_block/goal_processor.hpp`) requires the head's
  level run to be `{0..level}` or `{1..level}`; at `level=2` the run `{2}`
  can NEVER pass. Contrast: row 4's head arrived with `{0,1,2}` and
  discharged at the LB's third sweep (`toBeProved 2 → 1`). Row 29's goal is

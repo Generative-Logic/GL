@@ -1,0 +1,4 @@
+(=[2,8])	main	equality2	(=[2,7])	main	(=[7,8])	main
+(=[2,7])	main	symmetry of equality	(=[7,2])	main
+(=[7,2])	main	recursion
+(=[7,8])	main	task formulation

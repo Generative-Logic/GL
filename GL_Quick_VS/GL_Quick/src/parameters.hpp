@@ -49,23 +49,14 @@
 // folds and prints those rows after the join. The resulting category totals
 // are summed worker wall time, deliberately kept separate from the complete
 // phase barrier wall. No prover decision reads these measurements. Off by
-// default like RT_MEASUREMENT and MEM_MEASUREMENT.
+// default; enable only for a dedicated timing investigation.
 #define PHASE13_DEEP_TIMING 0
 
-// When 1, every logical block's end-of-burst size is polled per statified
-// container and folded into one process-wide table, the memory counterpart of
-// the RT section table. Each active LB is sampled at the end of
-// `performElemPhase3` (it is claimed and resident there — a deloaded container
-// asserts on `size()`, so an idle LB is unpollable by construction), the
-// per-worker rows are folded at the end-of-iteration barrier together with the
-// four pool footprints, the scratch registries and the derived indexes, and the
-// whole vector is snapshotted whenever its grand total sets a new high-water.
-// `main.cpp` writes the peak snapshot once at end of batch to
-// `.rt/_memory_<tag>.log`, with each structure's share of that peak. Pure
-// telemetry: nothing in the prover reads it, and no deload or steward decision
-// depends on it (I-106 / Rule 16). When 0, every call site compiles to nothing.
-// See `docs/agentic_swdd/_meta/memory_measurement.md`.
-#define MEM_MEASUREMENT 0
+// Optional live C++ heap counting and allocation-site sampling. Default builds
+// keep the ordinary allocation operators; peak scan/capture does not need these
+// hooks. Enable this independently when investigating heap allocation sites.
+#define HEAP_MEASUREMENT 0
+
 
 
 #include <cstdint>
@@ -292,6 +283,17 @@ namespace gl {
         bool allow_ssd_deload = true;
 
         bool trackHistory = true;
+
+        // Induction kinds scheduled per digit argument of a conjecture
+        // (D-500). Weak: the step hypothesis is the
+        // conjecture at the predecessor `rec` of the induction variable n.
+        // Strong: the step hypothesis is the conjecture at every m<n, with
+        // every non-anchor variable except n universal. Each enabled kind
+        // schedules its own step and zero blocks. Config keys:
+        // weak_induction, strong_induction.
+        bool weak_induction = true;
+        bool strong_induction = false;
+
         int inductionMaxAdmissionDepth = 1;
         int inductionMaxSecondaryNumber = 2;
         int counterExampleBoundary = 6;
@@ -360,7 +362,8 @@ namespace gl {
         // isValidStaticMemoryConfig (pool a whole multiple of block, block a
         // power of two for the arena's offset shift/mask) and
         // isValidStaticPageConfig (block a whole multiple of page, page a
-        // power of two); the ExpressionAnalyzer constructor asserts both.
+        // power of two); the Prover constructor asserts both.
+        int64_t static_gpu_host_pool_bytes = 4294967296LL; // Independent GPU-host ceiling.
         int64_t static_pool_bytes = 6442450944LL;  // 6 GiB (D-410)
         int32_t static_block_bytes = 262144;      // 256 KiB
         int32_t static_page_bytes = 2048;         // 2 KiB (D-411)
@@ -375,7 +378,7 @@ namespace gl {
         // (reclaimed only at discharge), so size by peak active-LB count, not
         // content. Must satisfy isValidStaticMemoryConfig (pool/block, block a
         // power of two) and isValidStaticPageConfig (block/page); the
-        // ExpressionAnalyzer constructor asserts both. Exhaustion asserts naming
+        // Prover constructor asserts both. Exhaustion asserts naming
         // static_persistent_pool_bytes.
         int64_t static_persistent_pool_bytes = 1073741824LL; // 1 GiB
         int32_t static_persistent_block_bytes = 32768;       // 32 KiB (4 pages)
@@ -383,7 +386,7 @@ namespace gl {
         // --- Statification: mail (third) pool ---
         // A THIRD program-start reservation, separate from both pools above and
         // NEVER deloaded. It backs the cross-LB pull-model mail system: the
-        // ExpressionAnalyzer MailLog plus per-LB incoming routing mailboxes and
+        // Prover MailLog plus per-LB incoming routing mailboxes and
         // the global mail interner. MailLog keeps full history for a grid with an
         // initially dormant LB and rolling delivered windows otherwise (I-161).
         // A stand-alone pool by design — nothing reads its grant ledger,
@@ -394,14 +397,14 @@ namespace gl {
         // mail-system content across a batch (tune by `[pool-memory]`); exhaustion
         // asserts naming static_mail_pool_bytes. Must satisfy
         // isValidStaticMemoryConfig (pool/block) and isValidStaticPageConfig
-        // (block/page); the ExpressionAnalyzer constructor asserts both.
+        // (block/page); the Prover constructor asserts both.
         int64_t static_mail_pool_bytes = 2147483648LL;       // 2 GiB
         int32_t static_mail_block_bytes = 262144;            // 256 KiB
 
         // --- Statification: LB-body (fourth) pool ---
         // A FOURTH program-start reservation, separate from all three pools above
         // and NEVER deloaded. It backs the LB object store (LbStore on
-        // ExpressionAnalyzer): the Memory node objects themselves are placement-
+        // Prover): the Memory node objects themselves are placement-
         // new'd into fixed-size slots carved from this pool's blocks instead of
         // the malloc heap. A stand-alone pool by design — nothing reads its grant
         // ledger, so it plays no role in any deload/throttle/steward decision, and
@@ -413,7 +416,7 @@ namespace gl {
         // sizeof(Memory) (tune by the pool telemetry); exhaustion asserts naming
         // static_lb_pool_bytes. Must satisfy isValidStaticMemoryConfig (pool/block,
         // block a power of two) and isValidStaticPageConfig (block/page); the
-        // ExpressionAnalyzer constructor asserts both.
+        // Prover constructor asserts both.
         int64_t static_lb_pool_bytes = 2147483648LL;         // 2 GiB
         int32_t static_lb_block_bytes = 262144;              // 256 KiB
     };
@@ -463,7 +466,7 @@ namespace gl {
     ///
     /// Kept separate from `isValidStaticMemoryConfig` (the pool/block pair) so
     /// that predicate's existing two-argument call sites stay unchanged; the
-    /// ExpressionAnalyzer constructor asserts both. Deliberately a pure predicate asserted
+    /// Prover constructor asserts both. Deliberately a pure predicate asserted
     /// at the call site (a bad page size is a misconfiguration that must stop
     /// the run at config load, not at first allocation — I-19), so unit tests
     /// exercise the rejecting branches without aborting the harness.
@@ -669,7 +672,7 @@ namespace gl {
         static constexpr int32_t MAX_ADMISSION_REM_ARGS = 256;
 
         /// @brief Ceiling on the distinct variables of one definition-set
-        ///        inference (`ExpressionAnalyzer::VarTypeTable`).
+        ///        inference (`Prover::VarTypeTable`).
         ///
         /// @details
         /// One inference covers the flat leaves of a theorem (premise chain
@@ -679,8 +682,8 @@ namespace gl {
         /// The table is a fixed stack array, so its add path asserts at this
         /// ceiling (a Rule-19 tripwire: widen with evidence, never truncate).
         ///
-        /// @see `ExpressionAnalyzer::VarTypeTable`,
-        ///      `ExpressionAnalyzer::typeLeafInto`.
+        /// @see `Prover::VarTypeTable`,
+        ///      `ScopeTypeResolver::typeLeafInto`.
         static constexpr int32_t MAX_TYPED_VARIABLES = 128;
 
         /// @brief Minimum operator-expression count (head included, anchors
@@ -695,7 +698,7 @@ namespace gl {
         /// it. The documented tightening knob if the route proves too loose
         /// is the head-gate of the design's decision 8, not this number.
         ///
-        /// @see `ExpressionAnalyzer::ordisRouteQualifies` — the consumer.
+        /// @see `AdmissionPolicy::ordisRouteQualifies` — the consumer.
         static constexpr int32_t kOrdisMinOperatorExpressions = 4;
 
         /// @brief Minimum argument count for an expression to enter the
@@ -710,7 +713,7 @@ namespace gl {
         /// by the demand slot filter and the park-side disjunct filing so
         /// the two key populations can never diverge.
         ///
-        /// @see `ExpressionAnalyzer::ordis2KeyEligible` — the one consumer.
+        /// @see `AdmissionPolicy::ordis2KeyEligible` — the one consumer.
         static constexpr int32_t kOrdis2DemandMinArity = 4;
 
         /// @brief Minimum NON-anchor premise count (qualifying slot
@@ -726,7 +729,7 @@ namespace gl {
         /// preorder guard + two products) and excludes the short rules
         /// whose demand traffic is pure fan-out.
         ///
-        /// @see `ExpressionAnalyzer::ordis2DemandSlotQualifies` — the one
+        /// @see `AdmissionPolicy::ordis2DemandSlotQualifies` — the one
         ///      consumer.
         static constexpr int32_t kOrdis2DemandMinPremises = 4;
 
@@ -749,9 +752,27 @@ namespace gl {
         /// non-anchor subset test still gate every slot, so equality /
         /// typing conjuncts mint nothing at any floor.
         ///
-        /// @see `ExpressionAnalyzer::ordis2DemandSlotQualifies` — the one
+        /// @see `AdmissionPolicy::ordis2DemandSlotQualifies` — the one
         ///      consumer.
         static constexpr int32_t kOrdis2DemandMinPremisesIntegration = 6;
+
+        /// @brief Minimum number of present premises of a goal-driven demand
+        ///        (D-574).
+        ///
+        /// @details
+        /// The maintainer's floor for both goal-driven steps. A goal's flat
+        /// integration rule reports its one missing compound premise only
+        /// when at least this many other NON-anchor premises hold; the rule
+        /// search installs a marked-head implication for an operator premise
+        /// only when at least this many positive NON-anchor premises without
+        /// its output fix its other arguments. Four keeps both steps to
+        /// premise-rich rules: I4's flat rule (in, sequence, primeseq, fold
+        /// beside the missing ordered) and FTA2 row 8 (successor, sequence,
+        /// ordered, append beside the missing entry).
+        ///
+        /// @see `AdmissionPolicy::goalNearMissSlotQualifies`,
+        ///      `IntegrationProcessor::forEachGoalDemandVariant`.
+        static constexpr int32_t kGoalDemandMinPresentPremises = 4;
 
         /// @brief Minimum NON-anchor premise count for a rule to install
         ///        UNTAGGED input-slot demand variants
@@ -767,7 +788,7 @@ namespace gl {
         /// the slot's other args, the slot itself carrying the witness)
         /// and excludes the short introduction rules.
         ///
-        /// @see `ExpressionAnalyzer::inputSlotDemandSlotQualifies` — the one
+        /// @see `AdmissionPolicy::inputSlotDemandSlotQualifies` — the one
         ///      consumer.
         static constexpr int32_t kInputSlotDemandMinPremises = 4;
 
@@ -789,9 +810,37 @@ namespace gl {
         /// ordered term. The maintainer set the value on 2026-09-11 with the
         /// explicit note that it can be relaxed later.
         ///
-        /// @see `ExpressionAnalyzer::theoremRelationDemandSlotQualifies` —
+        /// @see `AdmissionPolicy::theoremRelationDemandSlotQualifies` —
         ///      the one consumer.
         static constexpr int32_t kTheoremRelationDemandMinBoundArgs = 2;
+
+        /// @brief Exact number of positive operator premises (a configuration
+        ///        with an output slot) of a rule on the compound-operator
+        ///        admission route
+        ///        (D-569).
+        ///
+        /// @details
+        /// The rule shape the maintainer set for FTA2 row 16 (the fold of an
+        /// appended sequence): its premises `in2`, `appendToSequence`, `fold`
+        /// and `in3` are four operators. An exact count, not a minimum,
+        /// keeps the route to that shape.
+        ///
+        /// @see `AdmissionPolicy::compoundOperatorSlotQualifies` — the one
+        ///      consumer.
+        static constexpr int32_t kCompoundOperatorRoutePremises = 4;
+
+        /// @brief Exact number of compound operators (compiled non-atomic
+        ///        entities) among the operator premises of a rule on the
+        ///        compound-operator admission route
+        ///        (D-569).
+        ///
+        /// @details
+        /// Row 16's `appendToSequence` and `fold`. The missing premise is one
+        /// of them.
+        ///
+        /// @see `AdmissionPolicy::compoundOperatorSlotQualifies` — the one
+        ///      consumer.
+        static constexpr int32_t kCompoundOperatorRouteCompounds = 2;
 
         /// @brief Ceiling on one registered or-operator's FLATTENED leaf
         ///        count for the reduced-or pre-mint closure.
@@ -806,7 +855,7 @@ namespace gl {
         /// firing assert names this constant — widen with evidence, never
         /// soften (Rule 19).
         ///
-        /// @see `ExpressionAnalyzer::preMintReducedOrs` — the consumer.
+        /// @see `OrRuleCompiler::preMintReducedOrs` — the consumer.
         static constexpr int32_t kMaxReducedOrLeaves = 8;
 
         /// @brief Rule-19 tripwire on the subset-exclusion detector's
@@ -820,7 +869,7 @@ namespace gl {
         /// cap; a firing assert means a contract break (runaway
         /// unification, an oversized flat entity), never a tuning knob.
         ///
-        /// @see `ExpressionAnalyzer::isSubsetExclusionInstall` — the consumer.
+        /// @see `HashRuleClassifier::isSubsetExclusionInstall` — the consumer.
         static constexpr int32_t kSubsetExclusionEmbedCap = 4096;
 
         /// @brief Ceiling on the ENTRY count of one admission-integration key's
@@ -917,6 +966,19 @@ namespace gl {
         /// @see `prepareIntegrationCore`, `prepareIntegrationCore2`.
         static constexpr int32_t MAX_INSTRUCTION_ELEMENTS = 64;
 
+        /// @brief Ceiling on the names in one integration instruction's path
+        ///        list (D-529).
+        ///
+        /// @details The list holds the integration goal's fixed arguments (at
+        /// most `MAX_ARITY`) plus one value per marker fill along the path;
+        /// every fill prunes an entity, so a path has at most
+        /// `MAX_INSTRUCTION_ELEMENTS` fills. Sizes the stack runs that parse
+        /// and rebuild a list; the asserts at those sites are Rule-19
+        /// tripwires.
+        ///
+        /// @see `buildPathListScratch`, `extendPathListScratch`.
+        static constexpr int32_t MAX_PATH_VARIABLES = MAX_ARITY + MAX_INSTRUCTION_ELEMENTS;
+
         /// @brief Ceiling on the count of DISTINCT bracketed tokens collected from
         ///        one expression by `collectExprTokens` — sizes the fixed token /
         ///        `StrReplacement` stack runs in `stripUPrefixASTScratch` (and the
@@ -942,7 +1004,7 @@ namespace gl {
     struct RTMeasurementParameters {
         // Online dump fires once a single elementary step has been running
         // this many wall-clock seconds without returning.
-        static constexpr int RT_TIME_TRIGGER_SECONDS = 5;
+        static constexpr int RT_TIME_TRIGGER_SECONDS = 360000;
 
         // Section rows below this share of the call's total elapsed
         // self-time are folded into the trailing "other sections each
@@ -975,30 +1037,6 @@ namespace gl {
         // collapsing re-uses the section rows, so this is sized for deep
         // recursion. Exceeding it trips a Rule-19 assert.
         static constexpr int RT_MAX_OPEN_DEPTH = 1024;
-    };
-
-    // Memory-size measurement tunables — only consulted when
-    // MEM_MEASUREMENT == 1. See `docs/agentic_swdd/_meta/memory_measurement.md`
-    // and the `#define MEM_MEASUREMENT` block at the top of this file.
-    struct MemMeasurementParameters {
-        // Size of the per-tag byte table. One slot per `LbMemory::ContainerTag`
-        // value, including the reserved band holes and the retired tags — the
-        // tag IS the index, so the table is sized by the highest tag plus one
-        // and never by the count of live containers. Appending a tag past this
-        // ceiling trips a Rule-19 assert naming this constant.
-        static constexpr int MEM_TAG_SPACE = 1024;
-
-        // Number of worker slots the per-slot accumulator rows are sized for.
-        // Each row is MEM_TAG_SPACE int64 counters, so the whole accumulator is
-        // MEM_MAX_SLOTS * MEM_TAG_SPACE * 8 bytes of static storage and no heap.
-        // Must be at least the run's `logicalCores`; an out-of-range slot
-        // asserts rather than wrapping into a neighbour's row.
-        static constexpr int MEM_MAX_SLOTS = 64;
-
-        // Structure rows below this share of the peak grand total are folded
-        // into a single trailing "(N structures each < M %)" line. 0 shows
-        // every row, matching RT_MIN_PERCENTAGE's default.
-        static constexpr int MEM_MIN_PERCENTAGE = 0;
     };
 
 }

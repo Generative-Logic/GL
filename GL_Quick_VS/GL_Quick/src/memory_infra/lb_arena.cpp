@@ -32,17 +32,6 @@
 #include <algorithm>
 #include <cstring>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <dbghelp.h>
-#include <cstdio>
-#include <mutex>
-#pragma comment(lib, "dbghelp.lib")
-#endif
-
 namespace gl {
 
     /// @brief Bind to the global manager that grants this arena's blocks.
@@ -122,47 +111,6 @@ namespace gl {
         assert(align >= 1 && (align & (align - 1)) == 0 && align <= 16
             && "LbArena::alloc alignment must be a power of two in [1,16]");
         ensureGeometry();
-#ifdef _WIN32
-        if (bytes > blockBytes_) {
-            static std::mutex oversizedDiagnosticMutex;
-            std::lock_guard<std::mutex> lock(oversizedDiagnosticMutex);
-            const HANDLE process = GetCurrentProcess();
-            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS);
-            const BOOL symbolsReady = SymInitialize(process, nullptr, TRUE);
-            assert(symbolsReady);
-            void* frames[24];
-            const USHORT frameCount = CaptureStackBackTrace(0, 24, frames, nullptr);
-            char report[32768];
-            int used = std::snprintf(report, sizeof(report),
-                "[OR-MAIL-OVERSIZED] bytes=%d blockBytes=%d arena=%p",
-                bytes, blockBytes_, static_cast<void*>(this));
-            for (USHORT frame = 0; frame < frameCount; ++frame) {
-                alignas(SYMBOL_INFO) char symbolBytes[sizeof(SYMBOL_INFO) + 1024] = {};
-                auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBytes);
-                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-                symbol->MaxNameLen = 1023;
-                DWORD64 displacement = 0;
-                const DWORD64 address = reinterpret_cast<DWORD64>(frames[frame]);
-                const BOOL named = SymFromAddr(process, address, &displacement, symbol);
-                IMAGEHLP_LINE64 line{};
-                line.SizeOfStruct = sizeof(line);
-                DWORD lineDisplacement = 0;
-                const BOOL located = SymGetLineFromAddr64(process, address, &lineDisplacement, &line);
-                const int count = std::snprintf(report + used, sizeof(report) - used,
-                    " | frame%u=%p %s %s:%lu", frame, frames[frame],
-                    named ? symbol->Name : "<unresolved>",
-                    located ? line.FileName : "<unresolved>", located ? line.LineNumber : 0UL);
-                assert(count > 0 && count < static_cast<int>(sizeof(report)) - used);
-                used += count;
-            }
-            FILE* output = nullptr;
-            const errno_t opened = fopen_s(&output, ".debug/traps.log", "ab");
-            assert(opened == 0 && output != nullptr);
-            std::fprintf(output, "%s\n", report);
-            std::fclose(output);
-            SymCleanup(process);
-        }
-#endif
         assert(bytes <= blockBytes_
             && "single arena allocation exceeds a block — raise "
                "static_block_bytes or rethink the caller");
@@ -312,6 +260,104 @@ namespace gl {
 #endif
     }
 
+    /// @brief Let paged containers on this arena take sub-page slots (see the
+    ///        header contract).
+    ///
+    /// @details
+    /// Sets the per-arena opt-in. The arena must be unused, so no container on
+    /// it holds storage that predates the switch.
+    ///
+    /// @return Nothing.
+    void LbArena::enableSubPages() {
+        assert(!subPagesEnabled_ && "LbArena::enableSubPages called twice");
+        assert(blocksHeld() == 0 && pageTable_.empty()
+            && "LbArena::enableSubPages on a used arena");
+        subPagesEnabled_ = true;
+    }
+
+    /// @brief Number of sub-page size classes for this pool's page size (see
+    ///        the header contract).
+    ///
+    /// @details
+    /// Counts the classes `kSubPageMinBytes << c` strictly below the page size,
+    /// up to `kSubPageMaxClasses`. The page size is immutable after pool
+    /// initialization, so the answer never changes for a bound arena.
+    ///
+    /// @return Class count.
+    int32_t LbArena::subPageClassCount() const {
+        assert(global_ != nullptr && "LbArena::subPageClassCount on an unbound arena");
+        const int32_t pb = global_->pageBytes();
+        int32_t count = 0;
+        while (count < kSubPageMaxClasses && subPageBytes(count) < pb) ++count;
+        return count;
+    }
+
+    /// @brief Allocate one slot of size class `cls` (see the header contract).
+    ///
+    /// @details
+    /// An empty class list carves a fresh `allocPage` page: the first slot is
+    /// returned and the rest are pushed from the highest offset down, each link
+    /// in its slot's last 8 bytes, so the following pops ascend through the
+    /// page.
+    ///
+    /// @param cls Size class, `0 <= cls < subPageClassCount()`.
+    /// @return The allocated slot.
+    LbArena::SubPage LbArena::allocSubPage(int32_t cls) {
+        assert(resident_ && "LbArena::allocSubPage on a deloaded arena");
+        assert(subPagesEnabled_
+            && "LbArena::allocSubPage on an arena without sub-pages");
+        assert(cls >= 0 && cls < subPageClassCount()
+            && "LbArena::allocSubPage: size class out of range");
+        const int32_t bytes = subPageBytes(cls);
+        if (subPageFree_[cls] == -1) {
+            // allocPage may audit the arena (GL_ARENA_PARANOID), so the class
+            // counters change only after it returns.
+            const int32_t vid = allocPage();
+            ++subPageSlabs_[cls];
+            char* page = pageAt(vid);
+            const int32_t slots = global_->pageBytes() / bytes;
+            for (int32_t k = slots - 1; k >= 1; --k) {
+                *reinterpret_cast<int64_t*>(page + static_cast<std::ptrdiff_t>(k + 1) * bytes
+                    - sizeof(int64_t)) = subPageFree_[cls];
+                subPageFree_[cls] = packSubPage(SubPage{ vid, k * bytes });
+            }
+            ++subPageLive_[cls];
+            return SubPage{ vid, 0 };
+        }
+        const SubPage slot = unpackSubPage(subPageFree_[cls]);
+        subPageFree_[cls] = *reinterpret_cast<const int64_t*>(
+            pageAt(slot.vid) + slot.offset + bytes - sizeof(int64_t));
+        ++subPageLive_[cls];
+        return slot;
+    }
+
+    /// @brief Return a slot of size class `cls` to its free list (see the
+    ///        header contract).
+    ///
+    /// @param slot The slot to free.
+    /// @param cls  Its size class.
+    void LbArena::freeSubPage(SubPage slot, int32_t cls) {
+        assert(resident_ && "LbArena::freeSubPage on a deloaded arena");
+        assert(subPagesEnabled_
+            && "LbArena::freeSubPage on an arena without sub-pages");
+        assert(cls >= 0 && cls < subPageClassCount()
+            && "LbArena::freeSubPage: size class out of range");
+        const int32_t bytes = subPageBytes(cls);
+        assert(slot.vid >= 0 && slot.vid < pageTable_.size()
+            && isLivePageSlot(pageTable_[slot.vid])
+            && "LbArena::freeSubPage: slot page is not live");
+        assert(slot.offset >= 0 && slot.offset % bytes == 0
+            && slot.offset + bytes <= global_->pageBytes()
+            && "LbArena::freeSubPage: offset is not a slot of the class");
+        assert(subPageLive_[cls] > 0
+            && "LbArena::freeSubPage: no live slot of the class to return");
+        char* address = pageAt(slot.vid) + slot.offset;
+        std::memset(address, kArenaPoisonByte, static_cast<std::size_t>(bytes));
+        *reinterpret_cast<int64_t*>(address + bytes - sizeof(int64_t)) = subPageFree_[cls];
+        subPageFree_[cls] = packSubPage(slot);
+        --subPageLive_[cls];
+    }
+
     /// @brief In-place page compaction: pack the live pages onto the
     ///        contiguous prefix of the held blocks and return the emptied
     ///        blocks to the pool — the background steward's reclaim.
@@ -337,6 +383,9 @@ namespace gl {
     int64_t LbArena::compactPages(LbArena& scr) {
         assert(resident_ && "LbArena::compactPages on a deloaded arena");
         if (pageBlocks_.empty()) return 0;
+        // Pages carved into sub-page slots that hold no live slot go back to
+        // the page tier first, so the packing below can return their blocks.
+        releaseEmptySubPagePages(scr);
         const int32_t pageBytesN = global_->pageBytes();
         const int32_t ppb = global_->blockBytes() / pageBytesN;
         const int32_t totalSlots =
@@ -472,6 +521,61 @@ namespace gl {
         pageBlocks_.shrinkToFit();
         assertInvariants();
         return reclaimed;
+    }
+
+    /// @brief Return every sub-page page without a live slot to the page tier
+    ///        (see the header contract).
+    ///
+    /// @details
+    /// Per class: count the free slots of each page from the free list (a
+    /// per-vid counter on `scr`), relink the list without the slots of pages
+    /// whose every slot is free (the order of the remaining slots is kept),
+    /// then free those pages in ascending vid order. Each node's next link is
+    /// read before the previous kept node's link is rewritten, so the walk
+    /// never reads a rewritten link. The class page counter drops by every
+    /// released page before the first `freePage`, which may audit the arena,
+    /// so each audit sees a list and counters that agree.
+    ///
+    /// @param scr Scratch arena on an independent pool, exclusive to the
+    ///            calling thread (the `compactPages` scratch).
+    /// @return Nothing.
+    void LbArena::releaseEmptySubPagePages(LbArena& scr) {
+        const int32_t pb = global_->pageBytes();
+        for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+            if (subPageFree_[cls] == -1) continue;
+            const int32_t bytes = subPageBytes(cls);
+            const int32_t slotsPerPage = pb / bytes;
+            const int32_t hw = pageTable_.size();
+            PagedHashIndex freeSlots(&scr);
+            freeSlots.reset(hw);
+            for (int64_t link = subPageFree_[cls]; link != -1;) {
+                const SubPage slot = unpackSubPage(link);
+                freeSlots.set(slot.vid, freeSlots.at(slot.vid) + 1);
+                link = *reinterpret_cast<const int64_t*>(
+                    pageAt(slot.vid) + slot.offset + bytes - sizeof(int64_t));
+            }
+            int64_t head = -1;
+            int64_t* tail = &head;
+            for (int64_t link = subPageFree_[cls]; link != -1;) {
+                const SubPage slot = unpackSubPage(link);
+                int64_t* own = reinterpret_cast<int64_t*>(
+                    pageAt(slot.vid) + slot.offset + bytes - sizeof(int64_t));
+                const int64_t next = *own;
+                if (freeSlots.at(slot.vid) != slotsPerPage) {
+                    *tail = link;
+                    tail = own;
+                }
+                link = next;
+            }
+            *tail = -1;
+            subPageFree_[cls] = head;
+            int32_t released = 0;
+            for (int32_t vid = 0; vid < hw; ++vid)
+                if (freeSlots.at(vid) == slotsPerPage) ++released;
+            subPageSlabs_[cls] -= released;
+            for (int32_t vid = 0; vid < hw; ++vid)
+                if (freeSlots.at(vid) == slotsPerPage) freePage(vid);
+        }
     }
 
     /// @brief Bulk-acquire `count` blocks into a block directory — the raw
@@ -623,7 +727,7 @@ namespace gl {
         if (keptBlocks > 0) acquireInto(pageBlocks_, keptBlocks);
         // The final live-page count; the chunks' running `slot` must land
         // exactly here (asserted in restoreForRawLoadEnd). Nothing reads
-        // livePages_ between the stages — assertInvariants runs only at End.
+        // livePages_ between the stages — the audit runs only at End.
         livePages_ = liveCount;
     }
 
@@ -706,7 +810,9 @@ namespace gl {
             freeHead_ = page;
             ++freePageCount_;
         }
-        assertInvariants();
+        // The pages are bound but not yet filled: audit what reads no page
+        // content; fillRawImage walks the sub-page lists once the bytes land.
+        assertPageTierInvariants();
     }
 
     /// @brief Flag the arena as deloaded to SSD.
@@ -750,7 +856,37 @@ namespace gl {
         freeVidHead_ = -1;       // the chain nodes lived in pageTable_ (cleared)
         livePages_ = 0;
         cursor_ = 0;
+        for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+            subPageFree_[cls] = -1;  // the slots lived in the returned pages
+            subPageLive_[cls] = 0;
+            subPageSlabs_[cls] = 0;
+        }
         ++generation_;
+    }
+
+    /// @brief `releaseAll` that keeps the sub-page free lists for a raw-image
+    ///        restore (see the header contract).
+    ///
+    /// @details
+    /// Saves the per-class heads and counters, runs `releaseAll`, and puts
+    /// them back. The kept heads name vids the raw restore rebinds.
+    ///
+    /// @return Nothing.
+    void LbArena::releaseAllForRawImage() {
+        int64_t heads[kSubPageMaxClasses];
+        int32_t live[kSubPageMaxClasses];
+        int32_t slabs[kSubPageMaxClasses];
+        for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+            heads[cls] = subPageFree_[cls];
+            live[cls] = subPageLive_[cls];
+            slabs[cls] = subPageSlabs_[cls];
+        }
+        releaseAll();
+        for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+            subPageFree_[cls] = heads[cls];
+            subPageLive_[cls] = live[cls];
+            subPageSlabs_[cls] = slabs[cls];
+        }
     }
 
     /// @brief Lazily bind a default-constructed arena to a pool (see the
@@ -860,9 +996,10 @@ namespace gl {
         ++generation_;
     }
 
-    /// @brief Deep structural self-audit of the arena's bookkeeping — byte-bump
-    ///        and page tier (see the header for the full contract).
-    void LbArena::assertInvariants() const {
+    /// @brief Self-audit of the arena's bookkeeping that reads no page
+    ///        content — byte-bump and page tier, sub-page counters (see the
+    ///        header for the full contract).
+    void LbArena::assertPageTierInvariants() const {
 #ifndef NDEBUG
         pageTable_.assertInvariants();
         blocks_.assertInvariants();
@@ -926,6 +1063,29 @@ namespace gl {
                        == static_cast<int64_t>(pageBlocks_.size()) * ppb
                 && "LbArena::assertInvariants: carved pages != live + free");
         }
+        // Sub-page tier counters (no page content is read here, so this part
+        // also holds right after a raw restore, before the page fill): a class
+        // without carved pages has no slots, and no class has more live slots
+        // than its pages carve. Lists kept across a raw eviction
+        // (releaseAllForRawImage) are checked once the restore has rebound
+        // their pages.
+        if (hw > 0) {
+            int64_t slabPages = 0;
+            for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+                assert(subPageLive_[cls] >= 0 && subPageSlabs_[cls] >= 0);
+                slabPages += subPageSlabs_[cls];
+                if (subPageSlabs_[cls] == 0) {
+                    assert(subPageFree_[cls] == -1 && subPageLive_[cls] == 0
+                        && "LbArena::assertInvariants: sub-page slots without a page");
+                    continue;
+                }
+                assert(static_cast<int64_t>(subPageLive_[cls])
+                        <= static_cast<int64_t>(subPageSlabs_[cls]) * (pb / subPageBytes(cls))
+                    && "LbArena::assertInvariants: more live sub-page slots than carved");
+            }
+            assert(slabPages <= livePages_
+                && "LbArena::assertInvariants: more sub-page pages than live pages");
+        }
 #if GL_ARENA_PARANOID
         // Heavy cross-checks (O(pages^2 + pages*blocks), paranoid-only): every
         // live and free page is distinct, page-aligned, and inside a carved
@@ -956,6 +1116,50 @@ namespace gl {
             assert(inCarvedBlock(f)
                 && "LbArena::assertInvariants: free page outside a carved block");
 #endif
+#endif
+    }
+
+    /// @brief The full self-audit: the page-tier bookkeeping plus a walk of
+    ///        every sub-page free list (see the header contract).
+    void LbArena::assertInvariants() const {
+        assertPageTierInvariants();
+        assertSubPageInvariants();
+    }
+
+    /// @brief Walk every sub-page free list against the class counters (see
+    ///        the header contract).
+    ///
+    /// @details
+    /// Each class's list must hold exactly the carved slots that are not
+    /// allocated, every node a slot-aligned offset in a live page. The links
+    /// live in the free slots, so this reads page content; it skips an arena
+    /// that holds no vid (lists kept across a raw eviction wait for the
+    /// restore). NDEBUG-gated like `assertPageTierInvariants`.
+    void LbArena::assertSubPageInvariants() const {
+#ifndef NDEBUG
+        const int32_t hw = pageTable_.size();
+        if (hw == 0) return;
+        const int32_t pb = global_->pageBytes();
+        for (int32_t cls = 0; cls < kSubPageMaxClasses; ++cls) {
+            if (subPageSlabs_[cls] == 0) continue;
+            const int32_t bytes = subPageBytes(cls);
+            const int64_t freeSlots =
+                static_cast<int64_t>(subPageSlabs_[cls]) * (pb / bytes) - subPageLive_[cls];
+            int64_t walked = 0;
+            for (int64_t link = subPageFree_[cls]; link != -1; ++walked) {
+                assert(walked < freeSlots
+                    && "LbArena::assertSubPageInvariants: sub-page free list too long");
+                const SubPage slot = unpackSubPage(link);
+                assert(slot.vid < hw && isLivePageSlot(pageTable_[slot.vid])
+                    && "LbArena::assertSubPageInvariants: free sub-page slot in a dead page");
+                assert(slot.offset % bytes == 0 && slot.offset + bytes <= pb
+                    && "LbArena::assertSubPageInvariants: misaligned free sub-page slot");
+                link = *reinterpret_cast<const int64_t*>(
+                    pageTable_[slot.vid] + slot.offset + bytes - sizeof(int64_t));
+            }
+            assert(walked == freeSlots
+                && "LbArena::assertSubPageInvariants: free list length != carved - live");
+        }
 #endif
     }
 

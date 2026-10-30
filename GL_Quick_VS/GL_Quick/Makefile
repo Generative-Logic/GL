@@ -96,11 +96,11 @@ $(shell mkdir -p build; [ "$$(cat $(CONFIG_STAMP) 2>/dev/null)" = '$(BUILD_CONFI
 # `src/tests/*.cpp` is the unit-test harness
 # (test_harness.cpp + test_<module>.cpp), linked into the same
 # `gl_quick` binary so the `--unit-tests` flag in main.cpp can dispatch
-# to the registered tests. All five globs feed the same OBJS expansion;
+# to the registered tests. All nine globs feed the same OBJS expansion;
 # the patsubst rewrites `src/...` to `build/...` preserving the relative
 # subdirectory, and the `build/%.o` recipe handles arbitrary depth via
 # the `mkdir -p $(@D)` order-only step inside the recipe.
-SRCS := $(wildcard src/*.cpp) $(wildcard src/infra/*.cpp) $(wildcard src/memory_infra/*.cpp) $(wildcard src/gpu/*.cpp) $(wildcard src/tests/*.cpp)
+SRCS := $(wildcard src/*.cpp) $(wildcard src/compiler/*.cpp) $(wildcard src/proof/*.cpp) $(wildcard src/inference/*.cpp) $(wildcard src/logical_block/*.cpp) $(wildcard src/infra/*.cpp) $(wildcard src/memory_infra/*.cpp) $(wildcard src/gpu/*.cpp) $(wildcard src/tests/*.cpp)
 OBJS := $(patsubst src/%.cpp,build/%.o,$(SRCS))
 TARGET := gl_quick
 

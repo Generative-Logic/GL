@@ -32,14 +32,14 @@ Contributions require CLA — see CONTRIBUTING.md.
 - **Objective and acceptance:** Replace the two expanded D2 conjectures with one remainder-uniqueness conjecture for the same dividend and divisor. Run one full GPU pipeline and record whether host-pool exhaustion persists and whether the exact new conjecture is proved.
 - **Authorization and constraints:** The maintainer requested this replacement to test exhaustion. Keep the first 66 supplied conjectures, predicate definitions, prover policy, capacities and assertions unchanged. Retarget only the sacred dump's complete-chain matcher to the replacement premise block.
 - **Baseline:** The latest completed run below exhausted all 49,152 blocks of the 12 GiB host main pool at FTA burst 16 during Phase 3; both expanded D2 equality goals remained open.
-- **Hypothesis:** One equality head has only two induction-eligible variables, `a` and `d`. In `ConfigFTA.json`, `remainder` has `input_args=["a","d"]` and `output_args=["r"]`; the two outputs `r` and `r'` are excluded. `prover.hpp`, `ExpressionAnalyzer::findDigitArgs`, selects distinct configured input arguments minus all output and anchor arguments. The quotient and product witnesses stay internal to the predicate. The earlier expanded rows each have five eligible variables (`q,d,r,q',r'`), so the supplied goals move from ten candidates across two heads to two across one head. The configured-input/output calculation is saved in . The completed measurement below confirms that this input avoids the previous exhaustion on the unchanged 12 GiB main pool; it does not isolate the contribution of each input simplification.
+- **Hypothesis:** One equality head has only two induction-eligible variables, `a` and `d`. In `ConfigFTA.json`, `remainder` has `input_args=["a","d"]` and `output_args=["r"]`; the two outputs `r` and `r'` are excluded. `logical_block/scope_type_resolver.hpp`, `ScopeTypeResolver::findDigitArgs`, selects distinct configured input arguments minus all output and anchor arguments. The quotient and product witnesses stay internal to the predicate. The earlier expanded rows each have five eligible variables (`q,d,r,q',r'`), so the supplied goals move from ten candidates across two heads to two across one head. The configured-input/output calculation is saved in . The completed measurement below confirms that this input avoids the previous exhaustion on the unchanged 12 GiB main pool; it does not isolate the contribution of each input simplification.
 - **Replacement:** `remainder(N,+,*,a,d,r)` and `remainder(N,+,*,a,d,r')` imply `r=r'`. Slots `9=a`, `10=d`, `11=r`, `12=r'` follow the unchanged eight-slot FTA anchor. Quotient uniqueness is outside this experiment.
 
 ```text
 (>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](remainder[1,4,5,9,10,11])(>[12](remainder[1,4,5,9,10,12])(=[11,12]))))
 ```
 
-- **Trace identity:** `(remainder[1,4,5,9,10,12])` → `(remainder[1,4,5,9,10,11])` → `(AnchorFTA[1,2,3,4,5,6,7,8])` → empty root with null parent. This follows `prover.cpp`, `ExpressionAnalyzer::addTheoremToMemory`, which creates one child per premise and sets its expression key to that premise.
+- **Trace identity:** `(remainder[1,4,5,9,10,12])` → `(remainder[1,4,5,9,10,11])` → `(AnchorFTA[1,2,3,4,5,6,7,8])` → empty root with null parent. This follows `proof/proof_grid_builder.cpp`, `ProofGridBuilder::addTheoremToMemory`, which creates one child per premise and sets its expression key to that premise.
 - **Input milestone:** Committed and pushed as. The input has 67 unique rows; the first 66 are unchanged and the replacement parses with no free arguments. All 266 source/input hashes from the previous failing run were compared: only the conjecture file and sacred dump matcher differ. Evidence: .
 - **Completed run:** Descriptor `d2_remainder_unique_20260910_01`, tested input/source commit. The native full rebuild passed in **103.142 seconds**. `main.py --GPU` exited **0** after **296.926 seconds** (pipeline-reported runtime **296.78738 seconds**); FTA prover runtime was **55.1819 seconds**. All **1,724 native tests**, **423 verifier unit tests**, **150,663 proof checks with zero failures**, and the connected Lean build passed. The eight logged theorem counts are **518, 79, 76, 105, 25, 4, 19, 40**.
 - **Memory result:** FTA's main static-pool peak was **12,933 blocks / 3,390,308,352 bytes / 3.15747 GiB**, with the same **49,152-block / 12 GiB** capacity. The previous expanded input exhausted that capacity during Phase 3. Across all eight batches the largest main-pool peak was **6.32520 GiB**. This run completed without either host-pool or GPU-capacity exhaustion; no capacity or assertion was changed.
@@ -150,7 +150,7 @@ For a stall, map these steps to the compiled expressions and exact scopes, deriv
 
 ### Diagnostic preparation
 
-- Derived the shared D2 target directly from `ExpressionAnalyzer::addTheoremToMemory` and `ce::disintegrateImplication`. Its inner-to-root chain is `strictOrder[1,4,16,10]`, `strictOrder[1,4,12,10]`, `in3[15,16,13,4]`, `in3[14,10,15,5]`, `in3[11,12,13,4]`, `in3[9,10,11,5]`, `AnchorFTA[1,2,3,4,5,6,7,8]`, empty root with null parent; each nonempty key retains its MPL parentheses. Retargeted only `infra/hashburst_dump.cpp::isTargetLB`.
+- Derived the shared D2 target directly from `ProofGridBuilder::addTheoremToMemory` and `ce::disintegrateImplication`. Its inner-to-root chain is `strictOrder[1,4,16,10]`, `strictOrder[1,4,12,10]`, `in3[15,16,13,4]`, `in3[14,10,15,5]`, `in3[11,12,13,4]`, `in3[9,10,11,5]`, `AnchorFTA[1,2,3,4,5,6,7,8]`, empty root with null parent; each nonempty key retains its MPL parentheses. Retargeted only `infra/hashburst_dump.cpp::isTargetLB`.
 - Added temporary  diagnostics: `proveKernel` records each projected block's complete parent chain; `CudaPhase2EvaluationBuffer::expandEvaluationWork` records the overflow total and independently sums synchronized request states in bounded 1,024-record host chunks, including per-block owner totals and maximum owners per request. No capacity, assertion, device kernel or proof gate is changed. These diagnostics remain until the diagnosis/fix disposition is known.
 - Working hypothesis: the common 4,194,304-entry reverse-owner work buffer is too small for the D2 evaluation image. The recount and block attribution distinguish real request expansion from an inconsistent counter before any sizing decision.
 - While reading required cookbooks, clarified that the string-cookbook identity migration covers converted hot paths, not every owning-string caller, and labeled the GPU evaluator's old small ceilings as historical. The current common capacity table remains unchanged.
@@ -166,7 +166,7 @@ For a stall, map these steps to the compiled expressions and exact scopes, deriv
 
 The overflowing evaluation has **60,782 requests** and **4,224,638 reverse-owner work items**. The common reservation is **4,194,304**, exceeded by **30,334 (0.7232 percent)**. The recount and the device aggregate both equal 4,224,638. These are reverse-index candidate owners before the remaining-argument subset and encoded-key checks, not successful rule firings.
 
-Every contributing block in this evaluation belongs to D2's full parent chain. `ExpressionAnalyzer::addTheoremToMemory` creates these as recursion block #1 under the shared last-premise block, using `(in2[recArg,digitArg,sName])`.
+Every contributing block in this evaluation belongs to D2's full parent chain. `ProofGridBuilder::addTheoremToMemory` creates these as recursion block #1 under the shared last-premise block, using `(in2[recArg,digitArg,sName])`.
 
 | Projected blocks | Induction variable | Leaf keys | Requests per block | Owners per block | Maximum owners per request |
 |---|---|---|---:|---:|---:|
@@ -199,7 +199,7 @@ Neither quotient equality nor remainder equality appears as a live statement in 
 1. Enlarge the active common profile's reverse-owner work reservation and rerun. For example, `kFullRunPhase2EvaluationCapacity.reverseOwners` from 4,194,304 to 8,388,608 adds 32 MiB to the eight-byte owner-work array. This exceeds the measured failed-burst demand, but later peak demand is unknown; it is not a proven final sizing requirement.
 2. A bounded multi-segment owner expansion could avoid reserving the whole image at once, but that is a new execution design requiring explicit approval and ordering/provenance validation.
 
-No capacity, proof gate or configuration was changed, and every existing assertion remains intact. Temporary projection-chain and overflow-recount diagnostics remain in `prover.cpp` and `gpu/phase2_cuda.cu`; the sacred dump remains targeted at D2. This is a diagnosis-only checkpoint, so no cleanup masquerading as a completed fix or successful final verification is claimed.
+No capacity, proof gate or configuration was changed, and every existing assertion remains intact. Temporary projection-chain and overflow-recount diagnostics remain in `json.hpp` and `gpu/phase2_cuda.cu`; the sacred dump remains targeted at D2. This is a diagnosis-only checkpoint, so no cleanup masquerading as a completed fix or successful final verification is claimed.
 
 ## Approved capacity continuation — 2026-09-09
 
@@ -246,7 +246,7 @@ Correctness requirements for the implementation:
 6. Deload complete provenance-bearing results with their canonical ordering keys and required identifiers. Do not reconstruct missing proof evidence by rerunning semantics or route proof decisions through the origin map. Do not recycle event/request identifiers while a result or continuation still references them.
 7. Verify lossless results across several batch sizes and forced drain boundaries, including an oversized single block and an oversized request expansion. For unchanged inputs, preserve the processor-equivalent search and the repository's applicable proof/artifact identity contract. Measure bounded GPU memory separately from elapsed time.
 
-Implementation entry points: `prover.cpp`, `ExpressionAnalyzer::proveKernel`; `gpu/phase2_cuda.cu`, `CudaPhase2GrowthBuffer::runRequestGrowth`, `appendPooledGrowthEvent`, `CudaPhase2OrderingBuffer::orderAndDeduplicate`, `CudaPhase2EvaluationBuffer::expandEvaluationWork`, `materializeFiringExpressions` and `selectDoomPrefixes`. Consult the GPU and statification cookbooks before selecting the continuation and deload representations. The exact queue, storage and batching design belongs to the main-based implementation session; no such machinery is added here.
+Implementation entry points: `prover.cpp`, `Prover::proveKernel`; `gpu/phase2_cuda.cu`, `CudaPhase2GrowthBuffer::runRequestGrowth`, `appendPooledGrowthEvent`, `CudaPhase2OrderingBuffer::orderAndDeduplicate`, `CudaPhase2EvaluationBuffer::expandEvaluationWork`, `materializeFiringExpressions` and `selectDoomPrefixes`. Consult the GPU and statification cookbooks before selecting the continuation and deload representations. The exact queue, storage and batching design belongs to the main-based implementation session; no such machinery is added here.
 
 ### AND-head design: share induction, retain separate contradiction blocks
 
@@ -285,7 +285,7 @@ The last target snapshot preserves `(=[9,14])` and `(=[12,16])` as the two unres
 
 The first Node completion watcher lost its tool transport at 300 seconds. Its kernel was reset and a native process-exit waiter replaced it without restarting the runner. The maintainer explicitly requested progress, authorizing the two live checks; final evidence was inspected after process completion.
 
-While answering the proof-method question, the read prover chapter was found to describe an obsolete separate typing block and `typingProofOnly` flag. Its induction section now documents the existing exact-main typing lookup in `ExpressionAnalyzer::updateGlobal` and the parent-block proof export. This is a documentation correction to current source, not a prover change, and requires no new execution.
+While answering the proof-method question, the read prover chapter was found to describe an obsolete separate typing block and `typingProofOnly` flag. Its induction section now documents the existing exact-main typing lookup in `TheoremPublisher::updateGlobal` and the parent-block proof export. This is a documentation correction to current source, not a prover change, and requires no new execution.
 
 ## 2026-09-10 — Stall playbook steps 1 and 2: proof map and target
 
@@ -301,7 +301,7 @@ While answering the proof-method question, the read prover chapter was found to 
 
 The original saved direct target has both decompositions and the quotient trichotomy. Its `q<q'` branch is live; the equality and reverse strict-order leaves are pending. This identifies the branch arithmetic as a candidate frontier, not yet its cause. The only induction candidates remain `a=9` and `d=10`; the direct witness comparison does not imply induction on those existential witnesses.
 
-**Step 2 complete.** Choose the negated-head contradiction child to examine the explicit reductio route. The source creation site is `prover.cpp`, `ExpressionAnalyzer::addTheoremToMemory`, under `try_contradiction_negated_head`: it sets `negHead=negate(head)`, `contradictionKey="__contradiction__"+negHead`, links the child to the final premise block, and sets its expression key to that same string. `ConfigFTA.json` enables this route; its separate positive-head contradiction route is disabled.
+**Step 2 complete.** Choose the negated-head contradiction child to examine the explicit reductio route. The source creation site is `proof/proof_grid_builder.cpp`, `ProofGridBuilder::addTheoremToMemory`, under `try_contradiction_negated_head`: it sets `negHead=negate(head)`, `contradictionKey="__contradiction__"+negHead`, links the child to the final premise block, and sets its expression key to that same string. `ConfigFTA.json` enables this route; its separate positive-head contradiction route is disabled.
 
 Full target chain, innermost first:
 
@@ -347,7 +347,7 @@ The last present step is the quotient trichotomy; the first absent step is openi
 
 ### Negated-head route: explicit-goal requirement prevents every case split
 
-The creation site in `prover.cpp`, `ExpressionAnalyzer::addTheoremToMemory`, seeds the negated head with status 0, without registering a status-2 goal. In `ExpressionAnalyzer::consumeOrLeavesCohort`:
+The creation site in `proof/proof_grid_builder.cpp`, `ProofGridBuilder::addTheoremToMemory`, seeds the negated head with status 0, without registering a status-2 goal. In `CaseProcessor::consumeOrLeavesCohort`:
 
 ```cpp
 const bool lbHasGoals = !memoryBlock.intToBeProved.empty();

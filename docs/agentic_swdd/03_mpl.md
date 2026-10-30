@@ -96,7 +96,7 @@ Examples:
 
 ### Conjunction — `(&expr1 expr2)`
 
-Binary conjunction. Each node has exactly two sub-expressions, with no comma separator. Larger conjunctions nest binary nodes, as in the definition bodies. Both `ce::parseExpr` in [`compiler.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler.cpp) and `parse_expr` in [`expression_utils.py`](../../expression_utils.py) read one left child and one right child.
+Binary conjunction. Each node has exactly two sub-expressions, with no comma separator. Larger conjunctions nest binary nodes, as in the definition bodies. Both `ce::parseExpr` in [`compiler.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler.cpp) and `parse_expr` in [`expression_utils.py`](../../expression_utils.py) read one left child and one right child. `ExpressionParser::parseSubtree` (behind `ce::parseExpr`) asserts it: a conjunction with one or with three children aborts. A longer conjunction may nest either way; the or compile collects the conjuncts of either nesting into one or ([D-504](40_decisions.md#d-504)).
 
 ```text
 (&
@@ -168,7 +168,7 @@ Inside a compiled expression's body, the formal parameters are `u_0`, `u_1`, …
 
 ### `x<k>` — prover-internal anchor-slot copies
 
-During anchor handling, the prover mints fresh copies of anchor-slot `(1)`-typed variables to keep them distinct from their originals. The minted names are `x` + the original slot name. See [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::prehandleAnchor`. Priority 2.5 of the processor renaming (see [`10_pipeline/06_process_proof_graph.md`](10_pipeline/06_process_proof_graph.md)) rewrites these `x<N>` to `<digit>_copy` in the processed proof graph.
+During anchor handling, the prover mints fresh copies of anchor-slot `(1)`-typed variables to keep them distinct from their originals. The minted names are `x` + the original slot name. See [`proof/proof_grid_builder.hpp`](../../GL_Quick_VS/GL_Quick/src/proof/proof_grid_builder.hpp), `ProofGridBuilder::prehandleAnchor`. Priority 2.5 of the processor renaming (see [`10_pipeline/06_process_proof_graph.md`](10_pipeline/06_process_proof_graph.md)) rewrites these `x<N>` to `<digit>_copy` in the processed proof graph.
 
 ### `it_<k>` — Pass B iteration variables
 
@@ -239,6 +239,19 @@ Schematic form within an outer context binding N: `(>[v1](in[v1,N])(P[v1]))`.
 Schematic form within an outer context binding N: `!(>[v1](in[v1,N])!(P[v1]))`.
 
 Rationale: MPL has no native existential quantifier. The double-negated universal encodes it cleanly, and the compiler rewrites it to `existence<N>` compiled names during `precompileStructuralOperators`.
+
+### Sequence-value membership
+
+The public FTA predicate `inSequence[N,p,P]` means that the value `p` occurs in relation `P` at some natural-number index. [`inSequence.mpl`](../../files/definitions/inSequence.mpl) constrains and binds that index internally:
+
+```text
+!(>[i]
+    (in[i,N])
+    !(in2[i,p,P])
+)
+```
+
+It does not assert that `P` is a sequence or that `p` is natural by itself. A separate `sequence` premise supplies the graph's domain, totality and range. F8 combines this membership predicate, a nonempty sequence on `[zero,n]` and an existing multiplication Fold value; its conclusion is multiplicative `preorder`, meaning divisibility. The index is absent from the theorem's external arguments.
 
 ### Iff in a definition — conjunction of two implications
 
@@ -368,7 +381,7 @@ Fold statement. The compact number is snapshot-specific.
 The [MPL cookbook](03b_mpl_cookbook.md#set-definition-implications-can-produce-existence-statements)
 shows the proved source implication, its generated existence result, the
 corresponding sequence example, and the exact set-definition reformulation
-gates in `ArgumentAnalyzer::isSetDefinition` and `ExpressionAnalyzer::reformulateTheorem`.
+gates in `ArgumentAnalyzer::isSetDefinition` and `TheoremPublisher::reformulateTheorem`.
 
 ---
 
@@ -390,7 +403,7 @@ Adding a new operator or predicate:
 
 1. Add a per-expression entry to every relevant `Config<Tag>.json` — see [`04_configs.md`](04_configs.md).
 2. Add a definition file to `files/definitions/` (or use inline `full_mpl` if the body is small).
-3. If the operator has `output_args`, it joins the prover's `operators` set at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `ExpressionAnalyzer::ExpressionAnalyzer`, automatically (the set is recomputed from `coreExpressionMap` every run).
+3. If the operator has `output_args`, it joins the `CompiledDefinitionRegistry::operatorNames` set at [`compiler/compiled_definition_registry.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler/compiled_definition_registry.cpp), `CompiledDefinitionRegistry::configure`, automatically (the set is recomputed from `coreExpressionMap` every run).
 4. Ensure the GL binary's `category` is correctly inferred — `atomic` for leaves, `and` / `existence` / `implication` / `or` for compound. See `compiler.cpp` loading logic.
 5. Verify that `process_proof_graphs.py`'s anchor-mapping and HTML-export's `rename_expr_peano` / `rename_expr_gauss` handle the new name (they may default-through, which is OK for auxiliary operators).
 
@@ -423,11 +436,11 @@ Adding a new structural operator (a new shape like `@`, `|`,...):
 ## Open questions
 
 - **OPEN-MPL-1 — RESOLVED (partial normalisation).** Double-negation `!!X` is cancelled at specific prover sites, not globally. Explicit cancellation:
- - [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) — during `existence2` rewriting: *"`!(existence2[args]) =!!(>[bound](left)!(right)) = (>[bound](left)!(right))`"* — a structural-operator simplification where the `!` on existence cancels with the `!` inside the compiled definition.
- - [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) — explicit `expanded = expanded.substr(1); // double negation cancels`.
+ - [`compiler/definition_expansion.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler/definition_expansion.cpp), `DefinitionExpansion::expandSignature` — during existence rewriting: *"`!(existence2[args]) =!!(>[bound](left)!(right)) = (>[bound](left)!(right))`"* — a structural-operator simplification where the `!` on existence cancels with the `!` inside the compiled definition.
+ - [`compiler/definition_expansion.cpp`](../../GL_Quick_VS/GL_Quick/src/compiler/definition_expansion.cpp), `DefinitionExpansion::expandSignature`, contains the corresponding span-based double-negation cancellation.
  
  There is **no universal normaliser** that scans an arbitrary expression and collapses every `!!X` to `X`. The conjecturer does not emit `!!` by construction; the verifier does not specifically test for it. A manually-authored external theorem containing raw `!!X` would be passed through unchanged in most paths and would hash distinctly from `X` — potentially preventing hash-matches that should succeed. Hardening: either canonicalise at the load boundary (precompile phase) or forbid `!!` in external theorems.
-- **OPEN-MPL-2.** `(&X)` (single-element conjunction) and `(>[])` with no sub-expressions — parser behaviour not tested. Neither is emitted by the conjecturer, and neither appears in any checked-in definition file. Whether the C++ compiler rejects them or silently accepts them has not been investigated for this chapter. Low priority — if the shape never enters the pipeline, behaviour is moot.
+- **OPEN-MPL-2.** `(>[])` with no sub-expressions — parser behaviour not tested. It is not emitted by the conjecturer and appears in no checked-in definition file. Low priority — if the shape never enters the pipeline, behaviour is moot. (`(&X)`, a single-element conjunction, is closed: the C++ parser asserts two children, [D-504](40_decisions.md#d-504).)
 
 ---
 

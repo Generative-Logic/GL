@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 5: Parallel execution (reference-level).
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html">Compilation &amp; names</a>
@@ -287,6 +287,15 @@ gates, survivors compact stably, and only survivors perform the exact key and
 owner probes. Pool placement, window size, and thread arrival never become
 ordering keys; retained semantic tokens still determine every observable order.</p>
 
+<p><b>Frontier levels stay on the GPU.</b> Each growth level and its children
+live in two pass-local device buffers of 8,388,608 nodes each. Their blocks
+come from a separate reservation of spare device memory beside the 4&nbsp;GiB
+working budget, so the store never shrinks the other columns. The buffers fill
+that reservation rather than following the measured level, because a level
+larger than every earlier one would otherwise outgrow them. Without spare
+memory, the buffers follow the measured level inside the working budget. Only a level larger than the store moves to host RAM pages;
+such pages would otherwise stay resident for the rest of the batch.</p>
+
 <p>Statement setup also records which iterative arguments are distinct and are
 not recursion products. Candidates reuse this small mask, comparing only those
 arguments against the current prefix. Hypothesis length and scope checks run
@@ -344,14 +353,19 @@ these windows.</figcaption>
 <p><b>Encoded statements are filtered before upload.</b> Each logical block supplies
 the core name and polarity of every rule premise. Only matching encoded statements
 enter device memory, in their original relative order; being a goal alone does not
-require upload. Argument matching, iteration limits, and frozen-branch filtering
-still run on the device.</p>
+require upload. A matching statement must also fit the argument pattern of at least
+one live rule premise: every fixed (<code>u_</code>) argument carries the same
+constant, repeated premise variables meet equal arguments, and the statement's
+scope lies on one line with the rule's scope. The processor route applies the same
+pattern test in its request filter, so both routes keep the same eligible statements.
+Argument matching, iteration limits, and frozen-branch filtering still run on the
+device.</p>
 <figure aria-label="Statement transfer filter"><svg viewBox="0 0 720 70" role="img">
 <rect x="5" y="10" width="180" height="45" fill="#e8eef5" rx="6"/>
 <text x="95" y="38" text-anchor="middle" fill="#17212b">Encoded statements</text>
 <text x="210" y="38" fill="currentColor">→</text>
 <rect x="245" y="10" width="220" height="45" fill="#e8eef5" rx="6"/>
-<text x="355" y="38" text-anchor="middle" fill="#17212b">Premise core + polarity</text>
+<text x="355" y="38" text-anchor="middle" fill="#17212b">Premise core + pattern</text>
 <text x="490" y="38" fill="currentColor">→</text>
 <rect x="525" y="10" width="185" height="45" fill="#e8eef5" rx="6"/>
 <text x="618" y="38" text-anchor="middle" fill="#17212b">Device statement slice</text>
@@ -464,7 +478,7 @@ each group into bounded chunks. Mirror refutation still follows the complete pas
 <p>Each candidate window launches only the covering slice of the ordered node
 lists. Nodes whose candidate ranges lie outside the window do not need gate
 workers; every candidate inside the window still receives the same checks.</p>
-<p>Frontier transfers use three pinned blocks from the existing host pool.
+<p>Frontier transfers use five pinned blocks from the independent GPU-host pool.
 Larger copy pages share each transfer call; each page fits one host block,
 and the blocks are unpinned before release. Early exit keeps only one state word per block.</p>
 <p>The processor is retained for the ASIC path. GPU performance may take priority
@@ -556,7 +570,7 @@ synchronisation — a direct <b>I-28</b> violation.</li>
 <i>sorted</i> pass after <code>pool.join()</code> performs the compile and deposit,
 shipped by the post-join <code>MailLog</code> commit barrier. Deterministic and injective.</li>
 </ol>
-<p style="margin:8px 0 0;color:#8B8FA5">This is the template for every deferral in
+<p style="margin:8px 0 0;color:var(--fg-dim)">This is the template for every deferral in
 §5.3: if an effect mutates shared state, a worker may only <i>record</i> it; the
 single-threaded sorted post-join pass <i>applies</i> it.</p>
 </div>
@@ -585,7 +599,7 @@ silicon. The thread pool is a software stand-in for a fabric of cores.
 </table>
 
 <!-- ===================== 5.6 ===================== -->
-<h2 id="mailbox">5.6 &nbsp;Per-LB mailbox geometry <span style="font-weight:normal;font-size:0.7em;color:#8B8FA5">(retired — replaced by the pull model)</span></h2>
+<h2 id="mailbox">5.6 &nbsp;Per-LB mailbox geometry <span style="font-weight:normal;font-size:0.7em;color:var(--fg-dim)">(retired — replaced by the pull model)</span></h2>
 <p>
 <b>This geometry is retired.</b> The push routing it served — every worker writing an
 outgoing copy into a per-core mailbox slot, then <code>smashMail</code> consolidating
@@ -600,7 +614,7 @@ dormant block, the delivered chain window and its global id table are reset firs
 only reads frozen retained pages and writes its own cursor row. See
 Substrate §3.3 (the pull model).
 </p>
-<p style="color:#8B8FA5;font-size:0.92em">
+<p style="color:var(--fg-dim);font-size:0.92em">
 <i>The diagram below depicts the retired <code>PerCoreMailboxes</code> geometry and is
 kept for historical reference only; it no longer reflects the live mechanism.</i>
 </p>
@@ -806,14 +820,17 @@ these capacities at completed chunk boundaries.</p>
 <section id="generation-windows"><h2>Pause and resume request generation</h2>
 <p>The bounded generation component keeps each frontier level in GPU memory for
 the duration of one pass, the level and its children in two buffers; only the rows
-of a level too large for a buffer spill to RAM. CUDA
+of a level too large for a buffer enter bounded host tails. With deload enabled,
+each tail keeps at most 32 MiB of row payload and spills earlier rows to disk;
+bounded reloads preserve the saved request identities. Counterexample filtering
+and resident-only batches retain the existing RAM path. CUDA
 processes seed, prefix and candidate windows. Cheap rejection uses the candidate buffer; the surviving indices are divided into output windows with enough room reserved before every write. Probe windows consume the remaining output space. A small tail, below one quarter of full-window capacity, pauses generation until evaluation retains
 all of those requests' results. Original call and premise identities remain intact.
 CUDA performs every semantic operation; the host schedules sizes from upper
 bounds and reads exact counts only when a buffer could fill. Frontier transfers prefer pinned 4,096-row pages within one host block. No early-exit request-identity pages are needed. Up to 65,536 consecutive frontier rows share one GPU preparation when their allocated columns fit. A transfer boundary does not force a new execution window. Complete pipeline runs verify theorem coverage and GPU determinism and record the transfer cost.</p>
-<figure><svg viewBox="0 0 760 104" role="img" aria-label="Frontier levels stay in GPU memory during a pass, spill to RAM only on overflow, and pause for request drains before reuse">
-<text x="16" y="26" fill="currentColor" font-size="13">GPU level (spilled RAM pages after) → combined prefixes → reject candidates → bounded survivors → requests</text>
-<text x="16" y="59" fill="currentColor" font-size="13">Children → next level in GPU memory (overflow to RAM); full requests → evaluate and retain results</text>
+<figure><svg viewBox="0 0 760 104" role="img" aria-label="Frontier levels stay in GPU memory during a pass, use bounded host tails and ordered disk prefixes on overflow, and pause for request drains before reuse">
+<text x="16" y="26" fill="currentColor" font-size="13">GPU level → host/disk overflow windows → prefix preparation → bounded candidate and request windows</text>
+<text x="16" y="59" fill="currentColor" font-size="13">Children → next level (bounded host/disk overflow); full requests → evaluate and retain results</text>
 <text x="16" y="92" fill="currentColor" font-size="12">Resume at the saved seed, page, prefix or candidate position.</text>
 </svg></figure></section>
 <section id="request-history-pages"><h2>Repeated requests and firing results</h2>
@@ -851,6 +868,9 @@ explicitly smaller component buffers keep this non-consuming scheduling state.</
 <path d="M290 40 V58 H177 V40 M455 40 V72 H350 V40" fill="none" stroke="#5DCAA5" stroke-width="2"/>
 <text x="16" y="72" fill="currentColor" font-size="12">Measure → reserve a fitting window → download → assemble complete records in RAM.</text>
 </svg></figure></section>
+<section id="bounded-path-sort"><h2>Sort only the meaningful path bits</h2>
+<p>Each of the eight request-path components fits in 17 bits. Their stable GPU sorts examine those bits; task, call and run components retain their full width. Every event keeps the same position and ties keep their existing order. Record sizes and memory budgets are unchanged.</p>
+</section>
 </main>
 </body>
 </html>

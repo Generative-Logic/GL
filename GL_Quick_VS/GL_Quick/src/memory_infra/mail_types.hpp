@@ -297,36 +297,49 @@ namespace gl {
     ///        pipeline with witness minting (door status 5) instead of the
     ///        bare-row status-3 absorb.
     constexpr int32_t kMailStatementFlagExternalDisintegrate = 5;
+    /// @brief Mail-statement flag 6 — "unconditional ordis": the statement is
+    ///        an OR reached by unfolding a conjecture premise; every receiver
+    ///        with proof work opens its case split unconditionally (route (b))
+    ///        (D-528).
+    constexpr int32_t kMailStatementFlagUnconditionalOrdis = 6;
+    /// @brief Mail-statement "from premise" bit — the statement is a product of
+    ///        the sender's forced disintegration (a status-0 seed or a
+    ///        hypothesis shot), so the receiver lists it among its own forced
+    ///        products (D-522). Orthogonal to the flag
+    ///        code; bit 30 of the packed value.
+    constexpr int32_t kMailStatementFromPremiseBit = int32_t{1} << 30;
 
     /// @brief Pack a mail-statement flag code plus its witness-generation
     ///        stamp into the side-column value.
     ///
     /// @details
-    /// Bits 0-2 carry the flag code (`kMailStatementFlagNone` or
-    /// `kMailStatementFlagExternalDisintegrate`); bit 3 carries the
-    /// integrated mark (the sender registered the statement as the head of
-    /// one of its integration rules' firings, D-444);
-    /// bits 4+ carry `iteration + 1`, so the all-zero value keeps meaning
-    /// "nothing carried" (flag none, not integrated, iteration -1). The
+    /// Bits 0-2 carry the flag code (`kMailStatementFlagNone`,
+    /// `kMailStatementFlagExternalDisintegrate` or
+    /// `kMailStatementFlagUnconditionalOrdis`); bits 3-29 carry
+    /// `iteration + 1`, so the all-zero value keeps meaning
+    /// "nothing carried" (flag none, iteration -1, not from a premise); bit
+    /// 30 is the from-premise bit (`kMailStatementFromPremiseBit`). The
     /// iteration is the sender-side disintegration's witness-generation
     /// stamp (I-171), carried across the cross-LB seam so a flag-5 receiver
     /// mints its `it_` witnesses at the same generation the sender's
-    /// disintegration used.
+    /// disintegration used; a flag-6 statement carries none.
     ///
-    /// @param flagCode   The flag code; one of the two constants above.
-    /// @param iteration  The witness-generation stamp; `>= -1` (-1 = none).
-    /// @param integrated The integrated mark (default false).
+    /// @param flagCode    The flag code; one of the three constants above.
+    /// @param iteration   The witness-generation stamp; `>= -1` (-1 = none).
+    /// @param fromPremise Whether the statement is a product of the sender's
+    ///                    forced disintegration.
     /// @return The packed int32 side-column value.
     /// @see unpackMailStatementFlagCode, unpackMailStatementFlagIteration,
-    ///      unpackMailStatementFlagIntegrated.
+    ///      unpackMailStatementFromPremise.
     inline int32_t packMailStatementFlag(int32_t flagCode, int32_t iteration,
-                                         bool integrated = false) {
+                                         bool fromPremise = false) {
         assert((flagCode == kMailStatementFlagNone
-                || flagCode == kMailStatementFlagExternalDisintegrate)
+                || flagCode == kMailStatementFlagExternalDisintegrate
+                || flagCode == kMailStatementFlagUnconditionalOrdis)
             && "packMailStatementFlag: unknown flag code");
         assert(iteration >= -1 && "packMailStatementFlag: iteration below -1");
-        assert(iteration < (INT32_MAX >> 4) && "packMailStatementFlag: iteration capacity exceeded");
-        return flagCode | (integrated ? 8 : 0) | ((iteration + 1) << 4);
+        assert(iteration < (int32_t{1} << 27) - 1 && "packMailStatementFlag: iteration capacity exceeded");
+        return flagCode | ((iteration + 1) << 3) | (fromPremise ? kMailStatementFromPremiseBit : 0);
     }
 
     /// @brief Unpack the flag-code half of a packed mail-statement flag value.
@@ -342,43 +355,46 @@ namespace gl {
     /// @return The witness-generation stamp (`-1` when the writer carried none).
     /// @see packMailStatementFlag.
     inline int32_t unpackMailStatementFlagIteration(int32_t packed) {
-        return (packed >> 4) - 1;
+        return ((packed & ~kMailStatementFromPremiseBit) >> 3) - 1;
     }
 
-    /// @brief Unpack the integrated mark of a packed mail-statement flag value.
+    /// @brief Unpack the from-premise bit of a packed mail-statement flag
+    ///        value (D-522).
     ///
-    /// @details Bit 3 (`packMailStatementFlag`): the sender registered the
-    /// statement as the head of one of its integration rules' firings. The
-    /// all-zero value (nothing carried) decodes to false.
+    /// @details The bit marks a product of the sender's forced disintegration
+    /// (a status-0 seed or a hypothesis shot); it is independent of the flag
+    /// code and the iteration.
     ///
     /// @param packed The stored int32.
-    /// @return True iff the integrated bit is set.
-    /// @see packMailStatementFlag, mergeMailStatementFlag.
-    inline bool unpackMailStatementFlagIntegrated(int32_t packed) {
-        return (packed & 8) != 0;
+    /// @return True iff the from-premise bit is set.
+    /// @see packMailStatementFlag, kMailStatementFromPremiseBit.
+    inline bool unpackMailStatementFromPremise(int32_t packed) {
+        return (packed & kMailStatementFromPremiseBit) != 0;
     }
 
     /// @brief Merge a new packed mail-statement flag value onto an existing one.
     ///
-    /// @details Flag codes 5-win (a relay marking never downgrades to none);
-    /// the integrated mark OR-merges; iterations min-merge over real
+    /// @details A real flag code wins over none (a relay or unconditional-ordis
+    /// marking never downgrades); flags 5 and 6 never meet on one statement —
+    /// flag 5 marks an existence compact, flag 6 an OR compact. Iterations
+    /// min-merge over real
     /// generations, with -1 (none) losing to
     /// any real one — the same order-free deterministic fold
     /// `ColdMail::setDisintegrationSignal` applies, so multiple ancestors'
     /// blobs folding into one inbox yield a write-order-independent value.
+    /// The from-premise bit is sticky: set on either side, it stays set.
     ///
     /// @param oldPacked The stored value.
     /// @param newPacked The incoming value.
     /// @return The merged packed value.
     /// @see packMailStatementFlag.
     inline int32_t mergeMailStatementFlag(int32_t oldPacked, int32_t newPacked) {
-        const int32_t code =
-            (unpackMailStatementFlagCode(oldPacked)
-                    == kMailStatementFlagExternalDisintegrate
-                || unpackMailStatementFlagCode(newPacked)
-                    == kMailStatementFlagExternalDisintegrate)
-            ? kMailStatementFlagExternalDisintegrate
-            : kMailStatementFlagNone;
+        const int32_t oldCode = unpackMailStatementFlagCode(oldPacked);
+        const int32_t newCode = unpackMailStatementFlagCode(newPacked);
+        assert((oldCode == kMailStatementFlagNone || newCode == kMailStatementFlagNone
+                || oldCode == newCode)
+            && "mergeMailStatementFlag: flags 5 and 6 never meet on one statement");
+        const int32_t code = oldCode != kMailStatementFlagNone ? oldCode : newCode;
         const int32_t oldIt = unpackMailStatementFlagIteration(oldPacked);
         const int32_t newIt = unpackMailStatementFlagIteration(newPacked);
         const int32_t mergedIt =
@@ -386,8 +402,7 @@ namespace gl {
             : (newIt == -1) ? oldIt
             : (oldIt < newIt ? oldIt : newIt);
         return packMailStatementFlag(code, mergedIt,
-            unpackMailStatementFlagIntegrated(oldPacked)
-                || unpackMailStatementFlagIntegrated(newPacked));
+            unpackMailStatementFromPremise(oldPacked) || unpackMailStatementFromPremise(newPacked));
     }
 
     /// @brief Id-form of one mail origin line -- `(tag, packed dependency keys)`,

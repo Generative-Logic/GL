@@ -34,6 +34,8 @@
 /// the purge. Test files land under
 /// `.debug/test_deload_*` directories (gitignored, recreated per run).
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
 
 #include "../memory_infra/lb_deload.hpp"
@@ -43,6 +45,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -134,14 +137,13 @@ TEST(lb_deload, or_sources_pending_events_and_discharge_roundtrip) {
     const gl::OrImplicationLeaf leaves[] = {{12, 13}, {4, 5}};
     const int levels[] = {3, 8};
     const int64_t key = gl::packInt32Pair(101, 7);
-    ASSERT_TRUE(source.orImplications.insert(key, 102, leaves, 2, levels, 2, true));
-    source.orImplications.pendingFacts.push_back(gl::packInt32Pair(13, 1));
-    source.orImplications.pendingClasses.push_back(gl::packInt32Pair(42, 7));
+    ASSERT_TRUE(((source).orImplications).insert(key, 102, leaves, 2, levels, 2, true));
+    ((source).orImplications).pendingFacts.push_back(gl::packInt32Pair(13, 1));
+    ((source).orImplications).pendingClasses.push_back(gl::packInt32Pair(42, 7));
     const int64_t cacheKey = gl::packInt32Pair(13, 7);
-    gl::ScratchArena cacheScratch(&manager);
-    source.orImplicationMatches.publishCache(cacheKey, gl::OrCanonicalCache{13, 51, 0}, [](auto&&) {}, cacheScratch);
-    source.orImplicationMatches.bindView(gl::OrViewIdentity::sourceLeaf(key, 7, 0), cacheKey);
-    source.orImplicationMatches.built = true;
+    ((source).orImplicationMatches).publishCache(cacheKey, gl::OrCanonicalCache{13, 51, 0}, [](auto&&) {});
+    ((source).orImplicationMatches).bindView(gl::OrViewIdentity::sourceLeaf(key, 7, 0), cacheKey, 101);
+    ((source).orImplicationMatches).built = true;
     source.existenceLookups.algebraSources.postings.insert(cacheKey, key);
     source.existenceLookups.algebraSources.built = true;
     const std::filesystem::path dir = freshDir("test_deload_or_sources");
@@ -150,27 +152,27 @@ TEST(lb_deload, or_sources_pending_events_and_discharge_roundtrip) {
         source, chain, 0, dir, 1 << 18);
     gl::LbMemory restored(&manager);
     gl::lbdeload::loadLbMemory(restored, chain, files, dir);
-    const gl::OrImplicationSource row = *restored.orImplications.find(key);
+    const gl::OrImplicationSource row = *((restored).orImplications).find(key);
     ASSERT_EQ(row.canonicalId, 102);
     ASSERT_EQ(row.leafCount, 2);
-    ASSERT_EQ(restored.orImplications.leaves[row.leafStart].literalId, 12);
-    ASSERT_EQ(restored.orImplications.leaves[row.leafStart + 1].complementId, 5);
-    ASSERT_EQ(restored.orImplications.levels[row.levelStart + 1], 8);
-    ASSERT_EQ(restored.orImplications.pendingSources[0], key);
-    ASSERT_EQ(restored.orImplications.pendingFacts[0], gl::packInt32Pair(13, 1));
-    ASSERT_EQ(restored.orImplications.pendingClasses[0], gl::packInt32Pair(42, 7));
-    ASSERT_EQ(restored.orImplicationMatches.liveBytes(), int64_t{0});
-    ASSERT_FALSE(restored.orImplicationMatches.built);
+    ASSERT_EQ(((restored).orImplications).leaves[row.leafStart].literalId, 12);
+    ASSERT_EQ(((restored).orImplications).leaves[row.leafStart + 1].complementId, 5);
+    ASSERT_EQ(((restored).orImplications).levels[row.levelStart + 1], 8);
+    ASSERT_EQ(((restored).orImplications).pendingSources[0], key);
+    ASSERT_EQ(((restored).orImplications).pendingFacts[0], gl::packInt32Pair(13, 1));
+    ASSERT_EQ(((restored).orImplications).pendingClasses[0], gl::packInt32Pair(42, 7));
+    ASSERT_EQ(((restored).orImplicationMatches).liveBytes(), int64_t{0});
+    ASSERT_FALSE(((restored).orImplicationMatches).built);
     ASSERT_FALSE(restored.existenceLookups.algebraSources.built);
     ASSERT_EQ(restored.existenceLookups.liveBytes(), int64_t{0});
     restored.existenceLookups.algebraSources.postings.insert(cacheKey, key);
     restored.existenceLookups.algebraSources.built = true;
-    restored.orImplicationMatches.publishCache(cacheKey, gl::OrCanonicalCache{13, 51, 0}, [](auto&&) {}, cacheScratch);
-    restored.orImplicationMatches.bindView(gl::OrViewIdentity::sourceLeaf(key, 7, 0), cacheKey);
+    ((restored).orImplicationMatches).publishCache(cacheKey, gl::OrCanonicalCache{13, 51, 0}, [](auto&&) {});
+    ((restored).orImplicationMatches).bindView(gl::OrViewIdentity::sourceLeaf(key, 7, 0), cacheKey, 101);
     restored.clearDischargeableContainers();
-    ASSERT_TRUE(restored.orImplications.find(key) == nullptr);
-    ASSERT_EQ(restored.orImplications.liveBytes(), int64_t{0});
-    ASSERT_EQ(restored.orImplicationMatches.liveBytes(), int64_t{0});
+    ASSERT_TRUE(((restored).orImplications).find(key) == nullptr);
+    ASSERT_EQ(((restored).orImplications).liveBytes(), int64_t{0});
+    ASSERT_EQ(((restored).orImplicationMatches).liveBytes(), int64_t{0});
     ASSERT_EQ(restored.existenceLookups.liveBytes(), int64_t{0});
 }
 
@@ -202,6 +204,9 @@ TEST(lb_deload, unary_composition_preserves_roots_pending_work_and_receipts) {
     state.admissionTransfers.mint(gl::StrSpan(receipt,12));
     state.consumerDemands.insertSorted(rule,demand);
     state.observedDemands.mint(demand);
+    const int64_t goal=gl::packInt32Pair(41,1);
+    state.consumerGoals.insertSorted(rule,goal);
+    state.observedGoals.mint(goal);
     state.rebuild.push_back(1);
     const auto directory=freshDir("test_deload_unary_composition");
     const auto files=gl::lbdeload::dumpLbMemory(source,"unary-composition",0,directory,1<<18);
@@ -221,6 +226,8 @@ TEST(lb_deload, unary_composition_preserves_roots_pending_work_and_receipts) {
     ASSERT_EQ(copy.admissionTransfers.lookup(gl::StrSpan(receipt,12)),1);
     ASSERT_EQ(copy.consumerDemands.valueAt(copy.consumerDemands.lookup(rule),0),demand);
     ASSERT_EQ(copy.observedDemands.lookup(demand),1);
+    ASSERT_EQ(copy.consumerGoals.valueAt(copy.consumerGoals.lookup(rule),0),goal);
+    ASSERT_EQ(copy.observedGoals.lookup(goal),1);
     ASSERT_EQ(copy.rebuild[0],uint8_t(1));
     ASSERT_TRUE(copy.liveBytes()>0);
     restored.clearDischargeableContainers();
@@ -261,41 +268,41 @@ TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
     const std::filesystem::path dir = freshDir("test_deload_hashmem_all_four");
     gl::Memory m;
     m.setExprKey("(test_deload_hashmem_lb)");
-    for (gl::NameId i = 0; i < 8; ++i) m.intEncodedStatements.push_back(makeExpr(i));
+    for (gl::NameId i = 0; i < 8; ++i) ((m).intEncodedStatements).push_back(makeExpr(i));
     gl::NameId buf[2] = { 7, 9 };
     const gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 2) };
-    m.overallHashMemory.encodedMap.assignRun(
+    ((((m).overallHashMemory)).encodedMap).assignRun(
         nk, std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
-    m.localHashMemory.encodedMap.assignRun(
+    ((((m).localHashMemory)).encodedMap).assignRun(
         nk, std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
-    m.localHashMemoryDelta.encodedMap.assignRun(
+    ((((m).localHashMemoryDelta)).encodedMap).assignRun(
         nk, std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
-    m.workingMemory.encodedMap.assignRun(
+    ((((m).workingMemory)).encodedMap).assignRun(
         nk, std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
-    ASSERT_EQ(m.overallHashMemory.encodedMap.count(), 1);
-    ASSERT_EQ(m.localHashMemory.encodedMap.count(), 1);
-    ASSERT_EQ(m.localHashMemoryDelta.encodedMap.count(), 1);
-    ASSERT_EQ(m.workingMemory.encodedMap.count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).localHashMemory)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).localHashMemoryDelta)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).workingMemory)).encodedMap).count(), 1);
     // rejectedMapOrdis rides the appended band tags (base+58..61): one parked
     // record must survive the same round-trip.
-    m.overallHashMemory.rejectedMapOrdis.assignRun(
+    ((((m).overallHashMemory)).rejectedMapOrdis).assignRun(
         int64_t{ 77 }, std::vector<gl::RejectedMapOrdisValue>{
             gl::RejectedMapOrdisValue(5, std::set<int>{ 1, 3 }) });
-    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis.count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).rejectedMapOrdis).count(), 1);
     // admissionMapOrdis2 rides the appended band tags (base+63..66): one
     // demand record must survive the same round-trip.
-    m.overallHashMemory.admissionMapOrdis2.assignRun(
+    ((((m).overallHashMemory)).admissionMapOrdis2).assignRun(
         int64_t{ 88 }, std::vector<gl::AdmissionMapOrdis2Value>{
             gl::AdmissionMapOrdis2Value(6, std::set<int>{ 0, 2 }) });
-    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).admissionMapOrdis2).count(), 1);
     // rejectedMapOrdis2 + its revisit guard ride base+67..71: one filed
     // record and one guard key must survive the same round-trip.
-    m.overallHashMemory.rejectedMapOrdis2.assignRun(
+    ((((m).overallHashMemory)).rejectedMapOrdis2).assignRun(
         int64_t{ 99 }, std::vector<gl::RejectedMapOrdisValue>{
             gl::RejectedMapOrdisValue(7, std::set<int>{ 2, 5 }) });
-    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis2.count(), 1);
-    m.overallHashMemory.ordis2RevisitInProgress.mint(int64_t{ 123 });
-    ASSERT_TRUE(m.overallHashMemory.ordis2RevisitInProgress.contains(123));
+    ASSERT_EQ(((((m).overallHashMemory)).rejectedMapOrdis2).count(), 1);
+    ((((m).overallHashMemory)).ordis2RevisitInProgress).mint(int64_t{ 123 });
+    ASSERT_TRUE(((((m).overallHashMemory)).ordis2RevisitInProgress).contains(123));
     // rejectedMapSubproof + its revisit guard ride base+88..92: one parked
     // implication record and one guard key must survive the same round-trip.
     {
@@ -308,64 +315,73 @@ TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
         implication.elements = { 14, 15 };
         parked.instruction.data.push_back(implication);
         parked.instruction.markedGoal = 16;
-        m.overallHashMemory.rejectedMapSubproof.assignRun(
+        ((((m).overallHashMemory)).rejectedMapSubproof).assignRun(
             int64_t{ 111 }, std::vector<gl::IntegrationEntry>{ parked });
     }
-    ASSERT_EQ(m.overallHashMemory.rejectedMapSubproof.count(), 1);
-    m.overallHashMemory.subproofRevisitInProgress.mint(int64_t{ 222 });
-    ASSERT_TRUE(m.overallHashMemory.subproofRevisitInProgress.contains(222));
+    ASSERT_EQ(((((m).overallHashMemory)).rejectedMapSubproof).count(), 1);
+    ((((m).overallHashMemory)).subproofRevisitInProgress).mint(int64_t{ 222 });
+    ASSERT_TRUE(((((m).overallHashMemory)).subproofRevisitInProgress).contains(222));
+    // admissionMapIntegrationDouble rides base+98..99: one double-marker key
+    // with its owning task must survive the same round-trip.
+    ((((m).overallHashMemory)).admissionMapIntegrationDouble).insert(int64_t{ 333 }, int64_t{ 444 });
+    ASSERT_EQ(((((m).overallHashMemory)).admissionMapIntegrationDouble).count(), 1);
 
     m.deloadStaticContainers(dir.string());
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
 
     m.ensureLoaded(dir.string());
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     // All four must come back; the transient pair is the regression target.
-    ASSERT_EQ(m.overallHashMemory.encodedMap.count(), 1);
-    ASSERT_EQ(m.localHashMemory.encodedMap.count(), 1);
-    ASSERT_EQ(m.localHashMemoryDelta.encodedMap.count(), 1);
-    ASSERT_EQ(m.workingMemory.encodedMap.count(), 1);
-    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis.count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).localHashMemory)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).localHashMemoryDelta)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).workingMemory)).encodedMap).count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).rejectedMapOrdis).count(), 1);
     {
-        const int32_t rid = m.overallHashMemory.rejectedMapOrdis.lookup(77);
+        const int32_t rid = ((((m).overallHashMemory)).rejectedMapOrdis).lookup(77);
         ASSERT_TRUE(rid != 0);
         const gl::RejectedMapOrdisValue back =
-            m.overallHashMemory.rejectedMapOrdis.recordAt(rid, 0);
+            ((((m).overallHashMemory)).rejectedMapOrdis).recordAt(rid, 0);
         ASSERT_EQ(back.orStatement, 5);
         ASSERT_TRUE((back.levels == std::set<int>{ 1, 3 }));
     }
-    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).admissionMapOrdis2).count(), 1);
     {
-        const int32_t did = m.overallHashMemory.admissionMapOrdis2.lookup(88);
+        const int32_t did = ((((m).overallHashMemory)).admissionMapOrdis2).lookup(88);
         ASSERT_TRUE(did != 0);
         const gl::AdmissionMapOrdis2Value back =
-            m.overallHashMemory.admissionMapOrdis2.recordAt(did, 0);
+            ((((m).overallHashMemory)).admissionMapOrdis2).recordAt(did, 0);
         ASSERT_EQ(back.sourceImplId, 6);
         ASSERT_TRUE((back.levels == std::set<int>{ 0, 2 }));
     }
-    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis2.count(), 1);
+    ASSERT_EQ(((((m).overallHashMemory)).rejectedMapOrdis2).count(), 1);
     {
-        const int32_t rid2 = m.overallHashMemory.rejectedMapOrdis2.lookup(99);
+        const int32_t rid2 = ((((m).overallHashMemory)).rejectedMapOrdis2).lookup(99);
         ASSERT_TRUE(rid2 != 0);
         const gl::RejectedMapOrdisValue back =
-            m.overallHashMemory.rejectedMapOrdis2.recordAt(rid2, 0);
+            ((((m).overallHashMemory)).rejectedMapOrdis2).recordAt(rid2, 0);
         ASSERT_EQ(back.orStatement, 7);
         ASSERT_TRUE((back.levels == std::set<int>{ 2, 5 }));
     }
-    ASSERT_TRUE(m.overallHashMemory.ordis2RevisitInProgress.contains(123));
-    ASSERT_EQ(m.overallHashMemory.rejectedMapSubproof.count(), 1);
+    ASSERT_TRUE(((((m).overallHashMemory)).ordis2RevisitInProgress).contains(123));
+    ASSERT_EQ(((((m).overallHashMemory)).rejectedMapSubproof).count(), 1);
     {
-        const int32_t sid = m.overallHashMemory.rejectedMapSubproof.lookup(111);
+        const int32_t sid = ((((m).overallHashMemory)).rejectedMapSubproof).lookup(111);
         ASSERT_TRUE(sid != 0);
         const gl::IntegrationEntry back =
-            m.overallHashMemory.rejectedMapSubproof.recordAt(sid, 0);
+            ((((m).overallHashMemory)).rejectedMapSubproof).recordAt(sid, 0);
         ASSERT_EQ(back.instruction.data.size(), static_cast<std::size_t>(1));
         ASSERT_EQ(back.instruction.data[0].signature, 12);
         ASSERT_TRUE((back.instruction.data[0].elements == std::vector<int32_t>{ 14, 15 }));
         ASSERT_EQ(back.instruction.markedGoal, 16);
         ASSERT_TRUE(back.valueIds.empty());
     }
-    ASSERT_TRUE(m.overallHashMemory.subproofRevisitInProgress.contains(222));
+    ASSERT_TRUE(((((m).overallHashMemory)).subproofRevisitInProgress).contains(222));
+    {
+        const int64_t* owner = ((((m).overallHashMemory)).admissionMapIntegrationDouble).find(int64_t{ 333 });
+        ASSERT_TRUE(owner != nullptr);
+        ASSERT_EQ(*owner, int64_t{ 444 });
+    }
 }
 
 TEST(lb_deload, roundtrip_single_file_all_four_containers) {
@@ -373,15 +389,15 @@ TEST(lb_deload, roundtrip_single_file_all_four_containers) {
     g.init(kDeloadTestCfg);
     gl::LbMemory src(&g);
     for (gl::NameId i = 0; i < 100; ++i)
-        src.intEncodedStatements.push_back(makeExpr(i));
+        ((src).intEncodedStatements).push_back(makeExpr(i));
     for (gl::NameId i = 0; i < 30; ++i)
-        src.intLocalEncodedStatements.push_back(makeExpr(
+        ((src).intLocalEncodedStatements).push_back(makeExpr(
             static_cast<gl::NameId>(200 + i)));
     for (gl::NameId i = 0; i < 7; ++i)
-        src.intLocalEncodedStatementsDelta.push_back(makeExpr(
+        ((src).intLocalEncodedStatementsDelta).push_back(makeExpr(
             static_cast<gl::NameId>(300 + i)));
     for (gl::NameId i = 0; i < 4; ++i)
-        src.intExternalStatements.push_back(makeExpr(
+        ((src).intExternalStatements).push_back(makeExpr(
             static_cast<gl::NameId>(400 + i)));
 
     const std::filesystem::path dir = freshDir("test_deload_roundtrip");
@@ -392,29 +408,29 @@ TEST(lb_deload, roundtrip_single_file_all_four_containers) {
 
     gl::LbMemory dst(&g);
     gl::lbdeload::loadLbMemory(dst, chain, files, dir);
-    ASSERT_EQ(dst.intEncodedStatements.size(), 100);
+    ASSERT_EQ(((dst).intEncodedStatements).size(), 100);
     for (int32_t i = 0; i < 100; ++i)
-        ASSERT_TRUE(sameExpr(dst.intEncodedStatements[i],
-                             src.intEncodedStatements[i]));
-    ASSERT_EQ(dst.intLocalEncodedStatements.size(), 30);
+        ASSERT_TRUE(sameExpr(((dst).intEncodedStatements)[i],
+                             ((src).intEncodedStatements)[i]));
+    ASSERT_EQ(((dst).intLocalEncodedStatements).size(), 30);
     for (int32_t i = 0; i < 30; ++i)
-        ASSERT_TRUE(sameExpr(dst.intLocalEncodedStatements[i],
-                             src.intLocalEncodedStatements[i]));
-    ASSERT_EQ(dst.intLocalEncodedStatementsDelta.size(), 7);
+        ASSERT_TRUE(sameExpr(((dst).intLocalEncodedStatements)[i],
+                             ((src).intLocalEncodedStatements)[i]));
+    ASSERT_EQ(((dst).intLocalEncodedStatementsDelta).size(), 7);
     for (int32_t i = 0; i < 7; ++i)
-        ASSERT_TRUE(sameExpr(dst.intLocalEncodedStatementsDelta[i],
-                             src.intLocalEncodedStatementsDelta[i]));
-    ASSERT_EQ(dst.intExternalStatements.size(), 4);
+        ASSERT_TRUE(sameExpr(((dst).intLocalEncodedStatementsDelta)[i],
+                             ((src).intLocalEncodedStatementsDelta)[i]));
+    ASSERT_EQ(((dst).intExternalStatements).size(), 4);
     for (int32_t i = 0; i < 4; ++i)
-        ASSERT_TRUE(sameExpr(dst.intExternalStatements[i],
-                             src.intExternalStatements[i]));
+        ASSERT_TRUE(sameExpr(((dst).intExternalStatements)[i],
+                             ((src).intExternalStatements)[i]));
 }
 
 TEST(lb_deload, cold_string_table_roundtrip_with_tail) {
     gl::GlobalMemoryManager g;
     g.init(kDeloadTestCfg);
     gl::LbMemory src(&g);
-    src.intEncodedStatements.push_back(makeExpr(1));
+    ((src).intEncodedStatements).push_back(makeExpr(1));
     const std::string base[] = { "(p[a,marker])",
                                  "(in2[u_x,int_0_1,u_z])",
                                  "(=[v1,zero])" };
@@ -435,7 +451,7 @@ TEST(lb_deload, cold_string_table_roundtrip_with_tail) {
         });
 
     // Appended-only window: one more row, two more strings.
-    src.intEncodedStatements.push_back(makeExpr(2));
+    ((src).intEncodedStatements).push_back(makeExpr(2));
     const std::string tailA = "(tail[one,marker])";
     const std::string tailB = "(tail[two])";
     src.templateStrings.intern(gl::StrSpan(tailA));
@@ -447,7 +463,7 @@ TEST(lb_deload, cold_string_table_roundtrip_with_tail) {
     // Base + tail reproduce the table exactly: ids, bytes, lookups.
     gl::LbMemory dst(&g);
     gl::lbdeload::loadLbMemory(dst, chain, files, dir);
-    ASSERT_EQ(dst.intEncodedStatements.size(), 2);
+    ASSERT_EQ(((dst).intEncodedStatements).size(), 2);
     ASSERT_EQ(dst.templateStrings.count(), 5);
     for (int32_t id = 1; id <= 5; ++id) {
         ASSERT_TRUE(gl::equalSpans(dst.templateStrings.view(id),
@@ -474,7 +490,7 @@ TEST(lb_deload, empty_aggregate_roundtrip_writes_header_only_file) {
     ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(0));
     gl::LbMemory dst(&g);
     gl::lbdeload::loadLbMemory(dst, "chain", files, dir);
-    ASSERT_EQ(dst.intEncodedStatements.size(), 0);
+    ASSERT_EQ(((dst).intEncodedStatements).size(), 0);
 }
 
 TEST(lb_deload, closed_or_goal_levels_roundtrip_and_discharge) {
@@ -512,7 +528,7 @@ TEST(lb_deload, double_dump_is_byte_identical) {
     g.init(kDeloadTestCfg);
     gl::LbMemory src(&g);
     for (gl::NameId i = 0; i < 64; ++i)
-        src.intEncodedStatements.push_back(makeExpr(i));
+        ((src).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dirA = freshDir("test_deload_double_a");
     const std::filesystem::path dirB = freshDir("test_deload_double_b");
     const std::string chain = "double";
@@ -539,21 +555,21 @@ TEST(lb_deload, churned_container_dumps_canonical_bytes) {
 
     gl::LbMemory clean(&g);
     for (gl::NameId i = 0; i < 50; ++i)
-        clean.intEncodedStatements.push_back(makeExpr(i));
+        ((clean).intEncodedStatements).push_back(makeExpr(i));
 
     gl::LbMemory churned(&g);
     for (gl::NameId i = 0; i < 200; ++i)
-        churned.intEncodedStatements.push_back(makeExpr(
+        ((churned).intEncodedStatements).push_back(makeExpr(
             static_cast<gl::NameId>(1000 + i)));
-    churned.intEncodedStatements.clear();
+    ((churned).intEncodedStatements).clear();
     for (gl::NameId i = 0; i < 50; ++i) {
-        churned.intEncodedStatements.push_back(makeExpr(i));
-        churned.intEncodedStatements.push_back(makeExpr(
+        ((churned).intEncodedStatements).push_back(makeExpr(i));
+        ((churned).intEncodedStatements).push_back(makeExpr(
             static_cast<gl::NameId>(500 + i)));
     }
-    for (int32_t i = churned.intEncodedStatements.size(); i-- > 0;)
-        if (churned.intEncodedStatements[i].nameId >= 500)
-            churned.intEncodedStatements.erase(i);
+    for (int32_t i = ((churned).intEncodedStatements).size(); i-- > 0;)
+        if (((churned).intEncodedStatements)[i].nameId >= 500)
+            ((churned).intEncodedStatements).erase(i);
 
     const std::filesystem::path dirA = freshDir("test_deload_clean");
     const std::filesystem::path dirB = freshDir("test_deload_churned");
@@ -576,7 +592,7 @@ TEST(lb_deload, multi_file_split_and_roundtrip) {
     g.init(kDeloadTestCfg);
     gl::LbMemory src(&g);
     for (gl::NameId i = 0; i < 5; ++i)
-        src.intEncodedStatements.push_back(makeExpr(i));
+        ((src).intEncodedStatements).push_back(makeExpr(i));
     // 5 * 240 = 1200 payload bytes at 350 bytes per file = 4 parts.
     const std::filesystem::path dir = freshDir("test_deload_split");
     const std::string chain = "split";
@@ -588,20 +604,20 @@ TEST(lb_deload, multi_file_split_and_roundtrip) {
 
     gl::LbMemory dst(&g);
     gl::lbdeload::loadLbMemory(dst, chain, files, dir);
-    ASSERT_EQ(dst.intEncodedStatements.size(), 5);
+    ASSERT_EQ(((dst).intEncodedStatements).size(), 5);
     for (int32_t i = 0; i < 5; ++i)
-        ASSERT_TRUE(sameExpr(dst.intEncodedStatements[i],
-                             src.intEncodedStatements[i]));
+        ASSERT_TRUE(sameExpr(((dst).intEncodedStatements)[i],
+                             ((src).intEncodedStatements)[i]));
 }
 
 TEST(lb_deload, build_lb_chain_string_walks_to_root) {
     gl::Memory root; // root sentinel: empty exprKey, null parent
     gl::Memory child;
     child.setExprKey("(=[a,b])");
-    child.parentMemory = &root;
+    ((child).parentMemory) = &root;
     gl::Memory grand;
     grand.setExprKey("(in2[x,N])");
-    grand.parentMemory = &child;
+    ((grand).parentMemory) = &child;
     ASSERT_EQ(gl::buildLbChainString(grand),
               std::string("(in2[x,N])__(=[a,b])__"));
     ASSERT_EQ(gl::buildLbChainString(child), std::string("(=[a,b])__"));
@@ -612,7 +628,7 @@ TEST(lb_deload, memory_deload_reload_roundtrip) {
     gl::Memory m;
     m.setExprKey("(=[a,b])");
     for (gl::NameId i = 0; i < 80; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const gl::ExpressionWithValidity outgoing("(in[a,N])", "main");
     m.insertMailOutStatement(outgoing, std::set<int>{ 1, 4 });
     m.addMailOutOrigin(outgoing,
@@ -620,46 +636,46 @@ TEST(lb_deload, memory_deload_reload_roundtrip) {
             std::vector<gl::ExpressionWithValidity>{
                 gl::ExpressionWithValidity("(&[x,y])", "main") }),
         8);
-    const int64_t mailBytesBefore = m.mailOutLiveBytes;
-    ASSERT_TRUE(m.mailOutPending);
+    const int64_t mailBytesBefore = ((m).mailOutLiveBytes);
+    ASSERT_TRUE(((m).mailOutPending));
     ASSERT_TRUE(mailBytesBefore > 0);
-    ASSERT_TRUE(m.lbMemory.manager.blocksHeld() > 0);
+    ASSERT_TRUE(((m).lbMemory).manager.blocksHeld() > 0);
 
     const std::filesystem::path dir = freshDir("test_deload_memory");
     m.deloadStaticContainers(dir.string());
-    ASSERT_FALSE(m.lbMemory.manager.resident());
-    ASSERT_EQ(m.lbMemory.manager.blocksHeld(), static_cast<int64_t>(0));
-    ASSERT_FALSE(m.deloadFiles.empty());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
+    ASSERT_EQ(((m).lbMemory).manager.blocksHeld(), static_cast<int64_t>(0));
+    ASSERT_FALSE(((m).deloadFiles).empty());
     // Cold metadata path: size() is residency-asserted, so counts come
     // from the record made at deload.
     ASSERT_EQ(m.intEncodedStatementsCount(), 80);
 
     m.ensureLoaded(dir.string());
-    ASSERT_TRUE(m.lbMemory.manager.resident());
-    ASSERT_EQ(m.intEncodedStatements.size(), 80);
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
+    ASSERT_EQ(((m).intEncodedStatements).size(), 80);
     ASSERT_EQ(m.intEncodedStatementsCount(), 80); // resident branch
     for (gl::NameId i = 0; i < 80; ++i)
-        ASSERT_TRUE(sameExpr(m.intEncodedStatements[i], makeExpr(i)));
-    ASSERT_TRUE(m.mailOutPending);
-    ASSERT_EQ(m.mailOutLiveBytes, mailBytesBefore);
+        ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[i], makeExpr(i)));
+    ASSERT_TRUE(((m).mailOutPending));
+    ASSERT_EQ(((m).mailOutLiveBytes), mailBytesBefore);
     const gl::Mail reloaded = gl::routingMailOutToHeap(
-        m.mailOut, m.mailOutInterner);
+        ((m).mailOut), ((m).mailOutInterner));
     ASSERT_EQ(reloaded.statements.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(reloaded.statements.count(
         std::make_pair(outgoing, std::set<int>{ 1, 4 })) == 1);
-    ASSERT_EQ(reloaded.exprOriginMap.at(outgoing).size(),
+    ASSERT_EQ(((reloaded).exprOriginMap).at(outgoing).size(),
               static_cast<std::size_t>(1));
-    ASSERT_EQ(reloaded.exprOriginMap.at(outgoing)[0].first,
+    ASSERT_EQ(((reloaded).exprOriginMap).at(outgoing)[0].first,
               std::string("disintegration"));
 
     // Resident no-op path (the touch points call unconditionally).
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 80);
+    ASSERT_EQ(((m).intEncodedStatements).size(), 80);
     m.clearMailOut();
-    ASSERT_FALSE(m.mailOutPending);
-    ASSERT_EQ(m.mailOutLiveBytes, 0);
-    ASSERT_TRUE(m.mailOut.empty());
-    ASSERT_EQ(m.mailOutInterner.internedCount(), 0);
+    ASSERT_FALSE(((m).mailOutPending));
+    ASSERT_EQ(((m).mailOutLiveBytes), 0);
+    ASSERT_TRUE(((m).mailOut).empty());
+    ASSERT_EQ(((m).mailOutInterner).internedCount(), 0);
 }
 
 // NameMap validity metadata (the validityNodes parent-pointer forest)
@@ -668,41 +684,41 @@ TEST(lb_deload, memory_deload_reload_roundtrip) {
 TEST(lb_deload, namemap_metadata_roundtrip) {
     gl::Memory m;
     m.setExprKey("(=[a,b])");
-    const gl::NameId mainId = m.nameMap.encode("main");
-    const gl::NameId a = m.nameMap.encodePush(mainId, "a");
-    const gl::NameId b = m.nameMap.encodePush(a, "b");        // main < a < b
-    const gl::NameId c = m.nameMap.encodePush(mainId, "c");   // diverges from a/b
-    m.intEncodedStatements.push_back(makeExpr(7));          // hold a block
-    ASSERT_TRUE(m.lbMemory.manager.blocksHeld() > 0);
+    const gl::NameId mainId = ((m).nameMap).encode("main");
+    const gl::NameId a = ((m).nameMap).encodePush(mainId, "a");
+    const gl::NameId b = ((m).nameMap).encodePush(a, "b");        // main < a < b
+    const gl::NameId c = ((m).nameMap).encodePush(mainId, "c");   // diverges from a/b
+    ((m).intEncodedStatements).push_back(makeExpr(7));          // hold a block
+    ASSERT_TRUE(((m).lbMemory).manager.blocksHeld() > 0);
 
     // Pre-deload structure.
-    ASSERT_EQ(m.nameMap.stackSize(), 5);                    // slot0 + main + a,b,c
-    ASSERT_EQ(m.nameMap.ancLen(b), 3);                      // {main, a, b}
-    ASSERT_TRUE(m.nameMap.comparable(a, b));
-    ASSERT_FALSE(m.nameMap.comparable(b, c));               // diverge
+    ASSERT_EQ(((m).nameMap).stackSize(), 5);                    // slot0 + main + a,b,c
+    ASSERT_EQ(((m).nameMap).ancLen(b), 3);                      // {main, a, b}
+    ASSERT_TRUE(((m).nameMap).comparable(a, b));
+    ASSERT_FALSE(((m).nameMap).comparable(b, c));               // diverge
 
     const std::filesystem::path dir = freshDir("test_deload_namemap_meta");
     m.deloadStaticContainers(dir.string());
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
 
     m.ensureLoaded(dir.string());
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
 
     // Ids stay stable (re-interned in id order) and the metadata reproduces.
-    ASSERT_EQ(m.nameMap.lookup("main_boundary_a"), a);
-    ASSERT_EQ(m.nameMap.lookup("main_boundary_a_boundary_b"), b);
-    ASSERT_EQ(m.nameMap.lookup("main_boundary_c"), c);
-    ASSERT_EQ(m.nameMap.stackSize(), 5);
-    ASSERT_EQ(m.nameMap.ancLen(b), 3);
-    ASSERT_EQ(m.nameMap.ancAt(b, 0), mainId);
-    ASSERT_EQ(m.nameMap.ancAt(b, 1), a);
-    ASSERT_EQ(m.nameMap.ancAt(b, 2), b);
-    ASSERT_EQ(m.nameMap.stackLen(b), 2);
-    ASSERT_TRUE(m.nameMap.comparable(a, b));
+    ASSERT_EQ(((m).nameMap).lookup("main_boundary_a"), a);
+    ASSERT_EQ(((m).nameMap).lookup("main_boundary_a_boundary_b"), b);
+    ASSERT_EQ(((m).nameMap).lookup("main_boundary_c"), c);
+    ASSERT_EQ(((m).nameMap).stackSize(), 5);
+    ASSERT_EQ(((m).nameMap).ancLen(b), 3);
+    ASSERT_EQ(((m).nameMap).ancAt(b, 0), mainId);
+    ASSERT_EQ(((m).nameMap).ancAt(b, 1), a);
+    ASSERT_EQ(((m).nameMap).ancAt(b, 2), b);
+    ASSERT_EQ(((m).nameMap).stackLen(b), 2);
+    ASSERT_TRUE(((m).nameMap).comparable(a, b));
     gl::NameId v = 0;
-    ASSERT_TRUE(m.nameMap.verdict(a, b, v));
+    ASSERT_TRUE(((m).nameMap).verdict(a, b, v));
     ASSERT_EQ(v, static_cast<gl::NameId>(-1));                 // a is ancestor of b
-    ASSERT_FALSE(m.nameMap.comparable(b, c));               // still diverge
+    ASSERT_FALSE(((m).nameMap).comparable(b, c));               // still diverge
 }
 
 TEST(lb_deload, ensure_loaded_for_read_revives_discharged_lb) {
@@ -713,25 +729,25 @@ TEST(lb_deload, ensure_loaded_for_read_revives_discharged_lb) {
     m.setExprKey("__contradiction__(=[10,11])");
     const std::string origin = "!(=[10,11])";
     const std::string scope = "main";
-    const int32_t exprId = m.originInterner.encode(origin);
-    const int32_t scopeId = m.originInterner.encode(scope);
-    m.intEncodedStatements.push_back(makeExpr(7));
+    const int32_t exprId = ((m).originInterner).encode(origin);
+    const int32_t scopeId = ((m).originInterner).encode(scope);
+    ((m).intEncodedStatements).push_back(makeExpr(7));
 
     const std::filesystem::path dir = freshDir("test_deload_read_revive");
-    m.dischargedForever = true;            // discharged, then drained:
+    ((m).dischargedForever) = true;            // discharged, then drained:
     m.deloadStaticContainers(dir.string());
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
 
     m.ensureLoadedForRead(dir.string());
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     // Ids and content reproduce exactly — the lookups the export's
     // hasOrigins probe makes now hit.
-    ASSERT_EQ(m.originInterner.lookup(origin), exprId);
-    ASSERT_EQ(m.originInterner.lookup(scope), scopeId);
-    ASSERT_EQ(m.originInterner.decode(exprId), origin);
+    ASSERT_EQ(((m).originInterner).lookup(origin), exprId);
+    ASSERT_EQ(((m).originInterner).lookup(scope), scopeId);
+    ASSERT_EQ(((m).originInterner).decode(exprId), origin);
     // Resident no-op path.
     m.ensureLoadedForRead(dir.string());
-    ASSERT_EQ(m.originInterner.internedCount(), 2);
+    ASSERT_EQ(((m).originInterner).internedCount(), 2);
 }
 
 TEST(lb_deload, read_only_reload_skips_the_reverse_index_rebuild) {
@@ -743,18 +759,18 @@ TEST(lb_deload, read_only_reload_skips_the_reverse_index_rebuild) {
     // the probe would answer "no candidates" instead of failing.
     gl::Memory m;
     m.setExprKey("__contradiction__(=[20,21])");
-    m.originInterner.encode("!(=[20,21])");
-    m.intEncodedStatements.push_back(makeExpr(3));
+    ((m).originInterner).encode("!(=[20,21])");
+    ((m).intEncodedStatements).push_back(makeExpr(3));
 
     const std::filesystem::path dir = freshDir("test_deload_read_revindex");
-    m.dischargedForever = true;
+    ((m).dischargedForever) = true;
     m.deloadStaticContainers(dir.string());
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
 
     m.ensureLoadedForRead(dir.string());
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     // Origin history — the only thing this door's callers read — is intact.
-    ASSERT_EQ(m.originInterner.decode(m.originInterner.lookup("!(=[20,21])")),
+    ASSERT_EQ(((m).originInterner).decode(((m).originInterner).lookup("!(=[20,21])")),
               std::string("!(=[20,21])"));
 
     // A work-path reload DOES rebuild. It needs its own LB: `ensureLoaded` is
@@ -762,14 +778,14 @@ TEST(lb_deload, read_only_reload_skips_the_reverse_index_rebuild) {
     // has a separate door.
     gl::Memory w;
     w.setExprKey("(in3[i0,i1,v1,+])");
-    w.originInterner.encode("(P)");
-    w.intEncodedStatements.push_back(makeExpr(4));
+    ((w).originInterner).encode("(P)");
+    ((w).intEncodedStatements).push_back(makeExpr(4));
     const std::filesystem::path wdir = freshDir("test_deload_work_revindex");
     w.deloadStaticContainers(wdir.string());
-    ASSERT_FALSE(w.lbMemory.manager.resident());
+    ASSERT_FALSE(((w).lbMemory).manager.resident());
     w.ensureLoaded(wdir.string());
-    ASSERT_TRUE(w.lbMemory.manager.resident());
-    ASSERT_EQ(w.originInterner.decode(w.originInterner.lookup("(P)")),
+    ASSERT_TRUE(((w).lbMemory).manager.resident());
+    ASSERT_EQ(((w).originInterner).decode(((w).originInterner).lookup("(P)")),
               std::string("(P)"));
 }
 
@@ -777,17 +793,17 @@ TEST(lb_deload, memory_deload_reload_cycle_repeats) {
     gl::Memory m;
     m.setExprKey("(in3[i0,i1,v1,+])");
     for (gl::NameId i = 0; i < 40; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_cycle");
     for (int round = 0; round < 3; ++round) {
         m.deloadStaticContainers(dir.string());
         m.ensureLoaded(dir.string());
         // Containers keep working after each cycle.
-        m.intEncodedStatements.push_back(
+        ((m).intEncodedStatements).push_back(
             makeExpr(static_cast<gl::NameId>(100 + round)));
     }
-    ASSERT_EQ(m.intEncodedStatements.size(), 43);
-    ASSERT_EQ(m.intEncodedStatements[42].nameId,
+    ASSERT_EQ(((m).intEncodedStatements).size(), 43);
+    ASSERT_EQ(((m).intEncodedStatements)[42].nameId,
               static_cast<gl::NameId>(102));
 }
 
@@ -795,144 +811,144 @@ TEST(lb_deload, skip_unchanged_deload_keeps_files_and_content) {
     gl::Memory m;
     m.setExprKey("(in2[a,b,c])");
     for (gl::NameId i = 0; i < 25; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_skip");
 
     // Dump 1 (dirty -> writes), reload (RAM == disk, flag cleared).
     m.deloadStaticContainers(dir.string());
     m.ensureLoaded(dir.string());
     const auto writtenAt =
-        std::filesystem::last_write_time(dir / m.deloadFiles.front());
+        std::filesystem::last_write_time(dir / ((m).deloadFiles).front());
 
     // No mutation: the second deload must SKIP the rewrite — the file's
     // write time stays byte-for-byte the dump-1 stamp.
     m.deloadStaticContainers(dir.string());
     ASSERT_TRUE(std::filesystem::last_write_time(
-                    dir / m.deloadFiles.front()) == writtenAt);
+                    dir / ((m).deloadFiles).front()) == writtenAt);
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 25);
+    ASSERT_EQ(((m).intEncodedStatements).size(), 25);
     for (gl::NameId i = 0; i < 25; ++i)
-        ASSERT_TRUE(sameExpr(m.intEncodedStatements[i], makeExpr(i)));
+        ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[i], makeExpr(i)));
 
     // Mutation: the next deload must rewrite, and the reload must see
     // the new content.
-    m.intEncodedStatements.push_back(makeExpr(99));
+    ((m).intEncodedStatements).push_back(makeExpr(99));
     m.deloadStaticContainers(dir.string());
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 26);
-    ASSERT_TRUE(sameExpr(m.intEncodedStatements[25], makeExpr(99)));
+    ASSERT_EQ(((m).intEncodedStatements).size(), 26);
+    ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[25], makeExpr(99)));
 }
 
 TEST(lb_deload, append_only_deload_writes_tail_and_roundtrips) {
     gl::Memory m;
     m.setExprKey("(in3[a,b,c,d])");
     for (gl::NameId i = 0; i < 40; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_tail");
 
     // Base dump, reload, append a few rows (AppendedOnly window).
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(1));
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(1));
     m.ensureLoaded(dir.string());
     const auto baseWrittenAt =
-        std::filesystem::last_write_time(dir / m.deloadFiles.front());
+        std::filesystem::last_write_time(dir / ((m).deloadFiles).front());
     for (gl::NameId i = 0; i < 5; ++i)
-        m.intEncodedStatements.push_back(makeExpr(
+        ((m).intEncodedStatements).push_back(makeExpr(
             static_cast<gl::NameId>(500 + i)));
 
     // Tail deload: one new tail file, base file untouched.
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(2));
-    ASSERT_TRUE(m.deloadFiles[1].find("_t1_") != std::string::npos);
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(2));
+    ASSERT_TRUE(((m).deloadFiles)[1].find("_t1_") != std::string::npos);
     ASSERT_TRUE(std::filesystem::last_write_time(
-                    dir / m.deloadFiles.front()) == baseWrittenAt);
+                    dir / ((m).deloadFiles).front()) == baseWrittenAt);
 
     // Reload = base + tail; content exact.
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 45);
+    ASSERT_EQ(((m).intEncodedStatements).size(), 45);
     for (gl::NameId i = 0; i < 40; ++i)
-        ASSERT_TRUE(sameExpr(m.intEncodedStatements[i], makeExpr(i)));
+        ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[i], makeExpr(i)));
     for (gl::NameId i = 0; i < 5; ++i)
-        ASSERT_TRUE(sameExpr(m.intEncodedStatements[40 + i],
+        ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[40 + i],
                              makeExpr(static_cast<gl::NameId>(500 + i))));
 
     // A second appended-only window stacks a second tail.
-    m.intEncodedStatements.push_back(makeExpr(600));
+    ((m).intEncodedStatements).push_back(makeExpr(600));
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(3));
-    ASSERT_TRUE(m.deloadFiles[2].find("_t2_") != std::string::npos);
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(3));
+    ASSERT_TRUE(((m).deloadFiles)[2].find("_t2_") != std::string::npos);
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 46);
-    ASSERT_TRUE(sameExpr(m.intEncodedStatements[45], makeExpr(600)));
+    ASSERT_EQ(((m).intEncodedStatements).size(), 46);
+    ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[45], makeExpr(600)));
 }
 
 TEST(lb_deload, restructure_forces_full_compaction) {
     gl::Memory m;
     m.setExprKey("(in2[x,y,z])");
     for (gl::NameId i = 0; i < 30; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_compact");
     m.deloadStaticContainers(dir.string());
     m.ensureLoaded(dir.string());
-    m.intEncodedStatements.push_back(makeExpr(100));
+    ((m).intEncodedStatements).push_back(makeExpr(100));
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(2)); // base+tail
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(2)); // base+tail
     m.ensureLoaded(dir.string());
 
     // An erase is a restructuring mutation: the next deload compacts to
     // a fresh single base image.
-    m.intEncodedStatements.erase(0);
+    ((m).intEncodedStatements).erase(0);
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(1));
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(1));
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 30);
-    ASSERT_TRUE(sameExpr(m.intEncodedStatements[0], makeExpr(1)));
-    ASSERT_TRUE(sameExpr(m.intEncodedStatements[29], makeExpr(100)));
+    ASSERT_EQ(((m).intEncodedStatements).size(), 30);
+    ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[0], makeExpr(1)));
+    ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[29], makeExpr(100)));
 }
 
 TEST(lb_deload, tail_volume_threshold_forces_compaction) {
     gl::Memory m;
     m.setExprKey("(in[q,N])");
     for (gl::NameId i = 0; i < 20; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_threshold");
     m.deloadStaticContainers(dir.string()); // base of 20 rows
     m.ensureLoaded(dir.string());
     // Appending >= base/4 rows exceeds the compaction fraction: the
     // deload must produce a fresh single base, not a tail.
     for (gl::NameId i = 0; i < 6; ++i)
-        m.intEncodedStatements.push_back(makeExpr(
+        ((m).intEncodedStatements).push_back(makeExpr(
             static_cast<gl::NameId>(700 + i)));
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(1));
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(1));
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 26);
+    ASSERT_EQ(((m).intEncodedStatements).size(), 26);
 }
 
 TEST(lb_deload, dump_without_release_keeps_resident_then_pressure_path) {
     gl::Memory m;
     m.setExprKey("(in2[r,s,t])");
     for (gl::NameId i = 0; i < 33; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_writethrough");
 
     // Write-through dump: image fresh, LB stays resident with blocks.
     m.dumpStaticContainers(dir.string());
-    ASSERT_TRUE(m.lbMemory.manager.resident());
-    ASSERT_TRUE(m.lbMemory.manager.blocksHeld() > 0);
-    ASSERT_FALSE(m.deloadFiles.empty());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.blocksHeld() > 0);
+    ASSERT_FALSE(((m).deloadFiles).empty());
     // ensureLoaded on the resident LB is a no-op; content untouched.
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 33);
+    ASSERT_EQ(((m).intEncodedStatements).size(), 33);
 
     // Pressure path: release the (fresh-imaged) blocks, then reload.
     m.releaseStaticBlocks();
-    ASSERT_FALSE(m.lbMemory.manager.resident());
-    ASSERT_EQ(m.lbMemory.manager.blocksHeld(), static_cast<int64_t>(0));
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
+    ASSERT_EQ(((m).lbMemory).manager.blocksHeld(), static_cast<int64_t>(0));
     m.ensureLoaded(dir.string());
-    ASSERT_EQ(m.intEncodedStatements.size(), 33);
+    ASSERT_EQ(((m).intEncodedStatements).size(), 33);
     for (gl::NameId i = 0; i < 33; ++i)
-        ASSERT_TRUE(sameExpr(m.intEncodedStatements[i], makeExpr(i)));
+        ASSERT_TRUE(sameExpr(((m).intEncodedStatements)[i], makeExpr(i)));
 }
 
 TEST(lb_deload, purge_empties_and_recreates) {
@@ -987,20 +1003,20 @@ TEST(lb_deload, deload_ordinal_stable_across_base_and_tail) {
     gl::Memory m;
     m.setExprKey("(ordinal[base,tail])");
     for (gl::NameId i = 0; i < 40; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_ord_tail");
     m.deloadStaticContainers(dir.string());
-    const int64_t ord = m.deloadOrdinal;
+    const int64_t ord = ((m).deloadOrdinal);
     ASSERT_GE(ord, static_cast<int64_t>(0));
     m.ensureLoaded(dir.string());
     for (gl::NameId i = 0; i < 5; ++i)
-        m.intEncodedStatements.push_back(
+        ((m).intEncodedStatements).push_back(
             makeExpr(static_cast<gl::NameId>(500 + i)));
     m.deloadStaticContainers(dir.string());  // AppendedOnly -> tail set
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(2));
-    ASSERT_EQ(m.deloadOrdinal, ord);  // stable across base + tail
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(2));
+    ASSERT_EQ(((m).deloadOrdinal), ord);  // stable across base + tail
     const std::string lb = "lb" + std::to_string(ord) + "_";
-    for (const std::string& f : m.deloadFiles)
+    for (const std::string& f : ((m).deloadFiles))
         ASSERT_TRUE(f.find(lb) == 0);
 }
 
@@ -1008,19 +1024,19 @@ TEST(lb_deload, deload_ordinal_assigned_once_across_redump) {
     gl::Memory m;
     m.setExprKey("(ordinal[redump])");
     for (gl::NameId i = 0; i < 30; ++i)
-        m.intEncodedStatements.push_back(makeExpr(i));
+        ((m).intEncodedStatements).push_back(makeExpr(i));
     const std::filesystem::path dir = freshDir("test_deload_ord_redump");
     m.deloadStaticContainers(dir.string());
-    const int64_t ord = m.deloadOrdinal;
+    const int64_t ord = ((m).deloadOrdinal);
     m.ensureLoaded(dir.string());
     // A restructuring erase forces a full re-dump; the ordinal must NOT
     // change (assigned once, lifetime-stable identity).
-    m.intEncodedStatements.erase(0);
+    ((m).intEncodedStatements).erase(0);
     m.deloadStaticContainers(dir.string());
-    ASSERT_EQ(m.deloadOrdinal, ord);
-    ASSERT_EQ(m.deloadFiles.size(), static_cast<size_t>(1));  // fresh base
+    ASSERT_EQ(((m).deloadOrdinal), ord);
+    ASSERT_EQ(((m).deloadFiles).size(), static_cast<size_t>(1));  // fresh base
     const std::string lb = "lb" + std::to_string(ord) + "_";
-    ASSERT_TRUE(m.deloadFiles.front().find(lb) == 0);
+    ASSERT_TRUE(((m).deloadFiles).front().find(lb) == 0);
 }
 
 // The two internal-mail ColdMail channels (tags 455..464 / 505..514) round-trip
@@ -1145,24 +1161,314 @@ TEST(lb_deload, parked_existences_and_replay_receipts_roundtrip) {
     integration.flags = 10;
     const int64_t key = gl::packInt32Pair(7,3);
     const int64_t receipt = gl::packInt32Pair(41,3);
-    source.overallHashMemory.rejectedMap.assignRun(key, {record});
-    source.overallHashMemory.rejectedMapIntegration.assignRun(key, {integration});
-    source.existenceReplays.upsert(receipt, 25);
+    ((((source).overallHashMemory)).rejectedMap).assignRun(key, {record});
+    ((((source).overallHashMemory)).rejectedMapIntegration).assignRun(key, {integration});
+    ((source).existenceReplays).upsert(receipt, 25);
     const auto dir = freshDir("test_deload_parked_existences");
     const std::string chain = "parked-existence-storage";
     const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
     gl::lbdeload::loadLbMemory(restored, chain, files, dir);
-    ASSERT_EQ(*restored.existenceReplays.find(receipt), 25);
-    const auto after = restored.overallHashMemory.rejectedMap.recordAt(
-        restored.overallHashMemory.rejectedMap.lookup(key),0);
+    ASSERT_EQ(*((restored).existenceReplays).find(receipt), 25);
+    const auto after = ((((restored).overallHashMemory)).rejectedMap).recordAt(
+        ((((restored).overallHashMemory)).rejectedMap).lookup(key),0);
     ASSERT_TRUE(gl::Codec<gl::RejectedMapValue>::serialize(after) == gl::Codec<gl::RejectedMapValue>::serialize(record));
-    const auto afterIntegration = restored.overallHashMemory.rejectedMapIntegration.recordAt(
-        restored.overallHashMemory.rejectedMapIntegration.lookup(key),0);
+    const auto afterIntegration = ((((restored).overallHashMemory)).rejectedMapIntegration).recordAt(
+        ((((restored).overallHashMemory)).rejectedMapIntegration).lookup(key),0);
     ASSERT_TRUE(gl::Codec<gl::RejectedMapIntegrationValue>::serialize(afterIntegration)
         == gl::Codec<gl::RejectedMapIntegrationValue>::serialize(integration));
     restored.clearDischargeableContainers();
-    ASSERT_TRUE(restored.existenceReplays.empty());
-    ASSERT_TRUE(restored.overallHashMemory.rejectedMap.lookup(key) != 0);
+    ASSERT_TRUE(((restored).existenceReplays).empty());
+    ASSERT_TRUE(((((restored).overallHashMemory)).rejectedMap).lookup(key) != 0);
+}
+
+// The slot the induction hypothesis ate at each scope
+// (D-519) round-trips, the strong slot included, and is
+// dischargeable.
+TEST(lb_deload, induction_eats_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.inductionEats.insert(int64_t(3), 17);
+    source.inductionEats.insert(int64_t(9), gl::Memory::kStrongInductionSlot);
+    const auto dir = freshDir("test_deload_induction_eats");
+    const std::string chain = "induction-eats";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.inductionEats.count(), 2);
+    ASSERT_EQ(*restored.inductionEats.find(int64_t(3)), 17);
+    ASSERT_EQ(*restored.inductionEats.find(int64_t(9)), gl::Memory::kStrongInductionSlot);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.inductionEats.empty());
+}
+
+// The registry of open contradiction scopes (D-560)
+// round-trips with its bootstrap states and is dischargeable; the canonical
+// load and the discharge clear the derived fact index.
+TEST(lb_deload, contradiction_scopes_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.contradictionScopes.insert(int64_t(4), 0);
+    source.contradictionScopes.insert(int64_t(11), 1);
+    const auto dir = freshDir("test_deload_contradiction_scopes");
+    const std::string chain = "contradiction-scopes";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    ASSERT_TRUE(restored.contradictionFacts.addFact(3));
+    restored.contradictionFacts.fileUnder(gl::StrSpan("k", 1), 3);
+    restored.contradictionFacts.markBuilt();
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.contradictionScopes.count(), 2);
+    ASSERT_EQ(*restored.contradictionScopes.find(int64_t(4)), 0);
+    ASSERT_EQ(*restored.contradictionScopes.find(int64_t(11)), 1);
+    ASSERT_FALSE(restored.contradictionFacts.built());
+    ASSERT_EQ(restored.contradictionFacts.factCount(), 0);
+    ASSERT_TRUE(restored.contradictionFacts.addFact(5));
+    restored.contradictionFacts.markBuilt();
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.contradictionScopes.empty());
+    ASSERT_FALSE(restored.contradictionFacts.built());
+    ASSERT_EQ(restored.contradictionFacts.factCount(), 0);
+}
+
+// The burst's induction firings and the settled induction roots
+// (D-520) round-trip and are dischargeable.
+TEST(lb_deload, induction_settlement_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.inductionFirings.mint(gl::NameId(7));
+    source.inductionSettledRoots.mint(gl::NameId(1));
+    source.inductionSettledRoots.mint(gl::NameId(4));
+    const auto dir = freshDir("test_deload_induction_settlement");
+    const std::string chain = "induction-settlement";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.inductionFirings.count(), 1);
+    ASSERT_TRUE(restored.inductionFirings.lookup(gl::NameId(7)) != 0);
+    ASSERT_EQ(restored.inductionSettledRoots.count(), 2);
+    ASSERT_TRUE(restored.inductionSettledRoots.lookup(gl::NameId(1)) != 0);
+    ASSERT_TRUE(restored.inductionSettledRoots.lookup(gl::NameId(4)) != 0);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.inductionFirings.empty());
+    ASSERT_TRUE(restored.inductionSettledRoots.empty());
+}
+
+// The ORs staged for the flag-6 unconditional-ordis mail
+// (D-528) round-trip and are dischargeable.
+TEST(lb_deload, pending_unconditional_ordis_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.pendingUnconditionalOrdis.mint(gl::NameId(3));
+    source.pendingUnconditionalOrdis.mint(gl::NameId(8));
+    const auto dir = freshDir("test_deload_unconditional_ordis");
+    const std::string chain = "unconditional-ordis";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.pendingUnconditionalOrdis.count(), 2);
+    ASSERT_TRUE(restored.pendingUnconditionalOrdis.lookup(gl::NameId(3)) != 0);
+    ASSERT_TRUE(restored.pendingUnconditionalOrdis.lookup(gl::NameId(8)) != 0);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.pendingUnconditionalOrdis.empty());
+}
+
+// The forced OR cohorts (D-527) round-trip and are
+// dischargeable.
+TEST(lb_deload, forced_or_cohorts_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.forcedOrCohorts.mint(int32_t(5));
+    source.forcedOrCohorts.mint(int32_t(12));
+    const auto dir = freshDir("test_deload_forced_or_cohorts");
+    const std::string chain = "forced-or-cohorts";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.forcedOrCohorts.count(), 2);
+    ASSERT_TRUE(restored.forcedOrCohorts.lookup(int32_t(5)) != 0);
+    ASSERT_TRUE(restored.forcedOrCohorts.lookup(int32_t(12)) != 0);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.forcedOrCohorts.empty());
+}
+
+// The cohorts opened by the induction hypothesis's missing expression
+// (D-575) round-trip and are dischargeable.
+TEST(lb_deload, hypothesis_or_cohorts_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.hypothesisOrCohorts.mint(int32_t(7));
+    source.hypothesisOrCohorts.mint(int32_t(19));
+    const auto dir = freshDir("test_deload_hypothesis_or_cohorts");
+    const std::string chain = "hypothesis-or-cohorts";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.hypothesisOrCohorts.count(), 2);
+    ASSERT_TRUE(restored.hypothesisOrCohorts.lookup(int32_t(7)) != 0);
+    ASSERT_TRUE(restored.hypothesisOrCohorts.lookup(int32_t(19)) != 0);
+    ASSERT_TRUE(restored.forcedOrCohorts.empty());
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.hypothesisOrCohorts.empty());
+}
+
+// The scopes where the induction hypothesis shot
+// (D-572) round-trip and are dischargeable.
+TEST(lb_deload, hypothesis_shots_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.hypothesisShots.mint(gl::NameId(3));
+    source.hypothesisShots.mint(gl::NameId(11));
+    const auto dir = freshDir("test_deload_hypothesis_shots");
+    const std::string chain = "hypothesis-shots";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.hypothesisShots.count(), 2);
+    ASSERT_TRUE(restored.hypothesisShots.lookup(gl::NameId(3)) != 0);
+    ASSERT_TRUE(restored.hypothesisShots.lookup(gl::NameId(11)) != 0);
+    ASSERT_TRUE(restored.hypothesisOrCohorts.empty());
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.hypothesisShots.empty());
+}
+
+// The int-scope records (D-578)
+// round-trip and are dischargeable.
+TEST(lb_deload, int_scope_records_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.intScopes.insert(int64_t{17}, gl::packInt32Pair(5, 1));
+    source.intScopes.insert(int64_t{19}, gl::packInt32Pair(5, 2));
+    source.intScopeGroups.insert(int64_t{5}, int64_t{6} | gl::kIntScopeGroupPromoted);
+    source.intScopeFirstFinish.insert(gl::packInt32Pair(5, 1), int64_t{17});
+    source.intScopeFirstFinish.insert(gl::packInt32Pair(5, 2), int64_t{19});
+    const auto dir = freshDir("test_deload_int_scope_records");
+    const std::string chain = "int-scope-records";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.intScopes.count(), 2);
+    ASSERT_EQ(*restored.intScopes.find(int64_t{17}), gl::packInt32Pair(5, 1));
+    ASSERT_EQ(*restored.intScopes.find(int64_t{19}), gl::packInt32Pair(5, 2));
+    ASSERT_EQ(*restored.intScopeGroups.find(int64_t{5}), int64_t{6} | gl::kIntScopeGroupPromoted);
+    ASSERT_EQ(*restored.intScopeFirstFinish.find(gl::packInt32Pair(5, 1)), int64_t{17});
+    ASSERT_EQ(*restored.intScopeFirstFinish.find(gl::packInt32Pair(5, 2)), int64_t{19});
+    restored.clearDischargeableContainers();
+    ASSERT_EQ(restored.intScopes.count(), 0);
+    ASSERT_EQ(restored.intScopeGroups.count(), 0);
+    ASSERT_EQ(restored.intScopeFirstFinish.count(), 0);
+}
+
+// The size markers of a weak step block
+// (D-583) round-trip and are dischargeable.
+TEST(lb_deload, size_markers_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.sizeMarkers.mint(int32_t{4});
+    source.sizeMarkers.mint(int32_t{9});
+    const auto dir = freshDir("test_deload_size_markers");
+    const std::string chain = "size-markers";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.sizeMarkers.count(), 2);
+    ASSERT_TRUE(restored.sizeMarkers.lookup(int32_t{4}) != 0);
+    ASSERT_TRUE(restored.sizeMarkers.lookup(int32_t{9}) != 0);
+    ASSERT_TRUE(restored.hypothesisShots.empty());
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.sizeMarkers.empty());
+}
+
+// The case-experiment cohorts of a twin block
+// (D-588) round-trip and are dischargeable.
+TEST(lb_deload, experiment_or_cohorts_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.experimentOrCohorts.mint(int32_t{3});
+    source.experimentOrCohorts.mint(int32_t{17});
+    const auto dir = freshDir("test_deload_experiment_or_cohorts");
+    const std::string chain = "experiment-or-cohorts";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.experimentOrCohorts.count(), 2);
+    ASSERT_TRUE(restored.experimentOrCohorts.lookup(int32_t{3}) != 0);
+    ASSERT_TRUE(restored.experimentOrCohorts.lookup(int32_t{17}) != 0);
+    ASSERT_TRUE(restored.sizeMarkers.empty());
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.experimentOrCohorts.empty());
+}
+
+// The forced products (D-522) round-trip and are
+// dischargeable.
+TEST(lb_deload, forced_products_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.forcedProducts.mint(gl::packStatementKey(gl::NameId(21), gl::NameId(1)));
+    source.forcedProducts.mint(gl::packStatementKey(gl::NameId(34), gl::NameId(6)));
+    const auto dir = freshDir("test_deload_forced_products");
+    const std::string chain = "forced-products";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.forcedProducts.count(), 2);
+    ASSERT_TRUE(restored.forcedProducts.lookup(gl::packStatementKey(gl::NameId(21), gl::NameId(1))) != 0);
+    ASSERT_TRUE(restored.forcedProducts.lookup(gl::packStatementKey(gl::NameId(34), gl::NameId(6))) != 0);
+    ASSERT_TRUE(restored.forcedProducts.lookup(gl::packStatementKey(gl::NameId(21), gl::NameId(6))) == 0);
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.forcedProducts.empty());
+}
+
+// An integration trial record (D-481)
+// round-trips every field, unused gate slots included, and so does its list
+// of witnesses and expressions; both are dischargeable.
+TEST(lb_deload, integration_trial_records_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    gl::IntegrationTrialRec open;
+    open.trialScope = 12;
+    open.source = 41;
+    open.generation = 6;
+    open.integrationDepth = 1;
+    open.flags = 4;
+    open.groupCount = 2;
+    open.groupEnd[0] = 1;
+    open.groupEnd[1] = 3;
+    open.gates[0] = 50;
+    open.gates[1] = 51;
+    open.gates[2] = 52;
+    gl::IntegrationTrialRec passed = open;
+    passed.trialScope = 13;
+    passed.status = gl::IntegrationTrialRec::kPassed;
+    passed.witnessCount = 2;
+    passed.expressionCount = 1;
+    const int64_t openKey = gl::packOriginKey(41, 3);
+    const int64_t passedKey = gl::packOriginKey(42, 3);
+    source.integrationTrials.insert(openKey, open);
+    source.integrationTrials.insert(passedKey, passed);
+    source.integrationTrialContents.insert(gl::packInt32Pair(13, 0), gl::packInt32Pair(0, 60));
+    source.integrationTrialContents.insert(gl::packInt32Pair(13, 1), gl::packInt32Pair(2, 61));
+    source.integrationTrialContents.insert(gl::packInt32Pair(13, 2),
+        gl::packInt32Pair(gl::kIntegrationTrialRule, 62));
+    const auto dir = freshDir("test_deload_integration_trials");
+    const std::string chain = "integration-trial-storage";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.integrationTrials.count(), 2);
+    const gl::IntegrationTrialRec* openBack = restored.integrationTrials.find(openKey);
+    const gl::IntegrationTrialRec* passedBack = restored.integrationTrials.find(passedKey);
+    ASSERT_TRUE(openBack != nullptr && passedBack != nullptr);
+    ASSERT_TRUE(std::memcmp(openBack, &open, sizeof(gl::IntegrationTrialRec)) == 0);
+    ASSERT_TRUE(std::memcmp(passedBack, &passed, sizeof(gl::IntegrationTrialRec)) == 0);
+    ASSERT_EQ(restored.integrationTrialContents.count(), 3);
+    for (int32_t i = 0; i < 3; ++i) {
+        const int64_t* back = restored.integrationTrialContents.find(gl::packInt32Pair(13, i));
+        const int64_t* original = source.integrationTrialContents.find(gl::packInt32Pair(13, i));
+        ASSERT_TRUE(back != nullptr && original != nullptr && *back == *original);
+    }
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.integrationTrials.empty());
+    ASSERT_TRUE(restored.integrationTrialContents.empty());
 }
 
 
@@ -1176,9 +1482,9 @@ TEST(lb_deload, canonical_and_application_classes_remain_separate_after_reload) 
     application.intEqualityLevelsMap[gl::packEqPairKey(4,7)] = {3};
     canonical.intEqualityLevelsMap = application.intEqualityLevelsMap;
     canonical.intEqualityLevelsMap[gl::packEqPairKey(2,7)] = {1,3};
-    source.equivalenceClassesMap.assignRun(1, {application});
-    source.canonicalEquivalenceClassesMap.assignRun(1, {canonical});
-    source.canonicalEquivalenceClassesMap.assignRun(2, {});
+    ((source).equivalenceClassesMap).assignRun(1, {application});
+    ((source).canonicalEquivalenceClassesMap).assignRun(1, {canonical});
+    ((source).canonicalEquivalenceClassesMap).assignRun(2, {});
     source.canonicalUses.statements.add(91,1,gl::StrSpan("a"));
     source.canonicalUses.statementMatches.forms.upsert(91,17);
     restored.canonicalUses.statements.add(92,1,gl::StrSpan("b"));
@@ -1190,42 +1496,42 @@ TEST(lb_deload, canonical_and_application_classes_remain_separate_after_reload) 
     restored.canonicalUses.statements.forEach(1,gl::StrSpan("b"),[&](int64_t){++visits;});
     ASSERT_EQ(visits,0);
     ASSERT_TRUE(restored.canonicalUses.statementMatches.forms.empty());
-    ASSERT_TRUE(gl::serializeEquivalenceClass(restored.equivalenceClassesMap.recordAt(
-        restored.equivalenceClassesMap.lookup(1),0)) == gl::serializeEquivalenceClass(application));
-    ASSERT_TRUE(gl::serializeEquivalenceClass(restored.canonicalEquivalenceClassesMap.recordAt(
-        restored.canonicalEquivalenceClassesMap.lookup(1),0)) == gl::serializeEquivalenceClass(canonical));
-    ASSERT_TRUE(restored.canonicalEquivalenceClassesMap.lookup(2) != 0);
-    ASSERT_EQ(restored.equivalenceClassesMap.lookup(2),0);
+    ASSERT_TRUE(gl::serializeEquivalenceClass(((restored).equivalenceClassesMap).recordAt(
+        ((restored).equivalenceClassesMap).lookup(1),0)) == gl::serializeEquivalenceClass(application));
+    ASSERT_TRUE(gl::serializeEquivalenceClass(((restored).canonicalEquivalenceClassesMap).recordAt(
+        ((restored).canonicalEquivalenceClassesMap).lookup(1),0)) == gl::serializeEquivalenceClass(canonical));
+    ASSERT_TRUE(((restored).canonicalEquivalenceClassesMap).lookup(2) != 0);
+    ASSERT_EQ(((restored).equivalenceClassesMap).lookup(2),0);
     restored.clearDischargeableContainers();
-    ASSERT_TRUE(restored.canonicalEquivalenceClassesMap.empty());
-    ASSERT_TRUE(restored.equivalenceClassesMap.empty());
+    ASSERT_TRUE(((restored).canonicalEquivalenceClassesMap).empty());
+    ASSERT_TRUE(((restored).equivalenceClassesMap).empty());
 }
 
 
 TEST(lb_deload, parked_and_queued_integration_depth_roundtrip) {
     gl::Memory memory;
     memory.setExprKey("integration-depth");
-    const auto scope = memory.nameMap.encode("main");
-    const auto sourceId = memory.nameMap.encode("(existence96[1,int_1_lev_2_0,3,4])");
+    const auto scope = ((memory).nameMap).encode("main");
+    const auto sourceId = ((memory).nameMap).encode("(existence96[1,int_1_lev_2_0,3,4])");
     const auto key = gl::packOriginKey(sourceId, scope);
-    const auto parkKey = gl::mintTemplateKey(memory.templateInterner, memory.nameMap,
+    const auto parkKey = gl::mintTemplateKey(((memory).templateInterner), ((memory).nameMap),
         "(in3[int_1_lev_2_0,3,marker,4])", "main");
     gl::RejectedMapIntegrationValue source;
-    source.sourceExpression = memory.valueInterner.encode("(existence96[1,int_1_lev_2_0,3,4])");
+    source.sourceExpression = ((memory).valueInterner).encode("(existence96[1,int_1_lev_2_0,3,4])");
     source.iteration = 3; source.flags = 2; source.integrationDepth = 1; source.levels = {0,2};
-    gl::insertRejectedIntegrationValue(memory.overallHashMemory.rejectedMapIntegration,
-        parkKey, source, memory.valueInterner);
-    memory.sameIterationInternalMail.setDisintegrationSignal(key, false, true, 3, false, false, 1);
+    gl::insertRejectedIntegrationValue(((((memory).overallHashMemory)).rejectedMapIntegration),
+        parkKey, source, ((memory).valueInterner));
+    ((memory).sameIterationInternalMail).setDisintegrationSignal(key, false, true, 3, false, false, 1);
     const auto directory = freshDir("test_deload_integration_depth");
     memory.deloadStaticContainers(directory.string());
-    ASSERT_FALSE(memory.lbMemory.manager.resident());
+    ASSERT_FALSE(((memory).lbMemory).manager.resident());
     memory.ensureLoaded(directory.string());
-    const auto restored = memory.overallHashMemory.rejectedMapIntegration.recordAt(
-        memory.overallHashMemory.rejectedMapIntegration.lookup(parkKey), 0);
+    const auto restored = ((((memory).overallHashMemory)).rejectedMapIntegration).recordAt(
+        ((((memory).overallHashMemory)).rejectedMapIntegration).lookup(parkKey), 0);
     ASSERT_EQ(restored.integrationDepth, 1);
     ASSERT_EQ(restored.levels.size(), size_t(2));
     bool dnd, aod; int32_t generation, depth;
-    memory.sameIterationInternalMail.getDisintegrationSignal(key, dnd, aod, generation, nullptr, nullptr, &depth);
+    ((memory).sameIterationInternalMail).getDisintegrationSignal(key, dnd, aod, generation, nullptr, nullptr, &depth);
     ASSERT_EQ(depth, 1); ASSERT_EQ(generation, 3); ASSERT_TRUE(aod);
 }
 
@@ -1235,26 +1541,130 @@ TEST(lb_deload, shared_expression_lists_reload_and_compact) {
     gl::LbMemory source(&manager);
     for (int i = 0; i < 120; ++i) {
         const auto row = makeExpr(i);
-        source.intEncodedStatements.push_back(row);
-        source.intLocalEncodedStatements.push_back(row);
-        source.intLocalEncodedStatementsDelta.push_back(row);
-        source.intExternalStatements.push_back(row);
+        ((source).intEncodedStatements).push_back(row);
+        ((source).intLocalEncodedStatements).push_back(row);
+        ((source).intLocalEncodedStatementsDelta).push_back(row);
+        ((source).intExternalStatements).push_back(row);
     }
     const auto directory = freshDir("test_deload_shared_expressions");
     const auto files = gl::lbdeload::dumpLbMemory(source, "shared records", 0, directory, 262144);
     gl::LbMemory restored(&manager);
     gl::lbdeload::loadLbMemory(restored, "shared records", files, directory);
     ASSERT_EQ(restored.sharedExpressions.count(), 120);
-    ASSERT_TRUE(&restored.intEncodedStatements[17] == &restored.intLocalEncodedStatements[17]);
+    ASSERT_TRUE(&((restored).intEncodedStatements)[17] == &((restored).intLocalEncodedStatements)[17]);
     gl::LbArena scratch(&manager); restored.reshuffle(scratch);
-    for (int i = 0; i < 120; ++i) ASSERT_TRUE(sameExpr(restored.intEncodedStatements[i], makeExpr(i)));
-    gl::IntStmtView sharedView(restored.intEncodedStatements);
+    for (int i = 0; i < 120; ++i) ASSERT_TRUE(sameExpr(((restored).intEncodedStatements)[i], makeExpr(i)));
+    gl::IntStmtView sharedView(((restored).intEncodedStatements));
     ASSERT_EQ(sharedView.size(), 120); ASSERT_FALSE(sharedView.empty());
     ASSERT_TRUE(sameExpr(sharedView[17], makeExpr(17)));
     gl::DirtyState scratchDirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> flat(&scratch, &scratchDirty); flat.push_back(makeExpr(17));
     gl::IntStmtView flatView(flat); ASSERT_TRUE(sameExpr(flatView[0], sharedView[17]));
-    restored.intEncodedStatements.clear(); ASSERT_EQ(restored.sharedExpressions.count(), 120);
-    restored.intLocalEncodedStatements.clear(); restored.intLocalEncodedStatementsDelta.clear();
-    restored.intExternalStatements.clear(); ASSERT_EQ(restored.sharedExpressions.count(), 0);
+    ((restored).intEncodedStatements).clear(); ASSERT_EQ(restored.sharedExpressions.count(), 120);
+    ((restored).intLocalEncodedStatements).clear(); ((restored).intLocalEncodedStatementsDelta).clear();
+    ((restored).intExternalStatements).clear(); ASSERT_EQ(restored.sharedExpressions.count(), 0);
+}
+
+
+namespace {
+    // Concatenated bytes of every file of one canonical deload image.
+    std::vector<char> readDeloadImage(const std::filesystem::path& dir,
+                                      const std::vector<std::string>& files) {
+        std::vector<char> image;
+        for (const std::string& name : files) {
+            std::ifstream in(dir / name, std::ios::binary);
+            ASSERT_TRUE(static_cast<bool>(in));
+            image.insert(image.end(), std::istreambuf_iterator<char>(in),
+                         std::istreambuf_iterator<char>());
+        }
+        return image;
+    }
+}
+
+TEST(lb_deload, batch_byte_sharing_moves_recurring_bytes_and_keeps_canonical_images) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{32 << 20, 1 << 18});
+    gl::BatchByteDictionary dictionary(&manager);
+    dictionary.activate();
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&manager, 2);
+    gl::ScratchArena scratch(&manager);
+    {
+        gl::LbMemory first(&manager), second(&manager);
+        std::vector<std::string> names, rules, origins;
+        for (int i = 0; i < 40; ++i) {
+            names.push_back("name_" + std::to_string(i));
+            rules.push_back("(implication" + std::to_string(i) + "[x_" + std::to_string(i) + "])");
+            origins.push_back("origin/line/" + std::to_string(1000 + i));
+        }
+        for (gl::LbMemory* lb : { &first, &second }) {
+            for (const std::string& s : names) lb->nameStrings.intern(gl::StrSpan(s));
+            for (const std::string& s : rules) lb->ruleStrings.intern(gl::StrSpan(s));
+            for (const std::string& s : origins) lb->originStrings.intern(gl::StrSpan(s));
+            lb->sharedNativeKeys.intern(gl::StrSpan(rules[0]));
+        }
+        first.templateStrings.intern(gl::StrSpan("only-first", 10));
+        int participating = 0;
+        first.forEachBatchSharedStore([&](gl::BytesKeyStore&) { ++participating; });
+        ASSERT_EQ(participating, 8);
+        const std::string chain = "batch-byte-sharing";
+        const std::filesystem::path beforeDir = freshDir("test_deload_batch_before");
+        const auto beforeFiles = gl::lbdeload::dumpLbMemory(first, chain, 0, beforeDir, 1 << 18);
+        const std::vector<char> beforeImage = readDeloadImage(beforeDir, beforeFiles);
+        const int64_t beforeBytes = first.nameStrings.liveBytes() + first.ruleStrings.liveBytes()
+            + first.originStrings.liveBytes() + first.sharedNativeKeys.liveBytes();
+
+        first.shareBatchBytesAfterPhase1(scratch);
+        first.shareBatchBytesAfterPhase3(candidates, scratch);
+        second.shareBatchBytesAfterPhase3(candidates, scratch);
+        ASSERT_TRUE(first.ruleStrings.view(1).ptr != second.ruleStrings.view(1).ptr);
+        ASSERT_EQ(dictionary.promoteNominations(candidates), 120);
+        first.shareBatchBytesAfterPhase1(scratch);
+        second.shareBatchBytesAfterPhase1(scratch);
+        for (int i = 0; i < 40; ++i) {
+            ASSERT_EQ(first.nameStrings.view(i + 1).ptr, second.nameStrings.view(i + 1).ptr);
+            ASSERT_EQ(first.ruleStrings.view(i + 1).ptr, second.ruleStrings.view(i + 1).ptr);
+        }
+        ASSERT_EQ(first.sharedNativeKeys.view(1).ptr, second.ruleStrings.view(1).ptr);
+        const gl::StrSpan onlyFirst("only-first", 10);
+        ASSERT_EQ(dictionary.referenceOf(onlyFirst, gl::coldKeyHash(onlyFirst)), 0);
+        const int64_t afterBytes = first.nameStrings.liveBytes() + first.ruleStrings.liveBytes()
+            + first.originStrings.liveBytes() + first.sharedNativeKeys.liveBytes();
+        ASSERT_LT(afterBytes, beforeBytes);
+
+        const std::filesystem::path afterDir = freshDir("test_deload_batch_after");
+        const auto afterFiles = gl::lbdeload::dumpLbMemory(first, chain, 0, afterDir, 1 << 18);
+        ASSERT_TRUE(readDeloadImage(afterDir, afterFiles) == beforeImage);
+
+        gl::LbMemory restored(&manager);
+        gl::lbdeload::loadLbMemory(restored, chain, afterFiles, afterDir);
+        ASSERT_EQ(restored.templateStrings.decodeString(1), "only-first");
+        for (int i = 0; i < 40; ++i) {
+            ASSERT_EQ(restored.nameStrings.decodeString(i + 1), names[i]);
+            ASSERT_EQ(restored.ruleStrings.decodeString(i + 1), rules[i]);
+            ASSERT_EQ(restored.originStrings.decodeString(i + 1), origins[i]);
+        }
+        for (int i = 0; i < 40; ++i)
+            ASSERT_EQ(restored.ruleStrings.view(i + 1).ptr, first.ruleStrings.view(i + 1).ptr);
+    }
+}
+
+// The one-way witnesses (D-585) round-trip and are
+// dischargeable.
+TEST(lb_deload, one_way_witnesses_roundtrip_and_discharge) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{4 << 20, 1 << 18});
+    gl::LbMemory source(&manager), restored(&manager);
+    source.oneWayWitnesses.mint(int32_t{5});
+    source.oneWayWitnesses.mint(int32_t{11});
+    const auto dir = freshDir("test_deload_one_way_witnesses");
+    const std::string chain = "one-way-witnesses";
+    const auto files = gl::lbdeload::dumpLbMemory(source, chain, 0, dir, 1 << 18);
+    gl::lbdeload::loadLbMemory(restored, chain, files, dir);
+    ASSERT_EQ(restored.oneWayWitnesses.count(), 2);
+    ASSERT_TRUE(restored.oneWayWitnesses.lookup(int32_t{5}) != 0);
+    ASSERT_TRUE(restored.oneWayWitnesses.lookup(int32_t{11}) != 0);
+    ASSERT_TRUE(restored.sizeMarkers.empty());
+    restored.clearDischargeableContainers();
+    ASSERT_TRUE(restored.oneWayWitnesses.empty());
 }

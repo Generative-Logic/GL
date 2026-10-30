@@ -56,10 +56,11 @@
 #include "prover.hpp"
 #include "infra/phase2_trace.hpp"
 #include "infra/rt_tracker.hpp"
-#include "infra/mem_tracker.hpp"
 #include "infra/heap_profile.hpp"
+#include "infra/peak_snapshot.hpp"
 #include "memory_infra/global_memory_manager.hpp"
 #include "memory_infra/heap_allocator.hpp"
+#include "process_scheduling.hpp"
 #include "tests/test_harness.hpp"
 
 namespace {
@@ -115,6 +116,9 @@ int main(int argc, char* argv[]) {
     // 64 MiB, so freed blocks go back to the operating system
     // (D-427).
     gl::configureHeapAllocator();
+    // Windows only: above-normal priority and no background power
+    // throttling, so foreign load slows the single-threaded tail less.
+    gl::configureProcessScheduling();
 #ifdef _WIN32
     // Assertion failures terminate without a full process dump unless the
     // diagnostic switch is explicitly enabled. Suppress the abort dialog in
@@ -141,7 +145,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-#if MEM_MEASUREMENT
+#if HEAP_MEASUREMENT
     // Opt-in allocation-site sampling for the heap census: GL_HEAP_PROFILE_KIB
     // is the sampling interval in KiB (see docs/agentic_swdd/_meta/
     // memory_measurement.md). Unset: live-heap counting only.
@@ -308,6 +312,7 @@ int main(int argc, char* argv[]) {
     // Default to IncubatorPeano for MSVS F5 debugging; full_run passes "Peano"/"Gauss" via argv
     std::string anchor_id = (argc > 1) ? std::string(argv[1]) : "Gauss";
     gl::Phase2TraceScope phase2BatchTrace(anchor_id.c_str());
+    gl::peak_snapshot::initialize(anchor_id.c_str());
 
     // Optional batch-path file overrides (shortcut mode):
     //   gl_quick.exe <Tag> [--conjectures-file <path>] [--externals-file <path>]
@@ -361,14 +366,6 @@ int main(int argc, char* argv[]) {
     gl::rt_tracker::dumpRtAggregate(".rt/_aggregate_" + anchor_id + ".log");
 #endif
 
-#if MEM_MEASUREMENT
-    // Per-structure memory table for this batch process. The peak snapshot is
-    // whichever iteration held the most attributed bytes; percentages are that
-    // structure's share of that one instant.
-    gl::mem_tracker::dumpMemAggregate(".rt/_memory_" + anchor_id + ".log");
-    gl::mem_tracker::dumpMemHtml(".rt/_memory_" + anchor_id + ".html");
-#endif
-
     // Return memory to OS (mimalloc retains free pages by default)
 #ifdef USE_MIMALLOC
     mi_collect(true);
@@ -382,5 +379,6 @@ int main(int argc, char* argv[]) {
     // Two-level page-directory spill telemetry for this batch (observability;
     // a forced-small-page run reports a non-zero promotion count).
     gl::staticMemory().reportPageStats();
+    gl::peak_snapshot::finish();
     return 0;
 }

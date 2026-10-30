@@ -27,7 +27,7 @@ Contributions require CLA — see CONTRIBUTING.md.
 ## Evidence and decisions
 
 - The prior direct `ordisMerge` test proves that the first deposit selects a capped contradiction witness. It does not prove that sorting is necessary for run-to-run determinism.
-- The four sites are `prover.cpp` and `addExprToMemoryBlockKernel`'s post-registration loop, plus `prover.hpp` and `drainStagedEquiProducts`, `canonicalizeUnusedLists`, and `applyEquiClasses`'s `mergeProducts` lambda. Each already owns an ordered statement buffer; removal consumes that buffer directly.
+- The four sites are `logical_block/equality_propagation.hpp` and `addExprToMemoryBlockKernel`'s post-registration loop, plus `logical_block/equality_propagation.hpp` and `drainStagedEquiProducts`, `canonicalizeUnusedLists`, and `applyEquiClasses`'s `mergeProducts` lambda. Each already owns an ordered statement buffer; removal consumes that buffer directly.
 - Baseline full GPU: 272.59237 seconds overall, 130.77052 seconds summed prover time, 142,755 proof checks with zero failures and Lean passed. Baseline shortcut GPU: 60.27769 seconds overall, 40.2036 seconds prover time, 9,192 proof checks with zero failures.
 
 - Baseline theorem files were verified byte-for-byte against the current generated files before any run: 62 main theorems, 1,460 incubator theorems, and 64 shortcut theorems. Their hashes and counts are recorded in .

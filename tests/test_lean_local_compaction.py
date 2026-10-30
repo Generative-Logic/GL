@@ -53,7 +53,7 @@ class LocalCompactionTests(unittest.TestCase):
             'step': 'chapter_1_line_1', 'namespace': 'main',
             'source_kind': 'local_step', 'expression': {'mpl': EXPANSION}}))
         text = '\n'.join(lines)
-        self.assertIn(f'simpa only [{lean.lean_constant("implication77")}] using row_1', text)
+        self.assertIn(f'simpa only [{lean.lean_constant("implication77")}] using (row_1)', text)
         self.assertEqual(len(manifest), 2)
 
     def test_local_compaction_carrying_a_theorem_reference_asserts(self) -> None:

@@ -128,6 +128,22 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 lean_pages.load_lean_export(root / "full", proc)
 
+    def test_a_running_kernel_check_has_no_exit_code_yet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            proc = root / "proc"
+            proc.mkdir()
+            (proc / "global_theorem_list.txt").write_bytes(b"row\n")
+            _write_export(root, hashlib.sha256(b"row\n").hexdigest().upper())
+            log = root / "full" / lean_pages.EXPORT_FOLDER / lean_pages.KERNEL_LOG
+            with self.assertRaisesRegex(AssertionError, "still running"):
+                lean_pages.load_lean_export(root / "full", proc, kernel_check_running=True)
+            log.write_text("$ lake build\nBuilding GLExport\n", encoding="utf-8")
+            view = lean_pages.load_lean_export(root / "full", proc, kernel_check_running=True)
+            self.assertEqual(sorted(view.theorems), [1, 10])
+            with self.assertRaisesRegex(AssertionError, "stale Lean export"):
+                lean_pages.load_lean_export(root / "full", proc)
+
 
 class RenderTests(unittest.TestCase):
     def test_links_follow_presence(self) -> None:

@@ -54,7 +54,12 @@
 /// The corpus comes from a fixed-seed linear congruential sequence, so the
 /// tests are byte-reproducible across hosts and runs.
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include <thread>
+#include "hash_request_generator_fixture.hpp"
 
 #include "../memory.hpp"
 #include "../prover.hpp"
@@ -94,28 +99,28 @@ namespace {
 
     // Whole-candidate verdict vs prefix-fold + one appended premise + verdict,
     // which is exactly what the grow search does per position.
-    bool gatesMatchOnSplit(gl::ExpressionAnalyzer& ea, const gl::Memory& m,
+    bool gatesMatchOnSplit(gl::tests::ProverFixture& ea, const gl::Memory& m,
                            const gl::IntEncodedExpr* const* exprs,
                            gl::NameId count, gl::NameId mainValidityId,
                            bool& verdictOut) {
         const bool oracle =
-            ea.requestGatesPass(exprs, count, m, mainValidityId);
+            gl::tests::HashRequestGeneratorFixture::requestGatesPass(ea.requestGenerator, exprs, count, m, mainValidityId);
 
         const gl::TypedColdSet<gl::NameId>& prodRecIds =
-            m.overallHashMemory.productsOfRecursionIds;
-        gl::ExpressionAnalyzer::RequestGateState st;
-        gl::ExpressionAnalyzer::resetRequestGateState(st);
+            ((((m).overallHashMemory)).productsOfRecursionIds);
+        gl::RequestGateState st;
+        gl::tests::HashRequestGeneratorFixture::resetRequestGateState(st);
 
         bool folded = true;
         for (gl::NameId k = 0; k + 1 < count && folded; ++k)
-            folded = gl::ExpressionAnalyzer::foldExprIntoRequestGates(
+            folded = gl::tests::HashRequestGeneratorFixture::foldExprIntoRequestGates(
                 *exprs[k], st, prodRecIds, mainValidityId);
         if (folded)
-            folded = gl::ExpressionAnalyzer::foldExprIntoRequestGates(
+            folded = gl::tests::HashRequestGeneratorFixture::foldExprIntoRequestGates(
                 *exprs[count - 1], st, prodRecIds, mainValidityId);
 
         const bool split = folded
-            && ea.requestGateStateAccepts(st, exprs, count, m, mainValidityId);
+            && gl::tests::HashRequestGeneratorFixture::requestGateStateAccepts(ea.requestGenerator, st, exprs, count, m, mainValidityId);
 
         verdictOut = oracle;
         return split == oracle;
@@ -126,16 +131,16 @@ namespace {
 // A corpus that reaches every gate: the folded verdict must equal the
 // whole-candidate verdict on all of it, and both verdicts must actually occur.
 TEST(request_gates, fold_split_matches_whole_candidate_verdict) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     ea.parameters.maxLenHypoKey = 2;
     ea.parameters.maxNumberSecondaryVariables = 2;
     ea.parameters.maxNumberSecondaryVariablesOrint = 2;
 
     gl::Memory m;
-    m.overallHashMemory.maxKeyLength = 6;
+    ((((m).overallHashMemory)).maxKeyLength) = 6;
     const gl::NameId mainVid = gl::NameMap::MAIN_ID;
-    const gl::NameId hypoA = m.nameMap.encodePush(mainVid, "hypo_a");
-    const gl::NameId hypoB = m.nameMap.encodePush(mainVid, "hypo_b");
+    const gl::NameId hypoA = ((m).nameMap).encodePush(mainVid, "hypo_a");
+    const gl::NameId hypoB = ((m).nameMap).encodePush(mainVid, "hypo_b");
     const gl::NameId scopes[3] = { mainVid, hypoA, hypoB };
 
     uint32_t seed = 424242u;
@@ -175,17 +180,17 @@ TEST(request_gates, fold_split_matches_whole_candidate_verdict) {
 // The production pattern: one prefix folded once, many last premises, a summary
 // rewind in between. This is the only place a forgotten rollback shows.
 TEST(request_gates, rewind_reuses_one_prefix_across_positions) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     ea.parameters.maxLenHypoKey = 3;
     ea.parameters.maxNumberSecondaryVariables = 3;
     ea.parameters.maxNumberSecondaryVariablesOrint = 3;
 
     gl::Memory m;
-    m.overallHashMemory.maxKeyLength = 6;
+    ((((m).overallHashMemory)).maxKeyLength) = 6;
     const gl::NameId mainVid = gl::NameMap::MAIN_ID;
-    const gl::NameId hypoA = m.nameMap.encodePush(mainVid, "hypo_a");
+    const gl::NameId hypoA = ((m).nameMap).encodePush(mainVid, "hypo_a");
     const gl::TypedColdSet<gl::NameId>& prodRecIds =
-        m.overallHashMemory.productsOfRecursionIds;
+        ((((m).overallHashMemory)).productsOfRecursionIds);
 
     // A conflict-free prefix: no premise is a hypothesis, so folding it can
     // never refuse and foldPrefixIntoRequestGates' assert holds.
@@ -214,8 +219,8 @@ TEST(request_gates, rewind_reuses_one_prefix_across_positions) {
         const gl::IntEncodedExpr* ptrs[gl::ExecutionParameters::MAX_EXPRESSIONS];
         for (gl::NameId k = 0; k < prefixCount; ++k) ptrs[k] = &prefixPool[k];
 
-        gl::ExpressionAnalyzer::RequestGateState st;
-        gl::ExpressionAnalyzer::foldPrefixIntoRequestGates(
+        gl::RequestGateState st;
+        gl::tests::HashRequestGeneratorFixture::foldPrefixIntoRequestGates(
             ptrs, prefixCount, prodRecIds, mainVid, st);
         const int32_t pHypoFound = st.hypoFound;
         const gl::NameId pHypoVid = st.hypoValidityId;
@@ -230,30 +235,30 @@ TEST(request_gates, rewind_reuses_one_prefix_across_positions) {
             st.nonExemptValidityId = pScopeVid;
             st.secondaryCount = pSecondary;
 
-            const bool folded = gl::ExpressionAnalyzer::foldExprIntoRequestGates(
+            const bool folded = gl::tests::HashRequestGeneratorFixture::foldExprIntoRequestGates(
                 lastPool[last], st, prodRecIds, mainVid);
             ptrs[prefixCount] = &lastPool[last];
             const gl::NameId count = static_cast<gl::NameId>(prefixCount + 1);
             const bool split = folded
-                && ea.requestGateStateAccepts(st, ptrs, count, m, mainVid);
+                && gl::tests::HashRequestGeneratorFixture::requestGateStateAccepts(ea.requestGenerator, st, ptrs, count, m, mainVid);
 
-            ASSERT_EQ(split, ea.requestGatesPass(ptrs, count, m, mainVid));
+            ASSERT_EQ(split, gl::tests::HashRequestGeneratorFixture::requestGatesPass(ea.requestGenerator, ptrs, count, m, mainVid));
         }
     }
 }
 
 // One named case per gate branch, so a regression names itself.
 TEST(request_gates, named_gate_branches) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     ea.parameters.maxLenHypoKey = 2;
     ea.parameters.maxNumberSecondaryVariables = 2;
     ea.parameters.maxNumberSecondaryVariablesOrint = 2;
 
     gl::Memory m;
-    m.overallHashMemory.maxKeyLength = 3;
+    ((((m).overallHashMemory)).maxKeyLength) = 3;
     const gl::NameId mainVid = gl::NameMap::MAIN_ID;
-    const gl::NameId hypoA = m.nameMap.encodePush(mainVid, "hypo_a");
-    const gl::NameId hypoB = m.nameMap.encodePush(mainVid, "hypo_b");
+    const gl::NameId hypoA = ((m).nameMap).encodePush(mainVid, "hypo_a");
+    const gl::NameId hypoB = ((m).nameMap).encodePush(mainVid, "hypo_b");
 
     const gl::NameId twoArgs[2] = { 501, 502 };
     const gl::NameId thirdArg[1] = { 503 };
@@ -330,16 +335,16 @@ TEST(request_gates, named_gate_branches) {
 // The scoped widening: a wider secondary budget, but only when every premise
 // sits at one shared scope AND that scope is an _orint_ branch.
 TEST(request_gates, orint_widening_branch) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     ea.parameters.maxLenHypoKey = 4;
     ea.parameters.maxNumberSecondaryVariables = 2;
     ea.parameters.maxNumberSecondaryVariablesOrint = 4;
 
     gl::Memory m;
-    m.overallHashMemory.maxKeyLength = 4;
+    ((((m).overallHashMemory)).maxKeyLength) = 4;
     const gl::NameId mainVid = gl::NameMap::MAIN_ID;
-    const gl::NameId orintVid = m.nameMap.encodePush(mainVid, "_orint_1");
-    const gl::NameId plainVid = m.nameMap.encodePush(mainVid, "branch_1");
+    const gl::NameId orintVid = ((m).nameMap).encodePush(mainVid, "_orint_1");
+    const gl::NameId plainVid = ((m).nameMap).encodePush(mainVid, "branch_1");
 
     const gl::NameId argsA[2] = { 601, 602 };
     const gl::NameId argsB[2] = { 603, 604 };
@@ -366,4 +371,69 @@ TEST(request_gates, orint_widening_branch) {
     const gl::IntEncodedExpr* notOrint[2] = { &plainA, &plainB };
     ASSERT_TRUE(gatesMatchOnSplit(ea, m, notOrint, 2, mainVid, verdict));
     ASSERT_FALSE(verdict);
+}
+
+TEST(request_gates, component_counters_preserve_reset_and_thread_boundaries) {
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
+    gl::LogicBlockIdentity identity(analyzer.parameters, analyzer.anchorInfo);
+    ASSERT_FALSE(identity.isAnchorLb(analyzer.body));
+    ASSERT_FALSE(identity.relaysAbsorbedHistory(analyzer.body));
+    gl::HashRequestGenerator generator(analyzer.parameters);
+    gl::HashRuleEvaluator evaluator(analyzer.parameters, analyzer.definitions,
+        analyzer.admissionPolicy, identity);
+    using Generator = gl::HashRequestGenerator;
+    using Fixture = gl::tests::HashRequestGeneratorFixture;
+    Fixture::setGrowthMatchCount(17);
+    ASSERT_EQ(Generator::growthMatchCount(), 17);
+    Generator::resetGrowthMatchCount();
+    ASSERT_EQ(Generator::growthMatchCount(), 0);
+    Fixture::seedDepth(2, 9);
+    ASSERT_EQ(Generator::gpuGrowAttemptsByDepth(2), 9u);
+    ASSERT_EQ(Generator::gpuGrowFrontierByDepth(2), 9u);
+    ASSERT_EQ(Generator::gpuGrowSubkeysByDepth(2), 9u);
+    ASSERT_EQ(Generator::gpuGrowRequestsByDepth(2), 9u);
+    ASSERT_EQ(Generator::gpuProducerAttemptsByDepth(2), 9u);
+    ASSERT_EQ(Generator::gpuProducerSurvivorsByDepth(2), 9u);
+    Generator::resetDepthCounters(2);
+    ASSERT_EQ(Generator::gpuGrowAttemptsByDepth(2), 0u);
+    ASSERT_EQ(Generator::gpuGrowFrontierByDepth(2), 0u);
+    ASSERT_EQ(Generator::gpuGrowSubkeysByDepth(2), 0u);
+    ASSERT_EQ(Generator::gpuGrowRequestsByDepth(2), 0u);
+    ASSERT_EQ(Generator::gpuProducerAttemptsByDepth(2), 0u);
+    ASSERT_EQ(Generator::gpuProducerSurvivorsByDepth(2), 0u);
+    Fixture::seedFilters(generator, 11);
+    ASSERT_EQ(generator.gpuRequestFilterCallsValue(), 11u);
+    ASSERT_EQ(generator.gpuProducerFilterCallsValue(), 11u);
+    ASSERT_EQ(generator.gpuFilterInputStatementsValue(), 11u);
+    ASSERT_EQ(generator.gpuFilterOutputStatementsValue(), 11u);
+    ASSERT_EQ(generator.gpuFilterMaximumInputStatementsValue(), 11u);
+    ASSERT_EQ(generator.gpuFilterMaximumOutputStatementsValue(), 11u);
+    generator.resetFilterCounters();
+    ASSERT_EQ(generator.gpuRequestFilterCallsValue(), 0u);
+    ASSERT_EQ(generator.gpuProducerFilterCallsValue(), 0u);
+    ASSERT_EQ(generator.gpuFilterInputStatementsValue(), 0u);
+    ASSERT_EQ(generator.gpuFilterOutputStatementsValue(), 0u);
+    ASSERT_EQ(generator.gpuFilterMaximumInputStatementsValue(), 0u);
+    ASSERT_EQ(generator.gpuFilterMaximumOutputStatementsValue(), 0u);
+    gl::HashRuleEvaluator::resetEvaluationUsage();
+    gl::HashRuleEvaluator::noteRequest();
+    gl::HashRuleEvaluator::noteDependencyPassRequest();
+    ASSERT_EQ(gl::HashRuleEvaluator::evaluationUsage().requests, 1u);
+    ASSERT_EQ(gl::HashRuleEvaluator::evaluationUsage().dependencyPassRequests, 1u);
+    Fixture::setGrowthMatchCount(23);
+    bool workerFresh = false;
+    std::thread worker([&]() {
+        workerFresh = Generator::growthMatchCount() == 0
+            && gl::HashRuleEvaluator::evaluationUsage().requests == 0;
+        Fixture::setGrowthMatchCount(41);
+        gl::HashRuleEvaluator::noteRequest();
+    });
+    worker.join();
+    ASSERT_TRUE(workerFresh);
+    ASSERT_EQ(Generator::growthMatchCount(), 23);
+    ASSERT_EQ(gl::HashRuleEvaluator::evaluationUsage().requests, 1u);
+    Generator::resetGrowthMatchCount();
+    gl::HashRuleEvaluator::resetEvaluationUsage();
+    ASSERT_EQ(gl::HashRuleEvaluator::evaluationUsage().requests, 0u);
+    ASSERT_EQ(gl::HashRuleEvaluator::evaluationUsage().dependencyPassRequests, 0u);
 }

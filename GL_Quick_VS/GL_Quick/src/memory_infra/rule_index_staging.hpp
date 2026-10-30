@@ -24,11 +24,13 @@
 // A rule install writes, per multiplied copy and per surviving permutation,
 // one record into each of seven cold blob maps (the LMV map, the whole-key /
 // originals / copy-owner / remaining-args-owner runs, the subkey record map
-// and the remaining-args forward map). Every one of those writes used to be
+// and the remaining-args forward map), and per copy and premise two records
+// into the premise-pattern map (the shape's u_ mask, the pattern's owner).
+// Every one of those writes used to be
 // an in-place splice into a dense CSR pool, O(bytes behind the key), and the
 // same key received a record per permutation and per rule sharing it. The
 // staging collects one absorb's records per map and per key; the flush
-// (`ExpressionAnalyzer::flushRuleIndexStaging`) then rewrites each touched
+// (`HashRuleIndex::flushRuleIndexStaging`) then rewrites each touched
 // map ONCE, in key-id order, merging the staged records into every key's run
 // exactly as the sequential doors would have (sorted-unique owner runs,
 // arrival-ordered LMV runs, the merged subkey record, the sorted-unique
@@ -110,7 +112,7 @@ namespace gl {
     /// @invariant `forEachItem(ord)` visits the key's items in the order they
     ///            were staged; `keyAt(ord)` for `ord` ascending is first-touch
     ///            order.
-    /// @see `RuleIndexStaging`, `ExpressionAnalyzer::flushRuleIndexStaging`,
+    /// @see `RuleIndexStaging`, `HashRuleIndex::flushRuleIndexStaging`,
     ///      `ReverseArgsIndex` (the same interner-plus-chain substrate).
     class RuleIndexStagingSection {
     public:
@@ -269,7 +271,7 @@ namespace gl {
         int32_t itemCount_ = 0;
     };
 
-    /// @brief The seven staging sections of one `HashMemory` -- one per rule
+    /// @brief The eight staging sections of one `HashMemory` -- one per rule
     ///        index map the install writes.
     ///
     /// @details
@@ -280,17 +282,20 @@ namespace gl {
     /// `normalizedEncodedSubkeys` (one merged `OwnerSet` record per key);
     /// `remArgs` -> `remainingArgsNormalizedEncodedMap` (sorted-unique
     /// `NormKey` blobs; the flush also appends the reverse-index edges of the
-    /// genuinely new ones).
+    /// genuinely new ones); `premisePatterns` -> `premisePatterns` (a fifth
+    /// sorted-unique run map: shape keys carry `u_` slot masks, pattern keys
+    /// carry scope-major owners).
     ///
     /// @see `RuleIndexStagingSection`, `RuleStagingRegistry`,
-    ///      `ExpressionAnalyzer::flushRuleIndexStaging`.
+    ///      `HashRuleIndex::flushRuleIndexStaging`.
     struct RuleIndexStaging {
         /// @brief Bind every section to an arena, empty.
         /// @param arena The arena (a worker slot's gen-scratch arena in
         ///              production, a test arena in tests); outlives the staging.
         explicit RuleIndexStaging(LbArena* arena)
             : wholeKeys(arena), originals(arena), copyOwners(arena),
-              remArgsOwners(arena), lmv(arena), subkeys(arena), remArgs(arena) {}
+              remArgsOwners(arena), lmv(arena), subkeys(arena), remArgs(arena),
+              premisePatterns(arena) {}
 
         RuleIndexStaging(const RuleIndexStaging&) = delete;
         RuleIndexStaging& operator=(const RuleIndexStaging&) = delete;
@@ -302,6 +307,7 @@ namespace gl {
         RuleIndexStagingSection lmv;
         RuleIndexStagingSection subkeys;
         RuleIndexStagingSection remArgs;
+        RuleIndexStagingSection premisePatterns;
 
         /// @brief The hash-memory instance the staged records belong to
         ///        (`nullptr` while empty) — set by `RuleStagingRegistry::acquire`,
@@ -313,7 +319,7 @@ namespace gl {
         bool empty() const {
             return wholeKeys.empty() && originals.empty() && copyOwners.empty()
                 && remArgsOwners.empty() && lmv.empty() && subkeys.empty()
-                && remArgs.empty();
+                && remArgs.empty() && premisePatterns.empty();
         }
 
         /// @brief Forget every section's records, return their pages, unbind.
@@ -326,6 +332,7 @@ namespace gl {
             lmv.clear();
             subkeys.clear();
             remArgs.clear();
+            premisePatterns.clear();
             boundTo = nullptr;
         }
     };
@@ -339,12 +346,12 @@ namespace gl {
     /// one program-start allocation). A window's installs `acquire` the
     /// staging bound to their target instance — or an empty one, which they
     /// bind — and the window's closer flushes every bound staging of the slot
-    /// (`ExpressionAnalyzer::flushRuleIndexStaging`). An install may nest
+    /// (`HashRuleIndex::flushRuleIndexStaging`). An install may nest
     /// deposits into other LBs (an integration seed, a copy equality at an
     /// ancestor), each holding its own instance's staging until its exit, so
     /// the pool covers the nesting depth: `kPerSlot` bindings live at once,
     /// the overflow asserts (the Rule-19 tripwire). The slot is the caller's gen-scratch slot
-    /// (`g_currentCoreId`, or the registry's last slot at a single-threaded
+    /// (`WorkerContext::coreId()`, or the registry's last slot at a single-threaded
     /// seam), so the staging rides the same arena the install's other scratch
     /// does and dies with it.
     ///

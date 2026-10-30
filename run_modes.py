@@ -231,7 +231,8 @@ def generate_anchor_connection(current_tag: str, prev_tag: str, theorems_dir=Non
 
     # 5. Create Implication A -> B (Current -> Previous)
     # e.g., (> [1,2,3] (AnchorGauss[1,2,3]) (AnchorPeano[1]))
-    quantified_vars = args_B
+    # Every slot of A binds at its premise, used by B or not (I-4).
+    quantified_vars = args_A
 
     implication = f"(>[{','.join(quantified_vars)}]{expr_A}{expr_B})"
 
@@ -422,6 +423,33 @@ def _filter_vacuous_tainted(theorems_dir: Path, raw_dir: Path) -> None:
         print(f"[VACUOUS-TAINT] {thm}")
 
 
+def _supplied_conjectures(tag: str, config) -> list:
+    """@brief Read a batch's supplied conjectures.
+
+    @details
+    The rows of the configuration's ``external_conjectures_file``, blank lines
+    dropped, each a complete parenthesized expression. A batch that disables
+    generation must supply at least one row. Read by the full run's
+    preparation (``_prepare_batch_conjectures``).
+
+    @param tag Configuration suffix, for the failure message.
+    @param config Loaded batch configuration with its input policy.
+    @return The supplied rows in file order (empty without an input file).
+    @invariant Every row is parenthesized; disabling generation requires a
+               nonempty input (asserted).
+    """
+    external = []
+    if config.external_conjectures_file:
+        source = PROJECT_ROOT / config.external_conjectures_file
+        assert source.is_file(), f"External conjectures file is missing: {source}"
+        external = [line.strip() for line in source.read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+        assert all(line.startswith("(") and line.endswith(")") for line in external)
+    assert config.generate_conjectures or external, (
+        f"{tag}: generation is disabled but external conjectures are empty")
+    return external
+
+
 def _prepare_batch_conjectures(tag: str, config, theorems_dir: Path) -> None:
     """@brief Prepare generated and externally supplied proof obligations.
 
@@ -437,15 +465,7 @@ def _prepare_batch_conjectures(tag: str, config, theorems_dir: Path) -> None:
     @return None.
     @invariant Disabling generation requires nonempty external conjectures.
     """
-    external = []
-    if config.external_conjectures_file:
-        source = PROJECT_ROOT / config.external_conjectures_file
-        assert source.is_file(), f"External conjectures file is missing: {source}"
-        external = [line.strip() for line in source.read_text(encoding="utf-8").splitlines()
-                    if line.strip()]
-        assert all(line.startswith("(") and line.endswith(")") for line in external)
-    assert config.generate_conjectures or external, (
-        f"{tag}: generation is disabled but external conjectures are empty")
+    external = _supplied_conjectures(tag, config)
     theorems_dir.mkdir(parents=True, exist_ok=True)
     destination = theorems_dir / "conjectures.txt"
     if config.generate_conjectures:
@@ -455,6 +475,7 @@ def _prepare_batch_conjectures(tag: str, config, theorems_dir: Path) -> None:
                            cwd=PROJECT_ROOT, check=True)
         print(f"Conjecture creation finished for {tag}.")
     else:
+        source = PROJECT_ROOT / config.external_conjectures_file
         assert destination.resolve() != source.resolve(), "External input must remain durable"
         destination.write_text("", encoding="utf-8")
         for name in ("or_pairs.txt", "mirror_pairs.txt"):
@@ -553,13 +574,14 @@ RUN_MAIN_PATH = True  # full pipeline: incubator + main (determinism study compl
 SIMPLE_FACTS_MAP = {}
 
 
-def full_run(phase2_backend: str = None) -> int:
+def full_run(phase2_backend: str = None, fresh_lean: bool = False) -> int:
     """@brief Run the unified pipeline and return the verifier's failure count.
 
     @details
     For each tag: Incubator{Tag} -> {Tag}. Incubator produces ground-level
     facts for CE filtering. Main path produces proof graph theorems, then FTA
-    consumes its supplied conjectures and the preceding proved pool. Use
+    (weak and strong induction) consumes its supplied conjectures and the
+    preceding proved pool. Use
     --no-clean to keep previous results. The finalization verifies the main
     and incubator graphs; their combined failure count is returned so that
     ``main.py`` can end a run with failures in a failed process status.
@@ -568,6 +590,9 @@ def full_run(phase2_backend: str = None) -> int:
            processor route unless a config pins CUDA), or an explicit
            ``cpu``/``cuda`` override for the whole run (``main.py --GPU``
            passes ``cuda``).
+    @param fresh_lean Whether the Lean export removes Lake's build folder
+           ``.lake`` before the kernel check (``main.py --fresh-lean``); by
+           default Lake rebuilds only what changed since the last run.
     @return The verifier failures of the main and incubator graphs together.
     """
     tags = ["Peano", "Gauss"]  # full pipeline
@@ -668,17 +693,18 @@ def full_run(phase2_backend: str = None) -> int:
         else:
             print(f"\n=== Skipping Incubator {tag} ===")
 
-        # Process incubator proof graph so global_theorem_list.txt exists
-        # before convert_incubator_theorems reads it
+        # Write the incubator's processed theorem list, which
+        # convert_incubator_theorems reads; the incubator book itself is
+        # arranged once, in finalization (_process_incubator_worker).
         if RUN_INCUBATOR:
             visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
             configuration_visu = configuration_reader(visu_config_path)
             with StageTimer(
-                "python.processed_graph.incubator",
+                "python.incubator_theorem_list",
                 parent="python.pipeline",
                 batch=tag,
             ):
-                process_proof_graphs.create_processed_proof_graph(
+                process_proof_graphs.create_processed_theorem_list(
                     configuration_visu, raw_dir=incubator_raw_dir,
                     proc_dir=incubator_proc_dir,
                     theorems_dir=incubator_theorems_dir)
@@ -714,7 +740,7 @@ def full_run(phase2_backend: str = None) -> int:
     configuration_visu = configuration_reader(visu_config_path)
 
     all_success, all_failure = _finish_full_graphs(
-        configuration_visu, RUN_MAIN_PATH, RUN_INCUBATOR)
+        configuration_visu, RUN_MAIN_PATH, RUN_INCUBATOR, fresh_lean)
 
     if all_failure == 0:
         art = (
@@ -767,68 +793,145 @@ def _finalize_incubator_worker(result_path: str, include_main: bool) -> None:
         Path(result_path).write_text(json.dumps({"success": success, "failure": failure}), encoding="utf-8")
 
 
-def _finish_full_graphs(config, run_main: bool, run_incubator: bool) -> tuple[int, int]:
+def _process_incubator_worker() -> None:
+    """@brief Arrange the incubator book once, in its own process.
+
+    @details
+    Runs the complete incubator processing (pruning, renaming and the book
+    arrangement) on the raw incubator graph after the last batch. The runs
+    between the incubator and main batches wrote only the theorem list
+    (``process_proof_graphs.create_processed_theorem_list``).
+
+    @return None.
+    @see _finish_full_graphs
+    """
+    incubator_dir = PROJECT_ROOT / "files" / "incubator"
+    config = configuration_reader(PROJECT_ROOT / "files/config/ConfigVisu.json")
+    with StageTimer("python.processed_graph.incubator", parent="python.finalization", batch="incubator"):
+        process_proof_graphs.create_processed_proof_graph(
+            config, raw_dir=incubator_dir / "raw_proof_graph",
+            proc_dir=incubator_dir / "processed_proof_graph",
+            theorems_dir=incubator_dir / "theorems")
+
+
+def _start_finalization_worker(prefix: str, statement: str, arguments: list[str]):
+    """@brief Start one finalization step in its own Python process.
+
+    @details
+    The child runs ``statement`` with the result path and ``arguments`` as
+    ``sys.argv[1:]``, inherits the environment (and with it the frame-timing
+    ledger) and writes its output to a log retained under ``.debug/``.
+
+    @param prefix File-name prefix of the retained log.
+    @param statement Python statement the child executes.
+    @param arguments Further string arguments after the result path.
+    @return The running process, its open log file and its result path.
+    @see _join_finalization_worker
+    """
+    worker_log = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", prefix=prefix, suffix=".log",
+        dir=PROJECT_ROOT / ".debug", delete=False)
+    result_path = Path(worker_log.name).with_suffix(".json")
+    worker_environment = dict(os.environ)
+    worker_environment["PYTHONIOENCODING"] = "utf-8"
+    process = subprocess.Popen([sys.executable, "-c", statement, str(result_path), *arguments],
+                               cwd=PROJECT_ROOT, env=worker_environment,
+                               stdout=worker_log, stderr=subprocess.STDOUT)
+    return process, worker_log, result_path
+
+
+def _join_finalization_worker(worker) -> None:
+    """@brief Wait for a finalization process, print its log and require success.
+
+    @param worker The process, log file and result path of
+           ``_start_finalization_worker``.
+    @return None.
+    @invariant A failed child asserts with its retained log's path.
+    """
+    process, worker_log, _ = worker
+    return_code = process.wait()
+    worker_log.close()
+    print(Path(worker_log.name).read_text(encoding="utf-8"), end="")
+    assert return_code == 0, f"Incubator finalization failed: {worker_log.name}"
+
+
+def _finish_full_graphs(config, run_main: bool, run_incubator: bool,
+                        fresh_lean: bool = False) -> tuple[int, int]:
     """@brief Finish independent main and incubator outputs concurrently.
 
     @details
-    Completes main processing first so both sibling registries exist. A child
-    process renders and verifies the incubator while the parent exports Lean,
-    renders main HTML, and verifies main. The parent joins the child on every
-    exit path and retains its log. Failed child execution asserts with that log.
+    A child arranges the incubator book while the parent processes the main
+    graph; both sibling registries exist once the parent has joined it. A second
+    child then renders and verifies the incubator while the parent writes the
+    Lean export, starts its kernel check in the background, renders main HTML,
+    verifies main and finally waits for the kernel check, whose failure fails
+    the run. The parent joins every child and the kernel check on every exit
+    path and retains the child logs. Failed child execution asserts with its log.
 
     @param config Fixed visualization configuration for main output.
     @param run_main Whether the main graph is enabled.
     @param run_incubator Whether the incubator graph is enabled.
+    @param fresh_lean Whether the Lean export removes Lake's build folder first.
     @return Combined verifier success and failure counts.
-    @invariant Main HTML follows Lean; output trees and renderer state are separate.
-    @see _finalize_incubator_worker
+    @invariant Main HTML follows the Lean export and both processed registries;
+               output trees and renderer state are separate.
+    @see _process_incubator_worker, _finalize_incubator_worker
     """
     main_proc = PROJECT_ROOT / "files/processed_proof_graph"
     main_out = PROJECT_ROOT / "files/full_proof_graph"
-    if run_main:
-        print("\n--- Generating Proof Graph ---")
-        with StageTimer("python.processed_graph.main", parent="python.pipeline", batch="main"):
-            process_proof_graphs.create_processed_proof_graph(config)
     success = failure = 0
     with StageTimer("python.finalization", parent="python.pipeline"):
-        process = None
-        if run_incubator:
-            worker_log = tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", prefix="incubator_finalize_", suffix=".log",
-                dir=PROJECT_ROOT / ".debug", delete=False)
-            result_path = Path(worker_log.name).with_suffix(".json")
-            command = [sys.executable, "-c",
-                       "import sys, run_modes; run_modes._finalize_incubator_worker(sys.argv[1], sys.argv[2] == '1')",
-                       str(result_path), "1" if run_main else "0"]
-            worker_environment = dict(os.environ)
-            worker_environment["PYTHONIOENCODING"] = "utf-8"
-            process = subprocess.Popen(command, cwd=PROJECT_ROOT, env=worker_environment,
-                                       stdout=worker_log, stderr=subprocess.STDOUT)
+        processing = rendering = kernel = None
         try:
+            if run_incubator:
+                processing = _start_finalization_worker(
+                    "incubator_processing_",
+                    "import run_modes; run_modes._process_incubator_worker()", [])
+            if run_main:
+                print("\n--- Generating Proof Graph ---")
+                with StageTimer("python.processed_graph.main", parent="python.finalization", batch="main"):
+                    process_proof_graphs.create_processed_proof_graph(config)
+            if processing is not None:
+                worker, processing = processing, None
+                _join_finalization_worker(worker)
+                rendering = _start_finalization_worker(
+                    "incubator_finalize_",
+                    "import sys, run_modes; run_modes._finalize_incubator_worker(sys.argv[1], sys.argv[2] == '1')",
+                    ["1" if run_main else "0"])
             if run_main:
                 with StageTimer("python.finalization.main", parent="python.finalization", batch="main"):
                     with StageTimer("python.lean_export.main", parent="python.finalization.main", batch="main"):
-                        lean_live.export_main_graph(main_proc, main_out,
-                                                    PROJECT_ROOT / "files/config",
-                                                    PROJECT_ROOT / "files/GL_binaries")
+                        export_dir = lean_live.write_main_export(main_proc, main_out,
+                                                                 PROJECT_ROOT / "files/config",
+                                                                 PROJECT_ROOT / "files/GL_binaries",
+                                                                 fresh_lean=fresh_lean)
+                        if export_dir is not None:
+                            kernel = lean_live.start_kernel_check(lean_live.find_lake(), export_dir)
                     siblings = ([{"proc_dir": PROJECT_ROOT / "files/incubator/processed_proof_graph",
                                   "out_dir": PROJECT_ROOT / "files/incubator/full_proof_graph"}]
                                 if run_incubator else [])
                     with StageTimer("python.html.main", parent="python.finalization.main", batch="main"):
-                        generate_full_proof_graph.generate_proof_graph_pages(config, sibling_graphs=siblings)
+                        generate_full_proof_graph.generate_proof_graph_pages(
+                            config, sibling_graphs=siblings,
+                            lean_kernel_check_running=kernel is not None)
                     print("\n--- Running Proof Graph Verifier ---")
                     with StageTimer("python.verifier.main", parent="python.finalization.main", batch="main"):
                         state = verifier.run_verifier(str(main_proc))
                         verifier.print_report(state)
                         success, failure = verifier.get_totals(state)
+                    if kernel is not None:
+                        check, kernel = kernel, None
+                        with StageTimer("python.lean_kernel_wait.main", parent="python.finalization.main",
+                                        batch="main"):
+                            lean_live.finish_kernel_check(check)
         finally:
-            if process is not None:
-                return_code = process.wait()
-                worker_log.close()
-                print(Path(worker_log.name).read_text(encoding="utf-8"), end="")
-                assert return_code == 0, f"Incubator finalization failed: {worker_log.name}"
-        if process is not None:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
+            if kernel is not None:
+                lean_live.finish_kernel_check(kernel)
+            for worker in (processing, rendering):
+                if worker is not None:
+                    _join_finalization_worker(worker)
+        if rendering is not None:
+            result = json.loads(rendering[2].read_text(encoding="utf-8"))
             assert set(result) == {"success", "failure"}
             assert all(type(value) is int and value >= 0 for value in result.values())
             success += result["success"]
@@ -842,9 +945,10 @@ def shortcut_run(phase2_backend: str = "cpu"):
     @details
     The full run captures its prepared FTA registry, theorem channels and prior
     proof chapters. Replay validates that capture, restores those bytes, then
-    runs the same native FTA batch and graph processing. A full run is required
-    after changing configurations, definitions or the supplied conjectures.
-    The shortcut skips earlier computation and connected Lean certification.
+    runs the same native FTA batch and the graph processing. A full run is
+    required after changing configurations, definitions or FTA's supplied
+    conjectures. The shortcut skips earlier computation and connected Lean
+    certification.
 
     @param phase2_backend Explicit cpu or cuda Phase 2 implementation.
     @return The shortcut graph's verifier failure count. Missing, stale or

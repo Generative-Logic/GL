@@ -31,11 +31,11 @@ namespace gl {
 /// @brief Index the names on which a scope-owned canonical record depends.
 /// @details Stable logical record keys own reversible token postings. A record
 /// replacement touches only its own postings; key synchronization preserves
-/// existing edges and decodes only newly encountered records. This is derived
-/// state: canonical release clears it and authoritative records rebuild it.
+/// existing edges and decodes only newly encountered records. The dependency
+/// store also holds the live-record registry. This is derived state:
+/// canonical release clears it and authoritative records rebuild it.
 class CanonicalUseIndex {
     DirtyState dirty_ = DirtyState::Clean;
-    TypedColdMap<int64_t, int32_t> records_;
     ColdHashSet<BytesKeyStore> names_;
     CanonicalDependencyEdges edges_;
     TypedColdMap<int64_t, int32_t> revisions_;
@@ -50,7 +50,7 @@ public:
     /// @param arena Owning arena, which outlives this index.
     /// @return An empty dependency index.
     explicit CanonicalUseIndex(LbArena* arena)
-        : records_(arena, &dirty_), names_(arena, &dirty_), edges_(arena),
+        : names_(arena, &dirty_), edges_(arena, &dirty_),
           revisions_(arena, &dirty_), observed_(arena, &dirty_),
           modified_(arena, &dirty_) {}
 
@@ -62,7 +62,6 @@ public:
     /// @return Nothing.
     void add(int64_t record, NameId scope, StrSpan member) {
         assert(scope != 0 && !member.empty());
-        records_.upsert(record, 1);
         const int64_t token = packInt32Pair(names_.mint(member), scope);
         if (edges_.insert(token, record, revision_))
             revisions_.upsert(token, revision_);
@@ -72,7 +71,7 @@ public:
     /// @details This prevents repeated decoding of unchanged token-free keys.
     /// @param record Stable logical record key.
     /// @return Nothing.
-    void remember(int64_t record) { records_.upsert(record, 1); }
+    void remember(int64_t record) { edges_.markRecord(record); }
 
     /// @brief Test whether a logical record is currently live in this index.
     ///
@@ -82,10 +81,7 @@ public:
     /// @param record Stable logical record key, including its effective scope.
     /// @return True exactly when the record is registered and not retired.
     /// @invariant The owning consumer synchronizes its authoritative source first.
-    bool contains(int64_t record) const {
-        const int32_t* live = records_.find(record);
-        return live != nullptr && *live != 0;
-    }
+    bool contains(int64_t record) const { return edges_.liveRecord(record); }
 
     /// @brief Remove one record's old token edges before replacing its text.
     /// @details Snapshot the small reverse run before unlinking either index.
@@ -106,8 +102,7 @@ public:
             revisions_.upsert(tokens[i], ++revision_);
         }
         edges_.maintain();
-        const int32_t* live = records_.find(record);
-        if (live != nullptr && *live != 0) records_.upsert(record, 0);
+        edges_.retireRecord(record);
     }
 
     /// @brief Mark one authoritative value as requiring dependency refresh.
@@ -139,7 +134,7 @@ public:
         for (int32_t i = 1; i <= modified_.count(); ++i) {
             const int64_t key = modified_.keyAt(i);
             erase(key, scratch);
-            if (map.lookup(key) != 0) { records_.upsert(key, 1); visit(key); }
+            if (map.lookup(key) != 0) { edges_.markRecord(key); visit(key); }
         }
         modified_.resetToFresh();
         const bool appended = sourceCount_ >= 0 && count >= sourceCount_
@@ -147,17 +142,16 @@ public:
         if (!appended) {
             DirtyState dirty = DirtyState::Clean;
             PagedVector<int64_t> retired(&scratch, &dirty);
-            for (int32_t i = 1; i <= records_.count(); ++i) {
-                const int64_t key = records_.keyAt(i);
-                if (*records_.find(key) != 0 && map.lookup(key) == 0) retired.push_back(key);
+            for (int32_t i = 1; i <= edges_.recordCount(); ++i) {
+                const int64_t key = edges_.recordAt(i);
+                if (edges_.liveRecordAt(i) && map.lookup(key) == 0) retired.push_back(key);
             }
             for (int32_t i = 0; i < retired.size(); ++i) erase(retired[i], scratch);
         }
         for (int32_t i = appended ? sourceCount_ + 1 : 1; i <= count; ++i) {
             const int64_t key = map.keyAt(i);
-            const int32_t* live = records_.find(key);
-            if (live != nullptr && *live != 0) continue;
-            records_.upsert(key, 1);
+            if (edges_.liveRecord(key)) continue;
+            edges_.markRecord(key);
             visit(key);
         }
         sourceCount_ = count;
@@ -232,9 +226,9 @@ public:
     template<class Closed>
     void eraseScopes(const Closed& closed) {
         const auto dead = [&](int64_t key) { return closed(static_cast<NameId>(uint64_t(key))); };
-        records_.eraseIf(dead);
         modified_.eraseIf(dead);
         edges_.eraseIf([&](int64_t token, int64_t record) { return dead(token) || dead(record); });
+        edges_.eraseKeys(dead);
         revisions_.eraseIf(dead);
         observed_.eraseIf(dead);
         sourceCount_ = -1;
@@ -246,7 +240,7 @@ public:
     /// @details Authoritative records remain in their separate owning stores.
     /// @return Nothing.
     void clear() {
-        records_.resetToFresh(); names_.resetToFresh(); edges_.clear();
+        names_.resetToFresh(); edges_.clear();
         sourceCount_ = -1; sourceEpoch_ = 0;
         revisions_.resetToFresh(); observed_.resetToFresh();
         modified_.resetToFresh(); revision_ = 0;
@@ -266,9 +260,8 @@ public:
     /// @details Derived bytes are excluded from canonical deload facets.
     /// @return Allocated live-byte accounting for this index.
     int64_t liveBytes() const {
-        return records_.count() * (sizeof(int64_t) + sizeof(int32_t))
-            + names_.liveBytes() + edges_.liveBytes()
-            + revisions_.count() * 12 + observed_.count() * 16 + modified_.count() * 8;
+        return peak_snapshot::measure("names_", names_, [&] { return names_.liveBytes(); }) + peak_snapshot::measure("edges_", edges_, [&] { return edges_.liveBytes(); })
+            + peak_snapshot::measure("revisions_", revisions_, [&] { if (peak_snapshot::active()) revisions_.liveBytes(); return revisions_.count(); }) * 12 + peak_snapshot::measure("observed_", observed_, [&] { if (peak_snapshot::active()) observed_.liveBytes(); return observed_.count(); }) * 16 + peak_snapshot::measure("modified_", modified_, [&] { if (peak_snapshot::active()) modified_.liveBytes(); return modified_.count(); }) * 8;
     }
 };
 
@@ -370,8 +363,8 @@ struct CanonicalTemplateIndex {
     /// @details Raw eviction retains this state with its arena descriptors.
     /// @return Live bytes in this comparison cache.
     int64_t liveBytes() const {
-        return sources.liveBytes() + uses.liveBytes() + labels.liveBytes() + keysByShape.liveBytes() + targetsByShape.liveBytes() + scopesByShape.liveBytes()
-            + forms.count() * 12 + pending.liveBytes() + matches.liveBytes();
+        return peak_snapshot::measure("sources", sources, [&] { return sources.liveBytes(); }) + peak_snapshot::measure("uses", uses, [&] { return uses.liveBytes(); }) + peak_snapshot::measure("labels", labels, [&] { return labels.liveBytes(); }) + peak_snapshot::measure("keysByShape", keysByShape, [&] { return keysByShape.liveBytes(); }) + peak_snapshot::measure("targetsByShape", targetsByShape, [&] { return targetsByShape.liveBytes(); }) + peak_snapshot::measure("scopesByShape", scopesByShape, [&] { return scopesByShape.liveBytes(); })
+            + peak_snapshot::measure("forms", forms, [&] { if (peak_snapshot::active()) forms.liveBytes(); return forms.count(); }) * 12 + peak_snapshot::measure("pending", pending, [&] { return pending.liveBytes(); }) + peak_snapshot::measure("matches", matches, [&] { return matches.liveBytes(); });
     }
 };
 
@@ -388,7 +381,7 @@ struct CanonicalUseIndexes {
     TypedColdMap<int64_t, int64_t> pendingIdentity;
     TypedColdMap<int64_t, int32_t> memberVersions;
     int32_t version = 0;
-    CanonicalTemplateIndex algebraMatches, integrationMatches, integrationSetMatches;
+    CanonicalTemplateIndex algebraMatches, integrationMatches, integrationSetMatches, integrationDoubleMatches;
     CanonicalTemplateIndex algebraParkMatches, integrationParkMatches, ordisParkMatches, ordis2ParkMatches, ordis2Matches;
     CanonicalTemplateIndex preparedMatches, preparedMarkerMatches, statementMatches, subproofParkMatches;
     bool pendingBuilt = false, orLedgersBuilt = false, watchesBuilt = false;
@@ -404,7 +397,7 @@ struct CanonicalUseIndexes {
         : statements(arena), receipts(arena), goals(arena), algebraDemands(arena), integrationDemands(arena),
           algebraSources(arena), integrationSources(arena), ordisSources(arena), ordis2Sources(arena), ordis2Demands(arena),
           processedOr(arena), compacts(arena), watches(arena), pendingCarriers(arena), pendingIdentity(arena, &dirty),
-          memberVersions(arena, &dirty), algebraMatches(arena), integrationMatches(arena), integrationSetMatches(arena),
+          memberVersions(arena, &dirty), algebraMatches(arena), integrationMatches(arena), integrationSetMatches(arena), integrationDoubleMatches(arena),
           algebraParkMatches(arena), integrationParkMatches(arena), ordisParkMatches(arena), ordis2ParkMatches(arena), ordis2Matches(arena), preparedMatches(arena), preparedMarkerMatches(arena), statementMatches(arena), subproofParkMatches(arena),
           wakeKinds(arena, &dirty), algebraWakeParks(arena, &dirty), integrationWakeParks(arena, &dirty) {}
 
@@ -420,7 +413,7 @@ struct CanonicalUseIndexes {
     /// @see CanonicalTemplateIndex::invalidateMember
     void invalidateComparisonMember(NameId scope, StrSpan member) {
         CanonicalTemplateIndex* indexes[] = {
-            &algebraMatches, &integrationMatches, &integrationSetMatches,
+            &algebraMatches, &integrationMatches, &integrationSetMatches, &integrationDoubleMatches,
             &algebraParkMatches, &integrationParkMatches, &ordisParkMatches,
             &ordis2ParkMatches, &ordis2Matches, &preparedMatches,
             &preparedMarkerMatches, &statementMatches, &subproofParkMatches
@@ -447,7 +440,7 @@ struct CanonicalUseIndexes {
         };
         for (CanonicalUseIndex* index : dependencies) index->eraseScopes(closed);
         CanonicalTemplateIndex* comparisons[] = {
-            &algebraMatches, &integrationMatches, &integrationSetMatches,
+            &algebraMatches, &integrationMatches, &integrationSetMatches, &integrationDoubleMatches,
             &algebraParkMatches, &integrationParkMatches, &ordisParkMatches,
             &ordis2ParkMatches, &ordis2Matches, &preparedMatches,
             &preparedMarkerMatches, &statementMatches, &subproofParkMatches
@@ -470,7 +463,7 @@ struct CanonicalUseIndexes {
         processedOr.clear(); compacts.clear(); watches.clear(); pendingCarriers.clear(); pendingIdentity.resetToFresh();
         pendingBuilt = false; orLedgersBuilt = false; watchesBuilt = false;
         memberVersions.resetToFresh(); version = 0;
-        algebraMatches.clear(); integrationMatches.clear(); integrationSetMatches.clear();
+        algebraMatches.clear(); integrationMatches.clear(); integrationSetMatches.clear(); integrationDoubleMatches.clear();
         algebraParkMatches.clear(); integrationParkMatches.clear(); ordisParkMatches.clear(); ordis2ParkMatches.clear(); ordis2Matches.clear(); preparedMatches.clear(); preparedMarkerMatches.clear(); statementMatches.clear(); subproofParkMatches.clear();
     }
 
@@ -495,6 +488,7 @@ struct CanonicalUseIndexes {
             || algebraMatches.hasRawChanges()
             || integrationMatches.hasRawChanges()
             || integrationSetMatches.hasRawChanges()
+            || integrationDoubleMatches.hasRawChanges()
             || algebraParkMatches.hasRawChanges()
             || integrationParkMatches.hasRawChanges()
             || ordisParkMatches.hasRawChanges()
@@ -528,6 +522,7 @@ struct CanonicalUseIndexes {
         algebraMatches.markRawClean();
         integrationMatches.markRawClean();
         integrationSetMatches.markRawClean();
+        integrationDoubleMatches.markRawClean();
         algebraParkMatches.markRawClean();
         integrationParkMatches.markRawClean();
         ordisParkMatches.markRawClean();
@@ -543,19 +538,20 @@ struct CanonicalUseIndexes {
     /// @details Canonical class and receipt storage is counted by its owning maps.
     /// @return Total live bytes in these derived indexes.
     int64_t liveBytes() const {
-        return statements.liveBytes() + receipts.liveBytes() + goals.liveBytes()
-            + algebraDemands.liveBytes() + integrationDemands.liveBytes()
-            + algebraSources.liveBytes() + integrationSources.liveBytes()
-            + ordisSources.liveBytes() + ordis2Sources.liveBytes() + ordis2Demands.liveBytes()
-            + processedOr.liveBytes() + compacts.liveBytes() + watches.liveBytes() + pendingCarriers.liveBytes()
-            + pendingIdentity.count() * (sizeof(int64_t) + sizeof(int64_t))
-            + memberVersions.count() * 12 + wakeKinds.count() * 12
-            + algebraWakeParks.liveBytes() + integrationWakeParks.liveBytes()
-            + algebraMatches.liveBytes() + integrationMatches.liveBytes() + integrationSetMatches.liveBytes()
-            + algebraParkMatches.liveBytes() + integrationParkMatches.liveBytes()
-            + ordisParkMatches.liveBytes() + ordis2ParkMatches.liveBytes() + ordis2Matches.liveBytes()
-            + preparedMatches.liveBytes() + preparedMarkerMatches.liveBytes() + statementMatches.liveBytes()
-            + subproofParkMatches.liveBytes();
+        return peak_snapshot::measure("statements", statements, [&] { return statements.liveBytes(); }) + peak_snapshot::measure("receipts", receipts, [&] { return receipts.liveBytes(); }) + peak_snapshot::measure("goals", goals, [&] { return goals.liveBytes(); })
+            + peak_snapshot::measure("algebraDemands", algebraDemands, [&] { return algebraDemands.liveBytes(); }) + peak_snapshot::measure("integrationDemands", integrationDemands, [&] { return integrationDemands.liveBytes(); })
+            + peak_snapshot::measure("algebraSources", algebraSources, [&] { return algebraSources.liveBytes(); }) + peak_snapshot::measure("integrationSources", integrationSources, [&] { return integrationSources.liveBytes(); })
+            + peak_snapshot::measure("ordisSources", ordisSources, [&] { return ordisSources.liveBytes(); }) + peak_snapshot::measure("ordis2Sources", ordis2Sources, [&] { return ordis2Sources.liveBytes(); }) + peak_snapshot::measure("ordis2Demands", ordis2Demands, [&] { return ordis2Demands.liveBytes(); })
+            + peak_snapshot::measure("processedOr", processedOr, [&] { return processedOr.liveBytes(); }) + peak_snapshot::measure("compacts", compacts, [&] { return compacts.liveBytes(); }) + peak_snapshot::measure("watches", watches, [&] { return watches.liveBytes(); }) + peak_snapshot::measure("pendingCarriers", pendingCarriers, [&] { return pendingCarriers.liveBytes(); })
+            + peak_snapshot::measure("pendingIdentity", pendingIdentity, [&] { if (peak_snapshot::active()) pendingIdentity.liveBytes(); return pendingIdentity.count(); }) * (sizeof(int64_t) + sizeof(int64_t))
+            + peak_snapshot::measure("memberVersions", memberVersions, [&] { if (peak_snapshot::active()) memberVersions.liveBytes(); return memberVersions.count(); }) * 12 + peak_snapshot::measure("wakeKinds", wakeKinds, [&] { if (peak_snapshot::active()) wakeKinds.liveBytes(); return wakeKinds.count(); }) * 12
+            + peak_snapshot::measure("algebraWakeParks", algebraWakeParks, [&] { return algebraWakeParks.liveBytes(); }) + peak_snapshot::measure("integrationWakeParks", integrationWakeParks, [&] { return integrationWakeParks.liveBytes(); })
+            + peak_snapshot::measure("algebraMatches", algebraMatches, [&] { return algebraMatches.liveBytes(); }) + peak_snapshot::measure("integrationMatches", integrationMatches, [&] { return integrationMatches.liveBytes(); }) + peak_snapshot::measure("integrationSetMatches", integrationSetMatches, [&] { return integrationSetMatches.liveBytes(); })
+            + peak_snapshot::measure("integrationDoubleMatches", integrationDoubleMatches, [&] { return integrationDoubleMatches.liveBytes(); })
+            + peak_snapshot::measure("algebraParkMatches", algebraParkMatches, [&] { return algebraParkMatches.liveBytes(); }) + peak_snapshot::measure("integrationParkMatches", integrationParkMatches, [&] { return integrationParkMatches.liveBytes(); })
+            + peak_snapshot::measure("ordisParkMatches", ordisParkMatches, [&] { return ordisParkMatches.liveBytes(); }) + peak_snapshot::measure("ordis2ParkMatches", ordis2ParkMatches, [&] { return ordis2ParkMatches.liveBytes(); }) + peak_snapshot::measure("ordis2Matches", ordis2Matches, [&] { return ordis2Matches.liveBytes(); })
+            + peak_snapshot::measure("preparedMatches", preparedMatches, [&] { return preparedMatches.liveBytes(); }) + peak_snapshot::measure("preparedMarkerMatches", preparedMarkerMatches, [&] { return preparedMarkerMatches.liveBytes(); }) + peak_snapshot::measure("statementMatches", statementMatches, [&] { return statementMatches.liveBytes(); })
+            + peak_snapshot::measure("subproofParkMatches", subproofParkMatches, [&] { return subproofParkMatches.liveBytes(); });
     }
 };
 }

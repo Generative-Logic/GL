@@ -18,16 +18,22 @@ numbers, supplies induction from `Nat.rec`, and instantiates every public
 theorem; the single default Lake target includes all those instances. The
 folder holds the selections, the certificates under `certificates/<kind>/`, a
 complete Lake project with the generated modules and manifests, and
-`kernel_check.log`; every HTML chapter links its Lean twin
-(`chapter<N>_lean.html`). The development shortcut (`python main.py
+`kernel_check.log`; every HTML chapter of the main proof graph links its Lean
+twin (`chapter<N>_lean.html`). The incubator graph is not exported. The development shortcut (`python main.py
 --shortcut`) produces no Lean export. The stage needs `lake` on the PATH or
 under `ELAN_HOME/bin` (default `~/.elan/bin`); without a toolchain the run
 prints one notice and produces no Lean export. Kernel-check children receive
 explicit `ELAN_HOME`, preserving a configured override or defaulting to
 `~/.elan`, so elan does not rely on implicit home-directory discovery. This
 changes neither the project's toolchain pin nor the rule that a kernel failure
-fails the run. The export folder is the release's Lean package, published in
-the release's proof archive; no corpus is tracked in the repository.
+fails the run. Inside the pipeline the check runs in the background while the
+main HTML renders and the main graph is verified; the run waits for it at the end.
+Lake keeps its build folder `.lake/` between runs and rebuilds only the modules
+whose sources or imports changed; `python main.py --fresh-lean` removes it first.
+The export folder is the release's Lean package: a release commits it with
+its other proofs and also packs it into the proof archive. Outside a release
+commit the repository tracks only the project skeleton (`lean_export/` at the
+repository root), never a generated export.
 
 The exported object theory uses ordinary types: one abstract carrier `α`, sets
 as `α → Prop`, binary relations as `α → α → Prop`, and ternary relations as
@@ -37,7 +43,8 @@ value becomes a Lean type and the export defines no term-indexed type family.
 **What a run exports.** Every Peano source index of the run's proof graph,
 every Gauss main source and every FTA source, with an empty exclusion list;
 each later certificate pins the earlier certificates' hashes and the theorems
-it cites. Counts follow the run; nothing is pinned ahead of it.
+it cites. Counts follow the run (v0.13.0: 67 Peano, 33 Gauss and 132 FTA
+theorems); nothing is pinned ahead of it.
 
 Gauss integration scopes are emitted as ordinary universally quantified
 implications. GL existence compacts remain propositions: the renderer builds a
@@ -77,10 +84,10 @@ and are skipped on a host without a Lean toolchain.
 
 The official release requires the full run's connected export with a green
 `kernel_check.log`, re-runs `lake build` in it, runs the contract suite, and
-publishes the folder in the proof archive (`GL_proofs_<version>.zip`, a GitHub
-release attachment), checking that the archive carries it byte for byte. The
-private recovery snapshot copies the same folder. Both exclude the rebuildable
-`.lake/` cache.
+publishes the folder with the release's other proofs in the repository and in
+the proof archive attached to the release's tag (`GL_proofs_<version>.zip`),
+checking that both carry it byte for byte. Neither
+includes the rebuildable `.lake/` cache.
 
 `zoom in` rows replay as explicit scope inheritance from one exact local parent
 step. The child expression is unchanged; the parent scope and proof stay explicit.

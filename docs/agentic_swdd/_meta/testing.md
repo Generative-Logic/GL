@@ -25,8 +25,11 @@ The harness exists for two reasons:
  --phase2-backend <route>` for the run's Phase 2 route and aborts on
  non-zero exit. The processor-route gate (`cpu`, every run without `--GPU`)
  leaves out the CUDA-route tests, so a PC without a CUDA device passes it
- ([D-457](../40_decisions.md#d-457)). Runtime depends on the suite; the target budget is under 30 s
- (the launcher does not enforce a timeout). Regressions surface at the start of a
+ ([D-457](../40_decisions.md#d-457)). The budget is under 10 s; the suite
+ runs in parallel worker processes and compiles each configuration once per
+ process ([Parallel workers and the compile record](#parallel-workers-and-the-compile-record),
+ [D-518](../40_decisions.md#d-518)).
+ The launcher does not enforce a timeout. Regressions surface at the start of a
  `main.py` run instead of buried in a 10–60-minute prover invocation.
 
 2. **Pin the per-function doxygen contracts.** The doxygen pass on
@@ -48,7 +51,7 @@ GL_Quick_VS/GL_Quick/src/tests/
     test_memory.cpp         NameMap, ChunkPool, KeyArena, Memory, HashMemory,
                             Mail, EquivalenceClass, IntNormalizedKey,
                             LocalMemoryValue, ExpressionWithValidity, plus
-                            ExpressionAnalyzer-instance tests for
+                            Prover-instance tests for
                             addOrigin's cap-full preference, negate
                             double-cancel, smoothenExpr idempotence, and
                             listLastRemovedArgs.
@@ -152,8 +155,9 @@ ASSERT_THROW(stmt, ex_type);
 ```
 
 Each `ASSERT_*` macro reports `[ASSERT] <file>:<line> <expr>` to stderr on
-miss, then throws an internal sentinel exception caught by `runAllTests`. The
-runner aborts on first failure with exit code 1.
+miss, then throws an internal sentinel exception caught by `runAllTests`. A
+worker process aborts on its first failure; the gate waits for every worker
+and exits 1 when any test failed.
 
 The registry uses a Meyers singleton (function-local static
 `std::vector<TestEntry>`) so static-initialisation-order issues across
@@ -222,7 +226,7 @@ sibling test files.
 - ~52 chapter-level meta-check failure tests (theorem goal reached,
  self-reference, anchor handling trace, contradiction
  trace, vacuous truth trace, origin, definition set consistency,
- origin chain termination).
+ bound variable uniqueness, origin chain termination).
 - ~38 positive sanity tests (the dedicated `test_verifier_positive.py`
  plus a few positive meta-checks) — well-formed inputs that MUST pass
  each checker, used as a fixture-rig meta-check. If the rig were
@@ -238,8 +242,8 @@ inventory estimates, not the current acceptance count.
 ## Entry points
 
 - `gl_quick.exe --unit-tests [--phase2-backend cpu|cuda]`
- Direct invocation of the C++ harness. Returns 0 on all-pass, 1 on
- first failure. Alone or with `--phase2-backend cuda` it runs every
+ Direct invocation of the C++ harness. Returns 0 on all-pass, 1 when
+ any test fails. Alone or with `--phase2-backend cuda` it runs every
  compiled test. With `--phase2-backend cpu` it leaves out every
  `CUDA_TEST` — a test of code only the CUDA Phase 2 route runs, which may
  need a CUDA device; every test compiled only under `GL_CUDA` is one — and
@@ -269,16 +273,75 @@ for those so direct debugging runs are unaffected.
 
 ---
 
+## Parallel workers and the compile record
+
+The gate runs the suite in parallel worker processes and each worker compiles
+every configuration once ([D-518](../40_decisions.md#d-518)).
+On main before this change the serial suite took 171 s, 92 % of it every
+`Prover` construction recompiling the configured definitions (about 1.2 s
+per FTA construction, 24 ms per Peano construction); the test bodies took 7 s.
+
+- **Worker trees.** Worker k runs in its own project tree
+ : hard links of the executable and its DLLs
+ under `GL_Quick_VS/GL_Quick/`, hard links of `files/config/` and
+ `files/definitions/`, and an empty `files/GL_binaries/`. `projectRoot`
+ follows the executable, so the relative writers and the project-root writers
+ of different workers never meet. The gate deletes and rebuilds the trees at
+ every run.
+- **Deal.** `assignedWorker` deals the selected tests in registration order.
+ The CUDA-route gate gives every `CUDA_TEST` to worker 0, so one process
+ holds the device, and deals the other tests round-robin to workers 1..K-1;
+ the processor-route gate deals all tests round-robin. The deal depends only
+ on the registration order, so a test always runs after the same
+ predecessors.
+- **Start.** The gate builds each worker's environment block (its own
+ environment without a slot, plus `GL_UNIT_TEST_WORKER=<k>/<K>`) and starts
+ all workers concurrently, one thread each: `CreateProcessW` with the gate's
+ standard handles (POSIX: `posix_spawn`). A process start costs about 0.3 s
+ on the development host; sequential starts delayed the last worker by 5 s.
+ The C runtime's `_spawnve(_P_NOWAIT, …)` crashed the gate with an access
+ violation there and is not used.
+- **Logs and failure.** Each worker writes  in its
+ tree. The gate waits for every worker and merges the per-test blocks into
+ the live  in registration order; on failure it names
+ the failed test, a worker that ended inside a test (crash), and the number
+ of tests not run.
+- **Worker count.** `defaultWorkerCount`: half the hardware threads, at
+ least 1 and at most 12. `GL_UNIT_TEST_WORKERS=<n>` overrides it;
+ `GL_UNIT_TEST_WORKERS=1` runs the suite serially in the gate process. A
+ single selected test (`GL_UNIT_TEST_ONLY`, ignoring an inherited worker
+ slot) and the external peak capture (`GL_PEAK_TEST_CAPTURE`, which calls a
+ tool of the live tree) always run in the gate process.
+
+**Compile record.** `ProverFixture` records the first compile of each anchor in
+the process (`PrecompiledDefinitions`: the `CompiledDefinitionRegistry` and
+the `CompilationReuseState`) and hands it to every later fixture of that
+anchor through `Prover`'s `precompiledDefinitions` input.
+`ProverInitialization::initialize` then installs the record instead of
+running `compileCoreExpressionMap` and `compileContrapositionFamilies`. The
+compilers hold only references to these two stores, so the record is the
+complete compile output; every other construction step runs as before. A
+fixture given a compiled-registry input (`glBinaryFile`) compiles and records
+nothing; `ProverFixture::FreshCompile` forces a compile.
+`prover_initialization.precompiled_definitions_reproduce_a_fresh_compile`
+pins that an installed record equals an independent fresh compile (Peano and
+FTA, every registry and reuse member). The batch driver never passes a
+record.
+
+---
+
 ## Performance budget
 
-- Hard ceiling: **30 s** for the full suite.
-- Per-test budget: 100 µs–500 ms (the harness prints per-test elapsed
- ms so a regression names itself).
-- No real config-file reads except via `ExpressionAnalyzer{ "Peano" }`
- used in a few prover-side tests; that ctor loads the Peano JSON
- config in ~5–10 ms. The Python verifier tests read only the tiny
- frozen `tests/fixtures/` copies (~36 KB total); all other tests use
- synthetic in-memory data.
+- Hard ceiling: **10 s** for the full suite (development host, 32 hardware
+ threads, 12 workers: CUDA-route gate 6.7 s, 7.8 s on the first run after a
+ rebuild; processor-route gate 7.5 s).
+- A worker's critical path is its first FTA compile (about 2.5 s while all
+ workers compile at once) plus its share of the suite; a single test above
+ 1 s lengthens its worker directly.
+- Prover-constructing tests read their anchor's configuration and
+ definitions; the compile record makes every later construction of the same
+ anchor in the worker cheap. The Python verifier tests read only the tiny
+ frozen `tests/fixtures/` copies (~36 KB total).
 
 Use the completed run's harness output for current totals and timings.
 The E6 baseline on 2026-09-18 passed 1,906 native tests and 423 verifier
@@ -309,7 +372,7 @@ suite count or runtime is not a current performance guarantee.
  those at start (`run_modes.py::full_run`, `CLEAN_RUN`), and the
  `gl_quick.exe --unit-tests` gate runs BEFORE that deletion, so a test
  reading them would see the previous run's state and pass or fail on
- it. The `ExpressionAnalyzer` constructor therefore loads a
+ it. The `Prover` constructor therefore loads a
  `GL_binary_<Tag>.json` only when the caller names one (`glBinaryFile`;
  the batch driver in `run_modes.cpp` does, a test does not); a test that
  needs a binary exports its own to a temporary directory and passes or
@@ -355,6 +418,33 @@ suite count or runtime is not a current performance guarantee.
 5. Commit with `git add -A`.
 
 ---
+
+## Proof-HTML browser tests
+
+`.scripts/html_browser_tests.py --book files` tests the generated proof books in headless
+Chrome without any agent; AGENTS.md (*Proof HTML browser tests*) makes it mandatory after
+every proof-HTML change, run through the shared queue as a test step.
+
+- **Driver.** `.scripts/html_browser_cdp.py` starts Chrome with its own profile under the
+ run directory, reads the DevTools port from `DevToolsActivePort`, acts only through
+ real input events (`Input.dispatchMouseEvent` / `dispatchKeyEvent`, history, tabs,
+ viewport and zoom emulation) and hit-tests every click. JavaScript only observes.
+ Chrome is closed through `Browser.close`, so its helper processes exit in order.
+- **Examples.** Chosen from the book itself: the longest and shortest proofs by
+ `data-proof-steps`, blocks by `data-block-kind`, citations by their targets; never
+ fixed chapter numbers.
+- **Tests.** A static sweep over every chapter (unique ids, resolving links, one caption
+ per row with the prose of its rule, citation numbers agreeing with the cited row,
+ OR-case scope isolation, products and witness rows, license footer) and browser tests
+ for opening, notation switching with reading-position retention, blocks and keyboard
+ access, Expand/Collapse all, citation jumps and history, permalinks, popups and hover,
+ the index, the mode across navigation, Lean pages, the incubator book, header
+ semantics and a formula-layout census at 1920-320 px and 80-175 % zoom.
+ `--list` maps every test to its suite cases; `--only` runs a subset.
+- **Output.** One line per test on the console, `report.json` and screenshots under
+ ; exit code 0 only when every test passed. A run
+ takes about two minutes.
+- **Requirements.** Google Chrome and the Python package `websocket-client`.
 
 ## See also
 
@@ -417,7 +507,7 @@ checked out from `origin/main`. Result:
 - **Verifier not run for the main-batch processed_proof_graph.**
  Because the main-batch's `processed_proof_graph/` was never
  created (the HTML stage crashed BEFORE reaching the main
- process-proof-graph step at `run_modes.py:502`), `verifier.py`
+ process-proof-graph step at `run_modes.py`), `verifier.py`
  has no main-batch directory to walk. The verifier reports
  `ERROR: directory not found`. The incubator's
  `processed_proof_graph/` IS present (212 chapters) but the
@@ -431,6 +521,22 @@ checked out from `origin/main`. Result:
  check is blocked at the HTML stage by the pre-existing ordering
  bug above; the prover stages themselves match the `origin/main`
  baseline.
+
+## Artifact-writing fixtures
+
+`tests/isolated_test_directory.hpp` confines relative-path writers to a unique
+`.debug/` fixture directory. `tests/test_hashburst_dump.cpp` exercises the
+unchanged writer there, leaving the investigation trace in the project root
+untouched. An assertion can leave only the fixture's own output.
+
+The export fixture also writes through `projectRoot`, which is derived from
+the executable location. It therefore runs one selected test in a copied native
+executable/configuration tree. `GL_UNIT_TEST_ONLY` selects that child test;
+`GL_ISOLATED_EXPORT_ROOT` identifies its private deployment. The child inherits
+the parent's selected test backend and not its worker slot. Ordinary unit-test
+entry points still select the full suite, and production path resolution and
+writers remain unchanged. The worker trees of the gate give every worker the
+same isolation from the live tree and from the other workers.
 
 ---
 

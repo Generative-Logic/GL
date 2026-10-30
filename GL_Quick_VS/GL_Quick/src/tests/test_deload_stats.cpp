@@ -35,6 +35,8 @@
 /// aggregate first — it is shared, but the suite runs sequentially. Deload
 /// files land under `.debug/test_deload_stats_*` (gitignored, recreated).
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
 
 #include "../memory.hpp"
@@ -130,16 +132,16 @@ TEST(deload_stats, round_trip_moves_dump_and_load_counters) {
     gl::Memory m;
     m.setExprKey("(deload_stats_round_trip_lb)");
     for (int16_t i = 0; i < 16; ++i)
-        m.intEncodedStatements.push_back(statsExpr(i));
+        ((m).intEncodedStatements).push_back(statsExpr(i));
 
     m.deloadStaticContainers(dir);       // dump + release
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
     ASSERT_EQ(st.v3DumpCount.load(), 1);
     ASSERT_EQ(st.fullDumpCount.load(), 1);
     ASSERT_TRUE(st.v3DumpBytes.load() > 0);
 
     m.ensureLoaded(dir);                 // reload
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     ASSERT_EQ(st.v3LoadCount.load(), 1);
     ASSERT_TRUE(st.v3LoadBytes.load() > 0);
     // The reload restreams exactly what was dumped.
@@ -183,7 +185,7 @@ TEST(deload_stats, skip_clean_counted_on_resident_redump) {
     gl::Memory m;
     m.setExprKey("(deload_stats_skip_clean_lb)");
     for (int16_t i = 0; i < 8; ++i)
-        m.intEncodedStatements.push_back(statsExpr(i));
+        ((m).intEncodedStatements).push_back(statsExpr(i));
 
     // First dump: full canonical write (LB stays resident — dump does not
     // release). Second dump: RAM == disk (Clean) with a base on disk, so the
@@ -191,7 +193,7 @@ TEST(deload_stats, skip_clean_counted_on_resident_redump) {
     m.dumpStaticContainers(dir);
     ASSERT_EQ(st.fullDumpCount.load(), 1);
     ASSERT_EQ(st.evictSkippedClean.load(), 0);
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
 
     m.dumpStaticContainers(dir);
     ASSERT_EQ(st.fullDumpCount.load(), 1);          // no new full dump

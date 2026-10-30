@@ -23,6 +23,7 @@ INTEGRATION_GOAL_SCOPE = "integration_goal"
 METHOD_SUFFIXES = {
     "single chapter proof": ("single_chapter_proof",),
     "induction": ("induction_typing", "check_zero", "check_induction_condition"),
+    "strong induction": ("induction_typing", "check_zero", "check_induction_condition"),
     "or theorem": ("or_theorem",),
     "or elimination": ("or_elimination",),
     "proved not broadcast": ("proved_not_broadcast",),

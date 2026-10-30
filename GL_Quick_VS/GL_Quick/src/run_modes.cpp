@@ -148,6 +148,9 @@ namespace run_modes {
         // --- Read config JSON for path overrides ---
         bool skipCompression = false;
         bool skipProofGraph = false;
+        // The batch's anchor: every AnchorFTA batch (FTA, FTA2) extends the
+        // paired theorem pool and may replay in shortcut mode.
+        std::string configAnchorName;
         {
             auto configPath = PROJECT_ROOT / "files" / "config" / ("Config" + anchor_id + ".json");
             if (fs::exists(configPath)) {
@@ -155,6 +158,9 @@ namespace run_modes {
                     std::ifstream f(configPath);
                     nlohmann::json j;
                     f >> j;
+                    if (j.contains("anchor_name")) {
+                        configAnchorName = j["anchor_name"].get<std::string>();
+                    }
                     if (j.contains("theorems_folder")) {
                         std::string folder = j["theorems_folder"];
                         THEOREMS_FOLDER = PROJECT_ROOT / folder;
@@ -196,7 +202,7 @@ namespace run_modes {
         }
 
         if (shortcutMode) {
-            assert(anchor_id == "FTA" && "Shortcut runs the FTA batch only");
+            assert(configAnchorName == "AnchorFTA" && "Shortcut runs the AnchorFTA batches only");
             THEOREMS_FOLDER = PROJECT_ROOT / "files" / "shortcut" / "theorems";
             RAW_PROOF_DIR = PROJECT_ROOT / "files" / "shortcut" / "raw_proof_graph";
             THEOREMS_FILE = THEOREMS_FOLDER / "conjectures.txt";
@@ -230,13 +236,13 @@ namespace run_modes {
         }
 
         // ====== PHASE 1: FULL PROVE ======
-        gl::ExpressionAnalyzer expressionAnalyzer(
+        gl::Prover expressionAnalyzer(
             anchor_id, selectedPhase2Backend,
             PROJECT_ROOT / "files" / "GL_binaries" / ("GL_binary_" + anchor_id + ".json"));
         // FTA replay uses the same capacity profile as its full-run source.
-        expressionAnalyzer.phase2ShortcutProfile = false;
+        expressionAnalyzer.setPhase2ShortcutProfile(false);
         if (shortcutMode)
-            expressionAnalyzer.filteredConjecturesDirectory = THEOREMS_FOLDER;
+            expressionAnalyzer.setFilteredConjecturesDirectory(THEOREMS_FOLDER);
 
         std::cout << "Loading proved theorems..." << std::endl;
         std::unordered_set<std::string> proved_set = loadLinesFromFile(PROVED_THEOREMS_FILE);
@@ -248,7 +254,7 @@ namespace run_modes {
 
         std::vector<std::string> proved_lst(proved_set.begin(), proved_set.end());
         for (auto& expression : proved_lst)
-            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compilationReplacements);
+            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compiledNames().replacements());
         std::sort(proved_lst.begin(), proved_lst.end());
         proved_lst.erase(std::unique(proved_lst.begin(), proved_lst.end()), proved_lst.end());
         std::cout << "Loaded " << proved_lst.size() << " proved theorems." << std::endl;
@@ -257,7 +263,7 @@ namespace run_modes {
         std::unordered_set<std::string> external_set = loadLinesFromFile(COMPRESSED_EXTERNAL_THEOREMS_FILE);
         std::vector<std::string> external_lst(external_set.begin(), external_set.end());
         for (auto& expression : external_lst)
-            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compilationReplacements);
+            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compiledNames().replacements());
         std::sort(external_lst.begin(), external_lst.end());
         external_lst.erase(std::unique(external_lst.begin(), external_lst.end()), external_lst.end());
         std::cout << "Loaded " << external_lst.size() << " external theorems." << std::endl;
@@ -270,7 +276,7 @@ namespace run_modes {
         std::unordered_set<std::string> theorem_set = loadLinesFromFile(THEOREMS_FILE);
         std::vector<std::string> tmp_lst(theorem_set.begin(), theorem_set.end());
         for (auto& expression : tmp_lst)
-            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compilationReplacements);
+            expression = gl::rewriteCompilationReferences(expression, expressionAnalyzer.compiledNames().replacements());
         std::sort(tmp_lst.begin(), tmp_lst.end());
         tmp_lst.erase(std::unique(tmp_lst.begin(), tmp_lst.end()), tmp_lst.end());
 
@@ -285,15 +291,15 @@ namespace run_modes {
                     if (line.empty()) continue;
                     auto tabPos = line.find('\t');
                     if (tabPos != std::string::npos) {
-                        gl::ExpressionAnalyzer::OrCandidate oc;
+                        gl::OrCandidate oc;
                         oc.existenceTheorem = gl::rewriteCompilationReferences(
-                            line.substr(0, tabPos), expressionAnalyzer.compilationReplacements);
+                            line.substr(0, tabPos), expressionAnalyzer.compiledNames().replacements());
                         oc.companionTheorem = gl::rewriteCompilationReferences(
-                            line.substr(tabPos + 1), expressionAnalyzer.compilationReplacements);
-                        expressionAnalyzer.orCandidates.push_back(oc);
+                            line.substr(tabPos + 1), expressionAnalyzer.compiledNames().replacements());
+                        expressionAnalyzer.orConstruction().addCandidate(oc);
                     }
                 }
-                std::cout << "Loaded " << expressionAnalyzer.orCandidates.size() << " OR pairs." << std::endl;
+                std::cout << "Loaded " << expressionAnalyzer.orConstruction().candidateCount() << " OR pairs." << std::endl;
             }
         }
 
@@ -302,18 +308,28 @@ namespace run_modes {
 
         const auto proverStarted = FrameClock::now();
         expressionAnalyzer.analyzeExpressions(tmp_lst, proved_lst, external_lst);
-        recordFrameTiming(
-            "native.prover", frameSecondsSince(proverStarted), true);
+        const double analyzeSeconds = frameSecondsSince(proverStarted);
+        // The start-up stages before the prover run count as outside the
+        // prover; `native.prover` keeps the rest of the call
+        // (D-533).
+        const auto& startup = expressionAnalyzer.startupTimings;
+        recordFrameTiming("native.extent_purge", startup.extentPurgeSeconds, false);
+        recordFrameTiming("native.ce_filter", startup.ceFilterSeconds, false);
+        recordFrameTiming("native.batch_preparation", startup.batchPreparationSeconds, false);
+        const double startupTotal = startup.extentPurgeSeconds + startup.ceFilterSeconds
+            + startup.batchPreparationSeconds;
+        assert(startupTotal <= analyzeSeconds);
+        recordFrameTiming("native.prover", analyzeSeconds - startupTotal, true);
 
         // Export the load-time compiled twins of the external theorems.
         // Base-form externals are registry-independent on the wire; the
         // chapter citations carry these compiled forms, so the processed
         // graph's external registry needs both (the processor unions this
         // file into external_theorems.txt).
-        if (!expressionAnalyzer.precompiledExternalsExport.empty()) {
+        if (!expressionAnalyzer.precompiledExternals().empty()) {
             std::ofstream pex(THEOREMS_FOLDER / "precompiled_external_theorems.txt");
             for (const std::string& row :
-                 expressionAnalyzer.precompiledExternalsExport) {
+                 expressionAnalyzer.precompiledExternals()) {
                 pex << row << "\n";
             }
             pex.flush();
@@ -322,8 +338,7 @@ namespace run_modes {
 
         // Sort globalTheoremList for deterministic downstream processing
         // (OR construction deferred to after compression)
-        std::sort(expressionAnalyzer.globalTheoremList.begin(),
-                  expressionAnalyzer.globalTheoremList.end());
+        expressionAnalyzer.results().sortPublished();
 
         // ====== COMPRESS (D-25: moved out of analyzeExpressions) ======
         // Pool must include: (a) old proved theorems from prior batches, (b)
@@ -346,13 +361,13 @@ namespace run_modes {
         // so the path resolves at use time).
         {
             const std::vector<std::string> vacuousPairs =
-                expressionAnalyzer.classifyVacuousPremisePairs();
+                expressionAnalyzer.results().classifyVacuousPremisePairs();
             if (!vacuousPairs.empty()
-                || !expressionAnalyzer.retractedVacuousTheorems.empty()) {
+                || !expressionAnalyzer.results().retractions().empty()) {
                 std::ofstream vout(THEOREMS_FOLDER / "vacuous_theorems.txt",
                                    std::ios::app);
                 for (const auto& thm :
-                         expressionAnalyzer.retractedVacuousTheorems)
+                         expressionAnalyzer.results().retractions())
                     vout << thm << "\tretracted producer\n";
                 for (const auto& thm : vacuousPairs)
                     vout << thm << "\tpremise contradiction\n";
@@ -365,7 +380,7 @@ namespace run_modes {
         // variants leave every proved-theorems artifact while keeping
         // their list rows and chapters.
         std::set<std::string> mergeVariantRows;
-        for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+        for (const auto& tpl : expressionAnalyzer.results().published()) {
             if (std::get<1>(tpl) != "or elimination") continue;
             mergeVariantRows.insert(std::get<2>(tpl));
             mergeVariantRows.insert(std::get<3>(tpl));
@@ -379,14 +394,14 @@ namespace run_modes {
             // (a) Old proved theorems from prior batches.
             for (const auto& thm : proved_lst) {
                 std::string compiled = thm;
-                expressionAnalyzer.precompileStructuralOperators(compiled);
+                expressionAnalyzer.compiler().precompileStructuralOperators(compiled);
                 if (seen.insert(compiled).second) {
                     theoremsForCompressor.push_back(compiled);
                 }
             }
             // (b) New theorems from this batch (already compiled — produced
             // in-flight through the compiled pipeline).
-            for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+            for (const auto& tpl : expressionAnalyzer.results().published()) {
                 const std::string& thm = std::get<0>(tpl);
                 // The proved-not-broadcast tier never enters the redundancy
                 // probe: an unbroadcast row must not subsume (and thereby
@@ -400,7 +415,7 @@ namespace run_modes {
                     // redundancy witnesses. They still mirror into
                     // fullTheoremList so the proof graph renders them.
                     if (alreadyInFull.insert(thm).second) {
-                        expressionAnalyzer.fullTheoremList.push_back(tpl);
+                        expressionAnalyzer.results().archive(tpl);
                     }
                     continue;
                 }
@@ -408,13 +423,13 @@ namespace run_modes {
                     theoremsForCompressor.push_back(thm);
                 }
                 if (alreadyInFull.insert(thm).second) {
-                    expressionAnalyzer.fullTheoremList.push_back(tpl);
+                    expressionAnalyzer.results().archive(tpl);
                 }
             }
             // (c) External theorems (mirrors included).
             for (const auto& ext : external_lst) {
                 std::string compiled = ext;
-                expressionAnalyzer.precompileStructuralOperators(compiled);
+                expressionAnalyzer.compiler().precompileStructuralOperators(compiled);
                 if (seen.insert(compiled).second) {
                     theoremsForCompressor.push_back(compiled);
                 }
@@ -425,21 +440,12 @@ namespace run_modes {
                 std::vector<std::string> survivors = compressor.run();
                 std::unordered_set<std::string> survivorSet(survivors.begin(), survivors.end());
 
-                expressionAnalyzer.lastCompressionSurvivors = survivors;
+                expressionAnalyzer.setCompressionSurvivors(survivors);
 
-                auto& gtl = expressionAnalyzer.globalTheoremList;
-                gtl.erase(std::remove_if(gtl.begin(), gtl.end(),
-                    [&](const std::tuple<std::string, std::string, std::string, std::string>& t) {
-                        // Tier rows and merge variants never entered the
-                        // probe, so absence from the survivor set says
-                        // nothing about them — keep (graph support).
-                        if (std::get<1>(t) == "proved not broadcast") return false;
-                        if (mergeVariantRows.count(std::get<0>(t))) return false;
-                        return survivorSet.find(std::get<0>(t)) == survivorSet.end();
-                    }), gtl.end());
+                expressionAnalyzer.results().retainCompressionSurvivors(survivorSet, mergeVariantRows);
                 std::cout << "After compression: " << survivors.size() << " essential theorems." << std::endl;
             } else {
-                expressionAnalyzer.lastCompressionSurvivors = theoremsForCompressor;
+                expressionAnalyzer.setCompressionSurvivors(theoremsForCompressor);
             }
         }
         recordFrameTiming(
@@ -457,7 +463,7 @@ namespace run_modes {
             // therefore ride into both the save below and the raw proof
             // graph (the writer synthesizes the or_theorem chapter).
             std::set<std::string> orConsumedParents;
-            expressionAnalyzer.constructOrTheoremsFromPairs(orConsumedParents);
+            expressionAnalyzer.orConstruction().constructOrTheoremsFromPairs(orConsumedParents);
 
             // Save proved theorems directly. Parents subsumed by an OR are
             // dropped from the file (they stay in globalTheoremList so
@@ -468,9 +474,10 @@ namespace run_modes {
             {
                 std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
                 assert(ofs.is_open());
-                // Full FTA extends the preceding batches' paired theorem pool.
-                // The compiled column identifies roots retained by graph pruning.
-                const bool appendCompiledRows = anchor_id == "FTA";
+                // The AnchorFTA batches (FTA, then FTA2) extend the preceding
+                // batches' paired theorem pool. The compiled column identifies
+                // roots retained by graph pruning.
+                const bool appendCompiledRows = configAnchorName == "AnchorFTA";
                 std::ofstream compiled;
                 if (appendCompiledRows) {
                     const auto compiledPath = THEOREMS_FOLDER / "compiled_theorems.txt";
@@ -478,7 +485,7 @@ namespace run_modes {
                     compiled.open(compiledPath, std::ios::app);
                     assert(compiled.is_open());
                 }
-                for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+                for (const auto& tpl : expressionAnalyzer.results().published()) {
                     const std::string& thm = std::get<0>(tpl);
                     if (orConsumedParents.count(thm)) continue;
                     // The proved-not-broadcast tier AND pre-split guard
@@ -493,7 +500,7 @@ namespace run_modes {
                     // as externals by later batches.
                     if (std::get<1>(tpl) == "or theorem"
                         || std::get<1>(tpl) == "or elimination") {
-                        ofs << expressionAnalyzer.expandToBaseForm(thm) << "\n";
+                        ofs << expressionAnalyzer.expressionExpansion().expandToBaseForm(thm) << "\n";
                     } else {
                         ofs << thm << "\n";
                     }
@@ -514,10 +521,10 @@ namespace run_modes {
             recordFrameTiming(
                 "native.save_orchestration", frameSecondsSince(saveStarted), false);
             const auto rawProofStarted = FrameClock::now();
-            expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
+            expressionAnalyzer.proofWriter().generateRawProofGraph(expressionAnalyzer.results().published(), RAW_PROOF_DIR);
             // Grid's last reader done — wipe it so the root's arena-backed
             // encodedMaps don't outlive their arena at process teardown.
-            expressionAnalyzer.destroyGrid();
+            expressionAnalyzer.gridOperations().destroyGrid();
             recordFrameTiming(
                 "native.raw_proof", frameSecondsSince(rawProofStarted), false);
         } else {
@@ -531,7 +538,7 @@ namespace run_modes {
             // lastCompressionSurvivors because globalTheoremList only contains
             // this-batch entries after pruning.
             const std::vector<std::string>& survivorsVec =
-                expressionAnalyzer.lastCompressionSurvivors;
+                expressionAnalyzer.compressionSurvivors();
             std::unordered_set<std::string> survivorsSet(
                 survivorsVec.begin(), survivorsVec.end());
 
@@ -598,7 +605,7 @@ namespace run_modes {
             // the raw batch output instead of the compression survivors).
             std::set<std::string> consumedParents;
             const std::vector<std::string> orTheorems =
-                expressionAnalyzer.constructOrTheoremsFromPairs(consumedParents);
+                expressionAnalyzer.orConstruction().constructOrTheoremsFromPairs(consumedParents);
 
             // Drop OR-consumed parents from the survivors list before saving.
             if (!consumedParents.empty()) {
@@ -611,7 +618,7 @@ namespace run_modes {
             // Save proved theorems (essential survivors minus OR-consumed parents,
             // excluding externals).  saveProvedTheoremsFiltered truncates and
             // rewrites both theorems.txt and compiled_theorems.txt.
-            expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
+            expressionAnalyzer.results().saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
 
             // Append OR theorems to both proved_theorems files.
             // theorems.txt: expanded form for inter-batch communication.
@@ -621,7 +628,7 @@ namespace run_modes {
                 std::ofstream ofsCompiled(THEOREMS_FOLDER / "compiled_theorems.txt", std::ios::app);
                 for (const auto& ot : orTheorems) {
                     if (ofsCompiled.is_open()) ofsCompiled << ot << "\n";
-                    std::string expanded = expressionAnalyzer.expandToBaseForm(ot);
+                    std::string expanded = expressionAnalyzer.expressionExpansion().expandToBaseForm(ot);
                     ofs << expanded << "\n";
                 }
             }
@@ -645,60 +652,56 @@ namespace run_modes {
             if (!skipProofGraph) {
                 const auto rawProofStarted = FrameClock::now();
                 // Use fullTheoremList if populated (big iteration mode); otherwise globalTheoremList
-                auto& listForGraph = expressionAnalyzer.fullTheoremList.empty()
-                    ? expressionAnalyzer.globalTheoremList
-                    : expressionAnalyzer.fullTheoremList;
-                std::sort(listForGraph.begin(), listForGraph.end());
-                if (expressionAnalyzer.parameters.debug) {
+                const auto& listForGraph = expressionAnalyzer.results().sortedForProofGraph();
+                if (expressionAnalyzer.configuration().debug) {
                     std::vector<std::string> expr_lst{ "(AnchorPeano[1,2,3,4,5,6])", "(in3[6,7,8,4])", "(in2[rec0,7,3])" };
-                    expressionAnalyzer.findEnds(expr_lst, RAW_PROOF_DIR);
+                    expressionAnalyzer.proofWriter().findEnds(expr_lst, RAW_PROOF_DIR);
                 }
                 else {
-                    expressionAnalyzer.generateRawProofGraph(listForGraph, RAW_PROOF_DIR);
+                    expressionAnalyzer.proofWriter().generateRawProofGraph(listForGraph, RAW_PROOF_DIR);
                 }
                 // Grid's last reader done — wipe it so the root's arena-backed
                 // encodedMaps don't outlive their arena at process teardown.
-                expressionAnalyzer.destroyGrid();
+                expressionAnalyzer.gridOperations().destroyGrid();
                 recordFrameTiming(
                     "native.raw_proof", frameSecondsSince(rawProofStarted), false);
             }
         }
 
         // Persist retirement and counters even when this batch has no chapter.
-        expressionAnalyzer.exportCompiledExpressionsJSON(PROJECT_ROOT / "files" / "GL_binaries");
+        expressionAnalyzer.compilationFiles().exportCompiledExpressionsJSON(PROJECT_ROOT / "files" / "GL_binaries");
         const auto telemetryStarted = FrameClock::now();
 
         // `mailArena` is owned exclusively by MailLog. Its blocks are retained
         // until analyzer teardown, so the end-of-batch held count is also the
         // log's physical high-water, including spilled arena directories.
+        const auto mailUsage = expressionAnalyzer.mailUsage();
         const int64_t mailLogPeakBlocks =
-            expressionAnalyzer.mailArena.blocksHeld();
+            mailUsage.mailLogBlocks;
         const int64_t mailPeakBlocks = gl::mailMemory().peakBlocksInUse();
         const int64_t mailBlockBytes =
-            expressionAnalyzer.parameters.static_mail_block_bytes;
+            expressionAnalyzer.configuration().static_mail_block_bytes;
         const int64_t mailInternerPeakBlocks =
             gl::mailInterner().arenaBlocksHeld();
         const int64_t routingMailInPeakBlocks =
-            expressionAnalyzer.peakRoutingMailInBlocks.load(
-                std::memory_order_relaxed);
+            mailUsage.routingPeak;
         const int64_t deloadableMailOutPeakBytes =
-            expressionAnalyzer.peakDeloadableMailOutBytes;
-        assert(expressionAnalyzer.routingMailInBlocksInFlight.load(
-                   std::memory_order_relaxed) == 0
+            mailUsage.deloadableMailOutPeakBytes;
+        assert(mailUsage.routingInFlight == 0
             && "batch ended with routing mailIn attribution still in flight");
         const int64_t mailEndBlocks = gl::mailMemory().blocksInUse();
         assert(mailEndBlocks >= mailLogPeakBlocks + mailInternerPeakBlocks);
         const int64_t mailEndUnattributedBlocks =
             mailEndBlocks - mailLogPeakBlocks - mailInternerPeakBlocks;
         gl::diagnosticsLog() << "[mail-memory] dormant_lbs="
-                  << expressionAnalyzer.dormantLogicBlocksAtGridBuild
+                  << mailUsage.dormantBlocks
                   << " mode="
-                  << (expressionAnalyzer.rollingMailHistoryEnabled
+                  << (mailUsage.rollingHistory
                           ? "rolling" : "full")
                   << " total_committed_history_bytes="
-                  << expressionAnalyzer.mailLog.totalCommittedHistoryBytes
+                  << mailUsage.committedHistoryBytes
                   << " peak_retained_history_bytes="
-                  << expressionAnalyzer.mailLog.peakRetainedHistoryBytes
+                  << mailUsage.retainedHistoryPeakBytes
                   << " mail_log_peak_blocks=" << mailLogPeakBlocks
                   << " mail_log_peak_bytes="
                   << mailLogPeakBlocks * mailBlockBytes
@@ -882,7 +885,7 @@ namespace run_modes {
             }
         }
 
-        gl::ExpressionAnalyzer expressionAnalyzer(
+        gl::Prover expressionAnalyzer(
             anchor_id, std::nullopt,
             PROJECT_ROOT / "files" / "GL_binaries" / ("GL_binary_" + anchor_id + ".json"));
 

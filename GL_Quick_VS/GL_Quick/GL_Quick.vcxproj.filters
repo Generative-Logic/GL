@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -56,9 +56,7 @@
     <ClCompile Include="src\filter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\visualizer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
+
     <ClCompile Include="src\compressor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -69,6 +67,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\infra\hashburst_dump.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\infra\hashburst_dump_reader.cpp">
       <Filter>Infra</Filter>
     </ClCompile>
     <ClCompile Include="src\memory_infra\address_space.cpp">
@@ -107,9 +108,6 @@
     <ClCompile Include="src\infra\heap_profile_hooks.cpp">
       <Filter>Infra</Filter>
     </ClCompile>
-    <ClCompile Include="src\infra\mem_tracker.cpp">
-      <Filter>Infra</Filter>
-    </ClCompile>
     <ClCompile Include="src\infra\memory_census.cpp">
       <Filter>Infra</Filter>
     </ClCompile>
@@ -128,9 +126,6 @@
     <ClCompile Include="src\tests\test_heap_profile.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
-    <ClCompile Include="src\tests\test_mem_tracker.cpp">
-      <Filter>Tests</Filter>
-    </ClCompile>
     <ClCompile Include="src\tests\test_memory_playbook.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
@@ -141,6 +136,15 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_compilation_state.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_argument_analyzer.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_admission_policy.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_hashburst_dump.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_filter.cpp">
@@ -158,10 +162,22 @@
     <ClCompile Include="src\tests\test_or_intro_rules.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests\test_double_marker.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_disintegration_shots.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_canonical_conjecture.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_or_elimination.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_antisym_variable_copy.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_induction_usefulness.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_output_collision_copy.cpp">
@@ -177,6 +193,9 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_theorem_sink_dedup.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_reformulation_binding.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_twin_deactivation.cpp">
@@ -195,6 +214,9 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_heap_allocator.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_process_scheduling.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_static_memory.cpp">
@@ -257,7 +279,28 @@
     <ClCompile Include="src\tests\test_rebuild_in_place.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
-    <ClCompile Include="src\tests\test_integration_root.cpp">
+    <ClCompile Include="src\tests\test_integration_trial.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_premise_split.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_twin_induction.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_int_scope.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_witness_link_gate.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_witness_history_gate.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_forced_products.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_induction_scope.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_request_gates.cpp">
@@ -271,10 +314,26 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\tests\burst_sink_fixture.hpp" />
+    <ClInclude Include="src\tests\canonical_test_helpers.hpp" />
+    <ClInclude Include="src\tests\canonicalizer_fixture.hpp" />
+    <ClInclude Include="src\tests\compiled_definition_fixture.hpp" />
+    <ClInclude Include="src\tests\hash_request_generator_fixture.hpp" />
+    <ClInclude Include="src\tests\hash_rule_index_fixture.hpp" />
+    <ClInclude Include="src\tests\hashburst_dump_expected.hpp" />
+    <ClInclude Include="src\tests\integration_instruction_fixture.hpp" />
+    <ClInclude Include="src\tests\isolated_test_directory.hpp" />
+    <ClInclude Include="src\tests\premise_pattern_fixture.hpp" />
+    <ClInclude Include="src\tests\rejected_source_memory_fixture.hpp" />
+    <ClInclude Include="src\tests\runtime_support_fixture.hpp" />
+    <ClInclude Include="src\tests\scope_type_fixture.hpp" />
     <ClInclude Include="src\compiler.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\project_paths.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\process_scheduling.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\compilation_state.hpp">
@@ -293,6 +352,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\infra\hashburst_dump.hpp">
+      <Filter>Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\infra\hashburst_dump_reader.hpp">
       <Filter>Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_infra\dirty_state.hpp">
@@ -376,9 +438,6 @@
     <ClInclude Include="src\infra\heap_profile.hpp">
       <Filter>Infra</Filter>
     </ClInclude>
-    <ClInclude Include="src\infra\mem_tracker.hpp">
-      <Filter>Infra</Filter>
-    </ClInclude>
     <ClInclude Include="src\infra\memory_census.hpp">
       <Filter>Infra</Filter>
     </ClInclude>
@@ -415,7 +474,253 @@
     <ClInclude Include="src\memory_infra\unary_composition.hpp"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\unary_composition.cpp"><Filter>Source Files</Filter></ClCompile>
+
     <ClInclude Include="src\memory_infra\unary_composition_store.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\compiler\expression_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\compiler\expression_parser.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\compiler\compilation_normalizer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\compiler\compilation_normalizer.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\compiler\compilation_reuse.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\compiler\compilation_reuse.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\proof\worker_context.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_memory_interface.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_hash_memory_interface.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_prover_initialization.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_unit_harness.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_prover_interface.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\proof_run_reporter.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\prover_initialization.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\theorem_usage_graph.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\variable_copy_detector.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\induction_usefulness.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\proof\worker_context.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\memory_layout_oracle.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\hash_memory_layout_oracle.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\prover_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\prover_mail_usage.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\prover_initialization_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_run_reporter.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\prover_initialization.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\phase2_backend.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\theorem_usage_graph_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_no_good_entry.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_walk_node.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\cached_proof_stack.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\theorem_usage_graph.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\variable_copy_detector.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\induction_usefulness.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\or_candidate.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\compiler\definition_expansion.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\compiled_definition_registry.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\structural_compiler.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\analysis_node.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\argument_analyzer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\argument_type_parser.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\or_rule_compiler.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\existence_rule_compiler.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\supporting_rule_compiler.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\integration_rule_compiler.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\compiler\compilation_persistence.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\tests\test_scheduler_components.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\proof_barrier.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\phase2_executor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_export_components.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\proof_graph_writer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\proof_reconstructor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_batch_components.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\inference\encoded_expression_normalizer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\counterexample_filter.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\or_elimination_builder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\or_theorem_builder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\proof_grid_builder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\theorem_publisher.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_runtime_components.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\block_key_reader.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\equivalence_queries.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\logical_block\block_mail_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\logic_block_operations.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\scope_lifecycle.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\goal_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\unary_integration_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\logical_block\or_implication_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\disintegration_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\case_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\case_ledger.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\watch_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\logical_block\equivalence_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\statement_memory.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\inference\hash_rule_installer.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\rejected_source_replay.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\implication_subproofs.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\integration_processor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\contradiction_demand.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\admission_memory.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\inference\hash_rule_evaluator.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\inference\hash_request_generator.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\inference\hash_rule_classifier.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\inference\implication_multiplier.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\inference\binding_partitions.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\logical_block\admission_policy.cpp"><Filter>Source Files</Filter></ClCompile>
+
+    <ClCompile Include="src\logical_block\unary_rule_memory.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\admission_marker_builder.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\compiler\definition_expansion.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\compiled_definition_registry.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\structural_compiler.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\analysis_node.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\argument_analyzer.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\argument_type_parser.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\or_rule_compiler.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\existence_rule_compiler.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\supporting_rule_compiler.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\integration_rule_compiler.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\flat_integration_walk.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\disintegration_shots.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\compilation_persistence.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\compiler\implication_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\hash_key_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\burst_stop_line.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\gpu_evaluation_usage.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\request_gate_state.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\statement_knowledge.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_barrier.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\phase2_executor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\proof_reconstructor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_graph_writer.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_reconstructor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\encoded_expression_normalizer_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\or_elimination_builder_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\or_theorem_builder_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\proof_grid_builder_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\theorem_publisher_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\encoded_expression_normalizer.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\counterexample_filter.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\or_elimination_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\or_theorem_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\proof_grid_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\theorem_publisher.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\anchor_scope_queries_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\block_mail_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\logic_block_operations_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\scope_lifecycle_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\goal_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\proof_history_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\or_implication_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\disintegration_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\case_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\case_ledger_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\watch_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\equivalence_admission_rewriter_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\equality_propagation_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\equivalence_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\compact_rule_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\hash_rule_installer_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\rejected_source_replay_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\implication_subproofs_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\integration_processor_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\tests\admission_memory_fixture.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\watch_ledger.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\phase13_timing_slot.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\block_key_reader.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\equivalence_queries.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\anchor_scope_queries.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\block_mail_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\logic_block_operations.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\scope_lifecycle.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\goal_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\unary_integration_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\proof_history.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\or_implication_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\disintegration_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\or_introduction_rules.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\case_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\case_ledger.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\watch_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\equivalence_admission_rewriter.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\equality_propagation.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\equivalence_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\statement_memory.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\compact_rule_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\hash_rule_installer.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\rejected_source_replay.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\implication_subproofs.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\integration_processor.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\contradiction_demand.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\admission_memory.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\equivalence_rewrite.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\equivalence_span_pair.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\scanned_token_runs.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\rejection_store.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\rejection_record.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\witness_meta_store.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\new_variable_store.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\collected_arena.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\collected_record.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\implication_subproof_outcome.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\hypo_scope_parse.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\numeric_less.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\compact_canon_pair.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\canonical_form_cache.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\watch_bridge.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\or_implication_selection.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\or_implication_refuter.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\update_global_single_chapter_record.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\deferred_ancestor_admission.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\logic_block_identity.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\burst_sink.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\hash_rule_evaluator.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\hash_request_generator.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\hash_rule_classifier.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\copy_ref.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\implication_multiplier.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\binding_partitions.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\rem_args_batch_blob.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\staged_sorted_unique.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\inference\hash_rule_index.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\admission_policy.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\var_type_table.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\scope_type_resolver.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\derivation_tree.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\forced_products.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\strong_shot_history.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\scope_syntax.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\integration_instruction_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\rejected_source_memory.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\resolved_statement_tokens.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\resolved_token.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\canonical_form.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\canonical_template_matcher.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\canonical_member_change.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\canonical_run_overlay.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\canonicalizer.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\unary_rule_memory.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\admission_marker_builder.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\compiler\compact_expression_syntax.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\statement_arrivals.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\logical_block\statement_registry_operations.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\proof\or_candidate_progress.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="src\logical_block\statement_arrivals.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\logical_block\statement_registry_operations.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\proof\or_candidate_progress.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\tests\test_easy_cycles.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
 </Project>

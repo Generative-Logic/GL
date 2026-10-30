@@ -1,0 +1,1 @@
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,V1](EnumerationRelationSet1[i0,v1,V1])(existence25[i0,v1,V1])))	main	reformulated from	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,W1](EnumerationRelationSet1[i0,w1,W1])(>[W2](EnumerationRelationSet1[i0,w1,W2])(=[W1,W2]))))	main

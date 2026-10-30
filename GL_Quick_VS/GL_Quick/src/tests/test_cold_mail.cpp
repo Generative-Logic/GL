@@ -166,6 +166,40 @@ TEST(cold_mail, disintegration_signals_pack_unpack_overwrite_read) {
     ASSERT_TRUE(!continuation);
 }
 
+// The forced-assumption bit (D-527) round-trips,
+// sticks once set, leaves the integration depth and the low-word flags intact,
+// and reads false on a key that never carried it and on a miss.
+TEST(cold_mail, disintegration_signal_forced_bit_round_trips_and_sticks) {
+    gl::GlobalMemoryManager g;
+    g.init(kColdMailCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdMail cm(&lb, &d);
+
+    cm.setDisintegrationSignal(pk(1, 16), false, false, -1, false, false, 3, true);
+    bool dnd = true, aod = true, rh = true, orSource = true, forced = false;
+    int32_t it = -99, depth = -99;
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it, &rh, &orSource, &depth, &forced);
+    ASSERT_TRUE(!dnd && !aod && !rh && !orSource && forced);
+    ASSERT_EQ(it, -1);
+    ASSERT_EQ(depth, 3);
+    cm.setDisintegrationSignal(pk(1, 16), false, true, 2);   // forced sticks
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it, &rh, &orSource, &depth, &forced);
+    ASSERT_TRUE(aod && forced);
+    ASSERT_EQ(it, 2);
+    ASSERT_EQ(depth, 3);
+    cm.setDisintegrationSignal(pk(2, 16), true, false, 4, false, true);
+    cm.getDisintegrationSignal(pk(2, 16), dnd, aod, it, &rh, &orSource, &depth, &forced);
+    ASSERT_TRUE(dnd && orSource && !forced);
+    ASSERT_EQ(depth, -1);
+    cm.getDisintegrationSignal(pk(99, 16), dnd, aod, it, &rh, &orSource, &depth, &forced);
+    ASSERT_TRUE(!forced);
+    const int64_t packed = gl::ColdMail::packSignals(false, false, -1, false, false, 7, true);
+    ASSERT_TRUE(gl::ColdMail::unpackForced(packed));
+    ASSERT_EQ(gl::ColdMail::unpackIntegrationDepth(packed), 7);
+    ASSERT_EQ(gl::ColdMail::unpackIteration(packed), -1);
+}
+
 // The out-param overload of getDisintegrationSignal is bit-identical to the
 // pair-returning oracle for both a present key (each of the four bit patterns)
 // and an absent key. The pair form is the oracle; the out-param door is the

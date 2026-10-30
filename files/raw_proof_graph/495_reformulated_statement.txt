@@ -1,0 +1,1 @@
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](prime[1,4,5,6,7,9])(existence21[2,9,1,4,5,6,7])))	main	reformulated from	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](prime[1,4,5,6,7,9])(>[10](EnumerationRelationSet1[2,9,10])(primeseq[1,4,5,6,7,10]))))	main

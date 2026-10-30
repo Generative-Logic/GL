@@ -46,12 +46,13 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 ## Tag index
 
-36 `TAG_CHECKERS` registry entries. `implication grouping` and `contraposition` share the strict auxiliary checker; each retains its own proof contract and counter. `equalize variable` is a retired alias, while `multiplied from` remains active. The verifier iterates in registry order; see [`10_pipeline/08_verifier.md`](../10_pipeline/08_verifier.md).
+37 `TAG_CHECKERS` registry entries. `implication grouping` and `contraposition` share the strict auxiliary checker; each retains its own proof contract and counter. `equalize variable` is a retired alias, while `multiplied from` remains active. The verifier iterates in registry order; see [`10_pipeline/08_verifier.md`](../10_pipeline/08_verifier.md).
 
 - [`anchor handling`](#anchor-handling) — pin raw bound-variable index to anchor-slot name.
 - [`compilation`](#compilation) — implication compiled to its compact `(implication<N>[…])` named form (ASIC-prep provenance).
 - [`contradiction`](#contradiction) — proof by contradiction.
 - [`disintegration`](#disintegration) — split compound expression into elements.
+- [`definition projection`](#definition-projection) — select a property through positive conjunction definitions, from one same-scope source.
 - [`equality1`](#equality1) — argument substitution via equality.
 - [`equality2`](#equality2) — transitivity of equality.
 - [`equalize variable`](#equalize-variable--multiplied-from) — (shared with `multiplied from`; dead alias).
@@ -59,7 +60,7 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 - [`expansion for integration`](#expansion-for-integration) — mirror of expansion on integration side.
 - [`externally provided theorem`](#externally-provided-theorem) — from `externally_provided_theorems.txt`.
 - [`implication`](#implication) — compiled implication rule fired.
-- [`implication composition`](#implication-composition) — an ordered producer chain and unary consumer composed with scoped proof support.
+- [`implication composition`](#implication-composition) — a producer chain and unary consumer composed with scoped proof support; the result may list the producer premises in any order.
 - [`implication grouping`](#implication-grouping) — complete common-premise sources combined into a binder-covering conjunction.
 - [`contraposition`](#contraposition) — exact signed reversal of one cited implication.
 - [`incubator back reformulation`](#incubator-back-reformulation) — incubator operator-equality rewritten.
@@ -92,22 +93,55 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 - `origin` — provenance chain for a `contradiction`'s derivation tree.
 - `self-reference` — error counter; increments when a chapter cites its own theorem.
 
+**Raw-graph-only tags** — written by the prover, removed by processing, never seen by the verifier:
+
+- [`induction scope`](#induction-scope-raw-graph-only) — a goal reached inside an induction scope, registered at the scope's root in the same absorb.
+- [`int scope`](#int-scope-raw-graph-only) — a statement of a finished int scope, registered at the scope's parent when every premise of its goal group has finished.
+
 ---
 
 
 ## `zoom in`
 
-**Purpose.** Record an unchanged expression released into a descendant validity scope, keeping its parent expression and derivation intact. The producer is `prover.cpp` / `recordZoomInOrigin`, called for the released product and each sibling. It writes one direct dependency from release data and does not read the parent origin map. The normal history writer retains its duplicate and capacity policy.
+**Purpose.** Record an unchanged expression released into a descendant validity scope, keeping its parent expression and derivation intact. The producer is `logical_block/rejected_source_replay.cpp` / `recordZoomInOrigin`, called for the released product and each sibling. It writes one direct dependency from release data and does not read the parent origin map. The normal history writer retains its duplicate and capacity policy.
 
 **Schematic row.** `E child_scope zoom in E parent_scope` — exactly five tab-separated columns and one dependency. The source must be a strict ancestor (not necessarily the immediate parent); expressions must be identical.
 
 **Checker.** `verifier.py` / `check_zoom_in` requires the exact `(expression, parent_scope)` row in the chapter. The child row cannot satisfy its own source requirement merely by sharing expression text. Same-scope, sibling, descendant-source, changed-expression, extra-dependency, and missing-parent cases fail. Ordinary type and origin-chain termination checks remain active; the tag is not origin-exempt.
 
-**Exporter.** `visualizer.cpp` / `liftToShallowestOriginAncestor` preserves an exact zoom-in result instead of lifting it away. `ExpressionAnalyzer::buildStack` preserves the recorded source scope while traversing that dependency. Processing preserves exact theorem spelling for the source instead of turning it into a theorem-citation alias. Both endpoint rows remain auditable.
+**Exporter.** [`proof/proof_reconstructor.hpp`](../../../GL_Quick_VS/GL_Quick/src/proof/proof_reconstructor.hpp) / `liftToShallowestOriginAncestor` preserves an exact zoom-in result instead of lifting it away. `ProofReconstructor::buildStack` preserves the recorded source scope while traversing that dependency. Processing preserves exact theorem spelling for the source instead of turning it into a theorem-citation alias. Both endpoint rows remain auditable.
 
 **Lean.** `proof_export/certificate.py` records a `scope_inherit` action with an exact local source step. `proof_export/lean.py` / `_scope_inheritance_proof` enters the target context and applies the cited parent proof to its own parameters, assumptions, and witness guards. Extra child assumptions remain unused. Existing witnesses and existential bundles are inherited, not minted again. No axiom or proof search is introduced.
 
 **Decision.** [D-342](../40_decisions.md#d-342). **Invariant.** [I-223](../30_invariants.md#i-223).
+
+---
+
+## `induction scope` (raw graph only)
+
+**Purpose.** Record that a goal reached inside an induction scope leaves the scope tree: a statement that is an open goal at the tree's root (the nearest scope that is not an induction scope) or above it is registered at the root as well, in the same absorb, so the goal closes in the burst that derived it. The producer is the statement door, `logical_block/statement_memory.hpp` / `StatementMemory::addStatement` (`ScopeSyntax::inductionGoalExit`); no other statement leaves an induction scope.
+
+**Schematic row.** `G root_scope induction scope G leaf_scope` — one dependency, the identical expression at the induction scope it was derived in.
+
+**Never checked.** Induction scopes carry no assumption, and the processed graph deletes them from every validity name (`process_proof_graphs.py` / `strip_induction_scopes`). The row then cites itself and is replaced by the leaf's derivation, so neither the verifier, the Lean export nor the HTML sees the tag; processing asserts that none survives. A `zoom in` of a source into an induction scope becomes an identity the same way and is replaced by its source.
+
+**Exporter.** `ProofReconstructor::buildStack` keeps the row's dependency at the leaf's exact scope, as for `zoom in`: lifting it to the shallowest origin-bearing ancestor would cite the row itself.
+
+**Decision.** [D-519](../40_decisions.md#d-519). **Invariant.** [I-321](../30_invariants.md#i-321).
+
+---
+
+## `int scope` (raw graph only)
+
+**Purpose.** Record that a statement of a finished int scope moves to the scope's parent. An int scope (`<parent>_boundary_int_scope_<premise>_<witness>`) holds one premise-bound integration of a split induction hypothesis; it carries no assumption. When every premise of the goal group has its first finished scope (a statement there is an instance of the integration goal), those scopes are promoted together: every statement registered at each of them and not known at the parent is registered at the parent in the same absorb, with its levels, and the scopes are then wiped. The producer is the statement door, `logical_block/statement_memory.hpp` / `StatementMemory::promoteIntScope`, called by `StatementMemory::finishIntScope`; no other statement leaves an int scope.
+
+**Schematic row.** `S parent_scope int scope S int_scope` — one dependency, the identical expression at the int scope.
+
+**Never checked.** As for `induction scope`: the processed graph deletes the `int_scope_` segments from every validity name (`process_proof_graphs.py` / `strip_induction_scopes`), the row then cites itself and is replaced by the leaf's derivation, and processing asserts that none survives. A `zoom in` of a witness's source into an int scope becomes an identity and is replaced by its source.
+
+**Exporter.** `ProofReconstructor::buildStack` and `DerivationTree::chooseRow` keep the row's dependency at the leaf's exact scope, as for `zoom in` and `induction scope`.
+
+**Decision.** [D-578](../40_decisions.md#d-578). **Invariant.** [I-343](../30_invariants.md#i-343).
 
 ---
 
@@ -156,7 +190,7 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 - `len(rest) >= 2` and `line.namespace == rest[1]` (compaction stays in scope).
 - `line.expression`'s core has a GL-binary entry of `category == "implication"` whose `elements`/`signature`, instantiated with the compact's actual args, reconstruct (via `_try_expand` → `_build_implication_from_elements`, modulo normalize-with-unchangeables) the original implication in `rest[0]`. A miss is a real failure the verifier surfaces — failures are first-class.
 
-**Prover-side emission.** The eight `updateGlobalSingleChapter` / `updateGlobal` broadcast sites (plus the two formerly-backup-less producers — `broadcastTheorems` load-time and `addExprToMemoryBlock` recovered-implication re-broadcast — per [D-83](../40_decisions.md#d-83)) call `recordPendingCompaction`; the single-threaded post-`pool.join` drain compiles each via `ExpressionAnalyzer::compileImplicationToCompact` and emits the `compilation` paired origin (gated on `parameters.trackHistory`; also discharges the receiver's [D-45](../40_decisions.md#d-45) paired-origin requirement). On the legacy `mailOut.implications.insert` sites are retired with the channel itself ([D-78](../40_decisions.md#d-78)); only the compact-form deposit on `mailOut.statements` remains. See [`03_mail_system.md`](03_mail_system.md#additive-compact-implication-deposit-asic-01-prep-d-76) and the [prover chapter](../10_pipeline/04_prover.md#compileimplicationtocompact).
+**Prover-side emission.** The eight `updateGlobalSingleChapter` / `updateGlobal` broadcast sites (plus the two formerly-backup-less producers — `broadcastTheorems` load-time and `addExprToMemoryBlock` recovered-implication re-broadcast — per [D-83](../40_decisions.md#d-83)) call `recordPendingCompaction`; the single-threaded post-`pool.join` drain compiles each via `StructuralCompiler::compileImplicationToCompact` and emits the `compilation` paired origin (gated on `parameters.trackHistory`; also discharges the receiver's [D-45](../40_decisions.md#d-45) paired-origin requirement). On the legacy `mailOut.implications.insert` sites are retired with the channel itself ([D-78](../40_decisions.md#d-78)); only the compact-form deposit on `mailOut.statements` remains. See [`03_mail_system.md`](03_mail_system.md#additive-compact-implication-deposit-asic-01-prep-d-76) and the [prover chapter](../10_pipeline/04_prover.md#compileimplicationtocompact).
 
 ---
 
@@ -164,7 +198,7 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 **Purpose.** Under the contradiction LB's proof assumption, the prover derives both `X` and `!X` at that LB's `main`. The assumption discharges and the original conclusion is emitted. A pair available only in a deeper branch scope does not emit this tag.
 
-**Emitted by.** `dischargeContradiction` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) — the single per-step sweep over `intEncodedStatements` that detects a main/main contradiction and fires the discharge. (Formerly the "Site G" block inside `addExprToMemoryBlock`; see the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).)
+**Emitted by.** `dischargeContradiction` ([`logical_block/goal_processor.hpp`](../../../GL_Quick_VS/GL_Quick/src/logical_block/goal_processor.hpp)) — the single per-step sweep over `intEncodedStatements` that detects a main/main contradiction and fires the discharge. (Formerly the "Site G" block inside `addExprToMemoryBlock`; see the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).)
 
 **Checker.** `check_contradiction` at [`verifier.py`](../../verifier.py). Accepts the row/seed relation in either polarity: the row's expression and the seed (`cleanOp`, rest[4]) must be exact negations of each other — `"!"+cleanOp` for a verbatim positive-seed LB, `cleanOp == "!"+expression` for a complement negated-seed LB ([D-214](../40_decisions.md#d-214)).
 
@@ -230,7 +264,7 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 **Prover-side emission sites.**
 
-- `applyEquivalenceClass` at `prover.hpp` — the main eq-class rewrite over `intEncodedStatements`. `rest[0]` is the original encodedStatement before args were mapped via the current class.
+- `EqualityPropagation::drainStagedEquiProducts` at `logical_block/equality_propagation.hpp` — publication of staged statement rewrites. `rest[0]` is the original encodedStatement before args were mapped via the current class.
 - `applyEquivalenceClassToRejectedMapIntegration` (integration-revival path, see [`05_equivalence_classes.md`](05_equivalence_classes.md#extension--rejectedmapintegration)) — emits `rest[0]` = the pre-rewrite form of the emitted constituent (NOT the compound, NOT the post-rewrite form). Common authoring mistake: passing the compound in `rest[0]` — the arity check then fails because the constituent and the compound have different cores.
 
 **Common authoring pitfalls.**
@@ -253,11 +287,13 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 ## `equalize variable` / `multiplied from`
 
-**Purpose.** A parent theorem is re-emitted with some of its bound variables identified according to a Bell partition — `multiplyImplication` at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp). Partitions that would merge two distinct free `u_*` anchor parameters into the same equivalence class are skipped (see [prover chapter](../10_pipeline/04_prover.md#multiplyimplication-bell-partition-equalisation) and [I-24](../30_invariants.md#i-24)).
+**Purpose.** A parent theorem is re-emitted with some of its bound variables identified according to a Bell partition — `multiplyImplication` at [`inference/implication_multiplier.cpp`](../../../GL_Quick_VS/GL_Quick/src/inference/implication_multiplier.cpp). Partitions that would merge two distinct free `u_*` anchor parameters into the same equivalence class are skipped (see [prover chapter](../10_pipeline/04_prover.md#multiplyimplication-bell-partition-equalisation) and [I-24](../30_invariants.md#i-24)).
 
 **Checker.** `check_equalize_variable` at [`verifier.py`](../../verifier.py) — **shared** by both tag keys.
 
 In addition to the slot-by-slot consistency check, the checker enforces a free-anchor-merge guard: it parses the bound-variable list from every `>[...]` binder of the source and copy implications, builds the orig→copy arg mapping over the paired premises and head, and rejects any pair where the orig arg is not bound by the source binders, the copy arg is not bound by the copy binders, and the two names differ. Bound→bound (Bell-partition merge) and bound→free (bound-variable specialisation to a known anchor) remain accepted — the rejection fires only on free-to-free remaps with distinct names, which is the chapter-1115 multiplyImplication soundness violation that the prover-side gate also rejects.
+
+A copy binds each name once along each scope chain: a merged class keeps its outermost binder ([I-290](../30_invariants.md#i-290)); the whole-row `bound variable uniqueness` meta-counter rejects a copy, or a rule citation, that rebinds a name.
 
 **Note.** Only `multiplied from` is ever emitted in current code. The `equalize variable` key is a dead alias kept in the registry for symmetry.
 
@@ -332,7 +368,7 @@ Decoded:
 1. Every PAIR of constituent namespaces (impl + each premise) must be comparable (parent-child via [`comparable / deeperOf`](04_validity_stack.md#comparablea-b) in the validity-stack chapter — one is an ancestor of the other, or they are equal). Sibling scopes are rejected.
 2. The row's namespace (`line.namespace`) must EQUAL the deepest constituent namespace. Equivalently, `line.namespace ∈ {impl_ns} ∪ {premise_nss}`.
 
-The C++ prover's hash-kernel ([`generateEncodedRequestsStatic`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) accumulates the joined-scope of combined facts via `nm.deeperOf(...)` — the result of an implication firing lives at the deepest scope of its inputs, never at a strictly deeper scope no constituent reaches. The verifier mirrors this. See [I-38](../30_invariants.md#i-38) and [D-58](../40_decisions.md#d-58) for the full rule + sound-under-validity-stack-semantics rationale.
+The C++ prover's hash-kernel ([`generateEncodedRequestsStatic`](../../../GL_Quick_VS/GL_Quick/src/memory.cpp)) accumulates the joined-scope of combined facts via `nm.deeperOf(...)` — the result of an implication firing lives at the deepest scope of its inputs, never at a strictly deeper scope no constituent reaches. The verifier mirrors this. See [I-38](../30_invariants.md#i-38) and [D-58](../40_decisions.md#d-58) for the full rule + sound-under-validity-stack-semantics rationale.
 
 **Concrete failing example (pre-fix, rung-1 incubator branch).**
 
@@ -373,7 +409,7 @@ Every constituent (impl + 3 premises) at `main`; result at `main_boundary_(impli
 5. The asserted disjunct (parsed in step 4) is DIFFERENT from the negated one (modulo equality symmetry). The row asserts a disjunct's negation only in branches where ANOTHER disjunct is asserted.
 6. **A matching `or branch proven` row exists (Codex round-3).** Some chapter row with `tag == "or branch proven"`, `expression == or_expr`, `namespace == parent_ns`, `len(rest) == 2`, `rest[1] == branch_ns`, and `rest[0]` matching the selected disjunct (modulo equality symmetry). Without this check the assumption row could pass structurally even when the corresponding `_orint_` subproof did not prove the OR goal.
 
-History: pre-D-35 the tag was claimed retired (overridden before export). The override never existed; the prover (`prover.hpp` `or branch assumption` site) emits this tag live, and FTA-rung-1 chapter `1209_single_chapter_proof.txt` line 43 carries it. Iterations: round-1 added the checker; round-2 tightened to `len(rest) == 2`, exact-equality branch-namespace match, and balanced-parens disjunct parsing; round-3 added the matching-`or branch proven` cross-check. Chapter 1209's `or branch assumption` row continues to pass after round-3 — the matching `or branch proven` row at line 22 satisfies all five sub-conditions.
+History: pre-D-35 the tag was claimed retired (overridden before export). The override never existed; the prover (`logical_block/integration_processor.hpp`, `IntegrationProcessor::prepareIntegrationCore2`) emits this tag live, and FTA-rung-1 chapter `1209_single_chapter_proof.txt` line 43 carries it. Iterations: round-1 added the checker; round-2 tightened to `len(rest) == 2`, exact-equality branch-namespace match, and balanced-parens disjunct parsing; round-3 added the matching-`or branch proven` cross-check. Chapter 1209's `or branch assumption` row continues to pass after round-3 — the matching `or branch proven` row at line 22 satisfies all five sub-conditions.
 
 ---
 
@@ -410,7 +446,7 @@ History: pre-D-35 the tag was claimed retired (replaced by `or theorem`). `or th
 
 **Purpose (mathematical contract).** An `or convergence` row certifies that the conclusion `line.expression` holds under EVERY branch of the case split on the OR cited in `rest[0]` — derived in each surviving branch, and discharged by reductio in each retired branch (dead-branch retirement: the branch's asserted disjunct is refuted) — and is therefore promoted to the OR's parent scope cited in `rest[1]`.
 
-**Checker.** `check_or_convergence` at [`verifier.py`](../../verifier.py) — validates the spec'd row layout. As of [D-36](../40_decisions.md#d-36) the producer side (`ordisMerge` in `prover.hpp`) emits the new layout, and chapter `1209_single_chapter_proof.txt`'s convergence rows pass cleanly.
+**Checker.** `check_or_convergence` at [`verifier.py`](../../verifier.py) — validates the spec'd row layout. As of [D-36](../40_decisions.md#d-36) the producer side (`ordisMerge` in `logical_block/case_processor.hpp`) emits the new layout, and chapter `1209_single_chapter_proof.txt`'s convergence rows pass cleanly.
 
 ### Row layout (compiled-form OR only)
 
@@ -435,7 +471,7 @@ For the row to PASS, all of:
 
 1. **Layout.** `len(rest) == 2 + 2*K`; `len(rest)` is even; `len(rest) >= 6` (so `K >= 2`).
 2. **Parent-scope match.** `line.namespace == rest[1]`.
-3. **OR is real.** `rest[0]` is a compiled `(or<N>[…])` with a known GL-binary entry of `category == "or"`; recursively flattening every substituted OR child yields at least two ordered non-OR leaves, and that leaf count `K` matches the entry count.
+3. **OR is real.** `rest[0]` is a compiled `(or<N>[…])` with a known GL-binary entry of `category == "or"`; recursively flattening every substituted OR child yields at least two ordered non-OR leaves, and that leaf count `K` matches the entry count. A negated-conjunction integration premise `!(name[…])` of category `and` is also a source: its `K` leaves are its complemented conjuncts ([D-460](../40_decisions.md#d-460)).
 4. **Entry classification + coverage.** Every entry matches one uncovered disjunct — a survivor entry by the disjunct payload embedded in its `_ordis_` branch scope (`parent + "_boundary_ordis_" + OR + "_(" + D_i + ")"`), a retired entry by `negate(D_i)` plus a parent-visible scope — and the K entries cover all K disjuncts exactly once.
 5. **Per-entry derivation evidence ("each ingredient has its own line").** For every entry `(expr, ns)`, a chapter row exists with `expression == expr` and `namespace == ns` under any tag — a survivor's branch derivation of `C`, or a retired branch's refutation.
 
@@ -443,7 +479,7 @@ Step 5 is the key strengthening per the user's directive — it ties each cited 
 
 ### Status (D-36)
 
-Chapter `1209_single_chapter_proof.txt`'s 2 convergence rows now pass cleanly. The producer side (`ordisMerge` in `prover.hpp` at the post-D-36 emission site) writes the spec'd layout: `(C, parent, or convergence, OR, parent, C, branch_D1, C, branch_D2)`. Each branch's derivation of `C` remains in `exprOriginMap` (because `removeExpressionFromMemoryBlock(state=0)` touches only `intEncodedStatements`), so chapter export's `buildStack` naturally renders the per-branch rows when it recurses on the new ingredients.
+Chapter `1209_single_chapter_proof.txt`'s 2 convergence rows now pass cleanly. The producer side (`ordisMerge` in `logical_block/case_processor.hpp` at the post-D-36 emission site) writes the spec'd layout: `(C, parent, or convergence, OR, parent, C, branch_D1, C, branch_D2)`. Each branch's derivation of `C` remains in `exprOriginMap` (because `removeExpressionFromMemoryBlock(state=0)` touches only `intEncodedStatements`), so chapter export's `buildStack` naturally renders the per-branch rows when it recurses on the new ingredients.
 
 A side-effect of the producer fix: 4 previously-hidden `or disintegration` rows now appear in chapter 1209 (lines 17, 21, 29, 33) — the `_ordis_` per-branch case-split records that were never reached by `buildStack` before. They use the same compiled-OR row layout and were verified by [D-36-extended `check_or_disintegration`](#or-disintegration-d-36-extended-checker).
 
@@ -464,7 +500,7 @@ A side-effect of the producer fix: 4 previously-hidden `or disintegration` rows 
 **Validation (D-36):**
 
 1. `len(rest) == 2` exactly. Same `_ORIGIN_EXEMPT_TAGS` rationale as the other OR-tag checkers.
-2. `rest[0]` is a known compiled OR `(or<N>[…])` whose recursively substituted contiguous OR tree yields at least two ordered non-OR leaves (matching arity at every node).
+2. `rest[0]` is a known compiled OR `(or<N>[…])` whose recursively substituted contiguous OR tree yields at least two ordered non-OR leaves (matching arity at every node), or a negated conjunction `!(name[…])` of category `and` — split only as the premise of an implication being integrated — whose leaves are its complemented conjuncts in definition order ([D-460](../40_decisions.md#d-460); `_case_split_disjuncts`).
 3. `line.expression` is one of those flattened leaves (modulo equality symmetry); an intermediate compiled OR is not a leaf.
 4. `line.namespace` is **EXACTLY** `rest[1] + "_boundary_ordis_" + rest[0] + "_(" + <leaf> + ")"` for `<leaf>` matching `line.expression` (modulo equality symmetry). The outer OR stays in the namespace even when the leaf came from an inner OR. No substring search.
 5. **The OR has an independent derivation row at parent scope.** A chapter row exists with `expression == rest[0]`, `namespace == rest[1]`, and `tag!= "or disintegration"` — i.e. the OR was actually derived (via `implication`, `expansion`, `theorem`, …) before being case-split. This check IS well-founded for `_ordis_`: case-split CONSUMES an existing OR. The analogous check on `check_or_branch_proven` was dropped per [D-36](../40_decisions.md#d-36) because `_orint_` PRODUCES an OR — no separate derivation exists by design. This is the exact semantic asymmetry that motivated the round-3 correction.
@@ -502,9 +538,9 @@ Pre-D-36 the checker accepted only the expanded `!(&!(…))` form in `rest[0]` a
 **Purpose.** Induction-hypothesis step.
 
 - In a `check_zero` chapter: the induction variable is identified with `i0`.
-- In a `check_induction_condition` chapter: the successor form is asserted as the inductive step's premise.
+- In a `check_induction_condition` chapter: the successor form is asserted as the inductive step's premise, and the hypothesis implication is asserted. Under method `induction` the hypothesis is the theorem at the predecessor (other digit arguments fixed); under method `strong induction` it is the theorem at every `m` below the induction variable `n`, bounded by `(in3[m,y,n,+])` and `!(=[m,n])`, every non-anchor variable except `n` universal ([D-500](../40_decisions.md#d-500)).
 
-**Checker.** `check_recursion` at [`verifier.py`](../../verifier.py).
+**Checker.** `check_recursion` at [`verifier.py`](../../verifier.py); the strong hypothesis is rebuilt by `_strong_induction_hypothesis` and compared up to renaming of bound names.
 
 **Example (13_check_induction_condition.txt):**
 
@@ -628,7 +664,7 @@ The cited expression is a proved theorem from `global_theorem_list.txt`. It appe
 | `rest[2..3]` | its negation + namespace |
 | `rest[4..5]` | the recursion-hypothesis expression + namespace |
 
-**Emitted by.** `dischargeContradiction` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) — the single per-step sweep over `intEncodedStatements`; the vacuous-truth branch fires on `isPartOfRecursion` plus both contradicting expressions at `main`. See the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).
+**Emitted by.** `dischargeContradiction` ([`logical_block/goal_processor.hpp`](../../../GL_Quick_VS/GL_Quick/src/logical_block/goal_processor.hpp)) — the single per-step sweep over `intEncodedStatements`; the vacuous-truth branch fires on `isPartOfRecursion` plus both contradicting expressions at `main`. See the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).
 
 **Induction prover-side: no level gate.** The vacuous-truth discharge has **no** `mb.level` gate. An earlier gate (requiring at least one contradicting ingredient to carry `mb.level` in its per-statement level set) was removed: for theorems whose own premise is impossible (chapter-101-style lemmas) the contradiction is necessarily rooted in the theorem's outer premise, not the recursion step's hypothesis, so an `mb.level` gate would reject those legitimate vacuous-truth cases. Soundness rests on axiom consistency — no chapter-level contradiction can trace only to anchor-level facts.
 
@@ -652,13 +688,17 @@ Read: the head `(in3[i1,v1,i0,*])` is vacuously true because the premise `(in2[v
 
 **Purpose.** Declares the `validityName` (implication-local scope) to which an integrated expression belongs, so the integrator can bind its conclusion back into the correct hypothetical context.
 
+**Dependency.** The one cited statement is the head of the integration's expansion, the goal the subproof placed at its scope. When a class rewrite respelled that goal before it closed, the head is reached from the closing statement by an `equality1` row at the subproof scope ([D-557](../40_decisions.md#d-557)).
+
+**Scope.** The row lands at the subproof scope's parent, the scope that opened the subproof: `main` for every goal-carrying subproof, the opening scope for a bare subproof opened below `main` (the contradiction-scope demand opens them inside `contradiction_` scopes). The subproof's proof may use every fact of its opening scope, so its compact holds there and below, never above ([D-562](../40_decisions.md#d-562), [I-332](../30_invariants.md#i-332)).
+
 **Checker.** `check_validity_name` at [`verifier.py`](../../verifier.py).
 
 ---
 
 ## `variable copy`
 
-**Purpose.** A fresh `_copy` duplicate of an existing variable was introduced, to keep a hypothesis variable distinct from its surrounding scope during case analysis or OR branching. Subsumes the retired `reaction to hypo` and `necessity for equality (hypo)` tags.
+**Purpose.** A fresh `_copy` duplicate of an existing variable was introduced, to keep a hypothesis variable distinct from its surrounding scope during case analysis or OR branching. Subsumes the retired `reaction to hypo` and `necessity for equality (hypo)` tags. A twin weak step block also uses the tag for `(=[q,rec2])`, which names the twin partner's predecessor q `rec2`; the checker accepts `rec2` as the alias when the chapter declares it for one source only ([D-581](../40_decisions.md#d-581)). Every row holding the copy name traces back to the copy; the walk also ends at a row whose source is an integration goal holding the name, since a goal is filed without a derivation.
 
 **Checker.** `check_variable_copy` at [`verifier.py`](../../verifier.py).
 
@@ -698,7 +738,18 @@ C++ cleanup of the genuinely retired (`reaction to hypo`, `necessity for equalit
 
 ## `reformulation for integration flattened`
 
-An additional root integration rule whose definition tree is unfolded through multiple levels. The one dependency is the same-scope compact with its `_integration_goal` suffix. Generated conjunction/existence wrappers dissolve; configured containers may remain intact or expand; all other leaves keep their polarity. `verifier.py` and `check_reformulation_for_integration_flattened` require the exact resulting premise multiset and injective witness renaming. `proof_export/flat_integration.py` constructs a certificate of premise positions and witnesses for explicit Lean replay. See [D-352](../40_decisions.md#d-352).
+An additional root integration rule whose definition tree is unfolded through multiple levels. The one dependency is the same-scope compact with its `_integration_goal` suffix. Generated conjunction/existence wrappers dissolve; configured containers may remain intact or expand; all other leaves keep their polarity. `verifier.py` and `check_reformulation_for_integration_flattened` require the exact resulting premise multiset and injective witness renaming; a premise the definition tree reaches twice (an existence's binder premise that is also the first conjunct of the bundle it binds) counts once, as the prover names it once. `proof_export/flat_integration.py` constructs a certificate of premise positions and witnesses for explicit Lean replay. See [D-352](../40_decisions.md#d-352). A disjunct's flat rule ([D-508](../40_decisions.md#d-508)) cites `<disjunct>_integration_goal` and binds the disjunct's open arguments, which stand at argument positions of its head: both checkers accept the head equal to the template up to an injective renaming of those binders onto template arguments the rule does not otherwise use, and the construction builds the head itself.
+
+### Compact-first integration rows
+
+Since [D-503](../40_decisions.md#d-503) every integration rule is installed from a compiled compact `(implication<N>[…])`, and its history states the compact first: the compact takes the integration tag and the citation the rule took, and the rule follows as an `expansion` row citing the compact. After a class merge the canonical compact follows by `equality1` and its rule by `expansion`. An OR introduction serving such a rule states its own compact and cites the rule's compact by `expansion`.
+
+```text
+(implication<N>[a,b])	main	reformulation for integration and	(&(p[a,b])(q[b,a]))_integration_goal	main
+(>[](p[a,b])(>[](q[b,a])(and<M>[a,b])))	main	expansion	(implication<N>[a,b])	main
+```
+
+The verifier checks a compact row on its expansion through the binary entry (`verifier.py::_integration_rule_line`); the certificate proves the expansion in a derived step and folds it into the compact (`proof_export/integration_compact.py`, action `integration_compact`).
 
 
 ## Weaknesses
@@ -728,21 +779,26 @@ An additional root integration rule whose definition tree is unfolded through mu
 
 ## `implication composition`
 
-Records an additional implication obtained from a complete ordered producer premise chain and one unary consumer. The result retains all producer premises in order. The four dependency cells are the producer expression and its validity, followed by the consumer expression and its validity. The intermediate atoms match with a bijection of both complete binder sets; both source binders map onto the complete result binder. Bound-to-fixed specialization and binder collapse are rejected. Repeated arguments, polarity and fixed parameters remain unchanged. The result uses the deeper of the comparable source scopes. Normal origin checking requires both source derivations, either local rows or main-scope citations resolved against the theorem registries. Both registered source citations contribute theorem-usage edges; an unresolved source is an origin failure.
+Records an additional implication obtained from a complete producer premise chain and one unary consumer. The result retains all producer premises, in the producer's order or in a permutation of it: the compiler identifies rules up to the order of their premises, so a composed rule can be stored with the chain permuted ([D-509](../40_decisions.md#d-509)). Each producer premise is paired with one result premise of the same sign, operator and arity; the pairings are tried in lexicographic order, the identity first, and the first under which all ports unify is recorded as `premise_order`. The four dependency cells are the producer expression and its validity, followed by the consumer expression and its validity. The intermediate atoms match with a bijection of both complete binder sets; both source binders map onto the complete result binder. Bound-to-fixed specialization and binder collapse are rejected. Repeated arguments, polarity and fixed parameters remain unchanged. The result uses the deeper of the comparable source scopes. Normal origin checking requires both source derivations, either local rows or main-scope citations resolved against the theorem registries. Both registered source citations contribute theorem-usage edges; an unresolved source is an origin failure.
 
-Producer: `unary_composition.cpp`, `drainUnaryComposition`. Checker: `verifier.py`, `check_implication_composition`. `proof_export/implication_composition.py`, `build_implication_composition_plan`, records explicit source instantiations; the `implication_compose` action in `proof_export/lean.py`, `_render_chapter_steps`, introduces every result binder group and premise in order, applies all producer premises, then applies the unary consumer. The composition row is also written to outgoing history through `Memory::addMailOutOrigin`, because the installed rule has no statement delta. Firing the installed result remains an ordinary `implication` row.
+Producers: `logical_block/unary_integration_processor.cpp`, `drainUnaryComposition` (premises always in order), and `logical_block/disintegration_processor.cpp`, `collectContrapositionProducts` (the composed supporting rule of a negated-conjunction premise, expanded from its compiled entity, possibly permuted). Checker: `verifier.py`, `check_implication_composition`. `proof_export/implication_composition.py`, `build_implication_composition_plan`, records explicit source instantiations and `premise_order`; the `implication_compose` action in `proof_export/lean.py`, `_render_chapter_steps`, introduces every result binder group and premise in the result's order, applies each producer premise to the result premise `premise_order` pairs it with, then applies the unary consumer. The composition row is also written to outgoing history through `Memory::addMailOutOrigin`, because the installed rule has no statement delta. Firing the installed result remains an ordinary `implication` row.
 
 ## `implication grouping`
 
 The result is a single-premise implication with a conjunction head. Every dependency pair names a contributing unary rule and its scope. All complete binder sets align bijectively through the common signed premise; fixed parameters and repeated ports remain rigid. The head uses each cited conclusion exactly once, following its actual compiled conjunction structure. The result scope is the deepest comparable source scope. This is an auxiliary derived rule, not a supplied conjecture or additional defining element.
 
-Producer: `contraposition.cpp`, `collectContrapositionProducts`. Checker: `verifier.py`, `check_contraposition_auxiliary`. The certificate records explicit substitutions and a conjunction-construction tree through `proof_export/contraposition.py`, `build_grouping_plan`; Lean applies every cited rule to the same premise and constructs that tree. Ordinary origin checks remain mandatory.
+Producer: `compiler/supporting_rule_compiler.cpp`, `collectContrapositionProducts`. Checker: `verifier.py`, `check_contraposition_auxiliary`. The certificate records explicit substitutions and a conjunction-construction tree through `proof_export/contraposition.py`, `build_grouping_plan`; Lean applies every cited rule to the same premise and constructs that tree. Ordinary origin checks remain mandatory.
 
 ## `contraposition`
 
 The result reverses one cited unary implication and complements both ends, cancelling double negation. Its sole dependency pair names the exact original or grouped source and its scope. The complete binder set must occur at both source ends and map bijectively to the result. Signs, repetitions and fixed parameters are checked. The result retains the source scope.
 
 Producer and checker are the same auxiliary doors as grouping. `proof_export/contraposition.py`, `build_contraposition_plan`, supplies the explicit source arguments; Lean applies that source under the opposite assumption and derives a contradiction. No new provenance exemption, theorem axiom or proof-admission shortcut is introduced.
+
+## `definition projection`
+Processed-only row: `target`, namespace, `definition projection`, source, the same namespace. The source must be an actual row of the chapter. `proof_export/definition_projection.py`, `build_definition_projection_plan`, admits only positive named conjunction unfolding and binary conjunction projection. Parameter instantiation is capture-free; lexical bound-name comparison preserves every free argument. Implications, negations, disjunctions and existence definitions are opaque: a whole such proposition can be a conjunct, but this rule never enters it or introduces a witness.
+
+The GL verifier's `check_definition_projection` checks the emitted row against its own chapter registry, preserving all normal origin, cycle and goal checks. The neutral certificate records each definition head, constituent index and primitive projection path. The Lean writer rechecks that plan and emits a direct product-projection term through transparent definitions. The planner is shared structural code; the Lean kernel independently checks the resulting proof term. No discarded original derivation is a proof input. Expanded definition/projection operations are reported alongside physical rows.
 
 ---
 

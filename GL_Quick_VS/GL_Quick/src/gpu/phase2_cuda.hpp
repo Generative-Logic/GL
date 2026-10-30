@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include "request_frontier_store.hpp"
+
 #include "phase2_projection.hpp"
 
 #include <condition_variable>
@@ -31,6 +33,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 #include "phase2_streaming.hpp"
@@ -77,11 +80,17 @@ namespace gl::gpu {
         /// @details
         /// Initializes CUDA before measuring free memory and allocates one
         /// contiguous reservation with the common runtime reserve left outside.
+        /// The reservation holds the working budget plus the dedicated
+        /// frontier-store blocks `makePhase2GpuBudget` grants from spare memory.
         ///
         /// @param limitBytes Optional working-byte ceiling, zero for automatic.
+        /// @param frontierStoreReserveBytes Dedicated frontier-store bytes wanted
+        ///        beyond the working budget (production passes
+        ///        `kPhase2FrontierStoreReserveBytes`); zero requests none.
         /// @return An empty pool ready for block leases.
         /// @invariant Device allocation and metadata sizes remain fixed.
-        explicit CudaPhase2BlockPool(uint64_t limitBytes = 0);
+        explicit CudaPhase2BlockPool(uint64_t limitBytes = 0,
+            uint64_t frontierStoreReserveBytes = 0);
 
         /// @brief Release the reservation after every lease has been returned.
         ///
@@ -118,22 +127,34 @@ namespace gl::gpu {
         ///        other resident user of the card.
         ///
         /// @details
-        /// Together with `deviceTotalBytes` and `budget().bytes` it splits the
+        /// Together with `deviceTotalBytes` and `reservedBytes()` it splits the
         /// card into: context and other users (`total - freeBefore`), this
-        /// process's fixed Phase 2 reservation (`budget().bytes`), and the
-        /// runtime reserve left free (`freeBefore - budget().bytes`).
+        /// process's fixed Phase 2 reservation (`reservedBytes()`), and the
+        /// memory left free (`freeBefore - reservedBytes()`).
         /// Observability only (Rule 16).
         ///
         /// @return Free device bytes before the reservation.
         uint64_t deviceFreeBeforePoolBytes() const { return deviceFreeBeforePoolBytes_; }
 
+        /// @brief Device bytes of the whole fixed reservation.
+        ///
+        /// @details
+        /// The working budget plus the dedicated frontier-store blocks.
+        /// Observability only (Rule 16).
+        ///
+        /// @return `budget().totalBlocks()` whole blocks in bytes.
+        uint64_t reservedBytes() const {
+            return static_cast<uint64_t>(budget_.totalBlocks()) * kPhase2GpuBlockBytes;
+        }
+
         /// @brief Count blocks currently available for lending.
         ///
         /// @details
-        /// Zero is the defined full-pool state used by the scheduler.
+        /// Zero is the defined full-pool state used by the scheduler. Working
+        /// and dedicated frontier-store blocks share one lease space.
         ///
         /// @return Free physical block count.
-        uint32_t availableBlocks() const { return budget_.blocks - usedBlocks_; }
+        uint32_t availableBlocks() const { return budget_.totalBlocks() - usedBlocks_; }
 
         /// @brief Find the longest free contiguous run without changing state.
         ///
@@ -278,6 +299,56 @@ namespace gl::gpu {
     ///            strictly positive memory, multiprocessor, and block limits.
     /// @see launchCudaContractProbe
     CudaDeviceContract queryCudaDeviceContract();
+
+    /// @brief Create this process's CUDA context, once.
+    ///
+    /// @details
+    /// The first call initializes the CUDA runtime (`cudaGetDeviceCount`) and
+    /// forces the active device's primary context into existence with
+    /// `cudaFree(nullptr)`; `std::call_once` makes a concurrent caller wait
+    /// until that has finished, and later calls return at once. Creating the
+    /// context takes 0.6-1.6 s per batch process, so the prover runs this on
+    /// a background thread (`CudaContextWarmup`) as soon as it has chosen the
+    /// CUDA route. `queryCudaDeviceContract` calls it first, and every CUDA
+    /// entry point queries the contract before any other CUDA call, so no
+    /// thread uses CUDA while the warm-up thread is still initializing it:
+    /// a first CUDA call racing that initialization failed
+    /// (`cudaGetDeviceCount` returned `cudaErrorInvalidValue`). Every CUDA
+    /// operation asserts success.
+    ///
+    /// @return None.
+    /// @invariant On return the active device's primary context exists.
+    /// @see CudaContextWarmup, queryCudaDeviceContract, CudaPhase2BlockPool
+    void createCudaContext();
+
+    /// @brief Background creation of the CUDA context while a batch sets up.
+    ///
+    /// @details
+    /// The constructor starts one thread running `createCudaContext` and
+    /// returns at once; the destructor joins that thread. The owner (the
+    /// prover's initialization, on the CUDA route only) keeps the object for
+    /// the whole batch, so the thread is always joined before the process
+    /// tears the runtime down. The CUDA runtime serializes context creation, so
+    /// a concurrent first CUDA call on another thread waits for it.
+    ///
+    /// @invariant Exactly one warm-up thread per object, joined on destruction.
+    /// @see createCudaContext
+    class CudaContextWarmup {
+    public:
+        /// @brief Start creating the CUDA context on a background thread.
+        /// @return A running warm-up.
+        CudaContextWarmup();
+
+        /// @brief Wait until the background context creation has finished.
+        /// @return None.
+        ~CudaContextWarmup();
+
+        CudaContextWarmup(const CudaContextWarmup&) = delete;
+        CudaContextWarmup& operator=(const CudaContextWarmup&) = delete;
+
+    private:
+        std::thread thread_;
+    };
 
     /// @brief Launch a real native CUDA kernel and return its deterministic word.
     ///
@@ -527,6 +598,7 @@ namespace gl::gpu {
         uint64_t unslicedGateNodes{0}, scheduledGateNodes{0};
         uint64_t candidatePositionsBeforePrefilter{0}, candidatePositionsAfterPrefilter{0};
         uint64_t frontierSpills{0};
+        RequestFrontierStorageStats frontierStorage{};
         uint64_t probeWindows{0}, exactCountReads{0};
     };
 
@@ -543,10 +615,19 @@ namespace gl::gpu {
 
     /// @brief Largest planned node count of one pass-local frontier-store buffer.
     ///
-    /// @details 4,194,304 nodes of 56 bytes (224 MiB per buffer). The planner
-    /// sizes the store from the measured level demand up to this ceiling; a
-    /// larger level spills its oldest rows to host pages.
-    inline constexpr uint32_t phase2FrontierStoreMaximumRows = uint32_t{1} << 22;
+    /// @details 8,388,608 nodes of 56 bytes (448 MiB per buffer). Dedicated
+    /// frontier-store blocks hold a store of this ceiling; without them the
+    /// planner sizes the store from the measured level demand up to it. A level
+    /// the store cannot hold spills its rows to host pages.
+    inline constexpr uint32_t phase2FrontierStoreMaximumRows = uint32_t{1} << 23;
+
+    /// @brief Dedicated device reservation wanted for the frontier store.
+    ///
+    /// @details Both store buffers at `phase2FrontierStoreMaximumRows` rows
+    /// (896 MiB). `makePhase2GpuBudget` grants it from device memory left over
+    /// after the working budget, so the store never shrinks other columns.
+    inline constexpr uint64_t kPhase2FrontierStoreReserveBytes =
+        2ull * phase2FrontierStoreMaximumRows * sizeof(DeviceGrowthNode);
 
     /// @brief Remove the frontier nodes of cut-off growth calls in place,
     ///        keeping the survivors in their order.
@@ -609,7 +690,7 @@ namespace gl::gpu {
     ///
     /// @param source            Device words, 4-byte aligned.
     /// @param words             Number of words; positive.
-    /// @param mappedDestination Host memory pinned by `cudaHostAlloc` (mapped)
+    /// @param mappedDestination Host memory registered for mapped CUDA access
     ///                          or `cudaHostRegister`, 4-byte aligned, at least
     ///                          @p words words; may point inside the pinned range.
     /// @return Nothing.
@@ -847,8 +928,9 @@ namespace gl::gpu {
     /// exactly. The remaining bits are the context-derived processor verdicts
     /// filled by later evaluator stages. Keeping both halves in one word lets the
     /// final canonical handoff consume GPU output without reopening the LMV blob.
-    // Serialized RuleJustification value; the host sealing boundary checks it.
+    // Serialized RuleJustification values; the host sealing boundary checks them.
     inline constexpr int32_t deviceIntegrationJustification = 2;
+    inline constexpr int32_t deviceGoalDemandJustification = 3;
 
     enum DevicePhase2FiringFlag : uint32_t {
         deviceFiringMarker = 1u << 0,
@@ -863,7 +945,10 @@ namespace gl::gpu {
         deviceFiringAlreadyKnown = 1u << 9,
         // Bit 10 is retired (marker mail permission).
         deviceFiringRecursionHead = 1u << 11,
-        deviceFiringDoomTrigger = 1u << 12
+        deviceFiringDoomTrigger = 1u << 12,
+        // A demand from a goal's flat-rule near-miss variant
+        // (D-574).
+        deviceFiringGoalNearMiss = 1u << 13
     };
 
     /// @brief Complete fixed-header representation of one device firing output.
@@ -1167,7 +1252,7 @@ namespace gl::gpu {
         uint64_t fixedAllocationBytes() const;
 
         /// @brief Page-locked host bytes this buffer holds for its deferred
-        ///        upload columns (`cudaHostAlloc`).
+        ///        upload columns (one registered GPU-host lease).
         ///
         /// @details
         /// The deferred columns of `beginPhase2Upload` are staged through pinned
@@ -1199,7 +1284,8 @@ namespace gl::gpu {
         uint32_t usedCounts_[kProjectionColumnCount]{};
         bool streamedUpload_ = false;
         uint64_t fixedAllocationBytes_{ 0 };
-        uint64_t pinnedHostBytes_{ 0 };  // cudaHostAlloc total of the deferred columns, once staged
+        GpuHostArena deferredHostStorage_;
+        uint64_t pinnedHostBytes_{ 0 };  // Whole registered pool lease, once staged
         bool phase2UploadPending_{ false };
     };
 
@@ -1215,9 +1301,11 @@ namespace gl::gpu {
     /// the next window, so at most two windows are alive: one uploading and one
     /// under construction. Windows run strictly in submission order, so device
     /// offsets and the retained sealing image equal those of the synchronous
-    /// sequence. A finished window is released on the submitting thread, which
-    /// allocated it, at the next `submit` or at `finish`
-    /// (D-447). The uploader holds no
+    /// sequence. The caller's slot owns each window; both copies are
+    /// synchronous, so the upload thread empties the slot as soon as they
+    /// finish, before it reports idle, and a finished window never stays alive
+    /// beside the next one (D-491, amending
+    /// D-447's release on the allocating thread). The uploader holds no
     /// logical-block state beyond the one window in flight.
     class Phase2WindowUploader {
     public:
@@ -1245,20 +1333,22 @@ namespace gl::gpu {
         /// @brief Hand one complete window to the upload thread.
         ///
         /// @details
-        /// Waits until the previous window is uploaded and retained, takes
-        /// ownership of `window`, wakes the thread and releases the previous
-        /// window on the calling thread.
+        /// Waits until the previous window is uploaded, retained and released,
+        /// borrows `slot` and wakes the thread. The upload thread empties the
+        /// slot after both copies; the caller touches the slot again only after
+        /// the next submit, waitUntilUploaded or finish returns.
         ///
-        /// @param window Adopted window whose references already address their
-        ///        complete-image offsets; non-null.
+        /// @param slot Engaged slot holding the adopted window, whose references
+        ///        already address their complete-image offsets.
         /// @param bases Complete-image column positions of the window's first rows,
         ///        equal to the ends of every earlier window.
         /// @return Nothing.
         /// @invariant `finish` has not been called.
-        void submit(std::unique_ptr<Phase2ProjectionArena> window,
+        void submit(std::optional<Phase2ProjectionArena>& slot,
             const Phase2ProjectionArena::ShardBases& bases);
 
-        /// @brief Wait for the last window, release it and join the thread.
+        /// @brief Wait until the last window is uploaded and released, then
+        ///        join the thread.
         ///
         /// @details
         /// After return the device image holds every submitted window and the
@@ -1268,14 +1358,40 @@ namespace gl::gpu {
         /// @invariant Called once.
         void finish();
 
+        /// @brief Wait until the current window is uploaded and released.
+        /// @details Both device upload and retained lookup copying finish, and the
+        /// upload thread empties the borrowed slot, before the pending flag
+        /// clears. The caller may then rebuild its slot.
+        /// @return Nothing.
+        void waitUntilUploaded();
+
+
+
+        /// @brief Wait for an idle upload thread.
+        /// @details Diagnostic only. No producer can submit while its seam thread
+        /// is capturing, so the sleeping upload thread leaves host storage fixed;
+        /// an idle uploader has already released its last window.
+        /// @return Nothing.
+        void quiesceForSnapshot();
+        /// @brief Observe the upload window after quiescence.
+        /// @details An idle uploader holds no window, so the defined result is
+        /// zero; a window under upload is never observed.
+        /// @return Retained host column bytes (zero once idle).
+        uint64_t observeForSnapshot();
+
     private:
-        /// @brief Thread body: upload and retain each submitted window in order.
+        /// @brief Thread body: upload, retain and release each submitted window
+        ///        in order.
         ///
         /// @details
         /// Waits for a pending window or the finish request; copies the window's
         /// used column ranges into the device image, appends its retained data to
-        /// the sealing image, clears the pending flag and wakes the submitter.
-        /// The finish request arrives only with no window pending.
+        /// the sealing image, empties the borrowed slot, clears the pending flag
+        /// and wakes the submitter. Both copies are synchronous, so the window
+        /// has no reader left when they return; while the pending flag is set
+        /// the submitter does not touch the slot, so the release needs no lock,
+        /// and it completes before the thread reports idle. The finish request
+        /// arrives only with no window pending.
         ///
         /// @return Nothing.
         void work();
@@ -1285,7 +1401,8 @@ namespace gl::gpu {
         std::mutex mutex_;
         std::condition_variable ready_;
         std::condition_variable uploaded_;
-        std::unique_ptr<Phase2ProjectionArena> window_;
+        std::optional<Phase2ProjectionArena>* slot_ = nullptr;
+        Phase2ProjectionArena* window_ = nullptr;
         Phase2ProjectionArena::ShardBases bases_{};
         bool pending_ = false;
         bool finished_ = false;
@@ -1640,6 +1757,7 @@ namespace gl::gpu {
         /// @param retainedCalls Optional cutoff query run after each completed
         ///        level's drain: fills one keep flag per scheduled call (0 stops
         ///        the call's descendants) and returns whether any flag is 0.
+        /// @param frontierStorage Prepared disk files and the resident frontier budget.
         /// @return Logical totals and frontier transfer/backing measurements.
         /// @invariant One prefix fits minimum execution scratch; request reuse
         ///            occurs only after its synchronous drain returns.
@@ -1652,7 +1770,8 @@ namespace gl::gpu {
             DevicePhase2GrowthParameters parameters,
             void (*drain)(void*, const CudaPhase2GrowthBuffer&, bool), void* context,
             uint64_t* taskSubkeyCounts, uint32_t taskCapacity,
-            bool (*retainedCalls)(void*, uint8_t*, uint32_t) = nullptr);
+            bool (*retainedCalls)(void*, uint8_t*, uint32_t) = nullptr,
+            RequestFrontierStorageOptions frontierStorage = {});
 
         /// @brief Download the most recent accepted growth-event ledger.
         ///
@@ -1700,7 +1819,7 @@ namespace gl::gpu {
         /// @details
         /// Copies one count per uploaded executor task. A count is incremented
         /// only for a growth node whose normalized key passed the subkey owner
-        /// probe, exactly matching `ExpressionAnalyzer::g_growthMatchCount`.
+        /// probe, exactly matching `Prover::g_growthMatchCount`.
         /// Whole-key-only events retained for request evaluation do not enter
         /// this statistic.
         ///

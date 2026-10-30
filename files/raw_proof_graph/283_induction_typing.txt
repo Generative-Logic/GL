@@ -1,0 +1,5 @@
+(in[9,1])	main	disintegration	(&(&(&(&(implication89[force_lev_2_0,1,4,2])(implication90[force_lev_2_0,1,4,9]))(implication91[1,4,2,9,force_lev_2_0]))(in[2,1]))(in[9,1]))	main
+(&(&(&(&(implication89[force_lev_2_0,1,4,2])(implication90[force_lev_2_0,1,4,9]))(implication91[1,4,2,9,force_lev_2_0]))(in[2,1]))(in[9,1]))	main	expansion	(interval[1,4,2,9,force_lev_2_0])	main
+(interval[1,4,2,9,force_lev_2_0])	main	disintegration	!(>[force_lev_2_0](interval[1,4,2,9,force_lev_2_0])!(existence2[force_lev_2_0,1,2,8,9,12,3,4]))	main
+!(>[force_lev_2_0](interval[1,4,2,9,force_lev_2_0])!(existence2[force_lev_2_0,1,2,8,9,12,3,4]))	main	expansion	(fold[1,3,4,4,8,2,9,12])	main
+(fold[1,3,4,4,8,2,9,12])	main	task formulation

@@ -28,14 +28,18 @@
 ///        installs one per-leaf intro implication `(>[bound](D_k)(or…))`.
 ///
 /// @details
-/// Covers `ExpressionAnalyzer::disintegrateExprCore2`'s implication branch:
+/// Covers `gl::tests::ProverFixture::disintegrateExprCore2`'s implication branch:
 /// disintegrating a statement whose compiled form carries an or-shaped
 /// premise (the EnumerationSet3 description's membership-intro conjunct)
 /// must install, alongside the main rule, one single-premise intro rule per
 /// flattened disjunct — each preserving the or premise's argument `u_`
 /// status (u_ args free, the changeable element variable bound).
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../prover.hpp"
 
@@ -54,12 +58,12 @@ namespace {
     /// @return All chains, each as premise strings followed by the head.
     std::vector<std::vector<std::string>> decodeOriginalChains(gl::Memory& mb) {
         std::vector<std::vector<std::string>> chains;
-        const int32_t n = mb.overallHashMemory.originals.count();
+        const int32_t n = ((((mb).overallHashMemory)).originals).count();
         chains.reserve(static_cast<std::size_t>(n));
         for (int32_t oi = 1; oi <= n; ++oi) {
             chains.push_back(gl::decodeValueVector(
-                mb.overallHashMemory.originals.decodeKey(oi).ids,
-                mb.ruleInterner));
+                ((((mb).overallHashMemory)).originals).decodeKey(oi).ids,
+                ((mb).ruleInterner)));
         }
         return chains;
     }
@@ -82,7 +86,7 @@ namespace {
 } // namespace
 
 TEST(or_intro_rules, es3_membership_intro_conjunct_emits_per_leaf_intros) {
-    gl::ExpressionAnalyzer ea(std::string("IncubatorGauss3"));
+    gl::tests::ProverFixture ea(std::string("IncubatorGauss3"));
 
     // Disintegrate the ES3 description at the root memory: the `and` branch
     // recurses into both conjuncts; the membership-intro conjunct is an
@@ -92,7 +96,7 @@ TEST(or_intro_rules, es3_membership_intro_conjunct_emits_per_leaf_intros) {
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{
         true, gl::OriginTag::taskFormulation, nullptr, 0 };
-    ea.addExprToMemoryBlock(gl::StrSpan(es3), ea.body, 0, 0, lv, 1, origin,
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(es3), ea.body, 0, 0, lv, 1, origin,
         -1, -1, gl::StrSpan("main", 4), false);
 
     const auto chains = decodeOriginalChains(ea.body);
@@ -145,7 +149,7 @@ TEST(or_intro_rules, es3_membership_intro_conjunct_emits_per_leaf_intros) {
 }
 
 TEST(or_intro_rules, atomic_premises_emit_no_intro) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
 
     // A Peano compact with only atomic (non-or) premises: no intro chain of
     // the shape [ single premise, (or...) head ] may appear.
@@ -153,7 +157,7 @@ TEST(or_intro_rules, atomic_premises_emit_no_intro) {
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{
         true, gl::OriginTag::taskFormulation, nullptr, 0 };
-    ea.addExprToMemoryBlock(gl::StrSpan(nat), ea.body, 0, 0, lv, 1, origin,
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(nat), ea.body, 0, 0, lv, 1, origin,
         -1, -1, gl::StrSpan("main", 4), false);
 
     const auto chains = decodeOriginalChains(ea.body);
@@ -167,16 +171,16 @@ TEST(or_intro_rules, atomic_premises_emit_no_intro) {
 
 TEST(or_intro_rules, conjunction_alternatives_preserve_order_signs_and_binders) {
     for (const bool nested : {false, true}) {
-        gl::ExpressionAnalyzer ea(std::string("Peano"));
+        gl::tests::ProverFixture ea(std::string("Peano"));
         const std::string alternative = nested
             ? "(&(=[y,12])(&(=[x,10])!(in[y,1])))"
             : "(&(=[y,12])(=[x,10]))";
         std::string compact = "(>[x,y]!(&!(in2[x,y,11])!" + alternative + ")(in2[x,y,13]))";
-        ea.precompileStructuralOperators(compact);
-        compact = ea.compileImplicationToCompact(compact);
+        ea.structuralCompiler.precompileStructuralOperators(compact);
+        compact = ea.structuralCompiler.compileImplicationToCompact(compact);
         const int levels[] = {0};
         const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
-        ea.addExprToMemoryBlock(gl::StrSpan(compact), ea.body, 0, 0, levels, 1,
+        ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(compact), ea.body, 0, 0, levels, 1,
             origin, -1, -1, gl::StrSpan("main", 4), false);
         bool found = false;
         for (const auto& chain : decodeOriginalChains(ea.body)) {

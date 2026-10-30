@@ -49,9 +49,9 @@
 ///                     from synthetic inputs; rejection rides on main.py
 ///                     integration runs).
 ///   - inputorder_* — 13 sub-helpers of checkInputVariablesOrder
-///   - reshuffle_*  — reshuffle pipeline + createReshuffledMirrored + countOperatorOccurrences/Int + staysOutputVariable
+///   - reshuffle_*  — reshuffle pipeline + createReshuffledMirrored + countOperatorOccurrences/Int + staysOutputVariable + reshuffleInt parity
 ///   - reform_*     — reformulateOperatorHead, generateNegatedPremiseVariants, triggersExistenceReformulation, reformulateToExistenceHead
-///   - worker_*     — singleThreadCalculation, singleExprAnchorConnection, singleThreadCalculationInt, singleExprAnchorConnectionInt
+///   - worker_*     — singleThreadCalculation, singleExprAnchorConnection, singleThreadCalculationInt, singleExprAnchorConnectionInt, qualifiesAsGrowingTheorem
 ///   - legacy_*     — renameVariablesInExpr (legacy reshuffle predecessor)
 ///   - ctor_*       — Conjecturer{"Peano"} / Conjecturer{"Gauss"} construct without throw, accessors
 ///   - or_pair_*    — generateOrConjectures Peano + Gauss smoke (config-derived
@@ -75,6 +75,7 @@
 #include "../conjecturer.hpp"
 #include "../compiler.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -437,6 +438,17 @@ public:
     }
     static const IntDefSetMap& anchorDefSetsInt(const Conjecturer& c) {
         return c.anchorDefSetsInt_;
+    }
+
+    // ---- Integer reshuffle and growth qualification ----
+    static void reshuffleInt(const Conjecturer& c, const IntConjBuf& expr, IntReshuffle& out) {
+        c.reshuffleInt(expr, out);
+    }
+    static bool qualifiesAsGrowingTheorem(const Conjecturer& c, int nse, const IntDefSetMap& defSets) {
+        return c.qualifiesAsGrowingTheorem(nse, defSets);
+    }
+    static int16_t nameId(const Conjecturer& c, const std::string& name) {
+        return c.nameMap_.lookup(name);
     }
 };
 
@@ -3178,6 +3190,123 @@ TEST(conjecturer, reshuffle_with_negation_smoke) {
     ASSERT_GE(static_cast<int>(out.size()), 1);
 }
 
+
+// ---- reshuffleInt parity with the string reshuffle (2 tests) ----
+// reshuffleInt must reproduce reshuffle(decodeExpr(chain), true) byte for
+// byte: the canonical text, its block encoding, its definition-set map
+// (encodeDefSetMap of the string map) and its `(>[` count. The chains are
+// deterministic pseudo-random connected chains over a batch's expressions:
+// one to four premises, repeated arguments, values above 9 (the decimal
+// key order of the definition-set map then differs from numeric order),
+// a value bound at several levels, levels that bind nothing.
+
+namespace {
+
+struct ReshuffleParityRng {
+    uint32_t state;
+    int below(int n) {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<int>((state >> 8) % static_cast<uint32_t>(n));
+    }
+};
+
+std::vector<std::pair<int16_t, int>> reshuffleParityLeaves(const conj::Conjecturer& c, bool withAnchor) {
+    using F = conj::testing::Friend;
+    const auto& config = F::config(c);
+    const std::string anchorName = config.getAnchorName();
+    std::vector<std::pair<int16_t, int>> leaves;
+    for (const auto& name : config.expressionOrder) {
+        const auto& desc = config.data.at(name);
+        const bool isAnchor = (name == anchorName);
+        if (isAnchor ? !withAnchor : desc.max_count_per_conjecture <= 0) continue;
+        bool allPositions = desc.arity > 0;
+        for (int a = 0; a < desc.arity; ++a)
+            allPositions = allPositions && desc.definition_sets.count(std::to_string(a + 1)) > 0;
+        if (allPositions) leaves.push_back({F::nameId(c, name), desc.arity});
+    }
+    return leaves;
+}
+
+conj::IntConjBuf reshuffleParityChain(const std::vector<std::pair<int16_t, int>>& leaves,
+                                      int chainLen, int maxValue, ReshuffleParityRng& rng) {
+    std::vector<int16_t> names;
+    std::vector<std::vector<int16_t>> args;
+    for (int i = 0; i <= chainLen; ++i) {
+        const auto& leaf = leaves[static_cast<std::size_t>(rng.below(static_cast<int>(leaves.size())))];
+        names.push_back(leaf.first);
+        std::vector<int16_t> leafArgs;
+        for (int a = 0; a < leaf.second; ++a)
+            leafArgs.push_back(static_cast<int16_t>(1 + rng.below(maxValue)));
+        args.push_back(leafArgs);
+    }
+    conj::IntConjBuf buf;
+    buf.len = 0;
+    auto push = [&](int word) { buf.data[buf.len++] = static_cast<int16_t>(word); };
+    for (int i = 0; i <= chainLen; ++i) {
+        std::vector<int16_t> bound;
+        for (int j = i; i < chainLen && j <= chainLen; ++j)
+            for (int16_t v : args[static_cast<std::size_t>(j)])
+                if (std::find(bound.begin(), bound.end(), v) == bound.end() && rng.below(3) == 0)
+                    bound.push_back(v);
+        push(static_cast<int>(bound.size()));
+        for (int16_t v : bound) push(v);
+        push(names[static_cast<std::size_t>(i)]);
+        push(static_cast<int>(args[static_cast<std::size_t>(i)].size()));
+        for (int16_t v : args[static_cast<std::size_t>(i)]) push(v);
+    }
+    return buf;
+}
+
+void expectReshuffleParity(const conj::Conjecturer& c, const conj::IntConjBuf& chain) {
+    using F = conj::testing::Friend;
+    auto [canonical, defSets, renameMap] = F::reshuffle(c, F::decodeExpr(c, chain), true);
+    conj::IntReshuffle out;
+    F::reshuffleInt(c, chain, out);
+    ASSERT_EQ(std::string(out.text, static_cast<std::size_t>(out.textLen)), canonical);
+    const conj::IntConjBuf expectedBuf = F::encodeExpr(c, canonical);
+    ASSERT_EQ(out.buf.len, expectedBuf.len);
+    for (int i = 0; i < expectedBuf.len; ++i) ASSERT_EQ(out.buf.data[i], expectedBuf.data[i]);
+    const conj::IntDefSetMap expectedMap = F::encodeDefSetMap(c, defSets);
+    ASSERT_EQ(out.defSets.count, expectedMap.count);
+    for (int i = 0; i < expectedMap.count; ++i) {
+        ASSERT_EQ(out.defSets.argId[i], expectedMap.argId[i]);
+        ASSERT_EQ(out.defSets.defSetId[i], expectedMap.defSetId[i]);
+        ASSERT_EQ(out.defSets.combinable[i], expectedMap.combinable[i]);
+        ASSERT_EQ(out.defSets.connectable[i], expectedMap.connectable[i]);
+    }
+    ASSERT_EQ(static_cast<int>(out.operatorCount), F::countOperatorOccurrences(c, canonical));
+}
+
+}  // namespace
+
+TEST(conjecturer, reshuffle_int_matches_string_reshuffle_on_peano_chains) {
+    conj::Conjecturer c("Peano");
+    conj::testing::Friend::precomputeAnchorTables(c);
+    const auto leaves = reshuffleParityLeaves(c, false);
+    ASSERT_GE(static_cast<int>(leaves.size()), 2);
+    ReshuffleParityRng rng{20261015u};
+    for (int round = 0; round < 400; ++round) {
+        const int chainLen = 1 + round % 4;
+        const int maxValue = (round % 3 == 0) ? 14 : 7;
+        expectReshuffleParity(c, reshuffleParityChain(leaves, chainLen, maxValue, rng));
+    }
+}
+
+TEST(conjecturer, reshuffle_int_matches_string_reshuffle_with_anchor_pin) {
+    // The anchor is among the leaves, so many chains carry it as a premise
+    // and only permutations starting with it compete.
+    conj::Conjecturer c("Gauss");
+    conj::testing::Friend::precomputeAnchorTables(c);
+    const auto leaves = reshuffleParityLeaves(c, true);
+    ASSERT_GE(static_cast<int>(leaves.size()), 2);
+    ReshuffleParityRng rng{4242u};
+    for (int round = 0; round < 300; ++round) {
+        const int chainLen = 1 + round % 3;
+        const int maxValue = (round % 2 == 0) ? 16 : 10;
+        expectReshuffleParity(c, reshuffleParityChain(leaves, chainLen, maxValue, rng));
+    }
+}
+
 TEST(conjecturer, reshuffle_three_predicates_smoke) {
     conj::Conjecturer c("Peano");
     auto [out, _ds, _rm] = conj::testing::Friend::reshuffle(
@@ -3512,7 +3641,7 @@ TEST(conjecturer, worker_single_thread_calculation_empty_inputs_no_survivors) {
     auto out = conj::testing::Friend::singleThreadCalculation(
         c, "(in[1,2])", "(in[3,4])", 1, 1,
         conj::DefSetMap{}, conj::DefSetMap{});
-    ASSERT_TRUE(out.connected_list.empty());
+    ASSERT_TRUE(out.growing_list.empty());
     ASSERT_TRUE(out.connected_list2.empty());
     ASSERT_TRUE(out.reshuffled_list.empty());
     ASSERT_TRUE(out.reshuffled_mirrored_list.empty());
@@ -3575,7 +3704,7 @@ TEST(conjecturer, worker_single_thread_calculation_int_no_survivors) {
     conj::IntDefSetMap am{}, bm{};
     auto out = conj::testing::Friend::singleThreadCalculationInt(
         c, a, b, 1, 1, am, bm);
-    ASSERT_TRUE(out.connected_list.empty());
+    ASSERT_TRUE(out.growing_list.empty());
 }
 
 TEST(conjecturer, worker_single_thread_calculation_int_higher_nse_no_survivors) {
@@ -3602,6 +3731,25 @@ TEST(conjecturer, worker_single_thread_calculation_int_with_def_sets_no_survivor
     ASSERT_TRUE(out.reshuffled_list.empty());
 }
 
+
+
+// ---- qualifiesAsGrowingTheorem (1 test) ----
+
+TEST(conjecturer, worker_qualifies_as_growing_theorem_needs_room_and_a_numeric_argument) {
+    using F = conj::testing::Friend;
+    conj::Conjecturer c("Peano");
+    const int maxNse = F::config(c).parameters.max_number_simple_expressions;
+    conj::IntDefSetMap withArgument{};
+    withArgument.count = 1;
+    withArgument.argId[0] = 1;
+    withArgument.defSetId[0] = 1;
+    withArgument.combinable[0] = 1;
+    withArgument.connectable[0] = 1;
+    const conj::IntDefSetMap noArgument{};
+    ASSERT_TRUE(F::qualifiesAsGrowingTheorem(c, maxNse - 1, withArgument));
+    ASSERT_FALSE(F::qualifiesAsGrowingTheorem(c, maxNse, withArgument));
+    ASSERT_FALSE(F::qualifiesAsGrowingTheorem(c, maxNse - 1, noArgument));
+}
 
 // ---- singleExprAnchorConnectionInt (3 tests) ----
 
@@ -3702,6 +3850,23 @@ TEST(conjecturer, or_pair_generate_or_conjectures_pairs_well_formed) {
         ASSERT_FALSE(ex.empty());
         ASSERT_FALSE(comp.empty());
     }
+}
+
+// Both halves of every OR pair bind every anchor slot at the anchor premise,
+// used in the body or not (I-4); the prover's conjecture registration asserts
+// that every argument is bound (ProofGridBuilder::canonicalConjecture).
+TEST(conjecturer, or_pair_generate_or_conjectures_bind_every_anchor_slot) {
+    conj::Conjecturer c("Peano");
+    auto pairs = conj::testing::Friend::generateOrConjectures(c);
+    ASSERT_EQ(static_cast<int>(pairs.size()), 2);
+    ASSERT_EQ(pairs[0].first, std::string("(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in[7,1])(>[]!(=[7,2])!(>[8](in[8,1])!(in2[8,7,3])))))"));
+    ASSERT_EQ(pairs[0].second, std::string("(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in[7,1])(>[](>[8](in[8,1])!(in2[8,7,3]))(=[7,2]))))"));
+    ASSERT_EQ(pairs[1].first, std::string("(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in[7,1])(>[]!(=[7,6])!(>[8](in[8,1])!(in2[8,7,3])))))"));
+    ASSERT_EQ(pairs[1].second, std::string("(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in[7,1])(>[](>[8](in[8,1])!(in2[8,7,3]))(=[7,6]))))"));
 }
 
 // ============================================================================

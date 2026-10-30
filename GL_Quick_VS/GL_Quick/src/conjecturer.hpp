@@ -87,6 +87,17 @@ static constexpr int MAX_CONN_MAPS   = 512;
 /// emits more types than this in a single candidate.
 static constexpr int MAX_DEFSET_GROUPS = 8;
 
+/// @brief Byte capacity of a conjecture rendered by `reshuffleInt`.
+///
+/// @details
+/// The integer reshuffle renders every candidate permutation of a
+/// connected chain into a fixed character buffer and keeps the winner in
+/// `IntReshuffle::text`. A chain of `MAX_CONJ_BUF` words renders to well
+/// under this size (at most six characters per argument word plus the
+/// expression names and the `(>[`, `](`, `])` punctuation of each block);
+/// every writer asserts before appending a character.
+static constexpr int MAX_CONJ_TEXT = 8192;
+
 /// @brief Maximum args belonging to one def-set group inside a
 ///        single conjecture.
 ///
@@ -237,6 +248,36 @@ struct IntConnMap {
 
     /// @brief Highest argId in use. Used to bound iteration.
     int16_t maxArg = 0;
+};
+
+/// @brief Result of `Conjecturer::reshuffleInt` — a connected chain in
+///        its canonical (reshuffled) form, in every representation the
+///        worker needs.
+///
+/// @details
+/// `text` holds the canonical expression exactly as the string-path
+/// `reshuffle` returns it; `buf` is its block encoding (equal to
+/// `encodeExpr(text)`); `defSets` is the canonical definition-set map
+/// (equal to `encodeDefSetMap` of the string path's re-keyed map, entries
+/// in decimal-string key order); `operatorCount` is the number of `(>[`
+/// headers in `text` (equal to `countOperatorOccurrences(text)`).
+///
+/// @invariant `textLen <= MAX_CONJ_TEXT` and `buf.len <= MAX_CONJ_BUF`.
+struct IntReshuffle {
+    /// @brief Block encoding of the canonical form.
+    IntConjBuf buf;
+
+    /// @brief Canonical definition-set map.
+    IntDefSetMap defSets;
+
+    /// @brief Number of `(>[` headers in `text`.
+    int16_t operatorCount = 0;
+
+    /// @brief Characters used in `text`.
+    int16_t textLen = 0;
+
+    /// @brief Canonical expression text (not NUL-terminated).
+    char text[MAX_CONJ_TEXT];
 };
 
 // ============================================================================
@@ -558,13 +599,36 @@ struct ConfigurationData {
 // Worker result
 // ============================================================================
 
+/// @brief One intermediate connection that grows further, with the
+///        encodings the main loop stores for a new growing theorem.
+///
+/// @details
+/// A worker emits a candidate for every connected (not yet anchored)
+/// expression with fewer simple expressions than
+/// `max_number_simple_expressions` and at least one numeric argument
+/// (`Conjecturer::qualifiesAsGrowingTheorem`). The main loop keeps the
+/// first arrival of each expression as a growing theorem and discards
+/// the rest, so it needs nothing else from the worker.
+///
+/// @invariant `intBuf == encodeExpr(expr)`.
+struct GrowingCandidate {
+    /// @brief Canonical (reshuffled) expression text.
+    std::string expr;
+
+    /// @brief Block encoding of `expr`.
+    IntConjBuf intBuf;
+
+    /// @brief Encoded definition-set map of `expr`.
+    IntDefSetMap intDefSets;
+};
+
 /// @brief Result bundle returned by every worker driver.
 ///
 /// @details
 /// Returned from `singleThreadCalculation*` and
-/// `singleExprAnchorConnection*`. `connected_list` carries
-/// `(expression, def_set_map)` pairs for intermediate (non-anchor)
-/// connections that may seed the next `nse` round.
+/// `singleExprAnchorConnection*`. `growing_list` carries the
+/// intermediate (non-anchor) connections that seed the next `nse`
+/// round, with their encodings (`GrowingCandidate`).
 /// `connected_list2` carries final-stage conjectures already
 /// attached to the anchor. `reshuffled_list` is the canonicalised
 /// companion for `connected_list2`, and `reshuffled_mirrored_list`
@@ -577,8 +641,9 @@ struct ConfigurationData {
 ///            own canonical form (rejected by I-9's distinctness
 ///            guard).
 struct WorkerResult {
-    /// @brief Intermediate non-anchor connections.
-    std::vector<std::pair<std::string, DefSetMap>> connected_list;
+    /// @brief Intermediate non-anchor connections that grow further,
+    ///        in emission order.
+    std::vector<GrowingCandidate> growing_list;
 
     /// @brief Final conjectures (anchor-attached).
     std::vector<std::string> connected_list2;
@@ -1180,6 +1245,30 @@ private:
 
         /// @brief Active entries in `indicesOutputArgs`.
         int16_t numOutputArgs = 0;
+
+        /// @brief Definition-set `nameMap_` id of argument position
+        ///        `i` (the `definition_sets` key `i + 1`).
+        int16_t positionDefSetId[16];
+
+        /// @brief Combinable flag (0 or 1) of argument position `i`.
+        int16_t positionCombinable[16];
+
+        /// @brief Connectable flag (0 or 1) of argument position `i`.
+        int16_t positionConnectable[16];
+
+        /// @brief Bit `i` set when `definition_sets` has the key `i + 1`.
+        uint16_t positionPresent = 0;
+
+        /// @brief Every `definition_sets` key is a decimal position.
+        ///        `reshuffleInt` requires it: the string path adds
+        ///        other keys to its definition-set maps, the integer
+        ///        map has no place for them.
+        bool positionKeysOnly = true;
+
+        /// @brief The leaf text `"(" + name + "["` contains the anchor
+        ///        handle — the condition under which `reshuffle` pins
+        ///        a chain entry at permutation position 0.
+        bool leafHasAnchorHandle = false;
     };
 
     /// @brief Per-expression config table indexed by nameId.
@@ -2106,6 +2195,38 @@ private:
     ///        operator-block headers in `buf`.
     int countOperatorOccurrencesInt(const IntConjBuf& buf) const;
 
+    /// @brief Integer-path twin of `reshuffle(decodeExpr(expr), true)`
+    ///        for the plain connected chains a worker builds.
+    ///
+    /// @details
+    /// `expr` is a chain of one or more premise leaves and a head leaf
+    /// (`connectExpressionsInt` output: no negation, no existence head).
+    /// Reproduces the string reshuffle step by step: the permutation
+    /// table `allPermutations_[chainLen]` in its order; the anchor pin
+    /// (only permutations starting with the first premise whose
+    /// `(name[` contains the anchor handle); each bound variable placed
+    /// at the first permuted level whose leaf uses it, in that leaf's
+    /// first-occurrence order (`orderByPattern`); first-occurrence
+    /// renaming over the permuted leaves and then the head; every
+    /// candidate rendered to bytes and the lexicographically smallest
+    /// kept (first wins ties). The definition-set map follows
+    /// `findArgMap` on the input — a deeper part of the chain overrides
+    /// an outer leaf, a later position overrides an earlier one, each
+    /// level removes its bound variables — re-keyed by the winner's
+    /// renaming and ordered by the decimal text of the keys, as
+    /// `encodeDefSetMap` iterates the string map. Nothing is allocated.
+    ///
+    /// @param expr Connected chain in block encoding.
+    /// @param out  Receives the canonical text, its block encoding, its
+    ///             definition-set map and its `(>[` count.
+    /// @return None.
+    /// @invariant `out.text` equals the string reshuffle's canonical form,
+    ///            `out.buf == encodeExpr(out.text)`, and `out.defSets`
+    ///            equals `encodeDefSetMap` of its definition-set map.
+    /// @see reshuffle — the string-path original (parity test
+    ///      `reshuffle_int_matches_string_reshuffle_*`).
+    void reshuffleInt(const IntConjBuf& expr, IntReshuffle& out) const;
+
     /// @brief Int-path twin of
     ///        `checkConjectureComplexityPerOperator`. Reject if
     ///        appending `statement` to `growingTheorem` would push
@@ -2113,6 +2234,22 @@ private:
     bool checkComplexityPerOpInt(const IntConjBuf& growingTheorem, const IntConjBuf& statement) const;
 
     // ---- Int-path: workers ----
+
+    /// @brief Whether a connected (not yet anchored) expression becomes
+    ///        a growing theorem for the next round.
+    ///
+    /// @details
+    /// True when the expression combines fewer simple expressions than
+    /// `max_number_simple_expressions` and its definition-set map has a
+    /// numeric argument to connect through. Both are properties of the
+    /// expression alone, so every arrival of the same expression gets the
+    /// same answer and the workers can drop the other connections before
+    /// the main loop sees them.
+    ///
+    /// @param nse     Simple expressions combined in the expression.
+    /// @param defSets Encoded definition-set map of the expression.
+    /// @return `true` when the expression grows further.
+    bool qualifiesAsGrowingTheorem(int nse, const IntDefSetMap& defSets) const;
 
     /// @brief Int-path twin of `singleThreadCalculation`. Hot-path
     ///        per-candidate driver.

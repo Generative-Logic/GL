@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #pragma once
+#include "../infra/peak_snapshot.hpp"
 
 // Portable force-inline for the paged-memory hot primitives. MSVC's
 // per-function inline budget saturates inside the large equi-class apply
@@ -44,6 +45,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -54,21 +56,23 @@ namespace gl {
     ///        growth is coarse, not per-slab.
     constexpr int64_t kExtentGrowChunkBytes = 256LL << 20;
 
-    /// @brief Which of the three process-wide pools a `GlobalMemoryManager`
-    ///        instance is — selects the exhaustion-assert knob name only.
-    ///
-    /// @details
-    /// The four pools are otherwise identical code (one class, four
-    /// instances); `kind` exists so a sizing problem points at the right
-    /// `parameters.hpp` field. `Main` = the deloadable main pool
-    /// (`static_pool_bytes`); `Persistent` = the never-deloaded second pool
-    /// backing `Memory::intToBeProved` (`static_persistent_pool_bytes`);
-    /// `Mail` = the never-deloaded third pool backing the cross-LB pull-model
-    /// mail log (`static_mail_pool_bytes`); `Lb` = the never-deloaded fourth
-    /// pool backing the LB object store (the `Memory` node shells themselves,
-    /// `static_lb_pool_bytes`). A unit test's private instance is `Main` by
-    /// default. Append-only: a future pool adds a new enumerator.
-    enum class PoolKind { Main, Persistent, Mail, Lb };
+    /// @brief Current and lifetime backing commitment, separate from logical grants.
+    /// @details Counters describe physical commitment only and never select proof work.
+    struct PoolCommitment {
+        int64_t currentBytes = 0;
+        int64_t peakBytes = 0;
+        int64_t decommittedBytes = 0;
+        int64_t recommittedBytes = 0;
+        int64_t trimCalls = 0;
+    };
+
+    /// @brief Select the independently budgeted memory owner.
+    /// @details Main, Persistent, Mail and Lb share the established recycle path.
+    /// GpuHost uses a pool-resident first-fit directory for both contiguous ranges
+    /// and ordinary arena blocks, with no logical-block eviction machinery.
+    /// Each kind names its own exhaustion setting. A private test manager defaults
+    /// to Main; enumerators are append-only.
+    enum class PoolKind { Main, Persistent, Mail, Lb, GpuHost };
 
     /// @brief What a granted pool block is used for — the key of a pool's
     ///        purpose attribution.
@@ -102,6 +106,15 @@ namespace gl {
 
     /// @brief Number of `PoolPurpose` values that name a real purpose.
     constexpr int kPoolPurposeCount = static_cast<int>(PoolPurpose::Count);
+
+    /// @brief Returned-block reuse reserve a pool keeps committed when it
+    ///        trims (`GlobalMemoryManager::trimRecycledBlocks`).
+    ///
+    /// @details One value for every trim site — the phase-3 completion trim
+    /// of every pool (D-480) and the steward's main-pool trim after a
+    /// discharge drain (D-486) — so no site keeps a
+    /// different reserve.
+    constexpr int64_t kRecycledWarmBytes = int64_t{64} << 20;
 
     /// @brief Printable name of a pool purpose — the column label of the
     ///        attribution report.
@@ -232,9 +245,9 @@ namespace gl {
     /// `init` makes a single reservation of `poolBytes` (the software model
     /// of the ASIC's fixed SRAM): never freed during the run, never grown.
     /// The reservation is address space; each block is committed when it is
-    /// first carved and stays committed, so the pool's commit charge is its
-    /// carve high-water (`peakBlocksInUse() * blockBytes()`), not `poolBytes`
-    /// (D-418).
+    /// first granted. Returned backing beyond the reuse reserve can be
+    /// decommitted, so current commitment is distinct from both the carve
+    /// high-water and the fixed reservation (I-297).
     /// Per-LB memory managers call `acquireBlock` when they need storage and
     /// `releaseBlock` when an LB deloads to SSD or is destroyed; both run
     /// under an internal mutex because LBs are processed in parallel.
@@ -315,7 +328,7 @@ namespace gl {
         /// reservation is address space only; blocks are committed when
         /// first carved (D-418). Idempotent
         /// when called again with a byte-identical config (run modes may
-        /// construct more than one `ExpressionAnalyzer` per process);
+        /// construct more than one `Prover` per process);
         /// asserts on a mismatching re-init — two different sizings in one
         /// process is a configuration bug, not a request to re-shape.
         ///
@@ -329,6 +342,50 @@ namespace gl {
         ///
         /// @return `true` after the first successful `init`.
         bool initialized() const;
+
+        /// @brief Lease a contiguous GPU-host range of whole pool blocks.
+        /// @details The first fitting free run owns every byte until release.
+        /// Directory and alignment overhead are charged to the same reservation.
+        /// @param count Positive number of contiguous blocks.
+        /// @return Stable block-aligned address; exhaustion asserts.
+        /// @invariant Only the independent GPU-host pool permits range grants.
+        char* acquireGpuHostRange(int32_t count);
+
+        /// @brief Return an exact GPU-host range after every consumer completes.
+        /// @details Head, length and unregistered state must match the live lease.
+        /// @param address Original address returned by acquireGpuHostRange.
+        /// @param count Original block count.
+        /// @return Nothing.
+        void releaseGpuHostRange(char* address, int32_t count);
+
+        /// @brief Account registration of an exclusive GPU-host range.
+        /// @details Call after successful registration and after unregistering;
+        /// a registered range cannot be released or registered twice.
+        /// @param address Live range head.
+        /// @param count Exact lease length in blocks.
+        /// @param pinned True registers accounting; false completes it.
+        /// @return Nothing.
+        void setGpuHostPinned(char* address, int32_t count, bool pinned);
+
+        /// @brief Measure the largest available contiguous GPU-host run.
+        /// @details A sizing query only; it does not allocate or change ownership.
+        /// @return Number of contiguous free blocks under the pool mutex.
+        int64_t largestGpuHostRun() const;
+
+        /// @brief Return committed bytes in the GPU-host reservation.
+        /// @details Includes the ownership directory and recycled committed blocks.
+        /// @return Exact committed block count times the block size.
+        int64_t gpuHostCommittedBytes() const;
+
+        /// @brief Return currently registered GPU-host bytes.
+        /// @details Counts complete exclusive transfer leases.
+        /// @return Registered block count times the block size.
+        int64_t gpuHostPinnedBytes() const;
+
+        /// @brief Return the peak registered GPU-host storage.
+        /// @details Counts whole registered blocks, independently of live leases.
+        /// @return Lifetime maximum pinned bytes.
+        int64_t gpuHostPeakPinnedBytes() const;
 
         /// @brief Grant one block (recycled first, else carved fresh).
         ///
@@ -780,7 +837,8 @@ namespace gl {
         ///
         /// @return Ordinal → current slab (ascending ordinal).
         const std::map<int64_t, SlabAllocation>& extentSlabRegistry() const {
-            return extentSlabRegistry_;
+            assert(extentSlabRegistry_.has_value());
+            return *extentSlabRegistry_;
         }
 
         /// @brief Σ live slab class sizes (the extent internal-slack numerator).
@@ -813,17 +871,74 @@ namespace gl {
             return extentLiveBytes_.load(std::memory_order_relaxed);
         }
 
+
+        /// @brief Release excess returned blocks while preserving recycle order.
+        ///
+        /// @details
+        /// The first warmBytes/blockBytes entries of the existing recycle queue
+        /// are retained for reuse. Later committed entries are decommitted under
+        /// the pool mutex, coalescing adjacent addresses in queue order. Granted
+        /// blocks, virtual addresses, carve limits and grant accounting stay fixed.
+        /// Already decommitted entries remain reserved until their next grant.
+        /// This operation is restricted to the four original pools; GPU-host
+        /// backing stays committed for reuse.
+        ///
+        /// @param warmBytes Nonnegative whole-block reuse reserve in bytes.
+        /// @return Number of backing bytes decommitted by this call.
+        /// @invariant Only exclusively returned whole-page blocks are decommitted.
+        /// @see commitment, grantLocked
+        int64_t trimRecycledBlocks(int64_t warmBytes);
+
+        /// @brief Return one synchronized commitment-counter snapshot.
+        ///
+        /// @details Current commitment includes both granted and retained free
+        /// blocks. The lifetime peak and cumulative release/recommit totals have
+        /// separate denominators and are never read to select inference work.
+        /// GPU-host commitment only grows, so current equals peak and its
+        /// decommit, recommit and trim totals remain zero.
+        ///
+        /// @return Current and lifetime commitment counters; all zero before init.
+        /// @see trimRecycledBlocks
+        PoolCommitment commitment() const;
+
+        /// @brief Observe committed pool blocks and their exact grant state.
+        /// @details Diagnostic only; callers have stopped all allocation writers.
+        /// A recycled block is retained memory, not live container content.
+        /// @return Nothing.
+        void observeResidentRanges() {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (pool_ == nullptr) return;
+            if (cfg_.kind == PoolKind::GpuHost) {
+                for (int64_t i = 0; i < totalBlocks_; ++i) {
+                    if (!gpuHostDirectory_[i].committed) continue;
+                    peak_snapshot::Scope owner(gpuHostDirectory_[i].run != 0
+                        ? "unassignedGrantedBlocks" : "recycledBlocks");
+                    peak_snapshot::note(pool_ + i * cfg_.blockBytes,
+                        static_cast<std::size_t>(cfg_.blockBytes), 4);
+                }
+                return;
+            }
+            for (int64_t i=0;i<carveCursor_;++i) {
+                if (!committed_[static_cast<std::size_t>(i)]) continue;
+                peak_snapshot::Scope owner(granted_[static_cast<std::size_t>(i)]
+                    ? "unassignedGrantedBlocks" : "recycledBlocks");
+                peak_snapshot::note(pool_+i*cfg_.blockBytes,
+                    static_cast<std::size_t>(cfg_.blockBytes),4);
+            }
+        }
+
     private:
         /// @brief Dequeue-or-carve one block and flag it granted; the
         ///        accounting-free core shared by both grant paths. Caller
         ///        holds `mutex_`.
         ///
         /// @details
-        /// A fresh carve commits the block (`commitAddressSpace`); a
-        /// recycled block is already committed.
+        /// Fresh and decommitted recycled blocks commit before use; already
+        /// committed recycled blocks retain their backing.
         ///
+        /// @param purpose Owning accounting category.
         /// @return The granted block.
-        char* grantLocked();
+        char* grantLocked(PoolPurpose purpose);
 
         /// @brief Run the pressure valve when a grant of `count` blocks would
         ///        leave fewer free blocks than the valve's floor.
@@ -843,7 +958,9 @@ namespace gl {
         ///        release paths. Caller holds `mutex_`.
         ///
         /// @param block The block being returned.
-        void returnLocked(char* block);
+        /// @param purpose Original accounting category.
+        /// @return Nothing.
+        void returnLocked(char* block, PoolPurpose purpose);
 
         /// @brief Book `count` fresh grants under `purpose`: raise the pool,
         ///        purpose and step high-waters and snapshot the purpose split
@@ -854,6 +971,34 @@ namespace gl {
         /// @param count   Blocks just granted; >= 1.
         void noteGrantLocked(PoolPurpose purpose, int64_t count);
 
+        /// @brief Allocate a first-fit run while holding the pool mutex.
+        /// @details Used by both single-block and contiguous GPU-host grants.
+        /// @param count Positive run length.
+        /// @param purpose Owning accounting category.
+        /// @return Committed stable address; exhaustion asserts.
+        char* grantGpuHostLocked(int32_t count, PoolPurpose purpose);
+
+        /// @brief Validate and free one exact GPU-host lease under the mutex.
+        /// @details Neither live transfer registration nor a partial lease may end.
+        /// @param address Original lease head.
+        /// @param count Exact original length.
+        /// @param purpose Original accounting category.
+        /// @return Nothing.
+        void returnGpuHostLocked(char* address, int32_t count, PoolPurpose purpose);
+
+        struct GpuHostBlock {
+            int32_t run = 0;
+            uint8_t committed = 0;
+            uint8_t purpose = 0;
+            uint8_t pinned = 0;
+            uint8_t padding = 0;
+        };
+        GpuHostBlock* gpuHostDirectory_ = nullptr;
+        int64_t gpuHostDirectoryBlocks_ = 0;
+        int64_t gpuHostCommittedBlocks_ = 0;
+        int64_t gpuHostPinnedBlocks_ = 0;
+        int64_t gpuHostPeakPinnedBlocks_ = 0;
+
         mutable std::mutex mutex_;
         std::mutex sealedMutex_;
         SharedSealedBlock* sealedAvailable_ = nullptr;
@@ -861,8 +1006,10 @@ namespace gl {
         StaticMemoryConfig cfg_{ 0, 0, 0 };
         int64_t totalBlocks_ = 0;
         int64_t carveCursor_ = 0;          // next never-granted block index
-        std::deque<char*> recycled_;       // returned blocks awaiting re-grant
+        std::optional<std::deque<char*>> recycled_;       // returned blocks awaiting re-grant
         std::vector<bool> granted_;        // per-block grant flag (assert aid)
+        std::vector<bool> committed_;      // backing commitment, independent of ownership
+        PoolCommitment commitment_{};
         int64_t blocksInUse_ = 0;
         // Relaxed copy of blocksInUse_ for the lock-free valve check, written
         // under mutex_ wherever blocksInUse_ changes.
@@ -890,7 +1037,7 @@ namespace gl {
         // assert; empty = not installed. See setExhaustionReporter.
         std::function<void(int64_t, int64_t)> exhaustionReporter_;
         int64_t nextDeloadOrdinal_ = 0;    // process-monotonic deload file id
-        std::map<int64_t, std::string> deloadRegistry_;  // ordinal -> chain
+        std::optional<std::map<int64_t, std::string>> deloadRegistry_;  // ordinal -> chain
 
         // v4 raw-eviction extent file (D-195 extent
         // datapath). ONE preallocated file per batch; each LB owns a slab.
@@ -906,7 +1053,7 @@ namespace gl {
         std::atomic<int64_t> extentLiveBytes_{ 0 };
         // ordinal -> current slab, for registry.txt's audit columns only
         // (reload uses the LB's own rawExtentOffset_). Under extentMutex_.
-        std::map<int64_t, SlabAllocation> extentSlabRegistry_;
+        std::optional<std::map<int64_t, SlabAllocation>> extentSlabRegistry_;
     };
 
     /// @brief The process-wide static-memory manager instance.
@@ -925,7 +1072,7 @@ namespace gl {
     /// @details
     /// Thin forwarder to `staticMemory().init(cfg)`; carries the same
     /// idempotent-same-config / assert-on-mismatch contract. Called by the
-    /// `ExpressionAnalyzer` constructor right after the JSON parameter
+    /// `Prover` constructor right after the JSON parameter
     /// parse, and by the unit-test harness with a small test pool.
     ///
     /// @param cfg Pool / block / page sizing triple.
@@ -955,7 +1102,7 @@ namespace gl {
     /// @details
     /// Thin forwarder to `persistentMemory().init(cfg)`; same idempotent-same-
     /// config / assert-on-mismatch contract as `initStaticMemory`. Called by the
-    /// `ExpressionAnalyzer` constructor right after `initStaticMemory`, and by
+    /// `Prover` constructor right after `initStaticMemory`, and by
     /// the unit-test harness with a small test pool.
     ///
     /// @param cfg Persistent pool / block / page sizing triple; its `kind`
@@ -973,7 +1120,7 @@ namespace gl {
     /// whole execution batch. A stand-alone pool by design — nothing reads its
     /// grant ledger, so it plays no role in any deload / throttle / steward
     /// decision, and the mail content never competes with the deloadable main
-    /// pool. The single `ExpressionAnalyzer`-owned `mailArena` draws blocks
+    /// pool. The single `Prover`-owned `mailArena` draws blocks
     /// from it; the `MailLog` containers pack pages out of that arena. Distinct
     /// pool, distinct telemetry, distinct exhaustion assert
     /// (`static_mail_pool_bytes`). Unit tests build private instances and leave
@@ -992,7 +1139,7 @@ namespace gl {
     /// Thin forwarder to `mailMemory().init(cfg)`; same idempotent-same-config
     /// / assert-on-mismatch contract as `initStaticMemory`. Asserts the config
     /// carries `PoolKind::Mail` so the exhaustion assert names the right knob.
-    /// Called by the `ExpressionAnalyzer` constructor right after
+    /// Called by the `Prover` constructor right after
     /// `initPersistentMemory`, and by the unit-test harness with a small test
     /// pool.
     ///
@@ -1005,7 +1152,7 @@ namespace gl {
     ///
     /// @details
     /// A separate reservation from the three pools above, NEVER deloaded: it
-    /// backs the `LbStore` on the `ExpressionAnalyzer`, which places every
+    /// backs the `LbStore` on the `Prover`, which places every
     /// `Memory` node object into a fixed-size slot carved from this pool's
     /// blocks instead of the malloc heap. A stand-alone pool by design —
     /// nothing reads its grant ledger, so it plays no role in any deload /
@@ -1028,11 +1175,22 @@ namespace gl {
     /// Thin forwarder to `lbMemory().init(cfg)`; same idempotent-same-config
     /// / assert-on-mismatch contract as `initStaticMemory`. Asserts the config
     /// carries `PoolKind::Lb` so the exhaustion assert names the right knob.
-    /// Called by the `ExpressionAnalyzer` constructor right after
+    /// Called by the `Prover` constructor right after
     /// `initMailMemory`, and by the unit-test harness with a small test pool.
     ///
     /// @param cfg LB-body pool / block / page sizing triple; `kind` must be
     ///            `PoolKind::Lb`.
     void initLbMemory(const StaticMemoryConfig& cfg);
+
+    /// @brief Access the separately initialized GPU-host pool.
+    /// @details Access alone reserves nothing; initialization precedes allocation.
+    /// @return Process-wide fifth static-memory manager.
+    GlobalMemoryManager& gpuHostMemory();
+
+    /// @brief Initialize an independent GPU-host reservation.
+    /// @details Uses the normal immutable-shape initialization contract.
+    /// @param cfg Positive valid geometry with kind GpuHost.
+    /// @return Nothing.
+    void initGpuHostMemory(const StaticMemoryConfig& cfg);
 
 }

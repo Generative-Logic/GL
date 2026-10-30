@@ -27,43 +27,49 @@
 ///        (stage / drain, sibling and per-head staging) and the
 ///        `SimpleMapStore::findChild` span overload.
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "scope_lifecycle_fixture.hpp"
+
 
 #include "../prover.hpp"
 
 TEST(twin_deactivation, stage_and_drain_deactivates_active_twin) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory mb;
-    mb.contradictionTheoremId = mb.nameMap.encode("(x)");
-    ASSERT_TRUE(mb.isActive);
-    ea.stageTwinDeactivation(&mb);
-    ea.drainPendingTwinDeactivations();
-    ASSERT_FALSE(mb.isActive);
-    ASSERT_EQ(mb.contradictionTheoremId, 0);
+    ((mb).contradictionTheoremId) = ((mb).nameMap).encode("(x)");
+    ASSERT_TRUE(((mb).isActive));
+    gl::tests::ScopeLifecycleFixture::stageTwinDeactivation(ea.scopeLifecycle, &mb);
+    ea.scopeLifecycle.drainPendingTwinDeactivations();
+    ASSERT_FALSE(((mb).isActive));
+    ASSERT_EQ(((mb).contradictionTheoremId), 0);
 }
 
 TEST(twin_deactivation, null_stage_and_inactive_twin_are_noops) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     // Contracted no-twin case: staging nullptr stages nothing.
-    ea.stageTwinDeactivation(nullptr);
-    ea.drainPendingTwinDeactivations();
+    gl::tests::ScopeLifecycleFixture::stageTwinDeactivation(ea.scopeLifecycle, nullptr);
+    ea.scopeLifecycle.drainPendingTwinDeactivations();
     // Already-inactive twin (it fired on its own first): untouched.
     gl::Memory mb;
-    mb.isActive = false;
-    const gl::NameId keep = mb.nameMap.encode("(x)");
-    mb.contradictionTheoremId = keep;
-    ea.stageTwinDeactivation(&mb);
-    ea.drainPendingTwinDeactivations();
-    ASSERT_EQ(mb.contradictionTheoremId, keep);
+    ((mb).isActive) = false;
+    const gl::NameId keep = ((mb).nameMap).encode("(x)");
+    ((mb).contradictionTheoremId) = keep;
+    gl::tests::ScopeLifecycleFixture::stageTwinDeactivation(ea.scopeLifecycle, &mb);
+    ea.scopeLifecycle.drainPendingTwinDeactivations();
+    ASSERT_EQ(((mb).contradictionTheoremId), keep);
 }
 
 TEST(twin_deactivation, sibling_staged_from_fired_complement) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.try_contradiction = true;
     ea.parameters.try_contradiction_negated_head = true;
     const std::string conj =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
-    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
 
     gl::Memory* anchorLB =
         ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -78,19 +84,19 @@ TEST(twin_deactivation, sibling_staged_from_fired_complement) {
     gl::ScratchArena arena;
     arena.bind(&gl::staticMemory());
     // The complement "fired": its sibling (the verbatim LB) retires.
-    ea.stageContradictionSiblingTwin(*complementLB, arena);
-    ea.drainPendingTwinDeactivations();
-    ASSERT_FALSE(verbatimLB->isActive);
-    ASSERT_TRUE(complementLB->isActive);
+    ea.scopeLifecycle.stageContradictionSiblingTwin(*complementLB, arena);
+    ea.scopeLifecycle.drainPendingTwinDeactivations();
+    ASSERT_FALSE(((*(verbatimLB)).isActive));
+    ASSERT_TRUE(((*(complementLB)).isActive));
 }
 
 TEST(twin_deactivation, both_twins_staged_from_chain_lb_head) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.try_contradiction = true;
     ea.parameters.try_contradiction_negated_head = true;
     const std::string conj =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
-    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
 
     gl::Memory* anchorLB =
         ea.simpleMapStore.findChild(&ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -103,19 +109,19 @@ TEST(twin_deactivation, both_twins_staged_from_chain_lb_head) {
     gl::ScratchArena arena;
     arena.bind(&gl::staticMemory());
     const std::string head = "(=[7,8])";
-    ea.stageContradictionTwinsOfHead(*innerLB, gl::StrSpan(head), arena);
-    ea.drainPendingTwinDeactivations();
-    ASSERT_FALSE(verbatimLB->isActive);
-    ASSERT_FALSE(complementLB->isActive);
-    ASSERT_TRUE(innerLB->isActive);
+    ea.scopeLifecycle.stageContradictionTwinsOfHead(*innerLB, gl::StrSpan(head), arena);
+    ea.scopeLifecycle.drainPendingTwinDeactivations();
+    ASSERT_FALSE(((*(verbatimLB)).isActive));
+    ASSERT_FALSE(((*(complementLB)).isActive));
+    ASSERT_TRUE(((*(innerLB)).isActive));
 }
 
 TEST(twin_deactivation, find_child_span_overload_matches_string) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.try_contradiction = true;
     const std::string conj =
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
-    ea.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
+    ea.proofGridBuilder.addTheoremToMemory(conj, ea.body, 0, false, ea.globalDependencies);
 
     const std::string key = "(AnchorPeano[1,2,3,4,5,6])";
     gl::Memory* viaString = ea.simpleMapStore.findChild(&ea.body, key);

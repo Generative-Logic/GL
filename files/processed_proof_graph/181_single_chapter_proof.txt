@@ -1,0 +1,19 @@
+(inSequence[N,v2,V1])	main	implication	(>[v3](in[v3,N])(>[](in2[v3,v2,V1])(inSequence[N,v2,V1])))	main	(in2[i0,v2,V1])	main	(in[i0,N])	main
+(>[v3](in[v3,N])(>[](in2[v3,v2,V1])(inSequence[N,v2,V1])))	main	expansion	(implication2667[N,v2,V1])	main
+(implication2667[N,v2,V1])	main	reformulation for integration >[bound]	!(>[v4](in[v4,N])!(in2[v4,v2,V1]))_integration_goal	main
+!(>[v4](in[v4,N])!(in2[v4,v2,V1]))_integration_goal	main	expansion for integration	(inSequence[N,v2,V1])_integration_goal	main
+(in2[i0,v2,V1])	main	equality1	(in2[i0_copy,v1,V1])	main	(=[i0_copy,i0])	main	(=[v1,v2])	main
+(in2[i0_copy,v1,V1])	main	implication	(>[w1](=[w1,i0])(>[w2](=[w2,v2])(in2[w1,w2,V1])))	main	(=[i0_copy,i0])	main	(=[v1,v2])	main
+(>[w1](=[w1,i0])(>[w2](=[w2,v2])(in2[w1,w2,V1])))	main	expansion	(implication2439[i0,v2,V1])	main
+(implication2439[i0,v2,V1])	main	equality1	(implication2439[i0,v1,V1])	main	(=[v1,v2])	main
+(implication2439[i0,v1,V1])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main	expansion	(EnumerationRelationSet1[i0,v1,V1])	main
+(=[i0_copy,i0])	main	symmetry of equality	(=[i0,i0_copy])	main
+(=[i0,i0_copy])	main	variable copy
+(in[i0,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(=[v1,v2])	main	task formulation
+(EnumerationRelationSet1[i0,v1,V1])	main	task formulation
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation

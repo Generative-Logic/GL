@@ -23,13 +23,15 @@ def source_fingerprints(root: Path) -> dict[str, str]:
 
     @param root Absolute project directory containing the pipeline inputs.
     @return Relative input paths mapped to their SHA-256 digests.
-    @invariant Required FTA configuration and supplied goals exist.
+    @invariant The FTA configuration and its supplied goals exist.
     """
+    paths = set()
     config_path = root / "files/config/ConfigFTA.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     goals = root / config["external_conjectures_file"]
-    assert goals.is_file() and goals.read_text(encoding="utf-8").strip()
-    paths = {goals, config_path}
+    assert goals.is_file() and goals.read_text(encoding="utf-8").strip(), \
+        f"FTA supplied goals are missing or empty: {goals}"
+    paths.update({goals, config_path})
     for directory in ("files/config", "files/definitions"):
         paths.update(path for path in (root / directory).rglob("*") if path.is_file())
     return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()

@@ -167,7 +167,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
 
 
-def load_lean_export(out_dir: Path, proc_dir: Path) -> LeanExportView | None:
+def load_lean_export(out_dir: Path, proc_dir: Path, kernel_check_running: bool = False) -> LeanExportView | None:
     """
     @brief Read the export folder of one proof graph.
     @details
@@ -178,11 +178,14 @@ def load_lean_export(out_dir: Path, proc_dir: Path) -> LeanExportView | None:
     equal the hash of `<proc_dir>/global_theorem_list.txt` (the shortcut's
     folder also holds the copied Peano and Gauss corpora of the full run,
     whose source indices would otherwise collide with the shortcut's). The
-    kernel-check log must record success for every command; the pipeline
-    never reaches the HTML stage otherwise, so a failing log is a stale folder
-    and asserts.
+    pipeline renders the main pages while the export's kernel check runs; its
+    log then holds the command line and no exit code yet, and the pipeline
+    fails afterwards if the check fails. Otherwise the log must record success
+    for every command, so a failing log is a stale folder and asserts.
     @param out_dir The proof graph's HTML folder.
     @param proc_dir The proof graph's processed folder (for the list hash).
+    @param kernel_check_running Whether this export's kernel check is still
+           running (the pipeline's main HTML stage).
     @return The export view, or None when the folder is absent.
     """
 
@@ -195,7 +198,10 @@ def load_lean_export(out_dir: Path, proc_dir: Path) -> LeanExportView | None:
         for line in log.read_text(encoding="utf-8").splitlines()
         if line.startswith("exit ")
     ]
-    assert exits and all(code == 0 for code in exits), f"stale Lean export: {log} records a failure"
+    if kernel_check_running:
+        assert not exits, f"{log} records an exit code while its kernel check is still running"
+    else:
+        assert exits and all(code == 0 for code in exits), f"stale Lean export: {log} records a failure"
     toolchain = (export_dir / TOOLCHAIN_FILE).read_text(encoding="utf-8").strip()
     graph_hash = _sha256(proc_dir / "global_theorem_list.txt")
     theorems: dict[int, LeanTheoremView] = {}
@@ -272,7 +278,7 @@ def toc_link(export: LeanExportView | None, source_index: int, chapter_num: int)
     if export is None or source_index not in export.theorems:
         return ""
     return (
-        f" <a href='{lean_page_name(chapter_num)}' style='font-size:0.8em; color:#8B8FA5;'>"
+        f" <a href='{lean_page_name(chapter_num)}' style='font-size:0.8em; color:var(--gl-text-muted);'>"
         "[Lean 4]</a>"
     )
 
@@ -287,7 +293,7 @@ def render_index_summary(export: LeanExportView | None) -> str:
     if export is None:
         return ""
     return (
-        '  <p style="color:#8B8FA5; margin:0.2em 0 1em 0;">'
+        '  <p style="color:var(--gl-text-muted); margin:0.2em 0 1em 0;">'
         f"Lean 4 export: {len(export.theorems)} theorems and {export.row_facts} named row facts, "
         f"kernel-checked with <code>{html.escape(export.toolchain)}</code> — "
         f"<a href='{export.folder}/{KERNEL_LOG}'>kernel check log</a>. "
@@ -344,10 +350,10 @@ def render_lean_page(
 {license_head_meta}
   {common_style}
   <style>
-    pre.lean {{ background:#20232F; border:1px solid #3A3D4A; border-radius:6px; padding:1em; overflow-x:auto; line-height:1.45; font-size:0.92em; }}
-    pre.lean .lc {{ color:#8B8FA5; font-style:italic; }}
-    pre.lean .lk {{ color:#5DCAA5; }}
-    .lean-card {{ background:#20232F; border:1px solid #3A3D4A; border-radius:6px; padding:0.8em 1em; margin:1em 0; color:#F0E8DC; }}
+    pre.lean {{ background:var(--gl-surface-sunken); border:1px solid var(--gl-rule); border-radius:6px; padding:1em; overflow-x:auto; line-height:1.45; font-size:0.92em; }}
+    pre.lean .lc {{ color:var(--gl-text-muted); font-style:italic; }}
+    pre.lean .lk {{ color:var(--gl-link); }}
+    .lean-card {{ background:var(--gl-surface-sunken); border:1px solid var(--gl-rule); border-radius:6px; padding:0.8em 1em; margin:1em 0; color:var(--gl-text); }}
     .lean-card td {{ vertical-align:top; }}
   </style>
 </head>
@@ -361,7 +367,7 @@ def render_lean_page(
     <a href="{folder}/{KERNEL_LOG}">Kernel check log</a>
   </nav>
   <h1>Chapter {chapter_num} — Lean 4 proof: <span>{statement_html}</span></h1>
-  <div style="margin-left:20px; color:#8B8FA5; font-weight:bold; font-size:1.3em;">{readable_html}</div>
+  <div style="margin-left:20px; color:var(--gl-text-muted); font-family:var(--gl-font-math); font-weight:bold; font-size:1.3em;">{readable_html}</div>
   <div class="lean-card">
     <p style="margin:0 0 0.6em 0;">The same proof, replayed in Lean 4 and accepted by its kernel. Every proof
     row of the HTML chapter is one named fact (<code>row_&lt;line&gt;</code>) whose comment names the GL

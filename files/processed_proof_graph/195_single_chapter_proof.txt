@@ -1,0 +1,55 @@
+(bez1[N,+,*,i1,v4,v1])	main	or convergence	(or6[N,+,*,i1,v1,v5,v3,v6])	main	(bez1[N,+,*,i1,v4,v1])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	(bez1[N,+,*,i1,v4,v1])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(bez1[N,+,*,i1,v4,v1])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	implication	(>[v7](in[v7,N])(>[v8](in[v8,N])(>[](or6[N,+,*,i1,v4,v7,v1,v8])(bez1[N,+,*,i1,v4,v1]))))	main	(in[v6,N])	main	(in[v9,N])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	(or6[N,+,*,i1,v4,v6,v1,v9])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(in[v9,N])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	implication	(>[w1,w2,w3](in3[w1,w2,w3,+])(in[w3,N]))	main	(in3[v13,v5,v9,+])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(or6[N,+,*,i1,v4,v6,v1,v9])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	implication	(>[v15,v16](bezEq[N,+,*,i1,v4,v15,v1,v16])(or6[N,+,*,i1,v4,v15,v1,v16]))	main	(bezEq[N,+,*,i1,v4,v6,v1,v9])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(in3[v13,v5,v9,+])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	disintegration	!(>[v9](in3[v13,v5,v9,+])!(bezEq[N,+,*,i1,v4,v6,v1,v9]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(bezEq[N,+,*,i1,v4,v6,v1,v9])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	disintegration	!(>[v9](in3[v13,v5,v9,+])!(bezEq[N,+,*,i1,v4,v6,v1,v9]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+!(>[v9](in3[v13,v5,v9,+])!(bezEq[N,+,*,i1,v4,v6,v1,v9]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	expansion	(existence17[v13,v5,+,N,*,i1,v4,v6,v1])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(existence17[v13,v5,+,N,*,i1,v4,v6,v1])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,*])(>[w4,w5](in3[w3,w4,w5,+])(>[w6,w7](bezEq[N,+,*,i1,w4,w6,w1,w7])(>[w8](in3[w2,w6,w8,*])(existence17[w8,w7,+,N,*,i1,w5,w6,w1]))))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(bezEq[N,+,*,i1,v3,v6,v1,v5])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	(in3[v2,v3,v4,+])	main	(in3[v1,v14,v2,*])	main	(in3[v14,v6,v13,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(in3[v14,v6,v13,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	disintegration	!(>[v13](in[v13,N])!(in3[v14,v6,v13,*]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+!(>[v13](in[v13,N])!(in3[v14,v6,v13,*]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	expansion	(existence1[N,v14,v6,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))
+(bezEq[N,+,*,i1,v3,v6,v1,v5])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	or disintegration	(or6[N,+,*,i1,v1,v5,v3,v6])	main
+(existence1[N,v14,v6,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v3,v6,v1,v5]))	zoom in	(existence1[N,v14,v6,*])	main
+(bez1[N,+,*,i1,v4,v1])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	implication	(>[v7](in[v7,N])(>[v8](in[v8,N])(>[](or6[N,+,*,i1,v4,v7,v1,v8])(bez1[N,+,*,i1,v4,v1]))))	main	(in[v6,N])	main	(in[v17,N])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	(or6[N,+,*,i1,v4,v6,v1,v17])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(in[v17,N])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	implication	(>[w1,w2,w3](in3[w1,w2,w3,+])(in[w3,N]))	main	(in3[v5,v18,v17,+])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(or6[N,+,*,i1,v4,v6,v1,v17])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	implication	(>[v19,v20](bezEq[N,+,*,i1,v1,v19,v4,v20])(or6[N,+,*,i1,v4,v20,v1,v19]))	main	(bezEq[N,+,*,i1,v1,v17,v4,v6])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(in3[v5,v18,v17,+])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	disintegration	!(>[v17](in3[v5,v18,v17,+])!(bezEq[N,+,*,i1,v1,v17,v4,v6]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(bezEq[N,+,*,i1,v1,v17,v4,v6])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	disintegration	!(>[v17](in3[v5,v18,v17,+])!(bezEq[N,+,*,i1,v1,v17,v4,v6]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+!(>[v17](in3[v5,v18,v17,+])!(bezEq[N,+,*,i1,v1,v17,v4,v6]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	expansion	(existence18[v5,v18,+,N,*,i1,v1,v4,v6])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(existence18[v5,v18,+,N,*,i1,v1,v4,v6])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,*])(>[w4,w5](in3[w3,w4,w5,+])(>[w6,w7](bezEq[N,+,*,i1,w1,w6,w4,w7])(>[w8](in3[w2,w7,w8,*])(existence18[w6,w8,+,N,*,i1,w1,w5,w7]))))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(bezEq[N,+,*,i1,v1,v5,v3,v6])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	(in3[v2,v3,v4,+])	main	(in3[v1,v14,v2,*])	main	(in3[v14,v6,v18,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(in3[v14,v6,v18,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	disintegration	!(>[v18](in[v18,N])!(in3[v14,v6,v18,*]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+!(>[v18](in[v18,N])!(in3[v14,v6,v18,*]))	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	expansion	(existence1[N,v14,v6,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))
+(bezEq[N,+,*,i1,v1,v5,v3,v6])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	or disintegration	(or6[N,+,*,i1,v1,v5,v3,v6])	main
+(existence1[N,v14,v6,*])	main_boundary_ordis_(or6[N,+,*,i1,v1,v5,v3,v6])_((bezEq[N,+,*,i1,v1,v5,v3,v6]))	zoom in	(existence1[N,v14,v6,*])	main
+(existence1[N,v14,v6,*])	main	implication	(>[w1](in[w1,N])(>[w2](in[w2,N])(existence1[N,w1,w2,*])))	main	(in[v14,N])	main	(in[v6,N])	main
+(or6[N,+,*,i1,v1,v5,v3,v6])	main	disintegration	!(>[v6](in[v6,N])!(or6[N,+,*,i1,v1,v5,v3,v6]))	main
+(in[v6,N])	main	disintegration	!(>[v6](in[v6,N])!(or6[N,+,*,i1,v1,v5,v3,v6]))	main
+!(>[v6](in[v6,N])!(or6[N,+,*,i1,v1,v5,v3,v6]))	main	expansion	(existence14[N,+,*,i1,v1,v5,v3])	main
+(existence14[N,+,*,i1,v1,v5,v3])	main	disintegration	!(>[v5](in[v5,N])!(existence14[N,+,*,i1,v1,v5,v3]))	main
+!(>[v5](in[v5,N])!(existence14[N,+,*,i1,v1,v5,v3]))	main	expansion	(bez1[N,+,*,i1,v1,v3])	main
+(bez1[N,+,*,i1,v1,v3])	main	task formulation
+(>[v15,v16](bezEq[N,+,*,i1,v4,v15,v1,v16])(or6[N,+,*,i1,v4,v15,v1,v16]))	main	expansion	(implication2472[N,+,*,i1,v4,v1])	main
+(implication2472[N,+,*,i1,v4,v1])	main	expansion	(implication2471[N,+,*,i1,v4,v1])	main
+(>[v19,v20](bezEq[N,+,*,i1,v1,v19,v4,v20])(or6[N,+,*,i1,v4,v20,v1,v19]))	main	expansion	(implication2473[N,+,*,i1,v1,v4])	main
+(implication2473[N,+,*,i1,v1,v4])	main	expansion	(implication2471[N,+,*,i1,v4,v1])	main
+(>[v7](in[v7,N])(>[v8](in[v8,N])(>[](or6[N,+,*,i1,v4,v7,v1,v8])(bez1[N,+,*,i1,v4,v1]))))	main	expansion	(implication2471[N,+,*,i1,v4,v1])	main
+(implication2471[N,+,*,i1,v4,v1])	main	reformulation for integration flattened	(bez1[N,+,*,i1,v4,v1])_integration_goal	main
+(>[w1](in[w1,N])(>[w2](in[w2,N])(existence1[N,w1,w2,*])))	main	expansion	(implication18[N,N,N,*])	main
+(implication18[N,N,N,*])	main	disintegration	(&(&(&(&(implication11[*,N])(implication12[*,N]))(implication13[*,N]))(implication18[N,N,N,*]))(implication19[N,N,*]))	main
+(&(&(&(&(implication11[*,N])(implication12[*,N]))(implication13[*,N]))(implication18[N,N,N,*]))(implication19[N,N,*]))	main	expansion	(fXYZ[*,N,N,N])	main
+(fXYZ[*,N,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main
+(>[w1,w2,w3](in3[w1,w2,w3,+])(in[w3,N]))	main	expansion	(implication13[+,N])	main
+(implication13[+,N])	main	disintegration	(&(&(&(&(implication11[+,N])(implication12[+,N]))(implication13[+,N]))(implication18[N,N,N,+]))(implication19[N,N,+]))	main
+(&(&(&(&(implication11[+,N])(implication12[+,N]))(implication13[+,N]))(implication18[N,N,N,+]))(implication19[N,N,+]))	main	expansion	(fXYZ[+,N,N,N])	main
+(fXYZ[+,N,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in[v14,N])	main	disintegration	!(>[v14](in[v14,N])!(in3[v1,v14,v2,*]))	main
+(in3[v1,v14,v2,*])	main	disintegration	!(>[v14](in[v14,N])!(in3[v1,v14,v2,*]))	main
+!(>[v14](in[v14,N])!(in3[v1,v14,v2,*]))	main	expansion	(preorder[N,*,v1,v2])	main
+(preorder[N,*,v1,v2])	main	task formulation
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v3,v4,v5,+])(>[v6,v7](bezEq[N,+,*,i1,v4,v6,v1,v7])(>[v8](in3[v2,v6,v8,*])(existence17[v8,v7,+,N,*,i1,v5,v6,v1]))))))	main	theorem
+(in3[v2,v3,v4,+])	main	task formulation
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v3,v4,v5,+])(>[v6,v7](bezEq[N,+,*,i1,v1,v6,v4,v7])(>[v8](in3[v2,v7,v8,*])(existence18[v6,v8,+,N,*,i1,v1,v5,v7]))))))	main	theorem

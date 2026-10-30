@@ -30,7 +30,15 @@
 ///        round-tripped through the GL binary, and completed at the seam
 ///        for an existence loaded without the field.
 
+#include "../compiler/compact_expression_syntax.hpp"
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "disintegration_processor_fixture.hpp"
+
+#include "compiled_definition_fixture.hpp"
 
 #include "../prover.hpp"
 
@@ -42,14 +50,13 @@
 #include <vector>
 
 TEST(contraposition, all_covering_combinations_preserve_defining_elements) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     std::string expression = "(&(>[x,y](in2[x,y,f])(in[x,A]))(&(>[x,y](in2[x,y,f])(in[y,B]))(>[x,y](in2[x,y,f])(in2[x,y,g]))))";
-    expression = ea.compileCoreExpressionMapCore(expression, ea.implCounter,
-        ea.existenceCounter, ea.andCounter, ea.orCounter, ea.variableCounter);
+    expression = ea.structuralCompiler.compileExpression(expression);
     const std::string name = gl::extractExpressionUniversalSpan(gl::StrSpan(expression)).toStdString();
-    const auto originalElements = ea.compiledExpressions.at(name).elements;
-    ea.compileContrapositionFamilies();
-    const auto& owner = ea.compiledExpressions.at(name);
+    const auto originalElements = gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).at(name).elements;
+    ea.supportingRuleCompiler.compileContrapositionFamilies();
+    const auto& owner = gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).at(name);
     ASSERT_TRUE(owner.elements == originalElements);
     ASSERT_EQ(owner.contrapositives.size(), std::size_t(5));
     std::size_t singles = 0, pairs = 0, triples = 0;
@@ -61,43 +68,114 @@ TEST(contraposition, all_covering_combinations_preserve_defining_elements) {
     ASSERT_EQ(singles, std::size_t(1));
     ASSERT_EQ(pairs, std::size_t(3));
     ASSERT_EQ(triples, std::size_t(1));
-    const auto count = ea.compiledExpressions.size();
-    ea.compileContrapositionFamilies();
-    ASSERT_EQ(ea.compiledExpressions.size(), count);
+    const auto count = gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).size();
+    ea.supportingRuleCompiler.compileContrapositionFamilies();
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).size(), count);
 }
 
 TEST(contraposition, excludes_negative_typing_body_rule_only) {
     const gl::LogicalEntity excluded("implication",
         {"(in2[u_1,1,u_2])", "!(in[1,u_3])"}, "(implication90[u_1,u_2,u_3])", 3);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::isContrapositionTypingExclusion(excluded));
+    ASSERT_TRUE(gl::SupportingRuleCompiler::isContrapositionTypingExclusion(excluded));
     auto candidate = excluded;
     candidate.elements[1] = "(in[1,u_3])";
-    ASSERT_FALSE(gl::ExpressionAnalyzer::isContrapositionTypingExclusion(candidate));
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionTypingExclusion(candidate));
     candidate.elements[1] = "!(in2[1,u_3,u_2])";
-    ASSERT_FALSE(gl::ExpressionAnalyzer::isContrapositionTypingExclusion(candidate));
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionTypingExclusion(candidate));
     candidate.elements[1] = "!(in[u_3,u_2])";
-    ASSERT_FALSE(gl::ExpressionAnalyzer::isContrapositionTypingExclusion(candidate));
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionTypingExclusion(candidate));
     candidate.elements = {"(in2[1,2,u_1])", "!(in[1,u_2])"};
-    ASSERT_FALSE(gl::ExpressionAnalyzer::isContrapositionTypingExclusion(candidate));
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionTypingExclusion(candidate));
     candidate.elements = {"(in2[u_1,1,u_2])", "(in[1,u_3])", "!(in[1,u_3])"};
-    ASSERT_FALSE(gl::ExpressionAnalyzer::isContrapositionTypingExclusion(candidate));
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionTypingExclusion(candidate));
+}
+
+TEST(contraposition, excludes_public_definition_with_uncovered_premise_binder_only) {
+    const gl::LogicalEntity definition("implication",
+        {"(in2[1,2,u_6])", "(prime[u_1,u_2,u_3,u_4,u_5,2])"},
+        "(primeseq[u_1,u_2,u_3,u_4,u_5,u_6])", 6);
+    ASSERT_TRUE(gl::SupportingRuleCompiler::isContrapositionUncoveredDefinition(definition, true));
+    // A generated compact of the same shape keeps the I-260 coverage assert.
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionUncoveredDefinition(definition, false));
+    auto candidate = definition;
+    candidate.elements[1] = "(in2[2,1,u_6])";
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionUncoveredDefinition(candidate, true));
+    candidate = definition;
+    candidate.category = "and";
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionUncoveredDefinition(candidate, true));
+    candidate = definition;
+    candidate.elements = {"(in2[1,2,u_6])", "(in[1,u_1])", "(prime[u_1,u_2,u_3,u_4,u_5,2])"};
+    ASSERT_FALSE(gl::SupportingRuleCompiler::isContrapositionUncoveredDefinition(candidate, true));
+}
+
+TEST(contraposition, primeseq_definition_prepares_no_reversal) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    ea.supportingRuleCompiler.compileContrapositionFamilies();
+    const auto& entity = gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).at("primeseq");
+    ASSERT_TRUE(entity.category == "implication");
+    ASSERT_TRUE(entity.contrapositionPrepared);
+    ASSERT_TRUE(entity.contrapositives.empty());
+}
+
+TEST(status_gate, configured_implication_definition_is_a_rule_carrier) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    ASSERT_TRUE(ea.statementMemory.isConfiguredImplicationCarrier(gl::StrSpan("(primeseq[1,4,5,6,7,9])")));
+    ASSERT_FALSE(ea.statementMemory.isConfiguredImplicationCarrier(gl::StrSpan("!(primeseq[1,4,5,6,7,9])")));
+    ASSERT_FALSE(ea.statementMemory.isConfiguredImplicationCarrier(gl::StrSpan("(prime[1,4,5,6,7,9])")));
+    ASSERT_FALSE(ea.statementMemory.isConfiguredImplicationCarrier(gl::StrSpan("(in2[1,9,10])")));
+    ASSERT_FALSE(ea.statementMemory.isConfiguredImplicationCarrier(gl::StrSpan("(implication1[1,9])")));
+    ASSERT_FALSE(gl::CompactExpressionSyntax::isCompactImplicationSpan(gl::StrSpan("(primeseq[1,4,5,6,7,9])")));
+}
+
+// The registry predicate behind the rule-carrier test and the and-gates: a
+// positive instance of a configured definition compiled as an implication.
+TEST(compiled_definition_registry, configured_implication_is_a_positive_configured_implication) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    ASSERT_TRUE(ea.definitions.isConfiguredImplication(gl::StrSpan("(subset[1,2])")));
+    ASSERT_TRUE(ea.definitions.isConfiguredImplication(gl::StrSpan("(primeseq[1,4,5,6,7,9])")));
+    ASSERT_FALSE(ea.definitions.isConfiguredImplication(gl::StrSpan("!(subset[1,2])")));
+    ASSERT_FALSE(ea.definitions.isConfiguredImplication(gl::StrSpan("(prime[1,4,5,6,7,9])")));
+    ASSERT_FALSE(ea.definitions.isConfiguredImplication(gl::StrSpan("(in2[1,9,10])")));
+    ASSERT_FALSE(ea.definitions.isConfiguredImplication(gl::StrSpan("(implication1[1,9])")));
+    ASSERT_FALSE(ea.definitions.isConfiguredImplication(gl::StrSpan("(notConfiguredAnywhere[1,9])")));
+}
+
+TEST(status_gate, inherited_configured_implication_installs_its_rule) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    const int levels[] = {0};
+    const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
+    const int32_t before = ((((ea.body).overallHashMemory)).originals).count();
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan("(prime[1,4,5,6,7,9])"), ea.body, 0, 3, levels, 1,
+        origin, -1, -1, gl::StrSpan("main", 4), false);
+    ASSERT_EQ(((((ea.body).overallHashMemory)).originals).count(), before);
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan("(primeseq[1,4,5,6,7,9])"), ea.body, 0, 3, levels, 1,
+        origin, -1, -1, gl::StrSpan("main", 4), false);
+    bool installed = false;
+    for (int32_t id = before + 1; id <= ((((ea.body).overallHashMemory)).originals).count(); ++id) {
+        const auto view = gl::viewIdVecKey(((((ea.body).overallHashMemory)).originals).inner().keyAt(id));
+        if (view.count() != 2) continue;
+        installed = installed
+            || (((ea.body).ruleInterner).decode(view.idAt(0)) == "(in2[1,2,u_9])"
+                && ((ea.body).ruleInterner).decode(view.idAt(1)) == "(prime[u_1,u_4,u_5,u_6,u_7,2])");
+    }
+    ASSERT_TRUE(installed);
 }
 
 TEST(contraposition, fxy_domain_group_and_hypothetical_publication_boundary) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ea.compileContrapositionFamilies();
-    const auto& owner = ea.compiledExpressions.at("fXY");
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ea.supportingRuleCompiler.compileContrapositionFamilies();
+    const auto& owner = gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).at("fXY");
     bool groupedDomain = false;
     for (const auto& row : owner.contrapositives)
         groupedDomain = groupedDomain || row.sources.size() == 2;
     ASSERT_TRUE(groupedDomain);
     const auto slot = gl::genScratchArenas().slotCount() - 1;
     auto& arena = gl::genScratchArenas().forSlot(slot);
-    gl::ExpressionAnalyzer::CollectedArena collected(&arena);
-    const auto before = ea.body.exprOriginMap.count();
-    ea.collectContrapositionProducts(gl::StrSpan("(fXY[u_f,u_I,u_N])", 18),
+    gl::CollectedArena collected(&arena);
+    const auto before = ((ea.body).exprOriginMap).count();
+    gl::tests::DisintegrationProcessorFixture::collectContrapositionProducts(ea.disintegrationProcessor, gl::StrSpan("(fXY[u_f,u_I,u_N])", 18),
         gl::StrSpan("(fXY[f,I,N])", 12), ea.body, collected, gl::StrSpan("main", 4), false);
-    ASSERT_EQ(ea.body.exprOriginMap.count(), before);
+    ASSERT_EQ(((ea.body).exprOriginMap).count(), before);
     int rules = 0;
     int groupedCarriers = 0;
     collected.forEachKey([&](gl::StrSpan key) {
@@ -123,10 +201,10 @@ namespace {
     ///        the full-bind reconstruction over the substituted elements.
     ///        Returns an empty string when the entry is missing or is not an
     ///        implication (the test asserts on it).
-    std::string expandCompact(gl::ExpressionAnalyzer& ea,
+    std::string expandCompact(gl::tests::ProverFixture& ea,
                               const std::string& compact) {
         const gl::LogicalEntity* le =
-            ea.compiledEntity(gl::StrSpan(coreOf(compact)));
+            ea.definitions.compiledEntity(gl::StrSpan(coreOf(compact)));
         if (le == nullptr || le->category != "implication") return "";
         const std::vector<std::string> sigArgs = ce::getArgs(le->signature);
         const std::vector<std::string> instArgs = ce::getArgs(compact);
@@ -141,51 +219,51 @@ namespace {
         }
         if (elems.empty()) return "";
         const std::vector<std::string> premises(elems.begin(), elems.end() - 1);
-        return ea.reconstructImplicationFullBind(premises, elems.back());
+        return gl::ImplicationBuilder::reconstructImplicationFullBind(premises, elems.back());
     }
 
     /// @brief The on-the-spot rule text of an existence entity's rule @p i
     ///        (the disintegrator's former construction over the registry
     ///        elements): `[0]` = left -> !right, `[1]` = right -> !left.
-    std::string existenceRuleText(gl::ExpressionAnalyzer& ea,
+    std::string existenceRuleText(gl::tests::ProverFixture& ea,
                                   const gl::LogicalEntity& le,
                                   std::size_t i) {
         const std::vector<std::string> premises = { le.elements[i] };
-        return ea.reconstructImplicationFullBind(premises,
-                                                 ea.negate(le.elements[1 - i]));
+        return gl::ImplicationBuilder::reconstructImplicationFullBind(premises,
+                                                 gl::DefinitionExpansion::negate(le.elements[1 - i]));
     }
 
     /// @brief Mint an existence through the compiler's `!(>` branch (the
     ///        theorem-load precompile door) and return its registry name.
-    std::string mintExistence(gl::ExpressionAnalyzer& ea, std::string text) {
-        ea.precompileStructuralOperators(text);
+    std::string mintExistence(gl::tests::ProverFixture& ea, std::string text) {
+        ea.structuralCompiler.precompileStructuralOperators(text);
         return coreOf(text);
     }
 
 } // namespace
 
 TEST(existence_implications, count_formula_named_elements_only) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const gl::LogicalEntity named("existence",
         {"(in[w1,u_1])", "(in2[w1,u_2,u_3])"}, "(existence90[u_1,u_2,u_3])", 3);
-    ASSERT_EQ(ea.existenceImplicationCount(named), 2);
+    ASSERT_EQ(ea.existenceRuleCompiler.existenceImplicationCount(named), 2);
     // A numbered element — a generated compound, registered as a real run
     // registers it — leaves the existence without implications.
-    ea.compiledExpressions["and2"] = gl::LogicalEntity("and",
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["and2"] = gl::LogicalEntity("and",
         {"(in[u_1,u_2])", "(in[u_1,u_3])"}, "(and2[u_1,u_2,u_3])", 3);
-    ea.compiledExpressions["existence17"] = gl::LogicalEntity("existence",
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["existence17"] = gl::LogicalEntity("existence",
         {"(in[w1,u_1])", "(in2[w1,u_2,u_3])"}, "(existence17[u_1,u_2,u_3])", 3);
     const gl::LogicalEntity numbered("existence",
         {"(in[w1,u_1])", "(and2[w1,u_2,u_3])"}, "(existence91[u_1,u_2,u_3])", 3);
-    ASSERT_EQ(ea.existenceImplicationCount(numbered), 0);
+    ASSERT_EQ(ea.existenceRuleCompiler.existenceImplicationCount(numbered), 0);
     const gl::LogicalEntity nested("existence",
         {"(in[w1,u_1])", "(existence17[w1,u_2,u_3])"}, "(existence92[u_1,u_2,u_3])", 3);
-    ASSERT_EQ(ea.existenceImplicationCount(nested), 0);
+    ASSERT_EQ(ea.existenceRuleCompiler.existenceImplicationCount(nested), 0);
     const gl::LogicalEntity one("existence", {"(in[w1,u_1])"}, "(existence93[u_1])", 1);
-    ASSERT_EQ(ea.existenceImplicationCount(one), 0);
+    ASSERT_EQ(ea.existenceRuleCompiler.existenceImplicationCount(one), 0);
     const gl::LogicalEntity three("existence",
         {"(in[w1,u_1])", "(in[w1,u_2])", "(in[w1,u_3])"}, "(existence94[u_1,u_2,u_3])", 3);
-    ASSERT_EQ(ea.existenceImplicationCount(three), 0);
+    ASSERT_EQ(ea.existenceRuleCompiler.existenceImplicationCount(three), 0);
 }
 
 TEST(existence_implications, negated_typed_existence_expands_body_direction_only) {
@@ -193,13 +271,13 @@ TEST(existence_implications, negated_typed_existence_expands_body_direction_only
     // of the two compiled compacts, the typing direction `in[x,a] ->
     // !in2[b,x,c]` is skipped and the body direction `in2[b,x,c] -> !in[x,a]`
     // becomes the one product statement and the one rule.
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string name = mintExistence(ea, "!(>[x](in[x,a])!(in2[b,x,c]))");
-    const gl::LogicalEntity* le = ea.compiledEntity(gl::StrSpan(name));
+    const gl::LogicalEntity* le = ea.definitions.compiledEntity(gl::StrSpan(name));
     ASSERT_TRUE(le != nullptr);
     ASSERT_EQ(static_cast<int>(le->implications.size()), 2);
-    ASSERT_TRUE(ea.isTypingDirectionCompact(gl::StrSpan(le->implications[0])));
-    ASSERT_FALSE(ea.isTypingDirectionCompact(gl::StrSpan(le->implications[1])));
+    ASSERT_TRUE(ea.existenceRuleCompiler.isTypingDirectionCompact(gl::StrSpan(le->implications[0])));
+    ASSERT_FALSE(ea.existenceRuleCompiler.isTypingDirectionCompact(gl::StrSpan(le->implications[1])));
 
     const std::vector<std::string> sigArgs = ce::getArgs(le->signature);
     std::map<std::string, std::string> subst;
@@ -212,16 +290,16 @@ TEST(existence_implications, negated_typed_existence_expands_body_direction_only
     const std::string typingInst = ce::replaceKeysInString(le->implications[0], subst);
     const std::string bodyInst = ce::replaceKeysInString(le->implications[1], subst);
 
-    ea.preMintReducedOrs();
+    ea.orRuleCompiler.preMintReducedOrs();
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{ true, gl::OriginTag::taskFormulation, nullptr, 0 };
-    const int32_t rulesBefore = ea.body.overallHashMemory.originals.count();
-    ea.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
+    const int32_t rulesBefore = ((((ea.body).overallHashMemory)).originals).count();
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
         -1, -1, gl::StrSpan("main", 4), false);
-    ASSERT_EQ(ea.body.overallHashMemory.originals.count(), rulesBefore + 1);
-    ASSERT_TRUE(gl::lookupStatementFlags(ea.body.intKnownStatements, ea.body.nameMap,
+    ASSERT_EQ(((((ea.body).overallHashMemory)).originals).count(), rulesBefore + 1);
+    ASSERT_TRUE(gl::lookupStatementFlags(((ea.body).intKnownStatements), ((ea.body).nameMap),
         gl::StrSpan(bodyInst), gl::StrSpan("main", 4)) != nullptr);
-    ASSERT_TRUE(gl::lookupStatementFlags(ea.body.intKnownStatements, ea.body.nameMap,
+    ASSERT_TRUE(gl::lookupStatementFlags(((ea.body).intKnownStatements), ((ea.body).nameMap),
         gl::StrSpan(typingInst), gl::StrSpan("main", 4)) == nullptr);
 }
 
@@ -230,9 +308,9 @@ TEST(existence_implications, nested_negated_existence_is_a_stored_statement_only
     // (nested) existence. The inner, over named predicates, keeps its two
     // compacts; the outer gets none, and its negation is registered as a
     // plain statement — no compact product, no rule.
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string inner = mintExistence(ea, "!(>[y](in[y,a])!(in2[b,y,c]))");
-    const gl::LogicalEntity* innerLe = ea.compiledEntity(gl::StrSpan(inner));
+    const gl::LogicalEntity* innerLe = ea.definitions.compiledEntity(gl::StrSpan(inner));
     ASSERT_TRUE(innerLe != nullptr);
     ASSERT_EQ(static_cast<int>(innerLe->implications.size()), 2);
     const std::vector<std::string> innerArgs = ce::getArgs(innerLe->signature);
@@ -242,13 +320,13 @@ TEST(existence_implications, nested_negated_existence_is_a_stored_statement_only
     // shape: the gate reads the element's core name only.
     const std::string innerInst = "(" + inner + "[a,z,c])";
     const std::string outer = mintExistence(ea, "!(>[z](in[z,a])!" + innerInst + ")");
-    const gl::LogicalEntity* outerLe = ea.compiledEntity(gl::StrSpan(outer));
+    const gl::LogicalEntity* outerLe = ea.definitions.compiledEntity(gl::StrSpan(outer));
     ASSERT_TRUE(outerLe != nullptr);
     ASSERT_EQ(static_cast<int>(outerLe->elements.size()), 2);
-    ASSERT_EQ(ea.existenceImplicationCount(*outerLe), 0);
+    ASSERT_EQ(ea.existenceRuleCompiler.existenceImplicationCount(*outerLe), 0);
     ASSERT_TRUE(outerLe->implications.empty());
-    ea.preMintReducedOrs();                       // the seam leaves it empty too
-    ASSERT_TRUE(ea.compiledEntity(gl::StrSpan(outer))->implications.empty());
+    ea.orRuleCompiler.preMintReducedOrs();                       // the seam leaves it empty too
+    ASSERT_TRUE(ea.definitions.compiledEntity(gl::StrSpan(outer))->implications.empty());
 
     const std::vector<std::string> outerArgs = ce::getArgs(outerLe->signature);
     std::string inst = "!(" + outer + "[";
@@ -256,21 +334,21 @@ TEST(existence_implications, nested_negated_existence_is_a_stored_statement_only
     inst += "])";
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{ true, gl::OriginTag::taskFormulation, nullptr, 0 };
-    const int32_t rulesBefore = ea.body.overallHashMemory.originals.count();
-    const int32_t rowsBefore = ea.body.intEncodedStatements.size();
-    ea.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
+    const int32_t rulesBefore = ((((ea.body).overallHashMemory)).originals).count();
+    const int32_t rowsBefore = ((ea.body).intEncodedStatements).size();
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
         -1, -1, gl::StrSpan("main", 4), false);
-    ASSERT_TRUE(gl::lookupStatementFlags(ea.body.intKnownStatements, ea.body.nameMap,
+    ASSERT_TRUE(gl::lookupStatementFlags(((ea.body).intKnownStatements), ((ea.body).nameMap),
         gl::StrSpan(inst), gl::StrSpan("main", 4)) != nullptr);
-    ASSERT_EQ(ea.body.intEncodedStatements.size(), rowsBefore + 1);
-    ASSERT_EQ(ea.body.overallHashMemory.originals.count(), rulesBefore);
+    ASSERT_EQ(((ea.body).intEncodedStatements).size(), rowsBefore + 1);
+    ASSERT_EQ(((((ea.body).overallHashMemory)).originals).count(), rulesBefore);
 }
 
 TEST(existence_implications, compacts_compiled_at_mint_expand_to_todays_rules) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string name =
         mintExistence(ea, "!(>[x](in[x,a])!(in2[b,x,c]))");
-    const gl::LogicalEntity* le = ea.compiledEntity(gl::StrSpan(name));
+    const gl::LogicalEntity* le = ea.definitions.compiledEntity(gl::StrSpan(name));
     ASSERT_TRUE(le != nullptr);
     ASSERT_TRUE(le->category == "existence");
     ASSERT_EQ(static_cast<int>(le->elements.size()), 2);
@@ -301,19 +379,18 @@ TEST(existence_implications, compacts_compiled_at_mint_expand_to_todays_rules) {
     const std::string again =
         mintExistence(ea, "!(>[y](in[y,p])!(in2[q,y,r]))");
     ASSERT_TRUE(again == name);
-    ASSERT_EQ(static_cast<int>(ea.compiledEntity(gl::StrSpan(name))->implications.size()), 2);
-    ea.compileExistenceImplications(name);
-    ASSERT_TRUE(ea.compiledEntity(gl::StrSpan(name))->implications == le->implications);
+    ASSERT_EQ(static_cast<int>(ea.definitions.compiledEntity(gl::StrSpan(name))->implications.size()), 2);
+    ea.existenceRuleCompiler.compileExistenceImplications(name);
+    ASSERT_TRUE(ea.definitions.compiledEntity(gl::StrSpan(name))->implications == le->implications);
 
     // The seam is idempotent and leaves a complete list complete.
-    ea.preMintReducedOrs();
-    ASSERT_TRUE(ea.existencesAwaitingImplications.empty());
-    ASSERT_EQ(static_cast<int>(ea.compiledEntity(gl::StrSpan(name))->implications.size()), 2);
+    ea.orRuleCompiler.preMintReducedOrs();
+    ASSERT_EQ(static_cast<int>(ea.definitions.compiledEntity(gl::StrSpan(name))->implications.size()), 2);
 }
 
 TEST(existence_implications, constructor_loads_only_the_binary_it_is_given) {
     namespace fs = std::filesystem;
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     // A nested existence (outer over an instance of a minted inner one):
     // a compound no config compile produces, so its presence in a registry
     // proves the binary was read.
@@ -321,44 +398,44 @@ TEST(existence_implications, constructor_loads_only_the_binary_it_is_given) {
     const std::string outer =
         mintExistence(ea, "!(>[z](in[z,a])!(" + inner + "[a,z,c]))");
     const std::vector<std::string> expectedList =
-        ea.compiledEntity(gl::StrSpan(inner))->implications;
+        ea.definitions.compiledEntity(gl::StrSpan(inner))->implications;
     const fs::path dir = fs::temp_directory_path() / "gl_constructor_binary_test";
     fs::create_directories(dir);
-    ea.exportCompiledExpressionsJSON(dir);
+    ea.compilationPersistence.exportCompiledExpressionsJSON(dir);
     const fs::path binPath = dir / "GL_binary_Peano.json";
     ASSERT_TRUE(fs::exists(binPath));
 
     // Given the file: both existences are part of the registry before the
     // core map is compiled, the inner with its implication list.
-    gl::ExpressionAnalyzer seeded(std::string("Peano"), std::nullopt, binPath);
-    ASSERT_EQ(seeded.compiledExpressions.count(inner), std::size_t(1));
-    ASSERT_EQ(seeded.compiledExpressions.count(outer), std::size_t(1));
-    ASSERT_TRUE(seeded.compiledEntity(gl::StrSpan(inner))->implications == expectedList);
+    gl::tests::ProverFixture seeded(std::string("Peano"), std::nullopt, binPath);
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(seeded.definitions).count(inner), std::size_t(1));
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(seeded.definitions).count(outer), std::size_t(1));
+    ASSERT_TRUE(seeded.definitions.compiledEntity(gl::StrSpan(inner))->implications == expectedList);
 
     // Without a file: nothing is read from disk, so the nested existence
     // does not exist here — the registry is the config's alone.
-    gl::ExpressionAnalyzer fresh(std::string("Peano"));
-    ASSERT_EQ(fresh.compiledExpressions.count(outer), std::size_t(0));
+    gl::tests::ProverFixture fresh(std::string("Peano"));
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(fresh.definitions).count(outer), std::size_t(0));
     fs::remove(binPath);
 }
 
-TEST(existence_implications, binary_round_trip_and_seam_completion) {
+TEST(existence_implications, binary_round_trip_always_writes_the_list) {
     namespace fs = std::filesystem;
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string name =
         mintExistence(ea, "!(>[x](in[x,a])!(in2[b,x,c]))");
     const std::vector<std::string> expectedList =
-        ea.compiledEntity(gl::StrSpan(name))->implications;
+        ea.definitions.compiledEntity(gl::StrSpan(name))->implications;
     ASSERT_EQ(static_cast<int>(expectedList.size()), 2);
 
     const fs::path dir = fs::temp_directory_path() / "gl_existence_implications_test";
     fs::create_directories(dir);
-    ea.exportCompiledExpressionsJSON(dir);
+    ea.compilationPersistence.exportCompiledExpressionsJSON(dir);
     const fs::path binPath = dir / "GL_binary_Peano.json";
     ASSERT_TRUE(fs::exists(binPath));
 
-    // The key is written for the existence; never for an implication /
-    // atomic entry.
+    // The key is written for every or and existence (an empty list
+    // included); never for an implication / atomic entry.
     nlohmann::json root;
     {
         std::ifstream f(binPath.string());
@@ -370,38 +447,19 @@ TEST(existence_implications, binary_round_trip_and_seam_completion) {
         const std::string cat = it.value().value("category", std::string());
         if (cat != "or" && cat != "existence") {
             ASSERT_FALSE(it.value().contains("implications"));
+        } else {
+            ASSERT_TRUE(it.value().contains("implications"));
         }
     }
 
-    // Round trip: a fresh analyzer loads the same list, nothing awaits.
-    gl::ExpressionAnalyzer ea2(std::string("Peano"));
-    ea2.loadGlBinary(binPath);
-    const gl::LogicalEntity* le2 = ea2.compiledEntity(gl::StrSpan(name));
+    // Round trip: a fresh analyzer loads the same list verbatim.
+    gl::tests::ProverFixture ea2(std::string("Peano"));
+    ea2.compilationPersistence.loadGlBinary(binPath);
+    const gl::LogicalEntity* le2 = ea2.definitions.compiledEntity(gl::StrSpan(name));
     ASSERT_TRUE(le2 != nullptr);
     ASSERT_TRUE(le2->implications == expectedList);
-    ASSERT_TRUE(ea2.existencesAwaitingImplications.count(name) == 0);
-
-    // A binary written before the field existed: strip the key from every
-    // entry, load, and let the seam complete the list deterministically.
-    nlohmann::json legacy = root;
-    for (auto it = legacy.begin(); it != legacy.end(); ++it) {
-        if (it.value().contains("implications")) it.value().erase("implications");
-    }
-    const fs::path legacyPath = dir / "GL_binary_legacy.json";
-    {
-        std::ofstream f(legacyPath.string());
-        f << legacy.dump(2);
-    }
-    gl::ExpressionAnalyzer ea3(std::string("Peano"));
-    ea3.loadGlBinary(legacyPath);
-    ASSERT_TRUE(ea3.existencesAwaitingImplications.count(name) == 1);
-    ASSERT_TRUE(ea3.compiledEntity(gl::StrSpan(name))->implications.empty());
-    ea3.preMintReducedOrs();
-    ASSERT_TRUE(ea3.existencesAwaitingImplications.empty());
-    ASSERT_TRUE(ea3.compiledEntity(gl::StrSpan(name))->implications == expectedList);
 
     std::remove(binPath.string().c_str());
-    std::remove(legacyPath.string().c_str());
 }
 
 namespace {
@@ -445,8 +503,8 @@ namespace {
 } // namespace
 
 TEST(contraposition, grouped_source_and_reverse_are_independent_compact_carriers) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    const auto& family = ea.compiledExpressions.at("fXY");
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    const auto& family = gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions).at("fXY");
     const gl::ContrapositionTemplate* grouped = nullptr;
     for (const auto& record : family.contrapositives)
         if (record.sources.size() == 2) grouped = &record;
@@ -465,20 +523,20 @@ TEST(contraposition, grouped_source_and_reverse_are_independent_compact_carriers
     const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
     for (const int status : {0, 3}) {
         gl::Memory memory;
-        ea.addExprToMemoryBlock(gl::StrSpan(source), memory, 0, status, levels, 1,
+        ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(source), memory, 0, status, levels, 1,
             origin, -1, -1, gl::StrSpan("main", 4), false);
         for (const std::string& compact : {source, reverse}) {
-            ASSERT_TRUE(gl::lookupStatementFlags(memory.intKnownStatements, memory.nameMap,
+            ASSERT_TRUE(gl::lookupStatementFlags(((memory).intKnownStatements), ((memory).nameMap),
                 gl::StrSpan(compact), gl::StrSpan("main", 4)) != nullptr);
-            const auto key = gl::packStatementKey(memory.nameMap.lookup(gl::StrSpan(compact)),
-                memory.nameMap.lookup(gl::StrSpan("main", 4)));
-            const int32_t id = memory.compactExpansions.lookup(key);
+            const auto key = gl::packStatementKey(((memory).nameMap).lookup(gl::StrSpan(compact)),
+                ((memory).nameMap).lookup(gl::StrSpan("main", 4)));
+            const int32_t id = ((memory).compactExpansions).lookup(key);
             ASSERT_TRUE(id != 0);
-            ASSERT_EQ(memory.compactExpansions.runLen(id), 1);
-            const auto installed = memory.compactExpansions.recordAt(id, 0);
-            const std::string expected = expandCompact(ea, ea.prefixArgumentsWithU(compact));
+            ASSERT_EQ(((memory).compactExpansions).runLen(id), 1);
+            const auto installed = ((memory).compactExpansions).recordAt(id, 0);
+            const std::string expected = expandCompact(ea, gl::DefinitionExpansion::prefixArgumentsWithU(compact));
             ASSERT_EQ(ce::getArgs(expected).size(), 2);
-            ASSERT_EQ(memory.lbStateInterner.decodeView(installed.implTextId).toStdString(), expected);
+            ASSERT_EQ(((memory).lbStateInterner).decodeView(installed.implTextId).toStdString(), expected);
             ASSERT_TRUE(installed.kind == (status == 3
                 ? gl::RuleInstallKind::External : gl::RuleInstallKind::Local));
         }
@@ -486,10 +544,10 @@ TEST(contraposition, grouped_source_and_reverse_are_independent_compact_carriers
 }
 
 TEST(existence_implications, negated_existence_disintegrates_into_compacts) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     const std::string name =
         mintExistence(ea, "!(>[x](in[x,a])!(in2[b,x,c]))");
-    const gl::LogicalEntity* le = ea.compiledEntity(gl::StrSpan(name));
+    const gl::LogicalEntity* le = ea.definitions.compiledEntity(gl::StrSpan(name));
     ASSERT_TRUE(le != nullptr);
     ASSERT_EQ(static_cast<int>(le->implications.size()), 2);
     const std::vector<std::string> sigArgs = ce::getArgs(le->signature);
@@ -501,7 +559,7 @@ TEST(existence_implications, negated_existence_disintegrates_into_compacts) {
     const std::string inst = "!(" + name + "[9,7,3])";
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{ true, gl::OriginTag::taskFormulation, nullptr, 0 };
-    ea.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(inst), ea.body, 0, 0, lv, 1, origin,
         -1, -1, gl::StrSpan("main", 4), false);
 
     // The body-direction compact is a registered statement at main
@@ -512,9 +570,9 @@ TEST(existence_implications, negated_existence_disintegrates_into_compacts) {
         const std::string compact = ce::replaceKeysInString(tmpl, subst);
         ASSERT_TRUE(compact.rfind("(implication", 0) == 0);
         const gl::StatementFlags* row = gl::lookupStatementFlags(
-            ea.body.intKnownStatements, ea.body.nameMap,
+            ((ea.body).intKnownStatements), ((ea.body).nameMap),
             gl::StrSpan(compact), gl::StrSpan("main", 4));
-        if (ea.isTypingDirectionCompact(gl::StrSpan(tmpl))) ASSERT_TRUE(row == nullptr);
+        if (ea.existenceRuleCompiler.isTypingDirectionCompact(gl::StrSpan(tmpl))) ASSERT_TRUE(row == nullptr);
         else ASSERT_TRUE(row != nullptr);
     }
 
@@ -527,11 +585,11 @@ TEST(existence_implications, negated_existence_disintegrates_into_compacts) {
         canonBound(ce::replaceKeysInString(le->elements[1], subst), deposit);
     bool r1 = false, r2 = false;
     int rules = 0;
-    const int32_t n = ea.body.overallHashMemory.originals.count();
+    const int32_t n = ((((ea.body).overallHashMemory)).originals).count();
     for (int32_t oi = 1; oi <= n; ++oi) {
         const auto c = gl::decodeValueVector(
-            ea.body.overallHashMemory.originals.decodeKey(oi).ids,
-            ea.body.ruleInterner);
+            ((((ea.body).overallHashMemory)).originals).decodeKey(oi).ids,
+            ((ea.body).ruleInterner));
         if (c.size() != 2) continue;
         const std::string prem = canonBound(stripU(c[0]), deposit);
         const std::string head = canonBound(stripU(c[1]), deposit);
@@ -545,45 +603,44 @@ TEST(existence_implications, negated_existence_disintegrates_into_compacts) {
 }
 
 TEST(contraposition, binary_round_trip_keeps_source_correspondence_and_definitions) {
-    gl::ExpressionAnalyzer original(std::string("Peano"));
-    const auto expected = original.compiledExpressions.at("fXY");
+    gl::tests::ProverFixture original(std::string("Peano"));
+    const auto expected = gl::CompiledDefinitionFixture::compiledExpressions(original.definitions).at("fXY");
     ASSERT_TRUE(expected.contrapositionPrepared);
     ASSERT_FALSE(expected.contrapositives.empty());
     const auto directory = std::filesystem::temp_directory_path() / "gl_contraposition_binary_test";
     std::filesystem::create_directories(directory);
-    original.exportCompiledExpressionsJSON(directory);
-    gl::ExpressionAnalyzer restored(std::string("Peano"));
-    restored.loadGlBinary(directory / "GL_binary_Peano.json");
-    const auto& actual = restored.compiledExpressions.at("fXY");
+    original.compilationPersistence.exportCompiledExpressionsJSON(directory);
+    gl::tests::ProverFixture restored(std::string("Peano"));
+    restored.compilationPersistence.loadGlBinary(directory / "GL_binary_Peano.json");
+    const auto& actual = gl::CompiledDefinitionFixture::compiledExpressions(restored.definitions).at("fXY");
     ASSERT_TRUE(actual.elements == expected.elements);
     ASSERT_EQ(actual.contrapositives.size(), expected.contrapositives.size());
     for (std::size_t i = 0; i < expected.contrapositives.size(); ++i) {
         ASSERT_TRUE(actual.contrapositives[i].sources == expected.contrapositives[i].sources);
         ASSERT_EQ(actual.contrapositives[i].sourceRule, expected.contrapositives[i].sourceRule);
         ASSERT_EQ(actual.contrapositives[i].reverseRule, expected.contrapositives[i].reverseRule);
-        const auto* reverse = restored.compiledEntity(gl::StrSpan(coreOf(actual.contrapositives[i].reverseRule)));
+        const auto* reverse = restored.definitions.compiledEntity(gl::StrSpan(coreOf(actual.contrapositives[i].reverseRule)));
         ASSERT_TRUE(reverse != nullptr && reverse->category == "implication");
     }
-    const auto count = restored.compiledExpressions.size();
-    restored.compileContrapositionFamilies();
-    ASSERT_EQ(restored.compiledExpressions.size(), count);
+    const auto count = gl::CompiledDefinitionFixture::compiledExpressions(restored.definitions).size();
+    restored.supportingRuleCompiler.compileContrapositionFamilies();
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(restored.definitions).size(), count);
 }
 
 TEST(conjunction_refutation, fixed_parameters_nested_members_and_signed_literals) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
-    const auto compact = analyzer.compileCoreExpressionMapCore(
-        "(&(in[x,N])(&(in2[x,y,f])!(=[y,a])))", analyzer.implCounter,
-        analyzer.existenceCounter, analyzer.andCounter, analyzer.orCounter, analyzer.variableCounter);
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
+    const auto compact = analyzer.structuralCompiler.compileExpression(
+        "(&(in[x,N])(&(in2[x,y,f])!(=[y,a])))");
     const auto name = coreOf(compact);
-    const auto elements = analyzer.compiledExpressions.at(name).elements;
-    analyzer.compileConjunctionRefutations();
-    const auto& owner = analyzer.compiledExpressions.at(name);
+    const auto elements = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(name).elements;
+    analyzer.supportingRuleCompiler.compileConjunctionRefutations();
+    const auto& owner = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(name);
     ASSERT_TRUE(owner.elements == elements);
     ASSERT_TRUE(owner.conjunctionRefutationsPrepared);
     ASSERT_TRUE(owner.conjunctionRefutations.size() >= std::size_t(3));
     bool positivePremise = false;
     for (const auto& row : owner.conjunctionRefutations) {
-        const auto& rule = analyzer.compiledExpressions.at(coreOf(row.second));
+        const auto& rule = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(row.second));
         ASSERT_EQ(rule.category, std::string("implication"));
         ASSERT_EQ(rule.elements.size(), std::size_t(2));
         const auto formal = ce::getArgs(rule.signature);
@@ -592,8 +649,8 @@ TEST(conjunction_refutation, fixed_parameters_nested_members_and_signed_literals
         for (std::size_t i = 0; i < formal.size(); ++i) substitution[formal[i]] = actual[i];
         const auto premise = ce::replaceKeysInString(rule.elements[0], substitution);
         const auto head = ce::replaceKeysInString(rule.elements[1], substitution);
-        ASSERT_EQ(premise, analyzer.negate(row.first));
-        ASSERT_EQ(head, analyzer.negate(owner.signature));
+        ASSERT_EQ(premise, gl::DefinitionExpansion::negate(row.first));
+        ASSERT_EQ(head, gl::DefinitionExpansion::negate(owner.signature));
         for (const auto& argument : ce::getArgs(premise)) ASSERT_TRUE(argument.rfind("u_", 0) == 0);
         for (const auto& argument : ce::getArgs(head)) ASSERT_TRUE(argument.rfind("u_", 0) == 0);
         if (row.first.front() == '!') {
@@ -602,22 +659,22 @@ TEST(conjunction_refutation, fixed_parameters_nested_members_and_signed_literals
         }
     }
     ASSERT_TRUE(positivePremise);
-    const auto count = analyzer.compiledExpressions.size();
-    analyzer.compileConjunctionRefutations();
-    ASSERT_EQ(analyzer.compiledExpressions.size(), count);
-    ASSERT_TRUE(analyzer.compiledExpressions.at("in").conjunctionRefutations.empty());
+    const auto count = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).size();
+    analyzer.supportingRuleCompiler.compileConjunctionRefutations();
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).size(), count);
+    ASSERT_TRUE(gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at("in").conjunctionRefutations.empty());
 }
 
 TEST(conjunction_refutation, binary_round_trip_preserves_direct_and_guarded_templates) {
-    gl::ExpressionAnalyzer original(std::string("Peano"));
+    gl::tests::ProverFixture original(std::string("Peano"));
     const auto directory = std::filesystem::temp_directory_path() / "gl_conjunction_refutation_binary_test";
     std::filesystem::create_directories(directory);
-    original.exportCompiledExpressionsJSON(directory);
-    gl::ExpressionAnalyzer restored(std::string("Peano"));
-    restored.loadGlBinary(directory / "GL_binary_Peano.json");
+    original.compilationPersistence.exportCompiledExpressionsJSON(directory);
+    gl::tests::ProverFixture restored(std::string("Peano"));
+    restored.compilationPersistence.loadGlBinary(directory / "GL_binary_Peano.json");
     bool reverseFound = false;
-    for (const auto& [name, expected] : original.compiledExpressions) {
-        const auto& actual = restored.compiledExpressions.at(name);
+    for (const auto& [name, expected] : gl::CompiledDefinitionFixture::compiledExpressions(original.definitions)) {
+        const auto& actual = gl::CompiledDefinitionFixture::compiledExpressions(restored.definitions).at(name);
         ASSERT_TRUE(actual.conjunctionRefutations == expected.conjunctionRefutations);
         ASSERT_EQ(actual.conjunctionRefutationsPrepared, expected.conjunctionRefutationsPrepared);
         ASSERT_TRUE(actual.supportingImplications == expected.supportingImplications);
@@ -628,50 +685,48 @@ TEST(conjunction_refutation, binary_round_trip_preserves_direct_and_guarded_temp
         reverseFound = reverseFound || !actual.supportingImplications.empty();
     }
     ASSERT_TRUE(reverseFound);
-    const auto count = restored.compiledExpressions.size();
-    restored.compileContrapositionFamilies();
-    ASSERT_EQ(restored.compiledExpressions.size(), count);
+    const auto count = gl::CompiledDefinitionFixture::compiledExpressions(restored.definitions).size();
+    restored.supportingRuleCompiler.compileContrapositionFamilies();
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(restored.definitions).size(), count);
 }
 
 TEST(conjunction_refutation, named_single_member_alias_retains_arity_and_exact_refutation) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     ce::CoreExpressionConfig config;
     config.signature = "(typedAlias[x,N])";
     config.arity = 2;
     config.definition = std::string("(in[x,N])");
-    analyzer.coreExpressionMap["typedAlias"] = config;
-    analyzer.compileCoreExpressionMapCore(config.signature, analyzer.implCounter,
-        analyzer.existenceCounter, analyzer.andCounter, analyzer.orCounter, analyzer.variableCounter);
-    const auto& alias = analyzer.compiledExpressions.at("typedAlias");
+    gl::CompiledDefinitionFixture::coreExpressionMap(analyzer.definitions)["typedAlias"] = config;
+    analyzer.structuralCompiler.compileExpression(config.signature);
+    const auto& alias = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at("typedAlias");
     ASSERT_EQ(alias.arity, 2);
     ASSERT_EQ(alias.signature, std::string("(typedAlias[u_1,u_2])"));
-    analyzer.compileConjunctionRefutations();
+    analyzer.supportingRuleCompiler.compileConjunctionRefutations();
     ASSERT_EQ(alias.conjunctionRefutations.size(), static_cast<std::size_t>(1));
-    const auto& rule = analyzer.compiledExpressions.at(coreOf(alias.conjunctionRefutations.front().second));
+    const auto& rule = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(alias.conjunctionRefutations.front().second));
     ASSERT_EQ(rule.arity, 2);
     ASSERT_TRUE(rule.elements == std::vector<std::string>({"!(in[u_1,u_2])", "!(typedAlias[u_1,u_2])"}));
-    analyzer.checkCompiledCoreExpressionMap();
+    analyzer.structuralCompiler.checkCompiledCoreExpressionMap();
 }
 
 namespace {
 struct RefutationFixture { std::string source, conjunction, reverse; };
-RefutationFixture refutationFixture(gl::ExpressionAnalyzer& analyzer) {
-    const auto conjunction = analyzer.compileCoreExpressionMapCore(
-        "(&(=[i,n])(=[p,a]))", analyzer.implCounter, analyzer.existenceCounter,
-        analyzer.andCounter, analyzer.orCounter, analyzer.variableCounter);
+RefutationFixture refutationFixture(gl::tests::ProverFixture& analyzer) {
+    const auto conjunction = analyzer.structuralCompiler.compileExpression(
+        "(&(=[i,n])(=[p,a]))");
     const auto mapped = ce::replaceKeysInString(conjunction,
         {{"i", "u_1"}, {"p", "u_2"}, {"n", "u_4"}, {"a", "u_5"}});
-    const auto name = analyzer.findOrMintOrOperator({"(in2[u_1,u_2,u_3])", mapped}, 5);
-    analyzer.preMintReducedOrs();
-    analyzer.compileContrapositionFamilies();
-    const auto& owner = analyzer.compiledExpressions.at("fXY");
+    const auto name = analyzer.orRuleCompiler.findOrMintOrOperator({"(in2[u_1,u_2,u_3])", mapped}, 5);
+    analyzer.orRuleCompiler.preMintReducedOrs();
+    analyzer.supportingRuleCompiler.compileContrapositionFamilies();
+    const auto& owner = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at("fXY");
     const auto formal = ce::getArgs(owner.signature);
     const std::vector<std::string> actual{"f", "I", "N"};
     std::map<std::string, std::string> mapping;
     for (std::size_t i = 0; i < actual.size(); ++i) mapping[formal[i]] = actual[i];
     std::string reverse;
     for (const auto& record : owner.contrapositives) {
-        const auto& rule = analyzer.compiledExpressions.at(coreOf(record.reverseRule));
+        const auto& rule = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(record.reverseRule));
         if (record.sources.size() == 2 && !rule.supportingImplications.empty())
             reverse = ce::replaceKeysInString(record.reverseRule, mapping);
     }
@@ -679,20 +734,20 @@ RefutationFixture refutationFixture(gl::ExpressionAnalyzer& analyzer) {
     return {"(" + name + "[i,p,f,n,a])", conjunction, reverse};
 }
 
-void registerRefutationSource(gl::ExpressionAnalyzer& analyzer, const std::string& text,
+void registerRefutationSource(gl::tests::ProverFixture& analyzer, const std::string& text,
     const std::string& scope = "main") {
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> statements(&gl::genScratchArenas().forSlot(0), &dirty);
     const int levels[] = {0};
-    const auto* entity = analyzer.compiledEntity(gl::extractExpressionUniversalSpan(gl::StrSpan(text)));
-    analyzer.addStatement(gl::StrSpan(text), analyzer.body, true, levels, 1,
+    const auto* entity = analyzer.definitions.compiledEntity(gl::extractExpressionUniversalSpan(gl::StrSpan(text)));
+    analyzer.statementMemory.addStatement(gl::StrSpan(text), analyzer.body, true, levels, 1,
         gl::TransientOrigin{}, gl::StrSpan(scope), statements, entity != nullptr && entity->category == "or");
 }
 }
 
 TEST(conjunction_refutation, ordinary_signed_firing_accepts_both_fact_arrival_orders) {
     for (bool factFirst : {false, true}) {
-        gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+        gl::tests::ProverFixture analyzer(std::string("Peano"));
         analyzer.parameters.trackHistory = true;
         const auto fixture = refutationFixture(analyzer);
         auto& mb = analyzer.body;
@@ -700,31 +755,31 @@ TEST(conjunction_refutation, ordinary_signed_firing_accepts_both_fact_arrival_or
         const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
         const std::string fact = "!(=[i,n])";
         const auto deposit = [&](const std::string& text) {
-            analyzer.addExprToMemoryBlock(gl::StrSpan(text), mb, 0, 0, levels, 1,
+            analyzer.statementMemory.addExprToMemoryBlock(gl::StrSpan(text), mb, 0, 0, levels, 1,
                 origin, -1, -1, gl::StrSpan("main", 4), false);
         };
         if (factFirst) deposit(fact);
         registerRefutationSource(analyzer, fixture.source);
         std::vector<std::string> compacts;
-        for (int32_t row = 1; row <= mb.sameIterationInternalMail.statements_.count(); ++row) {
-            const auto key = mb.sameIterationInternalMail.statements_.keyAt(row);
+        for (int32_t row = 1; row <= ((mb).sameIterationInternalMail).statements_.count(); ++row) {
+            const auto key = ((mb).sameIterationInternalMail).statements_.keyAt(row);
             int32_t expression;
             std::memcpy(&expression, key.ptr, sizeof(expression));
-            compacts.push_back(mb.nameMap.decode(expression));
+            compacts.push_back(((mb).nameMap).decode(expression));
         }
         ASSERT_EQ(compacts.size(), static_cast<std::size_t>(2));
-        analyzer.standardProcessing(mb, nullptr, mb.sameIterationInternalMail,
-            mb.nextIterationInternalMail, -1);
+        analyzer.logicBlockOperations.standardProcessing(mb, nullptr, ((mb).sameIterationInternalMail),
+            ((mb).nextIterationInternalMail), -1);
         for (const auto& compact : compacts)
-            ASSERT_TRUE(mb.intKnownStatements.find({mb.nameMap.lookup(compact), gl::NameMap::MAIN_ID}) != nullptr);
+            ASSERT_TRUE(((mb).intKnownStatements).find({((mb).nameMap).lookup(compact), gl::NameMap::MAIN_ID}) != nullptr);
         if (!factFirst) deposit(fact);
-        ASSERT_EQ(mb.overallHashMemory.originals.count(), 2);
+        ASSERT_EQ(((((mb).overallHashMemory)).originals).count(), 2);
         gl::SealedPageSet pages;
         pages.bind(&gl::staticMemory());
         std::atomic<int64_t> doomLine{gl::kNoDoomLine};
-        gl::BurstSink sink{&analyzer, &mb, 0u, &pages, &doomLine, 0,
+        gl::BurstSink sink{&analyzer.ruleEvaluator, &mb, 0u, &pages, &doomLine, 0,
             gl::SealedRecordCursor<gl::FiringRecord>(pages)};
-        analyzer.generateEncodedRequestsStatic(mb, mb.overallHashMemory, nullptr, 0,
+        analyzer.requestGenerator.generateEncodedRequestsStatic(mb, ((mb).overallHashMemory), nullptr, 0,
             gl::SplitStumpRef{}, 0u, sink);
         pages.seal();
         bool fired = false, correctScope = false, correctOrigin = false;
@@ -743,18 +798,17 @@ TEST(conjunction_refutation, ordinary_signed_firing_accepts_both_fact_arrival_or
 }
 
 TEST(supporting_implications, immediate_parts_complete_binding_and_no_recursive_families) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
-    const auto conjunction = analyzer.compileCoreExpressionMapCore(
-        "(&(in[x,u_N])(&(in[y,u_N])(in[z,u_N])))", analyzer.implCounter,
-        analyzer.existenceCounter, analyzer.andCounter, analyzer.orCounter, analyzer.variableCounter);
-    const auto source = analyzer.compileImplicationToCompact(
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
+    const auto conjunction = analyzer.structuralCompiler.compileExpression(
+        "(&(in[x,u_N])(&(in[y,u_N])(in[z,u_N])))");
+    const auto source = analyzer.structuralCompiler.compileImplicationToCompact(
         "(>[x,y,z]!" + conjunction + "!(in3[x,y,z,u_f]))");
-    analyzer.compileContrapositionFamilies();
-    const auto& owner = analyzer.compiledExpressions.at(coreOf(source));
+    analyzer.supportingRuleCompiler.compileContrapositionFamilies();
+    const auto& owner = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(source));
     ASSERT_EQ(owner.supportingImplications.size(), std::size_t(3));
     ASSERT_EQ(owner.composedSupportingImplications.size(), std::size_t(3));
     for (const auto& compact : owner.composedSupportingImplications) {
-        const auto& direct = analyzer.compiledExpressions.at(coreOf(compact));
+        const auto& direct = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(compact));
         ASSERT_EQ(direct.elements.size(), std::size_t(4));
         ASSERT_EQ(coreOf(direct.elements.back()), std::string("in3"));
         ASSERT_TRUE(direct.supportingImplicationAuxiliary);
@@ -763,7 +817,7 @@ TEST(supporting_implications, immediate_parts_complete_binding_and_no_recursive_
         ASSERT_TRUE(direct.contrapositives.empty());
     }
     for (const auto& compact : owner.supportingImplications) {
-        const auto& helper = analyzer.compiledExpressions.at(coreOf(compact));
+        const auto& helper = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(compact));
         ASSERT_EQ(helper.elements.size(), std::size_t(4));
         ASSERT_TRUE(helper.supportingImplicationAuxiliary);
         ASSERT_TRUE(helper.supportingImplications.empty());
@@ -778,18 +832,18 @@ TEST(supporting_implications, immediate_parts_complete_binding_and_no_recursive_
         for (const auto& arg : ce::getArgs(helper.elements.back()))
             ASSERT_TRUE(arg.rfind("u_", 0) == 0 || covered.count(arg) != 0);
     }
-    const auto count = analyzer.compiledExpressions.size();
-    analyzer.compileContrapositionFamilies();
-    ASSERT_EQ(analyzer.compiledExpressions.size(), count);
+    const auto count = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).size();
+    analyzer.supportingRuleCompiler.compileContrapositionFamilies();
+    ASSERT_EQ(gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).size(), count);
 }
 
 TEST(supporting_implications, composed_fxy_rules_require_guards_and_retain_independent_consumer) {
     for (bool factFirst : {false, true}) for (bool includePositive : {false, true})
         for (bool independentConjunction : {false, true}) for (bool negateDomain : {false, true}) {
-        gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+        gl::tests::ProverFixture analyzer(std::string("Peano"));
         analyzer.parameters.trackHistory = true;
         const auto fixture = refutationFixture(analyzer);
-        const auto& reverse = analyzer.compiledExpressions.at(coreOf(fixture.reverse));
+        const auto& reverse = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(fixture.reverse));
         std::map<std::string, std::string> substitution;
         const auto formal = ce::getArgs(reverse.signature);
         const auto actual = ce::getArgs(fixture.reverse);
@@ -805,7 +859,7 @@ TEST(supporting_implications, composed_fxy_rules_require_guards_and_retain_indep
         const int levels[] = {0};
         const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
         const auto deposit = [&](const std::string& text) {
-            analyzer.addExprToMemoryBlock(gl::StrSpan(text), mb, 0, 0, levels, 1,
+            analyzer.statementMemory.addExprToMemoryBlock(gl::StrSpan(text), mb, 0, 0, levels, 1,
                 origin, -1, -1, gl::StrSpan("main", 4), false);
         };
         const auto facts = [&] {
@@ -816,19 +870,19 @@ TEST(supporting_implications, composed_fxy_rules_require_guards_and_retain_indep
         if (factFirst) facts();
         deposit(fixture.reverse);
         if (!factFirst) facts();
-        ASSERT_TRUE(mb.orImplications.sources.count() == 0);
+        ASSERT_TRUE(((mb).orImplications).sources.count() == 0);
         std::map<std::string, std::string> fixed;
         for (std::size_t k = 0; k < formal.size(); ++k) fixed[formal[k]] = actual[k];
         for (const auto& helper : reverse.supportingImplications) {
             const auto carrier = ce::replaceKeysInString(helper, fixed);
-            ASSERT_TRUE(mb.intKnownStatements.find({mb.nameMap.lookup(carrier), gl::NameMap::MAIN_ID}) == nullptr);
+            ASSERT_TRUE(((mb).intKnownStatements).find({((mb).nameMap).lookup(carrier), gl::NameMap::MAIN_ID}) == nullptr);
         }
-        ASSERT_TRUE(mb.intKnownStatements.find({mb.nameMap.lookup(fixture.reverse), gl::NameMap::MAIN_ID}) != nullptr);
+        ASSERT_TRUE(((mb).intKnownStatements).find({((mb).nameMap).lookup(fixture.reverse), gl::NameMap::MAIN_ID}) != nullptr);
         gl::SealedPageSet pages; pages.bind(&gl::staticMemory());
         std::atomic<int64_t> doomLine{gl::kNoDoomLine};
-        gl::BurstSink sink{&analyzer, &mb, 0u, &pages, &doomLine, 0,
+        gl::BurstSink sink{&analyzer.ruleEvaluator, &mb, 0u, &pages, &doomLine, 0,
             gl::SealedRecordCursor<gl::FiringRecord>(pages)};
-        analyzer.generateEncodedRequestsStatic(mb, mb.overallHashMemory, nullptr, 0,
+        analyzer.requestGenerator.generateEncodedRequestsStatic(mb, ((mb).overallHashMemory), nullptr, 0,
             gl::SplitStumpRef{}, 0u, sink);
         pages.seal();
         bool fired = false, producedIntermediate = false;
@@ -842,7 +896,7 @@ TEST(supporting_implications, composed_fxy_rules_require_guards_and_retain_indep
         ASSERT_EQ(fired, includePositive || independentConjunction);
         ASSERT_FALSE(producedIntermediate);
         bool helperProof = false, compositionProof = false;
-        const auto history = gl::decodeOriginMapSorted(mb.exprOriginMap, mb.originInterner);
+        const auto history = gl::decodeOriginMapSorted(((mb).exprOriginMap), ((mb).originInterner));
         for (const auto& [expression, origins] : history) for (const auto& row : origins)
             if (row.first == "expansion" && row.second.size() == 1
                 && row.second.front().original.rfind("(>[", 0) == 0
@@ -856,30 +910,30 @@ TEST(supporting_implications, composed_fxy_rules_require_guards_and_retain_indep
 
 TEST(conjunction_refutation, direct_admission_uses_requested_output_and_obeys_disintegration_gate) {
     for (bool blocked : {false, true}) {
-        gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+        gl::tests::ProverFixture analyzer(std::string("Peano"));
         const auto fixture = refutationFixture(analyzer);
         analyzer.parameters.ban_disintegration = blocked;
         auto& mb = analyzer.body;
         gl::DirtyState dirty = gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> rows(&gl::genScratchArenas().forSlot(0), &dirty);
         const int levels[] = {0};
-        analyzer.addStatement(gl::StrSpan(fixture.source), mb, true, levels, 1,
-            gl::TransientOrigin{}, gl::StrSpan("main", 4), rows, true, &mb.nextIterationInternalMail);
-        ASSERT_TRUE(mb.sameIterationInternalMail.statementsEmpty());
-        ASSERT_EQ(mb.nextIterationInternalMail.statements_.count(), blocked ? 0 : 2);
+        analyzer.statementMemory.addStatement(gl::StrSpan(fixture.source), mb, true, levels, 1,
+            gl::TransientOrigin{}, gl::StrSpan("main", 4), rows, true, &((mb).nextIterationInternalMail));
+        ASSERT_TRUE(((mb).sameIterationInternalMail).statementsEmpty());
+        ASSERT_EQ(((mb).nextIterationInternalMail).statements_.count(), blocked ? 0 : 2);
     }
 }
 
 TEST(supporting_implications, nonunary_owner_preserves_its_guarded_helpers) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
-    const auto conjunction = analyzer.compileCoreExpressionMapCore(
-        "(&(in[x,u_N])(in[y,u_N]))", analyzer.implCounter,
-        analyzer.existenceCounter, analyzer.andCounter, analyzer.orCounter, analyzer.variableCounter);
-    const auto source = analyzer.compileImplicationToCompact(
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
+    const auto conjunction = analyzer.structuralCompiler.compileExpression(
+        "(&(in[x,u_N])(in[y,u_N]))");
+    const auto source = analyzer.structuralCompiler.compileImplicationToCompact(
         "(>[x,y](in[x,u_A])(>[]!" + conjunction + "!(in2[x,y,u_f])))");
-    analyzer.compileContrapositionFamilies();
-    const auto& owner = analyzer.compiledExpressions.at(coreOf(source));
+    analyzer.supportingRuleCompiler.compileContrapositionFamilies();
+    const auto& owner = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at(coreOf(source));
     ASSERT_EQ(owner.elements.size(), std::size_t(3));
     ASSERT_EQ(owner.supportingImplications.size(), std::size_t(2));
     ASSERT_TRUE(owner.composedSupportingImplications.empty());
 }
+

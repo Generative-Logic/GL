@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 1: Overview.
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html">Compilation &amp; names</a>
@@ -189,9 +189,17 @@ Lean/Coq/Isabelle sense: the value is the fixed, auditable execution model and t
 shippable proof corpus. Current canonical results: the Peano batch
 (commutativity/associativity of <code>+</code> and <code>*</code>, distributivity,
 ≈58 theorems), the Gauss batch (the division-free summation
-<code>n·(n+1)=2·Σi</code>), and rung 1 of the Fundamental Theorem of Arithmetic
-ladder (<code>{0,1} = [0,1]</code> — the set equality of enumerated and interval
-forms, and the first OR-branching milestone).
+<code>n·(n+1)=2·Σi</code>), and the FTA batch, which proves a supplied shortlist
+of lemmas toward the Fundamental Theorem of Arithmetic one by one: so far division
+with remainder, primes, finite products, Euclid's lemma (a prime that divides a
+product divides one of its factors) and its extension to finite sequences (a prime
+that divides the product of a sequence divides one of its entries; when every entry
+is prime, the prime is itself an entry) and the first facts about ordered sequences (a
+one-entry sequence is ordered; dropping the last entry of an ordered sequence keeps it
+ordered; the last entry of an ordered sequence is at most every entry; appending a value
+at most the last entry keeps a sequence ordered), after the first
+OR-branching milestone
+(<code>{0,1} = [0,1]</code> — the set equality of enumerated and interval forms).
 </p>
 
 <div class="key">
@@ -215,8 +223,8 @@ guarantees it — see <a href="substrate.html#compile">§3.5</a>.</li>
 <code>validityName</code>; escaping it to the parent is an explicit, audited step,
 never an implicit flag flip — see <a href="substrate.html#scope">§3.4</a>.</li>
 <li><b>First-class provenance.</b> Every fire writes an <code>exprOriginMap</code>
-entry. That map is the proof graph's raw material — and is <i>written, never read</i>
-by the proving logic (<a href="provenance.html#notinput">§7.8</a>).</li>
+entry. That map is the proof graph's raw material, permanent and complete; the
+proving logic reads it to decide only through named readers (<a href="provenance.html#permanent">§7.8</a>).</li>
 </ul>
 
 <h2 id="pipeline">1.2 &nbsp;The pipeline — artefacts and the prover's place</h2>
@@ -291,7 +299,7 @@ Each stage's on-disk artefact is named so a claim can be checked at the file lev
     <g>
       <rect x="232" y="378" width="296" height="38" rx="8" fill="#262938" stroke="#B084EB"/>
       <text x="248" y="402" fill="#B084EB" font-weight="bold">6</text>
-      <text x="380" y="402" fill="#F0E8DC" text-anchor="middle">Process proof graph</text>
+      <text x="380" y="402" fill="#F0E8DC" text-anchor="middle">Compact proofs; order graphs</text>
       <text x="700" y="402" fill="#8B8FA5" font-size="10.5" text-anchor="end">processed_proof_graph/</text>
     </g>
     <path d="M380 416 L380 434" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
@@ -317,6 +325,37 @@ Each stage's on-disk artefact is named so a claim can be checked at the file lev
   <path d="M168 68 L160 68 L160 532 L168 532" fill="none" stroke="#B084EB" stroke-width="1.5"/>
   <text x="154" y="300" fill="#B084EB" font-size="11" text-anchor="middle" transform="rotate(-90 154 300)">Python — run_modes.full_run() (batch orchestrator)</text>
 </svg>
+<p>The main proof book keeps each subproof in its own section. Processing orders
+facts before their local uses inside each section. Ordering preserves row
+content, scopes and citations; compaction shortens explicitly justified derivations. The same processed rows feed both the GL verifier and
+the connected Lean export; HTML reads each section in that dependency order.
+Consecutive equality substitutions are fused only when their explicitly cited
+equalities directly justify the final result. An intermediate row is removed
+only when nobody else uses it and it does not mark a scope boundary. The total
+step count includes every subproof and induction part.
+A property can also follow directly by unfolding a conjunction definition and
+selecting one of its constituents. The record keeps the source in the same
+subproof and records the exact projection path for checking. Lean checks a direct
+proof term, and expanded projection work is counted alongside the shorter graph.
+An equality rewrite can also disappear when it changes only arguments irrelevant
+to the selected property, or when an earlier direct equality proves the same
+substitution in one step. Each shortcut retains explicit same-scope evidence.
+The main book also places cited chapters before their consumers, keeping induction
+parts together. It keeps the proof order of the anchor families, Peano, then Gauss,
+then FTA, and improves the layout only inside each family's stretch of chapters;
+each stretch ends with its deepest theorem, the one resting on the most earlier
+chapters. Lean checks exact complete theorem selections for each family. Equivalent theorem copies keep the same cited proof.
+Private helper chains are placed close to their consumers when this improves
+the fixed layout cost. Distance, helper gaps, unfinished proof facts and crossing
+links are measured together; a losing candidate keeps the existing valid order.
+A further scheduling candidate tries to finish open chains before starting more,
+and is accepted only when the same combined cost improves.
+Layout scoring updates the affected relationships directly. Within one processing
+run, identical complete arrangement problems reuse their exact results. Proof
+processing still repeats every pass until the complete book is unchanged. Candidate
+construction uses structural matching; the independent verifier checks the complete
+resulting chapter, and Lean checks the corresponding proof terms.</p>
+
 <figcaption><b>Overall batch orchestration — the eight-stage main pipeline and its artefacts.</b> The conjecturer feeds
 candidates in, or a batch reads supplied conjectures; the prover decides them; everything after packages, compresses, and
 independently re-checks. Canonical user-authored inputs are
@@ -420,7 +459,7 @@ still need). The resulting six-stage shape is below.
 </figure>
 
 <figure>
-<svg viewBox="0 0 760 550" role="img" aria-label="Overall orchestration — two parallel tracks. Incubator track runs IncubatorPeano then IncubatorGauss; main track runs Peano, main Gauss, then FTA with supplied conjectures. Within each track the next batch consumes the previous one's theorems directly as proved theorems. Across tracks: main batches deliver theorems directly to the next incubator batch (which loads them as external rules); incubators deliver only simple_facts indirectly via the CE filter; incubator-proved theorems never enter the main pipeline.">
+<svg viewBox="0 0 760 560" role="img" aria-label="Overall orchestration — two parallel tracks. Incubator track runs IncubatorPeano then IncubatorGauss; main track runs Peano, main Gauss, then FTA with supplied conjectures and both weak and strong induction. Within each track the next batch consumes the previous one's theorems directly as proved theorems. Across tracks: main batches deliver theorems directly to the next incubator batch (which loads them as external rules); incubators deliver only simple_facts indirectly via the CE filter; incubator-proved theorems never enter the main pipeline.">
   <defs>
     <marker id="oo-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
@@ -474,37 +513,45 @@ still need). The resulting six-stage shape is below.
   <text x="590" y="190" fill="#EF9F27" font-size="12" text-anchor="start">simple_facts</text>
   <text x="590" y="206" fill="#8B8FA5" font-size="10" text-anchor="start">(indirect, via CE)</text>
 
-  <text x="380" y="492" fill="#8B8FA5" font-size="11" text-anchor="middle">Solid orange = direct (loaded as external rules in incubator).</text>
-  <text x="380" y="508" fill="#8B8FA5" font-size="11" text-anchor="middle">Dashed orange = indirect (simple_facts feed the CE filter, never the prover).</text>
-  <text x="380" y="524" fill="#8B8FA5" font-size="11" text-anchor="middle">Incubator-proved theorems never cross into the main pipeline.</text>
+  <text x="380" y="502" fill="#8B8FA5" font-size="11" text-anchor="middle">Solid orange = direct (loaded as external rules in incubator).</text>
+  <text x="380" y="518" fill="#8B8FA5" font-size="11" text-anchor="middle">Dashed orange = indirect (simple_facts feed the CE filter, never the prover).</text>
+  <text x="380" y="534" fill="#8B8FA5" font-size="11" text-anchor="middle">Incubator-proved theorems never cross into the main pipeline.</text>
   <path d="M580 360 V402" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#oo-ar)"/>
   <rect x="480" y="404" width="200" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
   <text x="580" y="428" fill="#5DCAA5" font-size="13" font-weight="bold" text-anchor="middle">FTA</text>
-  <text x="580" y="450" fill="#8B8FA5" font-size="11" text-anchor="middle">supplied conjectures → proofs</text>
-  <text x="240" y="439" fill="#B084EB" font-size="11" text-anchor="middle">Peano + Gauss + FTA → one Lean project</text>
+  <text x="580" y="450" fill="#8B8FA5" font-size="11" text-anchor="middle">supplied conjectures, weak + strong induction</text>
+  <text x="380" y="484" fill="#B084EB" font-size="11" text-anchor="middle">Peano + Gauss + FTA → one Lean project</text>
 </svg>
 <figcaption><b>Overall orchestration.</b> Two parallel tracks (incubator + main) run interleaved by <code>run_modes.full_run()</code> in Python (the entry point <code>main.py</code> is a thin wrapper around it). Within each track, the next batch consumes the previous one's proved theorems directly. Across tracks: main delivers its theorems directly to the next incubator batch, where they are loaded as <i>external</i> rules; incubators deliver only their <code>simple_facts/*.txt</code> to the next main batch — indirectly, via the CE filter, never to the prover. "External" is specifically the term the incubator uses for main-track theorems it loads; within-track inputs are simply proved theorems. Incubator-proved theorems stay inside the incubator track.</figcaption>
 </figure>
 
 <figure id="output-finalization">
-<svg viewBox="0 0 760 280" role="img" aria-label="Both processed proof registries finish first. Main Lean, HTML, and verification run beside incubator HTML and verification in a separate process. Both paths join before the final verifier total.">
+<svg viewBox="0 0 760 360" role="img" aria-label="Main processing in the parent and the incubator book arrangement in a child process run side by side. Once both processed registries exist, the parent writes the Lean export, starts the Lake kernel check in the background, renders main HTML and verifies main, then waits for the check, while a second child renders and verifies the incubator. Both paths join before the final verifier total.">
   <defs><marker id="finalize-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
-  <rect x="180" y="12" width="400" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/>
-  <text x="380" y="38" text-anchor="middle" fill="#F0E8DC" font-size="14">Main and incubator processed registries complete</text>
-  <path d="M380 54 V74 H195 V92 M380 74 H565 V92" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
-  <rect x="30" y="94" width="330" height="100" rx="8" fill="#262938" stroke="#5DCAA5"/>
-  <text x="195" y="119" text-anchor="middle" fill="#5DCAA5" font-size="14">Main process</text>
-  <text x="195" y="145" text-anchor="middle" fill="#F0E8DC" font-size="13">Lean export and kernel check</text>
-  <text x="195" y="170" text-anchor="middle" fill="#F0E8DC" font-size="13">then main HTML and verification</text>
-  <rect x="400" y="94" width="330" height="100" rx="8" fill="#262938" stroke="#5DCAA5"/>
-  <text x="565" y="119" text-anchor="middle" fill="#5DCAA5" font-size="14">Separate incubator process</text>
-  <text x="565" y="145" text-anchor="middle" fill="#F0E8DC" font-size="13">Incubator HTML</text>
-  <text x="565" y="170" text-anchor="middle" fill="#F0E8DC" font-size="13">then incubator verification</text>
-  <path d="M195 194 V214 H380 V231 M565 194 V214 H380" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
-  <rect x="180" y="234" width="400" height="36" rx="8" fill="#262938" stroke="#5DCAA5"/>
-  <text x="380" y="257" text-anchor="middle" fill="#F0E8DC" font-size="14">Join both paths and combine verifier totals</text>
+  <rect x="30" y="12" width="330" height="56" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="195" y="36" text-anchor="middle" fill="#F0E8DC" font-size="14">Main processing</text>
+  <text x="195" y="56" text-anchor="middle" fill="#8B8FA5" font-size="12">main process</text>
+  <rect x="400" y="12" width="330" height="56" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="565" y="36" text-anchor="middle" fill="#F0E8DC" font-size="14">Incubator book arrangement</text>
+  <text x="565" y="56" text-anchor="middle" fill="#8B8FA5" font-size="12">first incubator process, once per run</text>
+  <path d="M195 68 V84 H380 V100 M565 68 V84 H380" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
+  <rect x="180" y="102" width="400" height="38" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="380" y="126" text-anchor="middle" fill="#F0E8DC" font-size="14">Main and incubator processed registries complete</text>
+  <path d="M380 140 V156 H195 V172 M380 156 H565 V172" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
+  <rect x="30" y="174" width="330" height="112" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="195" y="198" text-anchor="middle" fill="#5DCAA5" font-size="14">Main process</text>
+  <text x="195" y="222" text-anchor="middle" fill="#F0E8DC" font-size="13">Lean export; Lake checks it in the background</text>
+  <text x="195" y="245" text-anchor="middle" fill="#F0E8DC" font-size="13">main HTML and verification meanwhile</text>
+  <text x="195" y="268" text-anchor="middle" fill="#F0E8DC" font-size="13">then wait for the kernel check</text>
+  <rect x="400" y="174" width="330" height="112" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="565" y="198" text-anchor="middle" fill="#5DCAA5" font-size="14">Second incubator process</text>
+  <text x="565" y="230" text-anchor="middle" fill="#F0E8DC" font-size="13">Incubator HTML</text>
+  <text x="565" y="254" text-anchor="middle" fill="#F0E8DC" font-size="13">then incubator verification</text>
+  <path d="M195 286 V302 H380 V316 M565 286 V302 H380" fill="none" stroke="#5DCAA5" marker-end="url(#finalize-arrow)"/>
+  <rect x="180" y="318" width="400" height="36" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="380" y="341" text-anchor="middle" fill="#F0E8DC" font-size="14">Join both paths and combine verifier totals</text>
 </svg>
-<figcaption><b>Independent output finalization.</b> Both processed graphs are complete before these paths overlap. Each process owns its renderer state and output directory. Main HTML waits for Lean so its proof links reference a completed kernel check. The parent retains the child log, waits for completion even when its own work fails, and rejects a failed child process.</figcaption>
+<figcaption><b>Independent output finalization.</b> The incubator book is arranged once, in its own process, while the main graph is processed; between the batches the run writes only the incubator's theorem list, which the simple-fact conversion reads. Both processed graphs are complete before the HTML paths start. Each process owns its renderer state and output directory. Main HTML renders while Lake kernel-checks the Lean export; the run then waits for the check and fails if it fails. Lake keeps its build folder between runs and rebuilds only changed modules (<code>python main.py --fresh-lean</code> rebuilds everything). The parent retains the child logs, waits for every child and for Lake even when its own work fails, and rejects a failed child process.</figcaption>
 </figure>
 
 <p>
@@ -637,8 +684,8 @@ inside one stage are deferred to the owning chapter.
 <tr><td><code>files/theorems/compressed_external_theorems.txt</code></td><td>4</td><td>Compressor-kept subset — the next batch's external rules as actually loaded by the native prover.</td><td>next batch at startup</td></tr>
 <tr><td><code>files/theorems/compressed_out_theorems.txt</code></td><td>4</td><td>Compressor-eliminated subset, recoverable from the kept set.</td><td>verifier on citation</td></tr>
 <tr><td><code>files/raw_proof_graph/*.txt</code></td><td>5</td><td>Per-theorem raw chapters (one file per proved theorem). Raw integer-name form.</td><td>stage 6</td></tr>
-<tr><td><code>files/processed_proof_graph/*.txt</code></td><td>6</td><td>Renamed chapters with <code>v&lt;k&gt;</code> bound vars and <code>_copy</code> anchor copies (Python pipeline).</td><td>HTML export + verifier</td></tr>
-<tr><td><code>files/processed_proof_graph/global_theorem_list.txt</code></td><td>6</td><td>Per-theorem index — method tag (<code>direct</code> / <code>induction</code> / …), chapter file, validity. <b>Derived</b> — not authoritative for theorem set.</td><td>verifier + HTML export</td></tr>
+<tr><td><code>files/processed_proof_graph/*.txt</code></td><td>6</td><td>Renamed, compacted and dependency-ordered chapters; every subproof stays separate.</td><td>Lean export + HTML export + verifier</td></tr>
+<tr><td><code>files/processed_proof_graph/global_theorem_list.txt</code></td><td>6</td><td>Per-theorem statement, method tag (<code>single chapter proof</code> / <code>induction</code> / …), and induction variable (or <code>-1</code>); chapter filenames follow from registry order and method. <b>Derived</b> — not authoritative for theorem set.</td><td>verifier + HTML export</td></tr>
 <tr><td><code>files/full_proof_graph/*.html</code></td><td>7</td><td>Human-readable per-theorem rendering.</td><td>maintainer; verifier ignores</td></tr>
 <tr><td><code>files/full_proof_graph/lean_export/</code></td><td>7</td><td>Lean 4 export of the run (with a Lean toolchain installed): selection, certificates, a complete Lake project with the generated modules and manifests, and the kernel-check log. The shortcut writes its own under <code>files/shortcut/full_proof_graph/lean_export/</code>, depending on nothing but its externals snapshot.</td><td>Lean kernel (<code>lake build</code>); HTML twin pages</td></tr>
 <tr><td><code>files/full_proof_graph/chapter&lt;N&gt;_lean.html</code></td><td>7</td><td>The chapter's Lean twin: the theorem's declarations sliced from the generated module, one named fact per proof row, links to module, certificate, manifest and kernel log.</td><td>maintainer; website copy</td></tr>
@@ -677,10 +724,10 @@ values (e.g. the Gauss revival in <a href="mechanisms.html#admit-rev">§4.2.5</a
 <tr><th>Chapter</th><th>What it gives you</th></tr>
 <tr><td><a href="prover.html">2 · The prover at a glance</a></td><td>One run end to end: constructor responsibilities, the cycle loop, the three load paths, the <code>status</code> deposit modes, deactivation, the hashburst dump.</td></tr>
 <tr><td><a href="substrate.html">3 · The substrate</a></td><td><code>Memory</code>, <code>HashMemory</code>, <code>Mail</code>, <code>NameMap</code> with their real fields; the five-map/three-key-shape table; the five-batch fan-out; compilation; delta machinery; subtree wipe.</td></tr>
-<tr><td><a href="mechanisms.html">4 · Proof mechanisms</a></td><td>Disintegration; the admission/rejection/equivalence machinery and its revival loop with a worked Gauss trace; integration; branching &amp; contradiction; induction; the pending-rejection cascade.</td></tr>
+<tr><td><a href="mechanisms.html">4 · Proof mechanisms</a></td><td>Disintegration; the admission/rejection/equivalence machinery and its revival loop with a worked Gauss trace; integration; branching &amp; contradiction; induction; admission closure before publication.</td></tr>
 <tr><td><a href="parallel.html">5 · Parallel execution</a></td><td>The work-stealing pool, the join barrier, the ordered serial collectors, the per-LB mailbox geometry, the cycle-N rule.</td></tr>
 <tr><td><a href="memory.html">6 · Static memory</a></td><td>The fixed memory hierarchy behind the prover: the program-start pool, blocks, the per-LB bump arena, virtual offsets, <code>LbMemory</code>, and the canonical deload/reload round-trip to SSD.</td></tr>
-<tr><td><a href="provenance.html">7 · Provenance</a></td><td>The origin record, locality, the four <code>buildStack</code> mechanisms, and why provenance is never a proof input.</td></tr>
+<tr><td><a href="provenance.html">7 · Provenance</a></td><td>The origin record, locality, the four <code>buildStack</code> mechanisms, and why provenance is permanent, complete proof history.</td></tr>
 </table>
 <table>
 <tr><th>Chapter (Part II)</th><th>What it gives you</th></tr>
@@ -824,6 +871,14 @@ artefacts it describes inherit the same terms — commercial terms at
 <a href="https://generative-logic.com/license">generative-logic.com/license</a>.
 </div>
 
+
+<section><h2>Place substitutions where they save work</h2><p>When several premises repeat compatible equality substitutions, processing can apply the implication to their original forms and then substitute once in the conclusion. If those original premises already prove the same conclusion, no final substitution is needed. The intermediate implication and final equality step remain explicit and are checked separately. During compaction the new intermediate uses a removed step's existing scope position. Final ordering then places intact subproofs between their prerequisites and consumers.</p><p>Several rewritten premises → original premises → explicit implication result → one conclusion rewrite</p></section>
+<section><h2>Unused main-proof evidence</h2><p>After checked compaction, ordinary main-proof steps with no remaining use can be removed. Every subproof, scope boundary, witness and assumption remains. The smaller graph is checked again before it supplies the book.</p></section>
+<section><h2>Improving proof order by measured search</h2><p>Small dependency graphs are ordered by checking every legal arrangement. Larger graphs use swaps and insertion moves, first nearby and then across the graph, accepting only a lower measured cost. Chapters move only inside their anchor stretch, and each stretch then ends with its deepest theorem. Chapters and separate subproofs keep their existing content and boundaries. The best found large arrangement is reported with bounds on the unknown optimum.</p><p>Valid order → measured alternatives inside each anchor stretch → strict improvement → deepest theorem last → checked book</p></section>
+<section><h2>Proof order and shared witnesses</h2><p>A fact proved before a witness is available stays universally quantified. When a later step uses the actual witness, Lean applies that fact to the witness before folding or unfolding its definition. Reordering therefore preserves the exact meaning of both statements.</p><p>Universal fact → introduce shared witness → apply fact to witness → fold or unfold definition</p></section>
+<section><h2>Reusing one fact in two premises</h2><p>An implication may need the same established fact twice. Both uses remain explicit. Exchanging two identical references does not make the proof ambiguous; references to different proof sources remain distinct.</p><p>One established fact → two required premises → checked implication result</p></section>
+<section><h2>Finish every newly exposed simplification</h2><p>Ordering can make an existing result available earlier, and shortening one inference can leave another step unused. Processing repeats its checked transformations until the complete book stops changing. Every subproof retains its own scope. After simplification stabilizes, a final permutation places complete subproofs recursively inside their parent proofs. Both proof checkers validate that final artifact.</p><p>Checked rewrites → measured order → newly available simplification → repeat until unchanged → nested subproof placement → GL and Lean → HTML</p></section>
+<p>See <a href="provenance.html#nested-proof-order">how the expanded proof order keeps nested assumptions and results together</a>. Collapsing a card never changes the measured proof-step total.</p>
 </main>
 </body>
 </html>

@@ -1,0 +1,4 @@
+(preorder[1,4,7,9])	main	vacuous truth	(=[9,2])	main	!(=[9,2])	main	(=[9,2])	main
+(=[9,2])	main	recursion
+!(=[9,2])	main	symmetry of inequality	!(=[2,9])	main
+!(=[2,9])	main	task formulation

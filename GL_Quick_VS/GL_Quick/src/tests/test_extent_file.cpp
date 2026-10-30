@@ -132,6 +132,37 @@ TEST(extent_file, preallocate_then_grow_tracks_size) {
     f.close();
 }
 
+// The ceiling admits every total up to 50 GiB and refuses one byte more.
+TEST(extent_file, deload_ceiling_is_fifty_gibibytes) {
+    ASSERT_EQ(gl::PositionedFile::kMaxDeloadBytes, int64_t(50) << 30);
+    ASSERT_TRUE(gl::PositionedFile::deloadWithinCeiling(0));
+    ASSERT_TRUE(gl::PositionedFile::deloadWithinCeiling(gl::PositionedFile::kMaxDeloadBytes));
+    ASSERT_FALSE(gl::PositionedFile::deloadWithinCeiling(gl::PositionedFile::kMaxDeloadBytes + 1));
+}
+
+// The process total follows every sizing of an open file and drops the
+// file's bytes at close; a direct resize moves it both ways.
+TEST(extent_file, open_deload_bytes_follow_sizing_and_close) {
+    const int64_t base = gl::PositionedFile::openDeloadBytes();
+    ASSERT_EQ(gl::PositionedFile::accountDeloadResize(0, 4096), base + 4096);
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base + 4096);
+    ASSERT_EQ(gl::PositionedFile::accountDeloadResize(4096, 0), base);
+
+    gl::PositionedFile f;
+    f.open(freshExtent("deload_total"));
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base);
+    f.preallocate(1 << 20);
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base + (1 << 20));
+    f.grow(3 << 20);
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base + (3 << 20));
+    f.preallocate(0);
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base);
+    f.preallocate(2 << 20);
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base + (2 << 20));
+    f.close();
+    ASSERT_EQ(gl::PositionedFile::openDeloadBytes(), base);
+}
+
 TEST(extent_file, reopen_reuses_thread_handle_across_generation) {
     // The open-generation guard: a second open of the SAME object must not
     // reuse the handle a prior generation cached in this thread's TLS.

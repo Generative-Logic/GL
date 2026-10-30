@@ -26,7 +26,7 @@
 /// @brief Unit tests for compressor graph values and reachability.
 ///
 /// @details
-/// `Compressor::run` requires a fully-constructed `ExpressionAnalyzer`
+/// `Compressor::run` requires a fully-constructed `Prover`
 /// (loads config files) and runs the prover end-to-end on a set of
 /// theorems, which belongs to the full-pipeline gate. These tests cover graph
 /// values and compare the indexed reachability oracle against an independent

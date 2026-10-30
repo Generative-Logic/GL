@@ -1,0 +1,2269 @@
+<!DOCTYPE html>
+<!--
+  Generative Logic proof output
+  Copyright © 2025-2026 Generative Logic UG
+  Licensed under GNU AGPLv3: https://www.gnu.org/licenses/agpl-3.0.html
+  Use outside AGPLv3 obligations, including AI model training,
+  dataset construction, or redistribution, requires a commercial license:
+  https://generative-logic.com/license/
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lean 4 proof — chapter 228</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <!-- License metadata -->
+  <meta name="copyright" content="© 2025-2026 Generative Logic UG">
+  <meta name="license" content="AGPL-3.0-or-later">
+  <meta name="robots" content="noindex, follow, noai, noimageai">
+  <link rel="license" href="https://www.gnu.org/licenses/agpl-3.0.html">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "CreativeWork",
+    "name": "Generative Logic Proof Graph",
+    "copyrightHolder": {
+      "@type": "Organization",
+      "name": "Generative Logic UG",
+      "url": "https://generative-logic.com/"
+    },
+    "copyrightYear": 2026,
+    "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+    "isAccessibleForFree": true,
+    "usageInfo": "https://generative-logic.com/license/"
+  }
+  </script>
+  
+    <style>
+
+:root {
+  color-scheme: light dark;
+  --gl-font-ui: "Jost", "Futura", "Futura PT", "Century Gothic", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --gl-font-math: "Newsreader", "Palatino Linotype", "Book Antiqua", Palatino, "STIX Two Text", Cambria, Georgia, serif;
+  --gl-font-mono: "IBM Plex Mono", "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --gl-horizon: linear-gradient(90deg, #7E2716 0%, #C2452A 16%, #E5672D 34%, #FFB54A 52%, #EF9AB3 74%, #5B2A55 100%);
+  --gl-bg: #F7EEDF; --gl-bg-rgb: 247 238 223; --gl-glow-rgb: 255 176 74;
+  --gl-surface: #FFF9EF; --gl-surface-hover: #FBF0DC; --gl-surface-sunken: #F0E3CC;
+  --gl-rule: #E2CCA8; --gl-rule-strong: #CDB088;
+  --gl-text: #22162A; --gl-text-common: #4A3A4D; --gl-text-soft: #3B2C40; --gl-prose: #4A3A4D; --gl-label: #3B2C40;
+  --gl-text-muted: #6E5B68; --gl-text-quiet: #725F6B; --gl-text-faint: #7A6672;
+  --gl-accent: #A8391F;
+  --gl-link: #386460; --gl-link-strong: #2C514D;
+  --gl-goal: #B5420F; --gl-goal-rgb: 229 103 45; --gl-goal-bg: #FBE2AE;
+  --gl-target: #7A2E86; --gl-target-rgb: 122 46 134;
+  --gl-external: #8E3D63;
+  --gl-namespace: #7A5A12; --gl-namespace-rgb: 194 140 30;
+  --gl-changed: #B23A1E;
+  --gl-control-bg: #E8EDEA; --gl-control-bg-hover: #D8E1DD; --gl-control-border: #386460;
+  --gl-tint: rgb(34 22 42 / 0.045); --gl-shadow: rgb(74 38 20 / 0.24);
+  --gl-depth-1: #386460; --gl-depth-1-bg: #FFF9EF;
+  --gl-depth-2: #D9792E; --gl-depth-2-bg: #FFF6E8;
+  --gl-depth-3: #A6466A; --gl-depth-3-bg: #FCF1EE;
+  --gl-depth-4: #3E6E9E; --gl-depth-4-bg: #F4F2EE;
+  --gl-depth-5: #C2452A; --gl-depth-5-bg: #FCF0E6;
+  --gl-depth-6: #7A6672; --gl-depth-6-bg: #F6EEE4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gl-bg: #1C1124; --gl-bg-rgb: 28 17 36; --gl-glow-rgb: 229 103 45;
+    --gl-surface: #26182E; --gl-surface-hover: #301F39; --gl-surface-sunken: #160D1C;
+    --gl-rule: #3D2A46; --gl-rule-strong: #573E60;
+    --gl-text: #F7EEDF; --gl-text-common: #DCCBD3; --gl-text-soft: #EADCCF; --gl-prose: #D8C6CF; --gl-label: #E6D2DA;
+    --gl-text-muted: #AE95A6; --gl-text-quiet: #A58C9C; --gl-text-faint: #93798C;
+    --gl-accent: #FF9B5A;
+    --gl-link: #96BCB4; --gl-link-strong: #BAD6D0;
+    --gl-goal: #FFB54A; --gl-goal-rgb: 255 181 74; --gl-goal-bg: #3E2A16;
+    --gl-target: #E39AE6; --gl-target-rgb: 227 154 230;
+    --gl-external: #EF9AB3;
+    --gl-namespace: #F2CC6B; --gl-namespace-rgb: 242 204 107;
+    --gl-changed: #FF8A5B;
+    --gl-control-bg: #2F4643; --gl-control-bg-hover: #3A5652; --gl-control-border: #96BCB4;
+    --gl-tint: rgb(255 240 220 / 0.045); --gl-shadow: rgb(0 0 0 / 0.55);
+    --gl-depth-1: #96BCB4; --gl-depth-1-bg: #26182E;
+    --gl-depth-2: #F8923C; --gl-depth-2-bg: #2C1B2C;
+    --gl-depth-3: #EF9AB3; --gl-depth-3-bg: #2E1A30;
+    --gl-depth-4: #8FB0E0; --gl-depth-4-bg: #241A33;
+    --gl-depth-5: #E5672D; --gl-depth-5-bg: #2E1A26;
+    --gl-depth-6: #AE95A6; --gl-depth-6-bg: #281C2E;
+  }
+}
+
+      body { font-family: var(--gl-font-ui); margin: 2rem; background: var(--gl-bg); color: var(--gl-text); }
+      /* One viewport of tail space lets the last rows scroll to the top; it
+         lies inside the body, so the floating reader header stays visible. */
+      body::after { content: ""; display: block; height: 100vh; }
+      nav a { text-decoration: none; color: var(--gl-link); margin-right: 1em; }
+      /* enforce same color & no underline for all links, visited or not */
+      a, a:link, a:visited {
+        color: var(--gl-link);
+        text-decoration: none;
+      }
+      .var-highlight { font-style: italic; margin-bottom: 1em; display: block; }
+      .step-output { margin: 1em 0; padding: 0.5em; background: var(--gl-surface); border-radius: 4px; }
+      .clickable    { cursor: pointer; }   /* no color overridden here */
+      h1 .clickable { overflow-wrap: anywhere; }
+      .integration-goal-label { cursor: pointer; }
+      .proof-line { display: flex; align-items: flex-start; margin-bottom: 1.8em; }
+      .step-badge { color: var(--gl-text-faint); font-size: 0.75em; white-space: nowrap; min-width: 5em; flex-shrink: 0; text-align: right; margin-right: 0.7em; padding-top: 0.15em; }
+      .proof-line-content { flex: 1; min-width: 0; }
+      .chapter-stats { margin-top: 2em; padding: 0.6em 1em; background: var(--gl-surface); border-top: 1px solid var(--gl-rule); color: var(--gl-text-muted); font-size: 0.9em; }
+      .dep-glow { background: linear-gradient(90deg, rgb(var(--gl-target-rgb) / 0.15), rgb(var(--gl-goal-rgb) / 0.12) 60%, transparent); border-left: 2px solid rgb(var(--gl-target-rgb) / 0.6); padding-left: 6px; border-radius: 4px; box-shadow: 0 0 8px rgb(var(--gl-goal-rgb) / 0.15), inset 0 0 12px rgb(var(--gl-target-rgb) / 0.06); transition: all 0.2s ease; }
+      .arg-changed { color: var(--gl-changed); text-decoration: underline; text-decoration-style: wavy; }
+      .subproof-toggle { cursor: pointer; user-select: none; margin-right: 0.3em; display: inline-block; transition: transform 0.2s; }
+      .subproof-card.collapsed .subproof-body { display: none; }
+      .subproof-card.collapsed .subproof-toggle { transform: rotate(-90deg); }
+      .goal-highlight { color: var(--gl-goal); font-weight: bold; }
+       /* only kill underlines on our autogenerated theorem links */
+      a.theorem-link,
+      a.theorem-link .clickable {
+      text-decoration: none;
+      /* force link to inherit whatever color its parent has (e.g. the gold inline span) */
+      color: inherit;
+     }
+     /* make inter-page theorem links mint green */
+     a.theorem-link[href$=".html"] .clickable {
+     color: var(--gl-link) !important;
+     }
+     /* cross-batch external-theorem links open in a new tab; render in
+        a distinct lavender so the reader sees at a glance it goes to a
+        sibling pipeline (e.g. incubator -> main, or main -> incubator) */
+     a.theorem-link.external-link[href$=".html"] .clickable {
+     color: var(--gl-external) !important;
+     border-bottom: 1px dotted var(--gl-external);
+     }
+     a.theorem-link.external-link[href$=".html"]::after {
+     content: " ↗";
+     font-size: 0.85em;
+     color: var(--gl-external);
+     vertical-align: super;
+     margin-left: 1px;
+     }
+     /* orphan external — registered as external in this pipeline but no
+        chapter exists (here or in any sibling). Same lavender family as
+        the cross-batch link, but dashed-underline + no ↗ icon to signal
+        "click won't navigate; right-click for explanation". */
+     .clickable.external-orphan {
+     color: var(--gl-external) !important;
+     border-bottom: 1px dashed var(--gl-external);
+     cursor: help;
+     }
+     /* Namespace-tag jump links: explicit affordance so the user sees
+        the yellow tag is clickable. Hover gives a subtle background
+        for visual feedback before clicking. */
+     a.ns-jump {
+     cursor: pointer;
+     border-radius: 3px;
+     padding: 0 2px;
+     transition: background 0.12s;
+     }
+     a.ns-jump:hover {
+     background: rgb(var(--gl-namespace-rgb) / 0.18);
+     }
+     /* Brief flash on the directly-targeted subproof card right after
+        an ns-jump click, to make the destination visually obvious. */
+     @keyframes nsJumpFlash {
+       0%   { box-shadow: 0 0 0 0 rgb(var(--gl-namespace-rgb) / 0.0); }
+       12%  { box-shadow: 0 0 12px 2px rgb(var(--gl-namespace-rgb) / 0.55); }
+       100% { box-shadow: 0 0 0 0 rgb(var(--gl-namespace-rgb) / 0.0); }
+     }
+     .jump-flash {
+     animation: nsJumpFlash 1s ease-out;
+     }
+     /* Textual explanation paragraph under the title of an OR-
+        introduction / OR-elimination subproof card. Subdued
+        callout: pale background, left rule, slightly smaller text. */
+     .subproof-explanation {
+     margin: 0.4em 0 0.6em 0;
+     padding: 0.55em 0.8em;
+     background: var(--gl-tint);
+     border-left: 2px solid var(--gl-text-faint);
+     font-size: 0.92em;
+     line-height: 1.45;
+     color: var(--gl-text-soft);
+     }
+     .subproof-explanation b {
+     color: var(--gl-namespace);
+     }
+     /* Inline symbolic example block — slightly tinted background +
+        a hairline rule above and below to visually separate the
+        formal-symbol example sentence from the surrounding prose. */
+     .symbolic-example {
+     display: inline-block;
+     padding: 0.05em 0.45em;
+     margin: 0 0.1em;
+     background: rgb(var(--gl-namespace-rgb) / 0.07);
+     border-radius: 3px;
+     color: var(--gl-text-soft);
+     }
+     .symbolic-example i {
+     font-style: normal;
+     font-family: 'Cambria Math', 'STIX Two Math', 'Latin Modern Math', serif;
+     font-weight: 600;
+     letter-spacing: 0.02em;
+     }
+     /* The full-MPL expansion of an or<N> placeholder rendered in
+        square brackets right after the symbolic name. Slightly
+        de-emphasised vs the surrounding prose. */
+     .or-expansion {
+     color: var(--gl-text-quiet);
+     font-size: 0.92em;
+     }
+     /* Step-badge as a permalink. The cursor change makes the
+        affordance obvious; on hover the badge brightens slightly so
+        the reader sees the click target before clicking. */
+     a.step-badge-link {
+     text-decoration: none;
+     color: inherit;
+     cursor: pointer;
+     }
+     a.step-badge-link:hover .step-badge {
+     color: var(--gl-text-soft) !important;
+     background: var(--gl-tint);
+     border-radius: 3px;
+     }
+     /* Defensive wrapping for long expressions. The 13-conjunct
+        disintegration sources can blow past the viewport width on
+        narrow windows; allow break-word as a fallback so the line
+        wraps inside the proof-line-content container instead of
+        forcing horizontal scroll. */
+     .proof-line-content {
+     overflow-wrap: anywhere;
+     word-break: break-word;
+     }
+     /* Expand-all / collapse-all subproof controls — small toggle
+        bar above the Subproofs section title. */
+     .subproof-controls {
+     margin: 0.6em 0 0.4em 0;
+     display: flex;
+     gap: 0.5em;
+     }
+     .subproof-controls button {
+     background: var(--gl-surface);
+     color: var(--gl-text-soft);
+     border: 1px solid var(--gl-rule);
+     border-radius: 4px;
+     padding: 0.25em 0.7em;
+     cursor: pointer;
+     font-family: inherit;
+     font-size: 0.88em;
+     }
+     .subproof-controls button:hover {
+     background: var(--gl-surface-hover);
+     border-color: var(--gl-link);
+     color: var(--gl-link);
+     }
+
+      .readable-grey { color: var(--gl-text-muted); font-weight: normal; font-size: 0.95em; line-height: 1.6; margin-top: 0.25em; overflow-wrap: normal; word-break: normal; }
+      .readable-grey.readable-title { font-weight: bold; font-size: 2.2em; margin: 0.15em 0 1.1em 20px; line-height: 1.45; }
+      .readable-grey.readable-index { font-size: 1.15em; margin: 0.1em 0 0.2em 20px; }
+      .readable-grey.reads { color: var(--gl-text-quiet); }
+      .readable-grey.subproof-reads { margin: 0.1em 0 0.4em 0; }
+      .rf-implication { display:inline-flex; flex-wrap:wrap; align-items:stretch; gap:0.35em 0.65em; max-width:100%; vertical-align:middle; white-space:normal; }
+      /* Premise group and conclusion share the line two to one, each at most
+         its natural width (a premise group is a column of formulas, which
+         wrapping makes tall); the conclusion moves below only when their
+         narrowest forms do not fit beside the arrow. */
+      .rf-implication > :first-child { flex:2 1 0%; min-width:min-content; max-width:max-content; }
+      .rf-conjunction { display:inline-flex; flex-direction:column; gap:0.45em; padding-left:0.2em; max-width:100%; box-sizing:border-box; vertical-align:middle; }
+      .rf-conjunct { display:grid; grid-template-columns:1em minmax(min-content,1fr); gap:0.35em; align-items:baseline; }
+      .rf-conjunct-body { min-width:0; white-space:normal; overflow-wrap:break-word; }
+      .rf-premises { display:flex; flex:0 1 auto; flex-direction:column; justify-content:center; padding-left:0.3em; gap:0.45em; min-width:0; }
+      .rf-premise, .rf-conclusion { white-space:normal; overflow-wrap:break-word; min-width:0; }
+      .rf-arrow { display:flex; align-items:center; flex:0 0 auto; line-height:1; font-size:2.2em; font-weight:700; padding:0 0.1em; }
+      .rf-conclusion { display:flex; align-items:center; flex:1 1 0%; min-width:min-content; max-width:max-content; }
+      .rf-conclusion-content { display:block; min-width:0; max-width:100%; }
+      .rf-parentheses { display:inline-grid; grid-template-columns:0.6em minmax(min-content,1fr) 0.6em; align-items:stretch; gap:0.15em; max-width:100%; vertical-align:middle; }
+      .rf-paren-content { align-self:center; min-width:0; }
+      .rf-lines { display:inline-flex; flex-direction:column; gap:0.2em; max-width:100%; vertical-align:middle; }
+      .rf-continued { padding-left:1.6em; }
+      .rf-fence { display:block; position:relative; min-height:1.4em; align-self:stretch; }
+      .rf-fence svg { position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+      .rf-fence path { fill:none; stroke:currentColor; stroke-width:1.6; vector-effect:non-scaling-stroke; }
+      .rf-fence-text { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+
+      .readable-grey sub { font-size: 0.7em; }
+      .rf-nb { white-space: nowrap; }
+      .rf-unit { white-space: nowrap; }
+      .rf-negation { display:inline-flex; align-items:center; max-width:100%; vertical-align:middle; }
+      .rf-label { font-size: 0.72em; letter-spacing: 0.08em; color: var(--gl-text-faint); margin: 0 0.55em 0 1.4em; vertical-align: 0.08em; }
+      .rf-kw { font-weight: normal; font-style: italic; color: var(--gl-text-quiet); margin: 0 0.4em; }
+      .rf-label.rf-lead, .rf-kw.rf-lead { margin-left: 0; }
+      .rf-big { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; margin: 0 2px; line-height: 1; }
+      .rf-big-hi, .rf-big-lo { font-size: 0.6em; }
+      .rf-big-sym { font-size: 1.8em; line-height: 0.8; margin: 2px 0 6px 0; }
+      .rf-big-lo { margin-top: 2px; }
+      .rf-bigparen { font-size: 2em; vertical-align: middle; font-weight: normal; }
+     .bb-N {
+     font-weight: 900;
+     font-size: 1.1em;
+     letter-spacing: 0.02em;
+     -webkit-text-stroke: 0.6px currentColor;
+     text-shadow:
+       0.4px 0 0 currentColor,
+       -0.4px 0 0 currentColor,
+       0 0.4px 0 currentColor,
+       0 -0.4px 0 currentColor;
+     }
+      @media (max-width: 480px) {
+        .rf-nb { white-space: normal; }
+        /* Formula pieces now wrap between words, so a side squeezed beside the
+           arrow could shrink to one word per line: each side claims at least
+           its natural width or its share of the line (6em at least), and the
+           conclusion moves below when both claims do not fit. */
+        .rf-implication > :first-child { flex-basis:max(40%, 6em); }
+        .rf-conclusion { flex-basis:max(50%, 6em); }
+        .rf-parentheses { grid-template-columns:0.45em minmax(min-content,1fr) 0.45em; gap:0.05em; }
+        .rf-conjunct { grid-template-columns:0.8em minmax(min-content,1fr); gap:0.2em; }
+        .readable-grey.readable-title { font-size: 1.3em; margin-left: 4px; }
+        .readable-grey.readable-index { margin-left: 4px; }
+      }
+
+     .validity-tag {
+       color: var(--gl-namespace) !important;
+       font-size: 0.78em;
+       margin-left: 0.45em;
+       white-space: nowrap;
+       display: inline-block;
+       font-weight: normal;
+       line-height: 1;
+       vertical-align: baseline;
+     }
+     a.proof-tag, a.proof-tag:link, a.proof-tag:visited {
+       color: var(--gl-text);
+       text-decoration: none;
+       cursor: pointer;
+       border-bottom: 1px dotted var(--gl-link);
+     }
+     a.proof-tag:hover {
+       color: var(--gl-link);
+     }
+
+     .proof-section { margin-top: 0.8em; }
+     .proof-section-title {
+       font-size: 1.05em;
+       font-weight: 700;
+       color: var(--gl-text-muted);
+       margin: 0.2em 0 0.8em 0;
+       text-transform: uppercase;
+       letter-spacing: 0.03em;
+     }
+     .main-proof-section { margin-bottom: 1.2em; }
+     .subproofs-section { border-top: 1px solid var(--gl-rule); padding-top: 0.8em; }
+     .subproof-card {
+       margin: 0.8em 0 1.1em 0;
+       padding: 0.7em 0.8em;
+       background: var(--gl-surface);
+       border: 1px solid var(--gl-rule);
+       border-left: 4px solid var(--gl-link);
+       border-radius: 6px;
+     }
+     /* Matryoshka depth — each nesting level shifts hue + indents.
+        Depth 1 = direct subproof of main; deeper = sub-sub-…-proofs. */
+     .subproof-depth-1 { border-left-color: var(--gl-link); background: var(--gl-surface); }
+     .subproof-depth-2 { border-left-color: var(--gl-depth-2); background: var(--gl-depth-2-bg); margin-left: 0.6em; }
+     .subproof-depth-3 { border-left-color: var(--gl-depth-3); background: var(--gl-depth-3-bg); margin-left: 1.2em; }
+     .subproof-depth-4 { border-left-color: var(--gl-depth-4); background: var(--gl-depth-4-bg); margin-left: 1.8em; }
+     .subproof-depth-5 { border-left-color: var(--gl-depth-5); background: var(--gl-depth-5-bg); margin-left: 2.4em; }
+     .subproof-card[class*="subproof-depth-"]:not(.subproof-depth-1):not(.subproof-depth-2):not(.subproof-depth-3):not(.subproof-depth-4):not(.subproof-depth-5) {
+       border-left-color: var(--gl-text-muted);
+       background: var(--gl-depth-6-bg);
+       margin-left: 3em;
+     }
+     .subproof-title {
+       font-weight: 700;
+       margin-bottom: 0.35em;
+       color: var(--gl-text);
+     }
+     .subproof-label {
+       color: var(--gl-text-muted);
+       font-weight: 600;
+       margin-left: 0.15em;
+     }
+     .subproof-meta {
+       margin-bottom: 0.55em;
+       color: var(--gl-text-muted);
+       font-size: 0.95em;
+     }
+     .subproof-goal { color: var(--gl-link); }
+     .proof-empty { color:var(--gl-text-faint); font-style: italic; }
+     @media (max-width: 480px) {
+       .validity-tag { white-space: normal; max-width: 100%; }
+       .subproof-card { padding: 0.5em 0.35em; }
+     }
+
+    </style>
+    <script id="common-notation-navigation">
+document.addEventListener('DOMContentLoaded', function() {
+  const parameter = 'notation';
+  const directory = new URL('.', window.location.href).href;
+  const control = document.getElementById('common-notation-toggle');
+  const toolbar = control ? control.closest('.reader-toolbar') : null;
+  if (control && !toolbar) throw new Error('Notation control requires its reader toolbar');
+
+  function updateToolbarSpacing() {
+    if (toolbar) document.documentElement.style.setProperty('--reader-toolbar-height', toolbar.getBoundingClientRect().height + 'px');
+  }
+
+  function applyNotation(common, updateAddress) {
+    document.body.classList.toggle('common-notation-only', common);
+    if (control) control.checked = common;
+    updateToolbarSpacing();
+    const mode = common ? 'common' : 'mixed';
+    if (updateAddress) {
+      const address = new URL(window.location.href);
+      address.searchParams.set(parameter, mode);
+      window.history.replaceState(window.history.state, '', address.href);
+    }
+    document.querySelectorAll('a[href]').forEach(function(link) {
+      const href = link.getAttribute('href');
+      if (href.startsWith('#') || link.hasAttribute('download')) return;
+      const target = new URL(href, document.baseURI);
+      if (new URL('.', target).href !== directory) return;
+      const filename = target.pathname.slice(target.pathname.lastIndexOf('/') + 1);
+      if (!/^(?:index|tags|chapter\d+(?:_lean)?)\.html$/.test(filename)) return;
+      target.searchParams.set(parameter, mode);
+      link.setAttribute('href', target.href);
+    });
+  }
+
+  function restoreNotation() {
+    const mode = new URL(window.location.href).searchParams.get(parameter);
+    if (mode !== null && mode !== 'common' && mode !== 'mixed') {
+      throw new Error('Unknown proof notation mode: ' + mode);
+    }
+    applyNotation(mode === 'common', false);
+  }
+
+  const readingLines = '.reader-section .proof-line, .reader-section .proof-line .common-line, '
+    + '.reader-section .subproof-title, .reader-section .subproof-title > .readable-grey > *, '
+    + '.reader-section .subproof-title > .readable-grey .block-products > *, #theorem-list > li';
+  let pinned = null;
+  if (control) control.addEventListener('change', function() {
+    const toolbarBottom = toolbar.getBoundingClientRect().bottom;
+    let reading = null;
+    if (pinned && pinned.scrollY === window.scrollY && pinned.node.getBoundingClientRect().height > 0) {
+      reading = {node: pinned.node, top: pinned.node.getBoundingClientRect().top};
+    } else {
+      let covering = null;
+      for (const node of document.querySelectorAll(readingLines)) {
+        const bounds = node.getBoundingClientRect();
+        if (bounds.height === 0 || bounds.bottom <= toolbarBottom) continue;
+        if (bounds.top >= window.innerHeight) break;
+        if (bounds.top >= toolbarBottom) {
+          reading = {node: node, top: bounds.top};
+          break;
+        }
+        covering = {node: node, top: bounds.top};
+      }
+      if (reading === null) reading = covering;
+    }
+    applyNotation(control.checked, true);
+    if (reading) window.scrollBy(0, reading.node.getBoundingClientRect().top - reading.top);
+    pinned = reading ? {node: reading.node, scrollY: window.scrollY} : null;
+  });
+  window.addEventListener('resize', updateToolbarSpacing);
+  window.addEventListener('pageshow', restoreNotation);
+  window.addEventListener('popstate', restoreNotation);
+  restoreNotation();
+});
+</script><style>
+.reader-section .proof-line { align-items:flex-start; }
+.readable-grey.readable-index { font-weight:700; }
+.readable-index a.common-index-link, .readable-index a.common-index-link:link,
+.readable-index a.common-index-link:visited { color:inherit; font-weight:inherit; }
+.common-line { display:flex; align-items:baseline; gap:0.7em; width:100%; }
+.common-citations { flex:0 1 auto; min-width:2.5em; max-width:100%; margin-left:auto; text-align:right; font-size:0.85em; }
+.common-citations a { white-space:nowrap; }
+.common-citations a { margin-right:0.35em; }
+.common-step-badge { display:none; white-space:nowrap; font-size:0.75em; font-weight:600; flex:0 0 auto; }
+.common-notation-only .common-step-badge { display:block; color:inherit; }
+.common-notation-only .common-line { color:var(--gl-text); }
+.common-notation-only .common-citations a { color:inherit; }
+.common-notation-only .rf-reads-label { display:none; }
+.rf-target-label { color:var(--gl-target); font-weight:800; }
+.reader-prose { display:block; margin-bottom:0.2em; color:var(--gl-prose); font-weight:700; font-family:var(--gl-font-ui); }
+.common-notation-only .reader-prose { color:var(--gl-label); }
+.common-line .readable-grey { flex:1; min-width:0; }
+.reader-section .subproof-title { display:block; }
+.reader-section .reader-block-kind { color:var(--gl-link-strong); font-size:1.12em; font-weight:800; }
+.reader-section .reader-label { display:block; margin:0.6em 0 0.25em; color:var(--gl-label); font-size:1em; font-weight:800; letter-spacing:0.015em; }
+.reader-section .proof-line, .reader-section .subproof-title, h2[id] { scroll-margin-top:calc(var(--reader-toolbar-height, 0px) + 1rem); }
+.reader-section .subproof-title .readable-grey { display:block; margin-left:1.6em; }
+.reader-section .subproof-card.collapsed > .subproof-body { display:none; }
+.reader-section .subproof-card:not(.collapsed) > .subproof-body { display:block; }
+.reader-section .subproof-card:not(.collapsed) > .subproof-title .subproof-toggle { transform:none; }
+.reader-section .subproof-title .mpl-line { font-weight:400; line-height:1.6; overflow-wrap:anywhere; white-space:normal; }
+.reader-section .goal-mpl { color:var(--gl-goal); font-weight:bold; }
+.reader-section .goal-common { font-weight:bold; }
+.reader-section .reader-witnesses { display:block; white-space:nowrap; max-width:100%; overflow-x:auto; }
+.reader-section .block-products { display:flex; flex-direction:column; gap:0.3em; }
+.reader-section .block-number { color:var(--gl-prose); margin-right:0.7em; font-variant-numeric:tabular-nums; }
+.common-notation-only .mpl-line, .common-notation-only .mpl-only,
+.common-notation-only .step-badge-link, .common-notation-only .step-badge,
+.common-notation-only .validity-tag { display:none !important; }
+.common-notation-only .readable-grey { color:var(--gl-text-common); font-size:1.08em; font-weight:500; line-height:1.8; }
+.common-notation-only .readable-grey.readable-index, .common-notation-only .readable-grey.readable-title { font-weight:600; }
+.common-notation-only .readable-title { font-size:1.8em; }
+.common-notation-only .goal-common { font-weight:700; }
+.common-notation-only .proof-line { padding:0.65em 0; }
+.common-notation-only .rf-label { color:var(--gl-prose); }
+.common-notation-only .proof-line-content { width:100%; }
+.reader-page-controls { display:flex; flex-wrap:wrap; gap:0.75rem; margin:0.55rem 0; }
+body:not(:has(.reader-section .subproof-card)) .reader-page-controls { display:none; }
+.reader-page-control, .subproof-controls button { border:2px solid var(--gl-link); border-radius:6px; padding:0.6rem 1rem; background:var(--gl-control-bg); color:var(--gl-text); font-size:1rem; font-weight:750; cursor:pointer; }
+.reader-page-control:hover, .subproof-controls button:hover { background:var(--gl-control-bg-hover); }
+.reader-page-control:focus-visible, .subproof-controls button:focus-visible { outline:2px solid var(--gl-goal); outline-offset:3px; }
+.reader-toolbar { position:sticky; top:0; z-index:100; background:var(--gl-bg); padding:0.6rem 0; box-shadow:0 4px 12px #0006; }
+.reader-toolbar > div:first-child { flex-wrap:wrap; gap:0.8em; }
+.reader-toolbar .common-notation-control { margin:0.8em 0 0.25em; }
+@media (max-width:760px) {
+  .reader-toolbar > div:first-child > div { grid-template-columns:repeat(2, minmax(0,1fr)) !important; justify-items:start !important; font-size:0.8em; }
+}
+@media (max-width:480px) {
+  .common-notation-only .readable-title { font-size:1.3em; }
+  .common-line { flex-wrap:wrap; }
+  .common-line .readable-grey { flex:1 0 100%; }
+  .reader-section .proof-line { flex-wrap:wrap; }
+  .reader-section .proof-line > .step-badge-link, .reader-section .proof-line > .proof-line-content { flex:1 0 100%; }
+  .common-citations { flex:1 0 100%; }
+  .reader-section .reader-block-kind { display:inline-block; }
+}
+.common-notation-control { display:flex; align-items:center; gap:0.9em; margin:1.2em 0; padding:0.9em 1.1em; max-width:44em; border:2px solid var(--gl-link); border-radius:9px; background:var(--gl-control-bg); color:var(--gl-text); font-size:1.12em; font-weight:700; cursor:pointer; }
+.common-notation-control input { width:1.4em; height:1.4em; accent-color:var(--gl-link); cursor:pointer; }
+.common-notation-control strong { display:block; font-size:1.15em; color:var(--gl-link-strong); }
+.common-notation-control .notation-invitation { display:block; margin-top:0.2em; font-size:0.9em; font-weight:500; }
+.common-notation-control:focus-within { outline:2px solid var(--gl-text); outline-offset:3px; }
+.reader-section .reader-counts { color:var(--gl-prose); margin:0.7em 0; }
+</style><style>
+body {
+  font-family: var(--gl-font-ui);
+  line-height: 1.5;
+  background-color: var(--gl-bg);
+  background-image:
+    radial-gradient(1000px 460px at 6% -60px, rgb(var(--gl-glow-rgb) / 0.17), transparent 72%),
+    radial-gradient(760px 380px at 104% -40px, rgb(var(--gl-target-rgb) / 0.07), transparent 70%);
+  background-repeat: no-repeat;
+  color: var(--gl-text);
+}
+::selection { background: rgb(var(--gl-goal-rgb) / 0.30); }
+:focus-visible { outline: 2px solid var(--gl-goal); outline-offset: 3px; }
+a:hover { color: var(--gl-link-strong); }
+
+h1 { font-weight: 500; font-size: 1.5rem; line-height: 1.4; letter-spacing: 0.01em; margin: 1em 0 0.45em; color: var(--gl-text); }
+h1 .clickable { font-family: var(--gl-font-mono); font-weight: 500; font-size: 0.84em; color: var(--gl-text-soft); }
+h2 { font-weight: 600; font-size: 1rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--gl-accent); margin: 1.8em 0 0.8em; }
+h2::before { content: ""; display: inline-block; width: 1.7em; height: 3px; margin: 0 0.65em 0.2em 0; vertical-align: middle; border-radius: 2px; background: var(--gl-horizon); }
+h3 { font-weight: 600; letter-spacing: 0.02em; }
+
+nav a, nav a:link, nav a:visited { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--gl-link); margin-right: 1.3em; padding: 0.3em 0; border-bottom: 1.5px solid transparent; }
+nav a:hover { border-bottom-color: currentColor; }
+nav::before { content: ""; display: inline-block; width: 1.9em; height: 1.9em; margin: 0 1.1em 0 0; vertical-align: middle;
+  background: url(gl-logo.png) center / contain no-repeat; }
+
+.reader-toolbar {
+  background: rgb(var(--gl-bg-rgb) / 0.97);
+  -webkit-backdrop-filter: saturate(1.15) blur(8px); backdrop-filter: saturate(1.15) blur(8px);
+  border-bottom: 3px solid transparent; border-image: var(--gl-horizon) 1;
+  box-shadow: 0 16px 30px -26px var(--gl-shadow);
+  margin: 0 -2rem; padding: 0.7rem 2rem 0.45rem;
+}
+.reader-toolbar > div:first-child > div { font-size: 0.8rem; letter-spacing: 0.02em; }
+
+.common-notation-control { border: 1.5px solid var(--gl-control-border); border-radius: 16px; background: var(--gl-control-bg);
+  color: var(--gl-text); box-shadow: 0 8px 22px -18px var(--gl-shadow); font-weight: 600; }
+.common-notation-control strong { color: var(--gl-link-strong); letter-spacing: 0.03em; }
+.common-notation-control:hover { background: var(--gl-control-bg-hover); }
+
+.reader-page-control, .subproof-controls button {
+  font-family: var(--gl-font-ui); font-weight: 600; font-size: 0.78rem; letter-spacing: 0.13em; text-transform: uppercase;
+  border: 1.5px solid var(--gl-control-border); border-radius: 999px; padding: 0.55rem 1.15rem;
+  background: var(--gl-surface); color: var(--gl-link-strong); box-shadow: 0 1px 0 var(--gl-tint);
+}
+.reader-page-control:hover, .subproof-controls button:hover { background: var(--gl-control-bg); color: var(--gl-link-strong); border-color: var(--gl-control-border); }
+
+.clickable, .mpl-line, .mpl-only, #expr-content { font-family: var(--gl-font-mono); }
+.mpl-line, .proof-line-content > .clickable, .proof-line-content > a > .clickable { font-size: 0.88em; line-height: 1.6; }
+.readable-grey { font-family: var(--gl-font-math); }
+.rf-label, .reader-label, .reader-prose, .rf-target-label { font-family: var(--gl-font-ui); }
+.rf-label { letter-spacing: 0.14em; }
+.step-badge, .common-step-badge, .block-number { font-family: var(--gl-font-mono); }
+.step-badge { font-size: 0.68rem; color: var(--gl-text-faint); }
+.validity-tag { font-family: var(--gl-font-ui); letter-spacing: 0.02em; }
+
+a.proof-tag, a.proof-tag:link, a.proof-tag:visited {
+  font-family: var(--gl-font-ui); font-size: 0.86em; letter-spacing: 0.04em; color: var(--gl-text);
+  border: 1px solid var(--gl-rule-strong); border-radius: 5px; padding: 0.02em 0.4em; background: var(--gl-surface-sunken);
+}
+a.proof-tag:hover { color: var(--gl-link-strong); border-color: var(--gl-link); }
+
+.step-output {
+  background: var(--gl-surface); border: 1px solid var(--gl-rule); border-radius: 18px; padding: 0.4em 1.2em 1em;
+  box-shadow: 0 1px 0 var(--gl-tint), 0 18px 36px -32px var(--gl-shadow);
+}
+.step-output > .reader-section.subproofs-section { border-top: 0; padding-top: 0.2em; }
+.reader-section h3 { font-size: 1.12rem; margin: 0.6em 0 0.4em; }
+.reader-section h3 .block-number { color: var(--gl-accent); }
+.reader-section .reader-counts { font-size: 0.86rem; letter-spacing: 0.03em; }
+.subproof-card { border: 1px solid var(--gl-rule); border-left-width: 4px; border-radius: 14px;
+  box-shadow: 0 1px 0 var(--gl-tint), 0 12px 26px -24px var(--gl-shadow); }
+.subproof-depth-1 { border-left-color: var(--gl-depth-1); background: var(--gl-depth-1-bg); }
+.subproof-depth-2 { border-left-color: var(--gl-depth-2); background: var(--gl-depth-2-bg); }
+.subproof-depth-3 { border-left-color: var(--gl-depth-3); background: var(--gl-depth-3-bg); }
+.subproof-depth-4 { border-left-color: var(--gl-depth-4); background: var(--gl-depth-4-bg); }
+.subproof-depth-5 { border-left-color: var(--gl-depth-5); background: var(--gl-depth-5-bg); }
+.subproof-title { color: var(--gl-text); }
+.reader-section .reader-block-kind { font-size: 0.82em; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gl-link-strong); }
+.subproof-explanation { border-left-color: var(--gl-rule-strong); border-radius: 0 8px 8px 0; }
+.chapter-stats { border-top: 1px dashed var(--gl-rule-strong); border-radius: 12px; background: var(--gl-surface-sunken);
+  font-size: 0.82rem; letter-spacing: 0.02em; }
+.used-by-panel { border-radius: 0 10px 10px 0; }
+
+#theorem-list > li { padding: 0.55em 0 0.75em; border-bottom: 1px solid var(--gl-rule); }
+#theorem-list .clickable { font-size: 0.92em; overflow-wrap: anywhere; }
+#theorem-list > li:last-child { border-bottom: 0; }
+#theorem-search:focus { border-color: var(--gl-link) !important; box-shadow: 0 0 0 3px rgb(var(--gl-goal-rgb) / 0.18); }
+
+dialog { border-radius: 14px !important; }
+dialog::backdrop { background: rgb(20 12 26 / 0.42); }
+pre.lean, .lean-card { border-radius: 14px; }
+</style>
+  <style>
+    pre.lean { background:var(--gl-surface-sunken); border:1px solid var(--gl-rule); border-radius:6px; padding:1em; overflow-x:auto; line-height:1.45; font-size:0.92em; }
+    pre.lean .lc { color:var(--gl-text-muted); font-style:italic; }
+    pre.lean .lk { color:var(--gl-link); }
+    .lean-card { background:var(--gl-surface-sunken); border:1px solid var(--gl-rule); border-radius:6px; padding:0.8em 1em; margin:1em 0; color:var(--gl-text); }
+    .lean-card td { vertical-align:top; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="index.html">Index</a> <a href="tags.html">Reasoning rules</a>
+    <a href="chapter228.html">Proof (HTML)</a>
+    <a href="lean_export/GLExport/Generated/FTA.lean">Lean module</a>
+    <a href="lean_export/certificates/fta/certificate.json">Certificate</a>
+    <a href="lean_export/lean_fta_manifest.json">Manifest</a>
+    <a href="lean_export/kernel_check.log">Kernel check log</a>
+  </nav>
+  <h1>Chapter 228 — Lean 4 proof: <span>(&gt;[N,0,s,+,*,1,2,id](AnchorFTA[N,0,s,+,*,1,2,id])(&gt;[v1](preorder[N,+,2,v1])(hasPrimeFactorization[N,s,+,*,0,1,2,v1])))</span></h1>
+  <div style="margin-left:20px; color:var(--gl-text-muted); font-family:var(--gl-font-math); font-weight:bold; font-size:1.3em;"><span class='rf-implication'><span class='rf-premises'><span class='rf-premise'><span class="rf-nb">2 ≤ v<sub>1</sub></span></span></span><span class='rf-arrow' aria-label='implies'>⇒</span><span class='rf-conclusion'><span class='rf-conclusion-content'><span class="rf-nb">∃ primes p<sub>0</sub> ≥ p<sub>1</sub> ≥ … ≥ p<sub>k</sub>:</span> <span class="rf-nb">v<sub>1</sub> = <span class="rf-big"><span class="rf-big-hi">k</span><span class="rf-big-sym">∏</span><span class="rf-big-lo">i = 0</span></span> p<sub>i</sub></span></span></span></span></div>
+  <div class="lean-card">
+    <p style="margin:0 0 0.6em 0;">The same proof, replayed in Lean 4 and accepted by its kernel. Every proof
+    row of the HTML chapter is one named fact (<code>row_&lt;line&gt;</code>) whose comment names the GL
+    reasoning rule and the source line; the public theorem at the end states the chapter's result over one
+    abstract carrier with ordinary predicates. No <code>sorry</code>, no added axiom.</p>
+    <table style="border-collapse:collapse;">
+      <tr><td style='padding:0.15em 1em 0.15em 0;'>Lean theorem</td><td style='padding:0.15em 0;'><code>fta_source_228</code></td></tr>
+      <tr><td style='padding:0.15em 1em 0.15em 0;'>Method</td><td style='padding:0.15em 0;'>strong induction</td></tr>
+      <tr><td style='padding:0.15em 1em 0.15em 0;'>Toolchain</td><td style='padding:0.15em 0;'><code>leanprover/lean4:v4.30.0-rc2</code></td></tr>
+    </table>
+    <table style="border-collapse:collapse; margin-top:0.5em;"><tr><td style='padding:0.15em 1em 0.15em 0;'>induction typing</td><td style='padding:0.15em 1em 0.15em 0;'><code>344_induction_typing.txt</code></td><td style='padding:0.15em 0;'>12 row facts</td></tr><tr><td style='padding:0.15em 1em 0.15em 0;'>check zero</td><td style='padding:0.15em 1em 0.15em 0;'><code>345_check_zero.txt</code></td><td style='padding:0.15em 0;'>86 row facts</td></tr><tr><td style='padding:0.15em 1em 0.15em 0;'>check induction condition</td><td style='padding:0.15em 1em 0.15em 0;'><code>346_check_induction_condition.txt</code></td><td style='padding:0.15em 0;'>169 row facts</td></tr></table>
+  </div>
+  <pre class="lean"><code><span class="lk">private</span> <span class="lk">theorem</span> fta_source_228_induction_typing
+    {α : <span class="lk">Type</span> u}
+    (N : GLSet α)
+    (zero : α)
+    (succ : GLBinaryRelation α)
+    (add mul : GLTernaryRelation α)
+    (one : α)
+    (two : α)
+    (identity : GLBinaryRelation α)
+    (anchor : gl_AnchorFTA N zero succ add mul one two identity)
+    (relationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → P n → ∀ m, succ n m → P m) →
+        N k →
+        P k)
+    (strongRelationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → ∀ m, succ n m → (∀ j x, add j x m → ¬ j = m → P j) → P m) →
+        N k →
+        P k)
+    (v1 : α)
+    (assumption_12 : (gl_preorder N add two v1))
+    : (N v1) := <span class="lk">by</span>
+  <span class="lc">-- chapter_344_line_12: GL tag task formulation.</span>
+  <span class="lk">have</span> row_12 : (gl_preorder N add two v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> assumption_12
+  <span class="lc">-- chapter_344_line_11: GL tag expansion.</span>
+  <span class="lk">have</span> row_11 : (¬ (∀ (v5 : α), ((N v5) → (¬ (add two v5 v1))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_preorder] <span class="lk">using</span> (row_12)
+  <span class="lk">have</span> exists_row_11 : ∃ (v5 : α), ((N v5) ∧ (add two v5 v1)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_11
+      <span class="lk">intro</span> v5 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v5, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v5, witness_row_11⟩ := exists_row_11
+  <span class="lc">-- chapter_344_line_10: GL tag disintegration.</span>
+  <span class="lk">have</span> row_10 : (add two v5 v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_11.2
+  <span class="lc">-- chapter_344_line_9: GL tag task formulation.</span>
+  <span class="lk">have</span> row_9 : (gl_AnchorFTA N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">exact</span> anchor
+  <span class="lc">-- chapter_344_line_8: GL tag expansion.</span>
+  <span class="lk">have</span> row_8 : ((((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one)) ∧ (succ one two)) ∧ (gl_identity N identity)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_AnchorFTA] <span class="lk">using</span> (row_9)
+  <span class="lc">-- chapter_344_line_7: GL tag disintegration.</span>
+  <span class="lk">have</span> row_7 : (gl_NaturalNumbers N zero succ add mul) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_8.1.1.1
+  <span class="lc">-- chapter_344_line_6: GL tag expansion.</span>
+  <span class="lk">have</span> row_6 : ((((((((((((((N zero) ∧ (gl_fXY succ N N)) ∧ (gl_implication9 N zero succ)) ∧ (gl_implication10 N succ)) ∧ (gl_fXYZ add N N N)) ∧ (gl_implication21 N zero add)) ∧ (gl_implication22 N zero add)) ∧ (gl_implication23 N succ add)) ∧ (gl_implication24 N succ add)) ∧ (gl_fXYZ mul N N N)) ∧ (gl_implication25 N zero mul)) ∧ (gl_implication26 zero N mul)) ∧ (gl_implication27 N succ mul add)) ∧ (gl_implication28 N succ mul add)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_NaturalNumbers] <span class="lk">using</span> (row_7)
+  <span class="lc">-- chapter_344_line_5: GL tag disintegration.</span>
+  <span class="lk">have</span> row_5 : (gl_fXYZ add N N N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_6.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_344_line_4: GL tag expansion.</span>
+  <span class="lk">have</span> row_4 : (((((gl_implication11 add N) ∧ (gl_implication12 add N)) ∧ (gl_implication13 add N)) ∧ (gl_implication18 N N N add)) ∧ (gl_implication19 N N add)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_fXYZ] <span class="lk">using</span> (row_5)
+  <span class="lc">-- chapter_344_line_3: GL tag disintegration.</span>
+  <span class="lk">have</span> row_3 : (gl_implication13 add N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_4.1.1.2
+  <span class="lc">-- chapter_344_line_2: GL tag expansion.</span>
+  <span class="lk">have</span> row_2 : (∀ (w1 : α) (w2 : α) (w3 : α), ((add w1 w2 w3) → (N w3))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication13] <span class="lk">using</span> (row_3)
+  <span class="lc">-- chapter_344_line_1: GL tag implication.</span>
+  <span class="lk">have</span> row_1 : (N v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_2
+    <span class="lk">exact</span> row_10
+  <span class="lk">exact</span> row_1
+
+<span class="lk">private</span> <span class="lk">theorem</span> fta_source_228_check_zero
+    {α : <span class="lk">Type</span> u}
+    (N : GLSet α)
+    (zero : α)
+    (succ : GLBinaryRelation α)
+    (add mul : GLTernaryRelation α)
+    (one : α)
+    (two : α)
+    (identity : GLBinaryRelation α)
+    (anchor : gl_AnchorFTA N zero succ add mul one two identity)
+    (relationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → P n → ∀ m, succ n m → P m) →
+        N k →
+        P k)
+    (strongRelationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → ∀ m, succ n m → (∀ j x, add j x m → ¬ j = m → P j) → P m) →
+        N k →
+        P k)
+    (v1 : α)
+    (assumption_85 : (gl_preorder N add two v1))
+    (assumption_2 : (v1 = zero))
+    : (gl_hasPrimeFactorization N succ add mul zero one two v1) := <span class="lk">by</span>
+  <span class="lc">-- chapter_345_line_86: GL tag task formulation.</span>
+  <span class="lk">have</span> row_86 : (gl_AnchorFTA N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">exact</span> anchor
+  <span class="lc">-- chapter_345_line_85: GL tag task formulation.</span>
+  <span class="lk">have</span> row_85 : (gl_preorder N add two v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> assumption_85
+  <span class="lc">-- chapter_345_line_84: GL tag theorem.</span>
+  <span class="lk">have</span> row_84 := fta_source_197 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_83: GL tag implication.</span>
+  <span class="lk">have</span> row_83 : (¬ (one = v1)) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_84
+    <span class="lk">exact</span> row_85
+  <span class="lc">-- chapter_345_line_82: GL tag expansion.</span>
+  <span class="lk">have</span> row_82 : ((((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one)) ∧ (succ one two)) ∧ (gl_identity N identity)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_AnchorFTA] <span class="lk">using</span> (row_86)
+  <span class="lc">-- chapter_345_line_81: GL tag disintegration.</span>
+  <span class="lk">have</span> row_81 : (succ one two) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_82.1.2
+  <span class="lc">-- chapter_345_line_80: GL tag disintegration.</span>
+  <span class="lk">have</span> row_80 : (gl_identity N identity) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_82.2
+  <span class="lc">-- chapter_345_line_79: GL tag disintegration.</span>
+  <span class="lk">have</span> row_79 : (succ zero one) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_82.1.1.2
+  <span class="lc">-- chapter_345_line_78: GL tag disintegration.</span>
+  <span class="lk">have</span> row_78 : (gl_NaturalNumbers N zero succ add mul) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_82.1.1.1
+  <span class="lc">-- chapter_345_line_77: GL tag expansion.</span>
+  <span class="lk">have</span> row_77 : ((((((((((((((N zero) ∧ (gl_fXY succ N N)) ∧ (gl_implication9 N zero succ)) ∧ (gl_implication10 N succ)) ∧ (gl_fXYZ add N N N)) ∧ (gl_implication21 N zero add)) ∧ (gl_implication22 N zero add)) ∧ (gl_implication23 N succ add)) ∧ (gl_implication24 N succ add)) ∧ (gl_fXYZ mul N N N)) ∧ (gl_implication25 N zero mul)) ∧ (gl_implication26 zero N mul)) ∧ (gl_implication27 N succ mul add)) ∧ (gl_implication28 N succ mul add)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_NaturalNumbers] <span class="lk">using</span> (row_78)
+  <span class="lc">-- chapter_345_line_76: GL tag disintegration.</span>
+  <span class="lk">have</span> row_76 : (gl_implication10 N succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_77.1.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_345_line_75: GL tag expansion.</span>
+  <span class="lk">have</span> row_75 : (∀ (w1 : α), ((N w1) → (∀ (w2 : α), ((succ w2 w1) → (∀ (w3 : α), ((succ w3 w1) → (w2 = w3))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication10] <span class="lk">using</span> (row_76)
+  <span class="lc">-- chapter_345_line_74: GL tag disintegration.</span>
+  <span class="lk">have</span> row_74 : (gl_fXYZ mul N N N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_77.1.1.1.1.2
+  <span class="lc">-- chapter_345_line_73: GL tag expansion.</span>
+  <span class="lk">have</span> row_73 : (((((gl_implication11 mul N) ∧ (gl_implication12 mul N)) ∧ (gl_implication13 mul N)) ∧ (gl_implication18 N N N mul)) ∧ (gl_implication19 N N mul)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_fXYZ] <span class="lk">using</span> (row_74)
+  <span class="lc">-- chapter_345_line_72: GL tag disintegration.</span>
+  <span class="lk">have</span> row_72 : (gl_implication13 mul N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_73.1.1.2
+  <span class="lc">-- chapter_345_line_71: GL tag expansion.</span>
+  <span class="lk">have</span> row_71 : (∀ (w1 : α) (w2 : α) (w3 : α), ((mul w1 w2 w3) → (N w3))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication13] <span class="lk">using</span> (row_72)
+  <span class="lc">-- chapter_345_line_70: GL tag disintegration.</span>
+  <span class="lk">have</span> row_70 : (gl_implication12 mul N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_73.1.1.1.2
+  <span class="lc">-- chapter_345_line_69: GL tag expansion.</span>
+  <span class="lk">have</span> row_69 : (∀ (w1 : α) (w2 : α) (w3 : α), ((mul w1 w2 w3) → (N w2))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication12] <span class="lk">using</span> (row_70)
+  <span class="lc">-- chapter_345_line_68: GL tag disintegration.</span>
+  <span class="lk">have</span> row_68 : (gl_implication11 mul N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_73.1.1.1.1
+  <span class="lc">-- chapter_345_line_67: GL tag expansion.</span>
+  <span class="lk">have</span> row_67 : (∀ (w1 : α) (w2 : α) (w3 : α), ((mul w1 w2 w3) → (N w1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication11] <span class="lk">using</span> (row_68)
+  <span class="lc">-- chapter_345_line_66: GL tag disintegration.</span>
+  <span class="lk">have</span> row_66 : (gl_implication9 N zero succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_77.1.1.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_345_line_65: GL tag expansion.</span>
+  <span class="lk">have</span> row_65 : (∀ (w1 : α), ((N w1) → (¬ (succ w1 zero)))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication9] <span class="lk">using</span> (row_66)
+  <span class="lc">-- chapter_345_line_64: GL tag disintegration.</span>
+  <span class="lk">have</span> row_64 : (gl_fXY succ N N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_77.1.1.1.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_345_line_63: GL tag expansion.</span>
+  <span class="lk">have</span> row_63 : ((((gl_implication0 succ N) ∧ (gl_implication1 succ N)) ∧ (gl_implication6 N N succ)) ∧ (gl_implication7 N succ)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_fXY] <span class="lk">using</span> (row_64)
+  <span class="lc">-- chapter_345_line_62: GL tag disintegration.</span>
+  <span class="lk">have</span> row_62 : (gl_implication6 N N succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_63.1.2
+  <span class="lc">-- chapter_345_line_61: GL tag expansion.</span>
+  <span class="lk">have</span> row_61 : (∀ (w1 : α), ((N w1) → (gl_existence0 N w1 succ))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication6] <span class="lk">using</span> (row_62)
+  <span class="lc">-- chapter_345_line_60: GL tag disintegration.</span>
+  <span class="lk">have</span> row_60 : (N zero) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_77.1.1.1.1.1.1.1.1.1.1.1.1.1
+  <span class="lc">-- chapter_345_line_59: GL tag disintegration.</span>
+  <span class="lk">have</span> row_59 : (gl_implication7 N succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_63.2
+  <span class="lc">-- chapter_345_line_58: GL tag expansion.</span>
+  <span class="lk">have</span> row_58 : (∀ (w1 : α), ((N w1) → (∀ (w2 : α), ((succ w1 w2) → (∀ (w3 : α), ((succ w1 w3) → (w2 = w3))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication7] <span class="lk">using</span> (row_59)
+  <span class="lc">-- chapter_345_line_57: GL tag disintegration.</span>
+  <span class="lk">have</span> row_57 : (gl_implication26 zero N mul) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_77.1.1.2
+  <span class="lc">-- chapter_345_line_56: GL tag expansion.</span>
+  <span class="lk">have</span> row_56 : (∀ (w1 : α), ((w1 = zero) → (∀ (w2 : α), ((N w2) → ((N w1) → (mul w2 zero w1)))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication26] <span class="lk">using</span> (row_57)
+  <span class="lc">-- chapter_345_line_55: GL tag expansion for integration.</span>
+  <span class="lk">have</span> row_55 : ((gl_AnchorGauss N zero succ add mul one two identity) ↔ ((((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one)) ∧ (succ one two)) ∧ (gl_identity N identity))) := <span class="lk">by</span>
+    <span class="lk">exact</span> <span class="lk">Iff</span>.rfl
+  <span class="lc">-- chapter_345_line_54_rule: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_54_rule : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → ((succ one two) → ((gl_identity N identity) → (gl_AnchorGauss N zero succ add mul one two identity))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> integration_premise_1
+    <span class="lk">intro</span> integration_premise_2
+    <span class="lk">intro</span> integration_premise_3
+    <span class="lk">intro</span> integration_premise_4
+    <span class="lk">simp</span> <span class="lk">only</span> [gl_AnchorGauss]
+    <span class="lk">exact</span> ⟨⟨⟨integration_premise_1, integration_premise_2⟩, integration_premise_3⟩, integration_premise_4⟩
+  <span class="lc">-- chapter_345_line_54: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_54 : (gl_implication40 N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication40] <span class="lk">using</span> row_54_rule
+  <span class="lc">-- chapter_345_line_53: GL tag expansion.</span>
+  <span class="lk">have</span> row_53 : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → ((succ one two) → ((gl_identity N identity) → (gl_AnchorGauss N zero succ add mul one two identity))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication40] <span class="lk">using</span> (row_54)
+  <span class="lc">-- chapter_345_line_52: GL tag implication.</span>
+  <span class="lk">have</span> row_52 : (gl_AnchorGauss N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_53
+    <span class="lk">exact</span> row_78
+    <span class="lk">exact</span> row_79
+    <span class="lk">exact</span> row_81
+    <span class="lk">exact</span> row_80
+  <span class="lc">-- chapter_345_line_51: GL tag expansion for integration.</span>
+  <span class="lk">have</span> row_51 : ((gl_AnchorPeano N zero succ add mul one) ↔ ((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one))) := <span class="lk">by</span>
+    <span class="lk">exact</span> <span class="lk">Iff</span>.rfl
+  <span class="lc">-- chapter_345_line_50_rule: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_50_rule : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → (gl_AnchorPeano N zero succ add mul one))) := <span class="lk">by</span>
+    <span class="lk">intro</span> integration_premise_1
+    <span class="lk">intro</span> integration_premise_2
+    <span class="lk">simp</span> <span class="lk">only</span> [gl_AnchorPeano]
+    <span class="lk">exact</span> ⟨integration_premise_1, integration_premise_2⟩
+  <span class="lc">-- chapter_345_line_50: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_50 : (gl_implication76 N zero succ add mul one) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication76] <span class="lk">using</span> row_50_rule
+  <span class="lc">-- chapter_345_line_49: GL tag expansion.</span>
+  <span class="lk">have</span> row_49 : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → (gl_AnchorPeano N zero succ add mul one))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication76] <span class="lk">using</span> (row_50)
+  <span class="lc">-- chapter_345_line_48: GL tag implication.</span>
+  <span class="lk">have</span> row_48 : (gl_AnchorPeano N zero succ add mul one) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_49
+    <span class="lk">exact</span> row_78
+    <span class="lk">exact</span> row_79
+  <span class="lk">have</span> rule_row_47 := peano_source_065 N zero succ add mul one (anchorPeanoOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_47: GL tag implication.</span>
+  <span class="lk">have</span> row_47 : (gl_inSequence N one succ) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_47
+  <span class="lc">-- chapter_345_line_46: GL tag expansion.</span>
+  <span class="lk">have</span> row_46 : (¬ (∀ (v5 : α), ((N v5) → (¬ (succ v5 one))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_inSequence] <span class="lk">using</span> (row_47)
+  <span class="lk">have</span> exists_row_46 : ∃ (v5 : α), ((N v5) ∧ (succ v5 one)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_46
+      <span class="lk">intro</span> v5 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v5, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v5, witness_row_46⟩ := exists_row_46
+  <span class="lc">-- chapter_345_line_45: GL tag disintegration.</span>
+  <span class="lk">have</span> row_45 : (succ v5 one) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_46.2
+  <span class="lc">-- chapter_345_line_44: GL tag disintegration.</span>
+  <span class="lk">have</span> row_44 : (N v5) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_46.1
+  <span class="lc">-- chapter_345_line_43: GL tag implication grouping.</span>
+  <span class="lk">have</span> row_43 : (∀ (w1 : α) (w2 : α) (w3 : α), ((mul w1 w2 w3) → (gl_and21 w1 N w2 N w3 N))) := <span class="lk">by</span>
+    <span class="lk">have</span> auxiliary_source_1 := row_67
+    <span class="lk">have</span> auxiliary_source_2 := row_69
+    <span class="lk">have</span> auxiliary_source_3 := row_71
+    <span class="lk">intro</span> auxiliary_argument_1
+    <span class="lk">intro</span> auxiliary_argument_2
+    <span class="lk">intro</span> auxiliary_argument_3
+    <span class="lk">intro</span> auxiliary_premise
+    <span class="lk">exact</span> ⟨⟨(auxiliary_source_1 auxiliary_argument_1 auxiliary_argument_2 auxiliary_argument_3 auxiliary_premise), (auxiliary_source_2 auxiliary_argument_1 auxiliary_argument_2 auxiliary_argument_3 auxiliary_premise)⟩, (auxiliary_source_3 auxiliary_argument_1 auxiliary_argument_2 auxiliary_argument_3 auxiliary_premise)⟩
+  <span class="lc">-- chapter_345_line_42: GL tag implication grouping.</span>
+  <span class="lk">have</span> row_42 : (∀ (w1 : α), ((N w1) → (gl_and3 N w1 succ zero))) := <span class="lk">by</span>
+    <span class="lk">have</span> auxiliary_source_1 := row_61
+    <span class="lk">have</span> auxiliary_source_2 := row_65
+    <span class="lk">intro</span> auxiliary_argument_1
+    <span class="lk">intro</span> auxiliary_premise
+    <span class="lk">exact</span> ⟨(auxiliary_source_1 auxiliary_argument_1 auxiliary_premise), (auxiliary_source_2 auxiliary_argument_1 auxiliary_premise)⟩
+  <span class="lc">-- chapter_345_line_41: GL tag implication.</span>
+  <span class="lk">have</span> row_41 : (gl_and3 N zero succ zero) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_42
+    <span class="lk">exact</span> row_60
+  <span class="lc">-- chapter_345_line_40: GL tag expansion.</span>
+  <span class="lk">have</span> row_40 : ((gl_existence0 N zero succ) ∧ (¬ (succ zero zero))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_and3] <span class="lk">using</span> (row_41)
+  <span class="lc">-- chapter_345_line_39: GL tag disintegration.</span>
+  <span class="lk">have</span> row_39 : (gl_existence0 N zero succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_40.1
+  <span class="lc">-- chapter_345_line_38: GL tag expansion.</span>
+  <span class="lk">have</span> row_38 : (¬ (∀ (v2 : α), ((N v2) → (¬ (succ zero v2))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence0] <span class="lk">using</span> (row_39)
+  <span class="lk">have</span> exists_row_38 : ∃ (v2 : α), ((N v2) ∧ (succ zero v2)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_38
+      <span class="lk">intro</span> v2 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v2, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v2, witness_row_38⟩ := exists_row_38
+  <span class="lc">-- chapter_345_line_37: GL tag disintegration.</span>
+  <span class="lk">have</span> row_37 : (succ zero v2) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_38.2
+  <span class="lc">-- chapter_345_line_36: GL tag disintegration.</span>
+  <span class="lk">have</span> row_36 : (N v2) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_38.1
+  <span class="lc">-- chapter_345_line_35: GL tag implication.</span>
+  <span class="lk">have</span> row_35 : (v2 = one) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_58
+    <span class="lk">exact</span> row_60
+    <span class="lk">exact</span> row_37
+    <span class="lk">exact</span> row_79
+  <span class="lc">-- chapter_345_line_34: GL tag implication.</span>
+  <span class="lk">have</span> row_34 : (one = v2) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_58
+    <span class="lk">exact</span> row_60
+    <span class="lk">exact</span> row_79
+    <span class="lk">exact</span> row_37
+  <span class="lc">-- chapter_345_line_33: GL tag equality1.</span>
+  <span class="lk">have</span> row_33 : (succ v5 v2) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_45
+    <span class="lk">have</span> equality_step_1 := row_34
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_345_line_32: GL tag implication.</span>
+  <span class="lk">have</span> row_32 : (v5 = zero) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_75
+    <span class="lk">exact</span> row_36
+    <span class="lk">exact</span> row_33
+    <span class="lk">exact</span> row_37
+  <span class="lc">-- chapter_345_line_31: GL tag implication.</span>
+  <span class="lk">have</span> row_31 : (mul v2 zero v5) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_56
+    <span class="lk">exact</span> row_32
+    <span class="lk">exact</span> row_36
+    <span class="lk">exact</span> row_44
+  <span class="lk">have</span> rule_row_30 := peano_source_058 N zero succ add mul one (anchorPeanoOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_30: GL tag implication.</span>
+  <span class="lk">have</span> row_30 : (mul zero v2 v5) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_30
+    <span class="lk">exact</span> row_31
+  <span class="lc">-- chapter_345_line_29: GL tag equality1.</span>
+  <span class="lk">have</span> row_29 : (mul zero one v5) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_30
+    <span class="lk">have</span> equality_step_1 := row_35
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_345_line_28: GL tag implication.</span>
+  <span class="lk">have</span> row_28 : (gl_and21 zero N one N v5 N) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_43
+    <span class="lk">exact</span> row_29
+  <span class="lc">-- chapter_345_line_27: GL tag equality1.</span>
+  <span class="lk">have</span> row_27 : (gl_and21 zero N one N zero N) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_28
+    <span class="lk">have</span> equality_step_1 := row_32
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_345_line_26: GL tag expansion.</span>
+  <span class="lk">have</span> row_26 : (((N zero) ∧ (N one)) ∧ (N zero)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_and21] <span class="lk">using</span> (row_27)
+  <span class="lc">-- chapter_345_line_25: GL tag disintegration.</span>
+  <span class="lk">have</span> row_25 : (N one) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_26.1.2
+  <span class="lc">-- chapter_345_line_24: GL tag implication.</span>
+  <span class="lk">have</span> row_24 : (gl_and3 N one succ zero) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_42
+    <span class="lk">exact</span> row_25
+  <span class="lc">-- chapter_345_line_23: GL tag expansion.</span>
+  <span class="lk">have</span> row_23 : ((gl_existence0 N one succ) ∧ (¬ (succ one zero))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_and3] <span class="lk">using</span> (row_24)
+  <span class="lc">-- chapter_345_line_22: GL tag disintegration.</span>
+  <span class="lk">have</span> row_22 : (gl_existence0 N one succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_23.1
+  <span class="lc">-- chapter_345_line_21: GL tag expansion.</span>
+  <span class="lk">have</span> row_21 : (¬ (∀ (v3 : α), ((N v3) → (¬ (succ one v3))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence0] <span class="lk">using</span> (row_22)
+  <span class="lk">have</span> exists_row_21 : ∃ (v3 : α), ((N v3) ∧ (succ one v3)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_21
+      <span class="lk">intro</span> v3 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v3, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v3, witness_row_21⟩ := exists_row_21
+  <span class="lc">-- chapter_345_line_20: GL tag disintegration.</span>
+  <span class="lk">have</span> row_20 : (succ one v3) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_21.2
+  <span class="lc">-- chapter_345_line_19: GL tag implication.</span>
+  <span class="lk">have</span> row_19 : (two = v3) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_58
+    <span class="lk">exact</span> row_25
+    <span class="lk">exact</span> row_81
+    <span class="lk">exact</span> row_20
+  <span class="lc">-- chapter_345_line_18: GL tag equality1.</span>
+  <span class="lk">have</span> row_18 : (gl_preorder N add v3 v1) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_85
+    <span class="lk">have</span> equality_step_1 := row_19
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_345_line_17: GL tag equality1.</span>
+  <span class="lk">have</span> row_17 : (succ v2 v3) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_20
+    <span class="lk">have</span> equality_step_1 := row_34
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lk">have</span> rule_row_16 := gauss_source_067 N zero succ add mul one two identity (anchorGaussOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_16: GL tag implication.</span>
+  <span class="lk">have</span> row_16 : (gl_preorder N add v2 v3) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_16
+    <span class="lk">exact</span> row_17
+  <span class="lk">have</span> rule_row_15 := gauss_source_071 N zero succ add mul one two identity (anchorGaussOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_15: GL tag implication.</span>
+  <span class="lk">have</span> row_15 : (gl_preorder N add v2 v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_15
+    <span class="lk">exact</span> row_16
+    <span class="lk">exact</span> row_18
+  <span class="lc">-- chapter_345_line_14: GL tag theorem.</span>
+  <span class="lk">have</span> row_14 := fta_source_153 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_13: GL tag implication.</span>
+  <span class="lk">have</span> row_13 : (gl_or8 v2 v1 N add) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_14
+    <span class="lk">exact</span> row_15
+  <span class="lc">-- chapter_345_line_12: GL tag equality1.</span>
+  <span class="lk">have</span> row_12 : (gl_or8 one v1 N add) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_13
+    <span class="lk">have</span> equality_step_1 := row_35
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_345_line_11: GL tag expansion.</span>
+  <span class="lk">have</span> row_11 : (¬ ((¬ (one = v1)) ∧ (¬ (gl_strictOrder N add one v1)))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_or8, GLExport.orIffNotAndNot, <span class="lk">Classical</span>.not_not] <span class="lk">using</span> (row_12)
+  <span class="lc">-- chapter_345_line_10: GL tag disintegration.</span>
+  <span class="lk">have</span> row_10 : (gl_implication2935 one v1 N add) := <span class="lk">by</span>
+    change ((¬ (one = v1)) → (gl_strictOrder N add one v1))
+    classical
+    <span class="lk">intro</span> projection_premise
+    <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+    <span class="lk">intro</span> projection_counterexample
+    <span class="lk">exact</span> (row_11) ⟨projection_premise, projection_counterexample⟩
+  <span class="lc">-- chapter_345_line_9: GL tag expansion.</span>
+  <span class="lk">have</span> row_9 : ((¬ (one = v1)) → (gl_strictOrder N add one v1)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication2935] <span class="lk">using</span> (row_10)
+  <span class="lc">-- chapter_345_line_8: GL tag implication.</span>
+  <span class="lk">have</span> row_8 : (gl_strictOrder N add one v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_9
+    <span class="lk">exact</span> row_83
+  <span class="lc">-- chapter_345_line_7: GL tag expansion.</span>
+  <span class="lk">have</span> row_7 : ((gl_preorder N add one v1) ∧ (¬ (one = v1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_strictOrder] <span class="lk">using</span> (row_8)
+  <span class="lc">-- chapter_345_line_6: GL tag disintegration.</span>
+  <span class="lk">have</span> row_6 : (gl_preorder N add one v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_7.1
+  <span class="lc">-- chapter_345_line_5: GL tag theorem.</span>
+  <span class="lk">have</span> row_5 := fta_source_161 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_345_line_4: GL tag implication.</span>
+  <span class="lk">have</span> row_4 : (¬ (zero = v1)) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_5
+    <span class="lk">exact</span> row_6
+  <span class="lc">-- chapter_345_line_3: GL tag symmetry of inequality.</span>
+  <span class="lk">have</span> row_3 : (¬ (v1 = zero)) := <span class="lk">by</span>
+    <span class="lk">exact</span> <span class="lk">fun</span> equality =&gt; row_4 (<span class="lk">Eq</span>.symm equality)
+  <span class="lc">-- chapter_345_line_2: GL tag recursion.</span>
+  <span class="lk">have</span> row_2 : (v1 = zero) := <span class="lk">by</span>
+    <span class="lk">exact</span> assumption_2
+  <span class="lc">-- chapter_345_line_1: GL tag vacuous truth.</span>
+  <span class="lk">have</span> row_1 : (gl_hasPrimeFactorization N succ add mul zero one two v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> <span class="lk">False</span>.elim (row_3 row_2)
+  <span class="lk">exact</span> row_1
+
+<span class="lk">private</span> <span class="lk">theorem</span> fta_source_228_check_induction_condition
+    {α : <span class="lk">Type</span> u}
+    (N : GLSet α)
+    (zero : α)
+    (succ : GLBinaryRelation α)
+    (add mul : GLTernaryRelation α)
+    (one : α)
+    (two : α)
+    (identity : GLBinaryRelation α)
+    (anchor : gl_AnchorFTA N zero succ add mul one two identity)
+    (relationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → P n → ∀ m, succ n m → P m) →
+        N k →
+        P k)
+    (strongRelationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → ∀ m, succ n m → (∀ j x, add j x m → ¬ j = m → P j) → P m) →
+        N k →
+        P k)
+    (v1 : α)
+    (assumption_166 : (∀ (w1 : α) (w2 : α), ((add w1 w2 v1) → ((¬ (w1 = v1)) → ((gl_preorder N add two w1) → (gl_hasPrimeFactorization N succ add mul zero one two w1))))))
+    (assumption_160 : (gl_preorder N add two v1))
+    : (gl_hasPrimeFactorization N succ add mul zero one two v1) := <span class="lk">by</span>
+  <span class="lc">-- chapter_346_line_169: GL tag theorem.</span>
+  <span class="lk">have</span> row_169 := fta_source_227 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_168: GL tag theorem.</span>
+  <span class="lk">have</span> row_168 := fta_source_194 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_167: GL tag theorem.</span>
+  <span class="lk">have</span> row_167 := fta_source_141 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_166: GL tag recursion.</span>
+  <span class="lk">have</span> row_166 : (∀ (w1 : α) (w2 : α), ((add w1 w2 v1) → ((¬ (w1 = v1)) → ((gl_preorder N add two w1) → (gl_hasPrimeFactorization N succ add mul zero one two w1))))) := <span class="lk">by</span>
+    <span class="lk">exact</span> assumption_166
+  <span class="lc">-- chapter_346_line_165: GL tag theorem.</span>
+  <span class="lk">have</span> row_165 := fta_source_173 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_164: GL tag theorem.</span>
+  <span class="lk">have</span> row_164 := fta_source_175 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_163_rule: GL tag reformulation for integration flattened.</span>
+  <span class="lk">have</span> row_163_rule : (∀ (cr163_1 : α), ((N cr163_1) → (∀ (cr163_2 : GLBinaryRelation α), ((gl_sequence N add zero cr163_1 cr163_2) → ((gl_primeseq N add mul one two cr163_2) → ((gl_ordered N add cr163_2) → ((gl_fold N succ add mul cr163_2 zero cr163_1 v1) → (gl_hasPrimeFactorization N succ add mul zero one two v1)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> cr163_1
+    <span class="lk">intro</span> integration_premise_1
+    <span class="lk">intro</span> cr163_2
+    <span class="lk">intro</span> integration_premise_2
+    <span class="lk">intro</span> integration_premise_3
+    <span class="lk">intro</span> integration_premise_4
+    <span class="lk">intro</span> integration_premise_5
+    <span class="lk">exact</span> (<span class="lk">fun</span> flat_counterexample_2 =&gt; flat_counterexample_2 cr163_1 (integration_premise_1) ((<span class="lk">fun</span> flat_counterexample_1 =&gt; flat_counterexample_1 cr163_2 (integration_premise_2) (⟨⟨⟨integration_premise_2, integration_premise_3⟩, integration_premise_4⟩, integration_premise_5⟩))))
+  <span class="lc">-- chapter_346_line_163: GL tag reformulation for integration flattened.</span>
+  <span class="lk">have</span> row_163 : (gl_implication2593 N add zero mul one two succ v1) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication2593] <span class="lk">using</span> row_163_rule
+  <span class="lc">-- chapter_346_line_162: GL tag expansion.</span>
+  <span class="lk">have</span> row_162 : (∀ (v5 : α), ((N v5) → (∀ (V2 : GLBinaryRelation α), ((gl_sequence N add zero v5 V2) → ((gl_primeseq N add mul one two V2) → ((gl_ordered N add V2) → ((gl_fold N succ add mul V2 zero v5 v1) → (gl_hasPrimeFactorization N succ add mul zero one two v1)))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication2593] <span class="lk">using</span> (row_163)
+  <span class="lc">-- chapter_346_line_161: GL tag task formulation.</span>
+  <span class="lk">have</span> row_161 : (gl_AnchorFTA N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">exact</span> anchor
+  <span class="lc">-- chapter_346_line_160: GL tag task formulation.</span>
+  <span class="lk">have</span> row_160 : (gl_preorder N add two v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> assumption_160
+  <span class="lc">-- chapter_346_line_159: GL tag theorem.</span>
+  <span class="lk">have</span> row_159 := fta_source_197 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_158: GL tag implication.</span>
+  <span class="lk">have</span> row_158 : (¬ (one = v1)) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_159
+    <span class="lk">exact</span> row_160
+  <span class="lc">-- chapter_346_line_157: GL tag expansion.</span>
+  <span class="lk">have</span> row_157 : ((((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one)) ∧ (succ one two)) ∧ (gl_identity N identity)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_AnchorFTA] <span class="lk">using</span> (row_161)
+  <span class="lc">-- chapter_346_line_156: GL tag disintegration.</span>
+  <span class="lk">have</span> row_156 : (succ one two) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_157.1.2
+  <span class="lc">-- chapter_346_line_155: GL tag disintegration.</span>
+  <span class="lk">have</span> row_155 : (gl_NaturalNumbers N zero succ add mul) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_157.1.1.1
+  <span class="lc">-- chapter_346_line_154: GL tag disintegration.</span>
+  <span class="lk">have</span> row_154 : (gl_identity N identity) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_157.2
+  <span class="lc">-- chapter_346_line_153: GL tag disintegration.</span>
+  <span class="lk">have</span> row_153 : (succ zero one) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_157.1.1.2
+  <span class="lc">-- chapter_346_line_152: GL tag expansion.</span>
+  <span class="lk">have</span> row_152 : ((((((((((((((N zero) ∧ (gl_fXY succ N N)) ∧ (gl_implication9 N zero succ)) ∧ (gl_implication10 N succ)) ∧ (gl_fXYZ add N N N)) ∧ (gl_implication21 N zero add)) ∧ (gl_implication22 N zero add)) ∧ (gl_implication23 N succ add)) ∧ (gl_implication24 N succ add)) ∧ (gl_fXYZ mul N N N)) ∧ (gl_implication25 N zero mul)) ∧ (gl_implication26 zero N mul)) ∧ (gl_implication27 N succ mul add)) ∧ (gl_implication28 N succ mul add)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_NaturalNumbers] <span class="lk">using</span> (row_155)
+  <span class="lc">-- chapter_346_line_151: GL tag disintegration.</span>
+  <span class="lk">have</span> row_151 : (gl_fXY succ N N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_152.1.1.1.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_346_line_150: GL tag expansion.</span>
+  <span class="lk">have</span> row_150 : ((((gl_implication0 succ N) ∧ (gl_implication1 succ N)) ∧ (gl_implication6 N N succ)) ∧ (gl_implication7 N succ)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_fXY] <span class="lk">using</span> (row_151)
+  <span class="lc">-- chapter_346_line_149: GL tag disintegration.</span>
+  <span class="lk">have</span> row_149 : (gl_implication1 succ N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_150.1.1.2
+  <span class="lc">-- chapter_346_line_148: GL tag expansion.</span>
+  <span class="lk">have</span> row_148 : (∀ (w1 : α) (w2 : α), ((succ w1 w2) → (N w2))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication1] <span class="lk">using</span> (row_149)
+  <span class="lc">-- chapter_346_line_147: GL tag disintegration.</span>
+  <span class="lk">have</span> row_147 : (gl_implication0 succ N) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_150.1.1.1
+  <span class="lc">-- chapter_346_line_146: GL tag expansion.</span>
+  <span class="lk">have</span> row_146 : (∀ (w1 : α) (w2 : α), ((succ w1 w2) → (N w1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication0] <span class="lk">using</span> (row_147)
+  <span class="lc">-- chapter_346_line_145: GL tag disintegration.</span>
+  <span class="lk">have</span> row_145 : (gl_implication7 N succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_150.2
+  <span class="lc">-- chapter_346_line_144: GL tag expansion.</span>
+  <span class="lk">have</span> row_144 : (∀ (w1 : α), ((N w1) → (∀ (w2 : α), ((succ w1 w2) → (∀ (w3 : α), ((succ w1 w3) → (w2 = w3))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication7] <span class="lk">using</span> (row_145)
+  <span class="lc">-- chapter_346_line_143: GL tag disintegration.</span>
+  <span class="lk">have</span> row_143 : (gl_implication6 N N succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_150.1.2
+  <span class="lc">-- chapter_346_line_142: GL tag expansion.</span>
+  <span class="lk">have</span> row_142 : (∀ (w1 : α), ((N w1) → (gl_existence0 N w1 succ))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication6] <span class="lk">using</span> (row_143)
+  <span class="lc">-- chapter_346_line_141: GL tag disintegration.</span>
+  <span class="lk">have</span> row_141 : (gl_implication9 N zero succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_152.1.1.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_346_line_140: GL tag expansion.</span>
+  <span class="lk">have</span> row_140 : (∀ (w1 : α), ((N w1) → (¬ (succ w1 zero)))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication9] <span class="lk">using</span> (row_141)
+  <span class="lc">-- chapter_346_line_139: GL tag disintegration.</span>
+  <span class="lk">have</span> row_139 : (N zero) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_152.1.1.1.1.1.1.1.1.1.1.1.1.1
+  <span class="lc">-- chapter_346_line_138: GL tag disintegration.</span>
+  <span class="lk">have</span> row_138 : (gl_implication10 N succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_152.1.1.1.1.1.1.1.1.1.1.2
+  <span class="lc">-- chapter_346_line_137: GL tag expansion.</span>
+  <span class="lk">have</span> row_137 : (∀ (w1 : α), ((N w1) → (∀ (w2 : α), ((succ w2 w1) → (∀ (w3 : α), ((succ w3 w1) → (w2 = w3))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication10] <span class="lk">using</span> (row_138)
+  <span class="lc">-- chapter_346_line_136: GL tag expansion for integration.</span>
+  <span class="lk">have</span> row_136 : ((gl_AnchorGauss N zero succ add mul one two identity) ↔ ((((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one)) ∧ (succ one two)) ∧ (gl_identity N identity))) := <span class="lk">by</span>
+    <span class="lk">exact</span> <span class="lk">Iff</span>.rfl
+  <span class="lc">-- chapter_346_line_135_rule: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_135_rule : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → ((succ one two) → ((gl_identity N identity) → (gl_AnchorGauss N zero succ add mul one two identity))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> integration_premise_1
+    <span class="lk">intro</span> integration_premise_2
+    <span class="lk">intro</span> integration_premise_3
+    <span class="lk">intro</span> integration_premise_4
+    <span class="lk">simp</span> <span class="lk">only</span> [gl_AnchorGauss]
+    <span class="lk">exact</span> ⟨⟨⟨integration_premise_1, integration_premise_2⟩, integration_premise_3⟩, integration_premise_4⟩
+  <span class="lc">-- chapter_346_line_135: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_135 : (gl_implication40 N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication40] <span class="lk">using</span> row_135_rule
+  <span class="lc">-- chapter_346_line_134: GL tag expansion.</span>
+  <span class="lk">have</span> row_134 : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → ((succ one two) → ((gl_identity N identity) → (gl_AnchorGauss N zero succ add mul one two identity))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication40] <span class="lk">using</span> (row_135)
+  <span class="lc">-- chapter_346_line_133: GL tag implication.</span>
+  <span class="lk">have</span> row_133 : (gl_AnchorGauss N zero succ add mul one two identity) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_134
+    <span class="lk">exact</span> row_155
+    <span class="lk">exact</span> row_153
+    <span class="lk">exact</span> row_156
+    <span class="lk">exact</span> row_154
+  <span class="lc">-- chapter_346_line_132: GL tag implication grouping.</span>
+  <span class="lk">have</span> row_132 : (∀ (w1 : α) (w2 : α), ((succ w1 w2) → (gl_and20 w1 N w2 N))) := <span class="lk">by</span>
+    <span class="lk">have</span> auxiliary_source_1 := row_146
+    <span class="lk">have</span> auxiliary_source_2 := row_148
+    <span class="lk">intro</span> auxiliary_argument_1
+    <span class="lk">intro</span> auxiliary_argument_2
+    <span class="lk">intro</span> auxiliary_premise
+    <span class="lk">exact</span> ⟨(auxiliary_source_1 auxiliary_argument_1 auxiliary_argument_2 auxiliary_premise), (auxiliary_source_2 auxiliary_argument_1 auxiliary_argument_2 auxiliary_premise)⟩
+  <span class="lc">-- chapter_346_line_131: GL tag implication.</span>
+  <span class="lk">have</span> row_131 : (gl_and20 zero N one N) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_132
+    <span class="lk">exact</span> row_153
+  <span class="lc">-- chapter_346_line_130: GL tag expansion.</span>
+  <span class="lk">have</span> row_130 : ((N zero) ∧ (N one)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_and20] <span class="lk">using</span> (row_131)
+  <span class="lc">-- chapter_346_line_129: GL tag disintegration.</span>
+  <span class="lk">have</span> row_129 : (N one) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_130.2
+  <span class="lc">-- chapter_346_line_128: GL tag implication.</span>
+  <span class="lk">have</span> row_128 : (gl_existence0 N one succ) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_142
+    <span class="lk">exact</span> row_129
+  <span class="lc">-- chapter_346_line_127: GL tag expansion.</span>
+  <span class="lk">have</span> row_127 : (¬ (∀ (v15 : α), ((N v15) → (¬ (succ one v15))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence0] <span class="lk">using</span> (row_128)
+  <span class="lk">have</span> exists_row_127 : ∃ (v15 : α), ((N v15) ∧ (succ one v15)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_127
+      <span class="lk">intro</span> v15 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v15, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v15, witness_row_127⟩ := exists_row_127
+  <span class="lc">-- chapter_346_line_126: GL tag disintegration.</span>
+  <span class="lk">have</span> row_126 : (succ one v15) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_127.2
+  <span class="lc">-- chapter_346_line_125: GL tag implication.</span>
+  <span class="lk">have</span> row_125 : (two = v15) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_144
+    <span class="lk">exact</span> row_129
+    <span class="lk">exact</span> row_156
+    <span class="lk">exact</span> row_126
+  <span class="lc">-- chapter_346_line_124: GL tag equality1.</span>
+  <span class="lk">have</span> row_124 : (gl_preorder N add v15 v1) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_160
+    <span class="lk">have</span> equality_step_1 := row_125
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_346_line_123: GL tag implication grouping.</span>
+  <span class="lk">have</span> row_123 : (∀ (w1 : α), ((N w1) → (gl_and3 N w1 succ zero))) := <span class="lk">by</span>
+    <span class="lk">have</span> auxiliary_source_1 := row_142
+    <span class="lk">have</span> auxiliary_source_2 := row_140
+    <span class="lk">intro</span> auxiliary_argument_1
+    <span class="lk">intro</span> auxiliary_premise
+    <span class="lk">exact</span> ⟨(auxiliary_source_1 auxiliary_argument_1 auxiliary_premise), (auxiliary_source_2 auxiliary_argument_1 auxiliary_premise)⟩
+  <span class="lc">-- chapter_346_line_122: GL tag implication.</span>
+  <span class="lk">have</span> row_122 : (gl_and3 N zero succ zero) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_123
+    <span class="lk">exact</span> row_139
+  <span class="lc">-- chapter_346_line_121: GL tag expansion.</span>
+  <span class="lk">have</span> row_121 : ((gl_existence0 N zero succ) ∧ (¬ (succ zero zero))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_and3] <span class="lk">using</span> (row_122)
+  <span class="lc">-- chapter_346_line_120: GL tag disintegration.</span>
+  <span class="lk">have</span> row_120 : (gl_existence0 N zero succ) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_121.1
+  <span class="lc">-- chapter_346_line_119: GL tag expansion.</span>
+  <span class="lk">have</span> row_119 : (¬ (∀ (v9 : α), ((N v9) → (¬ (succ zero v9))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence0] <span class="lk">using</span> (row_120)
+  <span class="lk">have</span> exists_row_119 : ∃ (v9 : α), ((N v9) ∧ (succ zero v9)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_119
+      <span class="lk">intro</span> v9 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v9, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v9, witness_row_119⟩ := exists_row_119
+  <span class="lc">-- chapter_346_line_118: GL tag disintegration.</span>
+  <span class="lk">have</span> row_118 : (succ zero v9) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_119.2
+  <span class="lc">-- chapter_346_line_117: GL tag disintegration.</span>
+  <span class="lk">have</span> row_117 : (N v9) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_119.1
+  <span class="lc">-- chapter_346_line_116: GL tag implication.</span>
+  <span class="lk">have</span> row_116 : (v9 = one) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_144
+    <span class="lk">exact</span> row_139
+    <span class="lk">exact</span> row_118
+    <span class="lk">exact</span> row_153
+  <span class="lc">-- chapter_346_line_115: GL tag implication.</span>
+  <span class="lk">have</span> row_115 : (one = v9) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_144
+    <span class="lk">exact</span> row_139
+    <span class="lk">exact</span> row_153
+    <span class="lk">exact</span> row_118
+  <span class="lc">-- chapter_346_line_114: GL tag equality1.</span>
+  <span class="lk">have</span> row_114 : (succ v9 v15) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_126
+    <span class="lk">have</span> equality_step_1 := row_115
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lk">have</span> rule_row_113 := gauss_source_067 N zero succ add mul one two identity (anchorGaussOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_113: GL tag implication.</span>
+  <span class="lk">have</span> row_113 : (gl_preorder N add v9 v15) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_113
+    <span class="lk">exact</span> row_114
+  <span class="lk">have</span> rule_row_112 := gauss_source_071 N zero succ add mul one two identity (anchorGaussOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_112: GL tag implication.</span>
+  <span class="lk">have</span> row_112 : (gl_preorder N add v9 v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_112
+    <span class="lk">exact</span> row_113
+    <span class="lk">exact</span> row_124
+  <span class="lc">-- chapter_346_line_111: GL tag theorem.</span>
+  <span class="lk">have</span> row_111 := fta_source_153 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_110: GL tag implication.</span>
+  <span class="lk">have</span> row_110 : (gl_or8 v9 v1 N add) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_111
+    <span class="lk">exact</span> row_112
+  <span class="lc">-- chapter_346_line_109: GL tag equality1.</span>
+  <span class="lk">have</span> row_109 : (gl_or8 one v1 N add) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_110
+    <span class="lk">have</span> equality_step_1 := row_116
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_346_line_108: GL tag expansion.</span>
+  <span class="lk">have</span> row_108 : (¬ ((¬ (one = v1)) ∧ (¬ (gl_strictOrder N add one v1)))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_or8, GLExport.orIffNotAndNot, <span class="lk">Classical</span>.not_not] <span class="lk">using</span> (row_109)
+  <span class="lc">-- chapter_346_line_107: GL tag disintegration.</span>
+  <span class="lk">have</span> row_107 : (gl_implication2935 one v1 N add) := <span class="lk">by</span>
+    change ((¬ (one = v1)) → (gl_strictOrder N add one v1))
+    classical
+    <span class="lk">intro</span> projection_premise
+    <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+    <span class="lk">intro</span> projection_counterexample
+    <span class="lk">exact</span> (row_108) ⟨projection_premise, projection_counterexample⟩
+  <span class="lc">-- chapter_346_line_106: GL tag expansion.</span>
+  <span class="lk">have</span> row_106 : ((¬ (one = v1)) → (gl_strictOrder N add one v1)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication2935] <span class="lk">using</span> (row_107)
+  <span class="lc">-- chapter_346_line_105: GL tag implication.</span>
+  <span class="lk">have</span> row_105 : (gl_strictOrder N add one v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_106
+    <span class="lk">exact</span> row_158
+  <span class="lc">-- chapter_346_line_104: GL tag expansion.</span>
+  <span class="lk">have</span> row_104 : ((gl_preorder N add one v1) ∧ (¬ (one = v1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_strictOrder] <span class="lk">using</span> (row_105)
+  <span class="lc">-- chapter_346_line_103: GL tag disintegration.</span>
+  <span class="lk">have</span> row_103 : (gl_preorder N add one v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_104.1
+  <span class="lc">-- chapter_346_line_102: GL tag expansion for integration.</span>
+  <span class="lk">have</span> row_102 : ((gl_AnchorPeano N zero succ add mul one) ↔ ((gl_NaturalNumbers N zero succ add mul) ∧ (succ zero one))) := <span class="lk">by</span>
+    <span class="lk">exact</span> <span class="lk">Iff</span>.rfl
+  <span class="lc">-- chapter_346_line_101_rule: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_101_rule : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → (gl_AnchorPeano N zero succ add mul one))) := <span class="lk">by</span>
+    <span class="lk">intro</span> integration_premise_1
+    <span class="lk">intro</span> integration_premise_2
+    <span class="lk">simp</span> <span class="lk">only</span> [gl_AnchorPeano]
+    <span class="lk">exact</span> ⟨integration_premise_1, integration_premise_2⟩
+  <span class="lc">-- chapter_346_line_101: GL tag reformulation for integration and.</span>
+  <span class="lk">have</span> row_101 : (gl_implication76 N zero succ add mul one) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication76] <span class="lk">using</span> row_101_rule
+  <span class="lc">-- chapter_346_line_100: GL tag expansion.</span>
+  <span class="lk">have</span> row_100 : ((gl_NaturalNumbers N zero succ add mul) → ((succ zero one) → (gl_AnchorPeano N zero succ add mul one))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication76] <span class="lk">using</span> (row_101)
+  <span class="lc">-- chapter_346_line_99: GL tag implication.</span>
+  <span class="lk">have</span> row_99 : (gl_AnchorPeano N zero succ add mul one) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_100
+    <span class="lk">exact</span> row_155
+    <span class="lk">exact</span> row_153
+  <span class="lk">have</span> rule_row_98 := peano_source_065 N zero succ add mul one (anchorPeanoOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_98: GL tag implication.</span>
+  <span class="lk">have</span> row_98 : (gl_inSequence N one succ) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_98
+  <span class="lc">-- chapter_346_line_97: GL tag expansion.</span>
+  <span class="lk">have</span> row_97 : (¬ (∀ (v6 : α), ((N v6) → (¬ (succ v6 one))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_inSequence] <span class="lk">using</span> (row_98)
+  <span class="lk">have</span> exists_row_97 : ∃ (v6 : α), ((N v6) ∧ (succ v6 one)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_97
+      <span class="lk">intro</span> v6 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v6, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v6, witness_row_97⟩ := exists_row_97
+  <span class="lc">-- chapter_346_line_96: GL tag disintegration.</span>
+  <span class="lk">have</span> row_96 : (N v6) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_97.1
+  <span class="lc">-- chapter_346_line_95: GL tag disintegration.</span>
+  <span class="lk">have</span> row_95 : (succ v6 one) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_97.2
+  <span class="lc">-- chapter_346_line_94: GL tag equality1.</span>
+  <span class="lk">have</span> row_94 : (succ v6 v9) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_95
+    <span class="lk">have</span> equality_step_1 := row_115
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_346_line_93: GL tag implication.</span>
+  <span class="lk">have</span> row_93 : (zero = v6) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_137
+    <span class="lk">exact</span> row_117
+    <span class="lk">exact</span> row_118
+    <span class="lk">exact</span> row_94
+  <span class="lc">-- chapter_346_line_92: GL tag theorem.</span>
+  <span class="lk">have</span> row_92 := fta_source_216 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_91: GL tag implication.</span>
+  <span class="lk">have</span> row_91 : (gl_existence36 N add mul two v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_92
+    <span class="lk">exact</span> row_160
+  <span class="lc">-- chapter_346_line_90: GL tag expansion.</span>
+  <span class="lk">have</span> row_90 : (¬ (∀ (V1 : GLSet α), ((gl_divisorSet N add mul two v1 V1) → (¬ (gl_hasMinimum N add V1))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence36] <span class="lk">using</span> (row_91)
+  <span class="lk">have</span> exists_row_90 : ∃ (V1 : GLSet α), ((gl_divisorSet N add mul two v1 V1) ∧ (gl_hasMinimum N add V1)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_90
+      <span class="lk">intro</span> V1 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V1, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨V1, witness_row_90⟩ := exists_row_90
+  <span class="lc">-- chapter_346_line_89: GL tag disintegration.</span>
+  <span class="lk">have</span> row_89 : (gl_hasMinimum N add V1) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_90.2
+  <span class="lc">-- chapter_346_line_88: GL tag expansion.</span>
+  <span class="lk">have</span> row_88 : (¬ (∀ (v3 : α), ((N v3) → (¬ (gl_minimum N add V1 v3))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_hasMinimum] <span class="lk">using</span> (row_89)
+  <span class="lk">have</span> exists_row_88 : ∃ (v3 : α), ((N v3) ∧ (gl_minimum N add V1 v3)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_88
+      <span class="lk">intro</span> v3 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v3, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v3, witness_row_88⟩ := exists_row_88
+  <span class="lc">-- chapter_346_line_87: GL tag disintegration.</span>
+  <span class="lk">have</span> row_87 : (N v3) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_88.1
+  <span class="lc">-- chapter_346_line_86: GL tag disintegration.</span>
+  <span class="lk">have</span> row_86 : (gl_divisorSet N add mul two v1 V1) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_90.1
+  <span class="lc">-- chapter_346_line_85: GL tag disintegration.</span>
+  <span class="lk">have</span> row_85 : (gl_minimum N add V1 v3) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_88.2
+  <span class="lc">-- chapter_346_line_84: GL tag expansion.</span>
+  <span class="lk">have</span> row_84 : ((V1 v3) ∧ (gl_implication89 V1 N add v3)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_minimum] <span class="lk">using</span> (row_85)
+  <span class="lc">-- chapter_346_line_83: GL tag disintegration.</span>
+  <span class="lk">have</span> row_83 : (V1 v3) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_84.1
+  <span class="lc">-- chapter_346_line_82: GL tag expansion.</span>
+  <span class="lk">have</span> row_82 : ((((gl_implication89 V1 N add two) ∧ (gl_implication90 V1 N add v1)) ∧ (gl_implication90 V1 N mul v1)) ∧ (gl_implication2475 N add two v1 mul V1)) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_divisorSet] <span class="lk">using</span> (row_86)
+  <span class="lc">-- chapter_346_line_81: GL tag disintegration.</span>
+  <span class="lk">have</span> row_81 : (gl_implication90 V1 N mul v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_82.1.2
+  <span class="lc">-- chapter_346_line_80: GL tag expansion.</span>
+  <span class="lk">have</span> row_80 : (∀ (w1 : α), ((V1 w1) → (gl_preorder N mul w1 v1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication90] <span class="lk">using</span> (row_81)
+  <span class="lc">-- chapter_346_line_79: GL tag disintegration.</span>
+  <span class="lk">have</span> row_79 : (gl_implication89 V1 N add two) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_82.1.1.1
+  <span class="lc">-- chapter_346_line_78: GL tag expansion.</span>
+  <span class="lk">have</span> row_78 : (∀ (w1 : α), ((V1 w1) → (gl_preorder N add two w1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication89] <span class="lk">using</span> (row_79)
+  <span class="lc">-- chapter_346_line_77: GL tag theorem.</span>
+  <span class="lk">have</span> row_77 := fta_source_218 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_76: GL tag implication.</span>
+  <span class="lk">have</span> row_76 : (gl_existence27 zero v3 N add) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_77
+    <span class="lk">exact</span> row_87
+  <span class="lc">-- chapter_346_line_75: GL tag expansion.</span>
+  <span class="lk">have</span> row_75 : (¬ (∀ (V3 : GLBinaryRelation α), ((gl_EnumerationRelationSet1 zero v3 V3) → (¬ (gl_ordered N add V3))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence27] <span class="lk">using</span> (row_76)
+  <span class="lk">have</span> exists_row_75 : ∃ (V3 : GLBinaryRelation α), ((gl_EnumerationRelationSet1 zero v3 V3) ∧ (gl_ordered N add V3)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_75
+      <span class="lk">intro</span> V3 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V3, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨V3, witness_row_75⟩ := exists_row_75
+  <span class="lc">-- chapter_346_line_74: GL tag disintegration.</span>
+  <span class="lk">have</span> row_74 : (gl_ordered N add V3) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_75.2
+  <span class="lc">-- chapter_346_line_73: GL tag disintegration.</span>
+  <span class="lk">have</span> row_73 : (gl_EnumerationRelationSet1 zero v3 V3) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_75.1
+  <span class="lc">-- chapter_346_line_72: GL tag theorem.</span>
+  <span class="lk">have</span> row_72 := fta_source_222 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_71: GL tag implication.</span>
+  <span class="lk">have</span> row_71 : (gl_sequence N add zero zero V3) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_72
+    <span class="lk">exact</span> row_87
+    <span class="lk">exact</span> row_73
+  <span class="lc">-- chapter_346_line_70: GL tag equality1.</span>
+  <span class="lk">have</span> row_70 : (gl_sequence N add zero v6 V3) := <span class="lk">by</span>
+    <span class="lk">have</span> equality_source := row_71
+    <span class="lk">have</span> equality_step_1 := row_93
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_346_line_69: GL tag theorem.</span>
+  <span class="lk">have</span> row_69 := fta_source_224 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_68: GL tag implication.</span>
+  <span class="lk">have</span> row_68 : (gl_fold N succ add mul V3 zero zero v3) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_69
+    <span class="lk">exact</span> row_87
+    <span class="lk">exact</span> row_73
+  <span class="lc">-- chapter_346_line_67: GL tag theorem.</span>
+  <span class="lk">have</span> row_67 := fta_source_203 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_66: GL tag implication.</span>
+  <span class="lk">have</span> row_66 : (gl_prime N add mul one two v3) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_67
+    <span class="lk">exact</span> row_160
+    <span class="lk">exact</span> row_86
+    <span class="lk">exact</span> row_85
+  <span class="lc">-- chapter_346_line_65: GL tag theorem.</span>
+  <span class="lk">have</span> row_65 := fta_source_225 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_64: GL tag implication.</span>
+  <span class="lk">have</span> row_64 : (gl_primeseq N add mul one two V3) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_65
+    <span class="lk">exact</span> row_66
+    <span class="lk">exact</span> row_73
+  <span class="lc">-- chapter_346_line_63: GL tag implication.</span>
+  <span class="lk">have</span> row_63 : (gl_preorder N mul v3 v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_80
+    <span class="lk">exact</span> row_83
+  <span class="lc">-- chapter_346_line_62: GL tag expansion.</span>
+  <span class="lk">have</span> row_62 : (¬ (∀ (v2 : α), ((N v2) → (¬ (mul v3 v2 v1))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_preorder] <span class="lk">using</span> (row_63)
+  <span class="lk">have</span> exists_row_62 : ∃ (v2 : α), ((N v2) ∧ (mul v3 v2 v1)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_62
+      <span class="lk">intro</span> v2 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v2, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v2, witness_row_62⟩ := exists_row_62
+  <span class="lc">-- chapter_346_line_61: GL tag disintegration.</span>
+  <span class="lk">have</span> row_61 : (mul v3 v2 v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_62.2
+  <span class="lc">-- chapter_346_line_60: GL tag disintegration.</span>
+  <span class="lk">have</span> row_60 : (N v2) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_62.1
+  <span class="lk">have</span> rule_row_59 := peano_source_054 N zero succ add mul one (anchorPeanoOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_59: GL tag implication.</span>
+  <span class="lk">have</span> row_59 : (mul v2 v3 v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> rule_row_59
+    <span class="lk">exact</span> row_61
+  <span class="lc">-- chapter_346_line_58: GL tag theorem.</span>
+  <span class="lk">have</span> row_58 := fta_source_157 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_57: GL tag implication.</span>
+  <span class="lk">have</span> row_57 : (gl_preorder N mul v2 v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_58
+    <span class="lk">exact</span> row_61
+  <span class="lc">-- chapter_346_line_56: GL tag theorem.</span>
+  <span class="lk">have</span> row_56 := fta_source_160 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_55: GL tag implication.</span>
+  <span class="lk">have</span> row_55 : (gl_preorder N add one v2) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_56
+    <span class="lk">exact</span> row_57
+    <span class="lk">exact</span> row_103
+  <span class="lc">-- chapter_346_line_54: GL tag theorem.</span>
+  <span class="lk">have</span> row_54 := fta_source_161 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_53: GL tag implication.</span>
+  <span class="lk">have</span> row_53 : (¬ (zero = v2)) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_54
+    <span class="lk">exact</span> row_55
+  <span class="lc">-- chapter_346_line_52: GL tag implication.</span>
+  <span class="lk">have</span> row_52 : (gl_preorder N add two v3) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_78
+    <span class="lk">exact</span> row_83
+  <span class="lc">-- chapter_346_line_51: GL tag theorem.</span>
+  <span class="lk">have</span> row_51 := fta_source_215 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_50: GL tag implication.</span>
+  <span class="lk">have</span> row_50 : (gl_strictOrder N add v2 v1) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_51
+    <span class="lk">exact</span> row_61
+    <span class="lk">exact</span> row_52
+    <span class="lk">exact</span> row_103
+  <span class="lc">-- chapter_346_line_49: GL tag expansion.</span>
+  <span class="lk">have</span> row_49 : ((gl_preorder N add v2 v1) ∧ (¬ (v2 = v1))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_strictOrder] <span class="lk">using</span> (row_50)
+  <span class="lc">-- chapter_346_line_48: GL tag disintegration.</span>
+  <span class="lk">have</span> row_48 : (¬ (v2 = v1)) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_49.2
+  <span class="lc">-- chapter_346_line_47: GL tag disintegration.</span>
+  <span class="lk">have</span> row_47 : (gl_preorder N add v2 v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> row_49.1
+  <span class="lc">-- chapter_346_line_46: GL tag expansion.</span>
+  <span class="lk">have</span> row_46 : (¬ (∀ (v14 : α), ((N v14) → (¬ (add v2 v14 v1))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_preorder] <span class="lk">using</span> (row_47)
+  <span class="lk">have</span> exists_row_46 : ∃ (v14 : α), ((N v14) ∧ (add v2 v14 v1)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> row_46
+      <span class="lk">intro</span> v14 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v14, counterexample_premise_0, counterexample_head⟩
+  <span class="lk">obtain</span> ⟨v14, witness_row_46⟩ := exists_row_46
+  <span class="lc">-- chapter_346_line_45: GL tag disintegration.</span>
+  <span class="lk">have</span> row_45 : (add v2 v14 v1) := <span class="lk">by</span>
+    <span class="lk">exact</span> witness_row_46.2
+  <span class="lc">-- chapter_346_line_44: GL tag theorem.</span>
+  <span class="lk">have</span> row_44 := fta_source_226 N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_43: GL tag implication.</span>
+  <span class="lk">have</span> row_43 : (gl_or10 zero v2 one N add two) := <span class="lk">by</span>
+    <span class="lk">apply</span> row_44
+    <span class="lk">exact</span> row_60
+  <span class="lc">-- chapter_346_line_42: GL tag or disintegration.</span>
+  <span class="lk">have</span> row_42 : ((gl_preorder N add two v2) → (gl_preorder N add two v2)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">exact</span> scope_premise_1
+  <span class="lc">-- chapter_346_line_41: GL tag implication.</span>
+  <span class="lk">have</span> row_41 : ((gl_preorder N add two v2) → (gl_hasPrimeFactorization N succ add mul zero one two v2)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_4 := row_42 scope_premise_1
+    <span class="lk">apply</span> row_166
+    <span class="lk">exact</span> row_45
+    <span class="lk">exact</span> row_48
+    <span class="lk">exact</span> scoped_fact_4
+  <span class="lc">-- chapter_346_line_40: GL tag expansion.</span>
+  <span class="lk">have</span> row_40 : ((gl_preorder N add two v2) → (¬ (∀ (v11 : α), ((N v11) → (¬ (gl_existence15 N add zero v11 succ mul one two v2)))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_hasPrimeFactorization] <span class="lk">using</span> (row_41)
+  <span class="lc">-- chapter_346_line_39: GL tag disintegration.</span>
+  <span class="lk">have</span> row_39 : ((gl_preorder N add two v2) → (∃ (v11 : α), ((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_1 := row_40 scope_premise_1
+    <span class="lk">have</span> counterexample_exists : ∃ (v11 : α), ((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> v11 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v11, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨v11, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨v11, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_38: GL tag expansion.</span>
+  <span class="lk">have</span> row_38 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (¬ (∀ (V5 : GLBinaryRelation α), ((gl_sequence N add zero v11 V5) → (¬ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence15] <span class="lk">using</span> (witness_guard_1.2)
+  <span class="lc">-- chapter_346_line_37: GL tag disintegration.</span>
+  <span class="lk">have</span> row_37 : ((gl_preorder N add two v2) → (∃ (v11 : α), ((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_1 := row_40 scope_premise_1
+    <span class="lk">have</span> counterexample_exists : ∃ (v11 : α), ((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> v11 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v11, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨v11, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨v11, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_36: GL tag disintegration.</span>
+  <span class="lk">have</span> row_36 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∃ (V5 : GLBinaryRelation α), ((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">have</span> scoped_fact_1 := row_38 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> counterexample_exists : ∃ (V5 : GLBinaryRelation α), ((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> V5 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V5, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨V5, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨V5, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_35: GL tag expansion.</span>
+  <span class="lk">have</span> row_35 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (¬ (∀ (V6 : GLSet α), ((gl_interval N add zero v11 V6) → (¬ (gl_fXY V5 V6 N)))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_sequence] <span class="lk">using</span> (witness_guard_2.1)
+  <span class="lc">-- chapter_346_line_34: GL tag disintegration.</span>
+  <span class="lk">have</span> row_34 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∃ (V6 : GLSet α), ((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">have</span> scoped_fact_1 := row_35 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">have</span> counterexample_exists : ∃ (V6 : GLSet α), ((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> V6 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V6, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨V6, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨V6, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_33: GL tag disintegration.</span>
+  <span class="lk">have</span> row_33 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∃ (V6 : GLSet α), ((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">have</span> scoped_fact_1 := row_35 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">have</span> counterexample_exists : ∃ (V6 : GLSet α), ((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> V6 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V6, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨V6, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨V6, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_32: GL tag expansion.</span>
+  <span class="lk">have</span> row_32 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → ((((gl_implication0 V5 V6) ∧ (gl_implication1 V5 N)) ∧ (gl_implication6 V6 N V5)) ∧ (gl_implication7 V6 V5))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_fXY] <span class="lk">using</span> (witness_guard_3.2)
+  <span class="lc">-- chapter_346_line_31: GL tag disintegration.</span>
+  <span class="lk">have</span> row_31 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (gl_implication6 V6 N V5)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_1 := row_32 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_3
+    <span class="lk">exact</span> scoped_fact_1.1.2
+  <span class="lc">-- chapter_346_line_30: GL tag expansion.</span>
+  <span class="lk">have</span> row_30 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (∀ (w1 : α), ((V6 w1) → (gl_existence0 N w1 V5)))))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_implication6] <span class="lk">using</span> (row_31)
+  <span class="lc">-- chapter_346_line_29: GL tag disintegration.</span>
+  <span class="lk">have</span> row_29 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∃ (V5 : GLBinaryRelation α), ((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">have</span> scoped_fact_1 := row_38 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> counterexample_exists : ∃ (V5 : GLBinaryRelation α), ((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> V5 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V5, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨V5, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨V5, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_28: GL tag expansion.</span>
+  <span class="lk">have</span> row_28 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → ((((gl_sequence N add zero v11 V5) ∧ (gl_primeseq N add mul one two V5)) ∧ (gl_ordered N add V5)) ∧ (gl_fold N succ add mul V5 zero v11 v2))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_primeFactorSeq] <span class="lk">using</span> (witness_guard_2.2)
+  <span class="lc">-- chapter_346_line_27: GL tag disintegration.</span>
+  <span class="lk">have</span> row_27 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (gl_ordered N add V5)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">have</span> scoped_fact_1 := row_28 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">exact</span> scoped_fact_1.1.2
+  <span class="lc">-- chapter_346_line_26: GL tag disintegration.</span>
+  <span class="lk">have</span> row_26 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (gl_primeseq N add mul one two V5)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">have</span> scoped_fact_1 := row_28 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">exact</span> scoped_fact_1.1.1.2
+  <span class="lc">-- chapter_346_line_25: GL tag disintegration.</span>
+  <span class="lk">have</span> row_25 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (gl_fold N succ add mul V5 zero v11 v2)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">have</span> scoped_fact_1 := row_28 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">exact</span> scoped_fact_1.2
+  <span class="lc">-- chapter_346_line_24: GL tag implication.</span>
+  <span class="lk">have</span> row_24 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (gl_existence0 N v11 succ)))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">have</span> scoped_fact_2 := row_37 scope_premise_1
+    <span class="lk">apply</span> row_142
+    <span class="lk">exact</span> witness_guard_1.1
+  <span class="lc">-- chapter_346_line_23: GL tag expansion.</span>
+  <span class="lk">have</span> row_23 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (¬ (∀ (v10 : α), ((N v10) → (¬ (succ v11 v10)))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence0] <span class="lk">using</span> (row_24)
+  <span class="lc">-- chapter_346_line_22: GL tag disintegration.</span>
+  <span class="lk">have</span> row_22 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∃ (v10 : α), ((N v10) ∧ (succ v11 v10)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">have</span> scoped_fact_1 := row_23 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> counterexample_exists : ∃ (v10 : α), ((N v10) ∧ (succ v11 v10)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> v10 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v10, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨v10, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨v10, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_21: GL tag disintegration.</span>
+  <span class="lk">have</span> row_21 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∃ (v10 : α), ((N v10) ∧ (succ v11 v10)))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">have</span> scoped_fact_1 := row_23 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> counterexample_exists : ∃ (v10 : α), ((N v10) ∧ (succ v11 v10)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> v10 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v10, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨v10, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨v10, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lk">have</span> rule_row_20 := gauss_source_069 N zero succ add mul one two identity (anchorGaussOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_20: GL tag implication.</span>
+  <span class="lk">have</span> row_20 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (V6 v11)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_2 := row_34 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">apply</span> rule_row_20
+    <span class="lk">exact</span> witness_guard_3.1
+  <span class="lc">-- chapter_346_line_19: GL tag implication.</span>
+  <span class="lk">have</span> row_19 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (gl_existence0 N v11 V5)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_1 := row_30 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_3
+    <span class="lk">have</span> scoped_fact_2 := row_20 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_3
+    <span class="lk">apply</span> scoped_fact_1
+    <span class="lk">exact</span> scoped_fact_2
+  <span class="lc">-- chapter_346_line_18: GL tag expansion.</span>
+  <span class="lk">have</span> row_18 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (¬ (∀ (v16 : α), ((N v16) → (¬ (V5 v11 v16)))))))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence0] <span class="lk">using</span> (row_19)
+  <span class="lc">-- chapter_346_line_17: GL tag disintegration.</span>
+  <span class="lk">have</span> row_17 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (∃ (v16 : α), (V5 v11 v16))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_1 := row_18 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_3
+    <span class="lk">have</span> counterexample_exists : ∃ (v16 : α), ((N v16) ∧ (V5 v11 v16)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> v16 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨v16, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨v16, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨v16, scoped_witness_bundle.2⟩
+  <span class="lc">-- chapter_346_line_16: GL tag implication.</span>
+  <span class="lk">have</span> row_16 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (∀ (v16 : α), ((V5 v11 v16) → (gl_preorder N add v3 v16)))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">intro</span> v16
+    <span class="lk">intro</span> witness_guard_4
+    <span class="lk">have</span> scoped_fact_2 := row_29 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> scoped_fact_6 := row_17 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_3
+    <span class="lk">apply</span> row_168
+    <span class="lk">exact</span> witness_guard_2.2
+    <span class="lk">exact</span> row_61
+    <span class="lk">exact</span> row_86
+    <span class="lk">exact</span> row_85
+    <span class="lk">exact</span> witness_guard_4
+  <span class="lc">-- chapter_346_line_15: GL tag implication.</span>
+  <span class="lk">have</span> row_15 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (gl_existence35 v10 v3 V5 N add zero)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> v10
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_2 := row_22 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> scoped_fact_3 := row_36 scope_premise_1 v11 witness_guard_1
+    <span class="lk">apply</span> row_165
+    <span class="lk">exact</span> witness_guard_3.2
+    <span class="lk">exact</span> witness_guard_2.1
+    <span class="lk">exact</span> row_87
+  <span class="lc">-- chapter_346_line_14: GL tag expansion.</span>
+  <span class="lk">have</span> row_14 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (¬ (∀ (V4 : GLBinaryRelation α), ((gl_appendToSequence v10 v3 V5 V4) → (¬ (gl_sequence N add zero v10 V4)))))))))))) := <span class="lk">by</span>
+    <span class="lk">simpa</span> <span class="lk">only</span> [gl_existence35] <span class="lk">using</span> (row_15)
+  <span class="lc">-- chapter_346_line_13: GL tag disintegration.</span>
+  <span class="lk">have</span> row_13 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (∃ (V4 : GLBinaryRelation α), ((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> v10
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_1 := row_14 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_3
+    <span class="lk">have</span> counterexample_exists : ∃ (V4 : GLBinaryRelation α), ((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> V4 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V4, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨V4, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨V4, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_12: GL tag disintegration.</span>
+  <span class="lk">have</span> row_12 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (∃ (V4 : GLBinaryRelation α), ((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> v10
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">have</span> scoped_fact_1 := row_14 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_3
+    <span class="lk">have</span> counterexample_exists : ∃ (V4 : GLBinaryRelation α), ((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)) := <span class="lk">by</span>
+      classical
+      <span class="lk">apply</span> <span class="lk">Classical</span>.byContradiction
+      <span class="lk">intro</span> no_counterexample
+      <span class="lk">apply</span> scoped_fact_1
+      <span class="lk">intro</span> V4 counterexample_premise_0
+      <span class="lk">intro</span> counterexample_head
+      <span class="lk">exact</span> no_counterexample ⟨V4, counterexample_premise_0, counterexample_head⟩
+    <span class="lk">obtain</span> ⟨V4, scoped_witness_bundle⟩ := counterexample_exists
+    <span class="lk">exact</span> ⟨V4, ⟨scoped_witness_bundle.1, scoped_witness_bundle.2⟩⟩
+  <span class="lc">-- chapter_346_line_11: GL tag implication.</span>
+  <span class="lk">have</span> row_11 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (∀ (V4 : GLBinaryRelation α), (((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (gl_ordered N add V4)))))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> v10
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">intro</span> V4
+    <span class="lk">intro</span> witness_guard_4
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_5
+    <span class="lk">have</span> scoped_fact_2 := row_22 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> scoped_fact_3 := row_36 scope_premise_1 v11 witness_guard_1
+    <span class="lk">obtain</span> ⟨v16, witness_guard_6⟩ := row_17 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_5
+    <span class="lk">have</span> scoped_fact_7 := row_13 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_3
+    <span class="lk">have</span> scoped_fact_5 := row_27 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">have</span> scoped_fact_6 := row_16 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_5 v16 witness_guard_6
+    <span class="lk">apply</span> row_167
+    <span class="lk">exact</span> witness_guard_3.2
+    <span class="lk">exact</span> witness_guard_2.1
+    <span class="lk">exact</span> witness_guard_6
+    <span class="lk">exact</span> scoped_fact_5
+    <span class="lk">exact</span> scoped_fact_6
+    <span class="lk">exact</span> witness_guard_4.1
+  <span class="lc">-- chapter_346_line_10: GL tag implication.</span>
+  <span class="lk">have</span> row_10 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (∀ (V4 : GLBinaryRelation α), (((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)) → (gl_primeseq N add mul one two V4)))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> v10
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">intro</span> V4
+    <span class="lk">intro</span> witness_guard_4
+    <span class="lk">have</span> scoped_fact_4 := row_13 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_3
+    <span class="lk">have</span> scoped_fact_2 := row_26 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">apply</span> row_169
+    <span class="lk">exact</span> scoped_fact_2
+    <span class="lk">exact</span> row_66
+    <span class="lk">exact</span> witness_guard_4.1
+  <span class="lc">-- chapter_346_line_9: GL tag implication.</span>
+  <span class="lk">have</span> row_9 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (v10 : α), (((N v10) ∧ (succ v11 v10)) → (∀ (V4 : GLBinaryRelation α), (((gl_appendToSequence v10 v3 V5 V4) ∧ (gl_sequence N add zero v10 V4)) → (gl_fold N succ add mul V4 zero v10 v1)))))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> v10
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">intro</span> V4
+    <span class="lk">intro</span> witness_guard_4
+    <span class="lk">have</span> scoped_fact_2 := row_22 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> scoped_fact_3 := row_36 scope_premise_1 v11 witness_guard_1
+    <span class="lk">have</span> scoped_fact_4 := row_13 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_3
+    <span class="lk">have</span> scoped_fact_5 := row_25 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2
+    <span class="lk">apply</span> row_164
+    <span class="lk">exact</span> witness_guard_3.2
+    <span class="lk">exact</span> witness_guard_2.1
+    <span class="lk">exact</span> witness_guard_4.1
+    <span class="lk">exact</span> scoped_fact_5
+    <span class="lk">exact</span> row_59
+  <span class="lc">-- chapter_346_line_8: GL tag implication.</span>
+  <span class="lk">have</span> row_8 : ((gl_preorder N add two v2) → (∀ (v11 : α), (((N v11) ∧ (gl_existence15 N add zero v11 succ mul one two v2)) → (∀ (V5 : GLBinaryRelation α), (((gl_sequence N add zero v11 V5) ∧ (gl_primeFactorSeq N succ add mul zero one two v11 V5 v2)) → (∀ (V6 : GLSet α), (((gl_interval N add zero v11 V6) ∧ (gl_fXY V5 V6 N)) → (gl_hasPrimeFactorization N succ add mul zero one two v1)))))))) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">intro</span> v11
+    <span class="lk">intro</span> witness_guard_1
+    <span class="lk">intro</span> V5
+    <span class="lk">intro</span> witness_guard_2
+    <span class="lk">intro</span> V6
+    <span class="lk">intro</span> witness_guard_3
+    <span class="lk">obtain</span> ⟨v10, witness_guard_4⟩ := row_21 scope_premise_1 v11 witness_guard_1
+    <span class="lk">obtain</span> ⟨V4, witness_guard_5⟩ := row_12 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_4
+    <span class="lk">have</span> scoped_fact_4 := row_10 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_4 V4 witness_guard_5
+    <span class="lk">have</span> scoped_fact_5 := row_11 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_4 V4 witness_guard_5 V6 witness_guard_3
+    <span class="lk">have</span> scoped_fact_6 := row_9 scope_premise_1 v11 witness_guard_1 V5 witness_guard_2 v10 witness_guard_4 V4 witness_guard_5
+    <span class="lk">apply</span> row_162
+    <span class="lk">exact</span> witness_guard_4.1
+    <span class="lk">exact</span> witness_guard_5.2
+    <span class="lk">exact</span> scoped_fact_4
+    <span class="lk">exact</span> scoped_fact_5
+    <span class="lk">exact</span> scoped_fact_6
+  <span class="lc">-- chapter_346_line_7: GL tag or disintegration.</span>
+  <span class="lk">have</span> row_7 : ((one = v2) → (one = v2)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">exact</span> scope_premise_1
+  <span class="lc">-- chapter_346_line_6: GL tag symmetry of equality.</span>
+  <span class="lk">have</span> row_6 : ((one = v2) → (v2 = one)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_1 := row_7 scope_premise_1
+    <span class="lk">exact</span> <span class="lk">Eq</span>.symm scoped_fact_1
+  <span class="lc">-- chapter_346_line_5: GL tag equality1.</span>
+  <span class="lk">have</span> row_5 : ((one = v2) → (mul one v3 v1)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_2 := row_6 scope_premise_1
+    <span class="lk">have</span> equality_source := row_59
+    <span class="lk">have</span> equality_step_1 := scoped_fact_2
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">exact</span> equality_source
+  <span class="lk">have</span> rule_row_4 := peano_source_060 N zero succ add mul one (anchorPeanoOfFTA N zero succ add mul one two identity anchor) relationalInduction strongRelationalInduction
+  <span class="lc">-- chapter_346_line_4: GL tag implication.</span>
+  <span class="lk">have</span> row_4 : ((one = v2) → (v3 = v1)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_3 := row_5 scope_premise_1
+    <span class="lk">apply</span> rule_row_4
+    <span class="lk">exact</span> row_87
+    <span class="lk">exact</span> scoped_fact_3
+  <span class="lc">-- chapter_346_line_3: GL tag equality1.</span>
+  <span class="lk">have</span> row_3 : ((one = v2) → (gl_fold N succ add mul V3 zero v6 v1)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_3 := row_4 scope_premise_1
+    <span class="lk">have</span> equality_source := row_68
+    <span class="lk">have</span> equality_step_1 := row_93
+    <span class="lk">cases</span> equality_step_1
+    <span class="lk">have</span> equality_step_2 := scoped_fact_3
+    <span class="lk">cases</span> equality_step_2
+    <span class="lk">exact</span> equality_source
+  <span class="lc">-- chapter_346_line_2: GL tag implication.</span>
+  <span class="lk">have</span> row_2 : ((one = v2) → (gl_hasPrimeFactorization N succ add mul zero one two v1)) := <span class="lk">by</span>
+    <span class="lk">intro</span> scope_premise_1
+    <span class="lk">have</span> scoped_fact_6 := row_3 scope_premise_1
+    <span class="lk">apply</span> row_162
+    <span class="lk">exact</span> row_96
+    <span class="lk">exact</span> row_70
+    <span class="lk">exact</span> row_64
+    <span class="lk">exact</span> row_74
+    <span class="lk">exact</span> scoped_fact_6
+  <span class="lc">-- chapter_346_line_1: GL tag or convergence.</span>
+  <span class="lk">have</span> row_1 : (gl_hasPrimeFactorization N succ add mul zero one two v1) := <span class="lk">by</span>
+    classical
+    <span class="lk">have</span> or_cases := row_43
+    <span class="lk">simp</span> <span class="lk">only</span> [gl_or10] <span class="lk">at</span> or_cases
+    <span class="lk">rcases</span> or_cases with (or_branch_1 | or_branch_2) | or_branch_3
+    · <span class="lk">have</span> branch_compact := or_branch_1
+      <span class="lk">exact</span> <span class="lk">False</span>.elim (row_53 branch_compact)
+    · <span class="lk">have</span> branch_compact := or_branch_2
+      <span class="lk">exact</span> row_2 branch_compact
+    · <span class="lk">have</span> branch_compact := or_branch_3
+      <span class="lk">obtain</span> ⟨v11, witness_guard_1⟩ := row_39 branch_compact
+      <span class="lk">obtain</span> ⟨V5, witness_guard_2⟩ := row_36 branch_compact v11 witness_guard_1
+      <span class="lk">obtain</span> ⟨V6, witness_guard_3⟩ := row_34 branch_compact v11 witness_guard_1 V5 witness_guard_2
+      <span class="lk">exact</span> row_8 branch_compact v11 witness_guard_1 V5 witness_guard_2 V6 witness_guard_3
+  <span class="lk">exact</span> row_1
+
+<span class="lk">theorem</span> fta_source_228
+    {α : <span class="lk">Type</span> u}
+    (N : GLSet α)
+    (zero : α)
+    (succ : GLBinaryRelation α)
+    (add mul : GLTernaryRelation α)
+    (one : α)
+    (two : α)
+    (identity : GLBinaryRelation α)
+    (anchor : gl_AnchorFTA N zero succ add mul one two identity)
+    (relationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → P n → ∀ m, succ n m → P m) →
+        N k →
+        P k)
+    (strongRelationalInduction :
+      ∀ (P : α → <span class="lk">Prop</span>) (k : α),
+        P zero →
+        (∀ n, N n → ∀ m, succ n m → (∀ j x, add j x m → ¬ j = m → P j) → P m) →
+        N k →
+        P k)
+    : (∀ (v1 : α), ((gl_preorder N add two v1) → (gl_hasPrimeFactorization N succ add mul zero one two v1))) := <span class="lk">by</span>
+  <span class="lk">intro</span> v1
+  <span class="lk">intro</span> premise_1
+  <span class="lk">have</span> inductionMember : N v1 := <span class="lk">by</span>
+    <span class="lk">have</span> typingRule := fta_source_228_induction_typing N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+    <span class="lk">exact</span> typingRule v1 premise_1
+  <span class="lk">have</span> inductionZeroMember : N zero := <span class="lk">by</span>
+    <span class="lk">simp</span> <span class="lk">only</span> [gl_AnchorFTA, gl_NaturalNumbers] <span class="lk">at</span> anchor
+    <span class="lk">exact</span> anchor.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1
+  <span class="lk">have</span> inductionBase : ((gl_preorder N add two zero) → (gl_hasPrimeFactorization N succ add mul zero one two zero)) := <span class="lk">by</span>
+    <span class="lk">intro</span> base_premise_1
+    <span class="lk">have</span> zeroRule := fta_source_228_check_zero N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+    <span class="lk">exact</span> zeroRule zero base_premise_1 rfl
+  <span class="lk">have</span> inductionStep :
+      ∀ induction_n, N induction_n → ∀ induction_m, succ induction_n induction_m → (∀ induction_j induction_x, add induction_j induction_x induction_m → ¬ induction_j = induction_m → ((gl_preorder N add two induction_j) → (gl_hasPrimeFactorization N succ add mul zero one two induction_j))) → ((gl_preorder N add two induction_m) → (gl_hasPrimeFactorization N succ add mul zero one two induction_m)) := <span class="lk">by</span>
+    <span class="lk">intro</span> induction_n induction_n_member induction_m induction_successor
+    <span class="lk">intro</span> induction_hypothesis
+    <span class="lk">intro</span> step_premise_1
+    <span class="lk">have</span> step_induction_assumption_1 :
+        (∀ (w1 : α) (w2 : α), ((add w1 w2 induction_m) → ((¬ (w1 = induction_m)) → ((gl_preorder N add two w1) → (gl_hasPrimeFactorization N succ add mul zero one two w1))))) := <span class="lk">by</span>
+      <span class="lk">intro</span> w1
+      <span class="lk">intro</span> w2
+      <span class="lk">intro</span> step_induction_assumption_1_premise_1
+      <span class="lk">intro</span> step_induction_assumption_1_premise_2
+      <span class="lk">intro</span> step_induction_assumption_1_premise_3
+      <span class="lk">apply</span> induction_hypothesis
+      all_goals assumption
+    <span class="lk">have</span> stepRule := fta_source_228_check_induction_condition N zero succ add mul one two identity anchor relationalInduction strongRelationalInduction
+    <span class="lk">exact</span> stepRule induction_m step_induction_assumption_1 step_premise_1
+  <span class="lk">have</span> inductionProperty : ((gl_preorder N add two v1) → (gl_hasPrimeFactorization N succ add mul zero one two v1)) := <span class="lk">by</span>
+    <span class="lk">exact</span> strongRelationalInduction
+      (<span class="lk">fun</span> induction_value =&gt; ((gl_preorder N add two induction_value) → (gl_hasPrimeFactorization N succ add mul zero one two induction_value)))
+      v1
+      inductionBase
+      inductionStep
+      inductionMember
+  <span class="lk">exact</span> inductionProperty premise_1</code></pre>
+  <div style="margin-top:2em; padding-top:1em; border-top:1px solid var(--gl-rule); font-size:0.8em; color:var(--gl-text-muted); display:flex; align-items:center; gap:0.9em;">
+    <a href="https://generative-logic.com" style="display:inline-flex; align-items:center; flex-shrink:0;" aria-label="Generative Logic homepage">
+      <img src="gl-logo.png" alt="Generative Logic" width="40" height="40" style="display:block;" />
+    </a>
+    <span>
+      Proof graph structure, presentation, and provenance chains
+      © 2025-2026 Generative Logic UG. Licensed under
+      <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPLv3</a>.
+      Use outside AGPLv3 obligations, including AI model training,
+      dataset construction, or redistribution, requires a
+      <a href="https://generative-logic.com/license/">commercial license</a>.
+    </span>
+  </div>
+</body>
+</html>

@@ -99,7 +99,7 @@ implemented, Rule 8):**
 on the branch, reported per Rule 30 (diagnosis-only session, no fix
 yet): `RT_MEASUREMENT 1` (parameters.hpp), `disable_lb_split: true`
 (ConfigFTA.json), `[RT-TEMP]`-tagged timers in `prover.cpp::proveKernel`
-/ `performElemPhase3` and `prover.hpp::standardProcessing` /
+/ `performElemPhase3` and `logical_block/logic_block_operations.hpp::standardProcessing` /
 `applyEquiClasses`, and the `rtChainOf` helper. Remove all of them
 (and restore the two switches) before any production run from this
 branch or at fix time.

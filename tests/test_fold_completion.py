@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 import analyze_incubator as incubator
 from configuration_reader import configuration_reader
-import generate_full_proof_graph as html
 from proof_export.mpl import iter_atoms, parse_mpl
 import visu_helpers as visu
 
@@ -23,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class FoldContractTests(unittest.TestCase):
     def test_all_eight_configurations_agree_on_slots_and_types(self):
+        # FTA and FTA2 are one AnchorFTA batch, so ConfigFTA2.json is gone.
         paths = [p for p in (ROOT / 'files/config').glob('Config*.json')
                  if 'fold' in json.loads(p.read_text(encoding='utf-8'))]
         self.assertEqual(len(paths), 8)
@@ -35,8 +35,7 @@ class FoldContractTests(unittest.TestCase):
                 self.assertEqual(data['definition_sets']['3'], data['definition_sets']['4'])
                 self.assertEqual(data['definition_sets']['4'], ['P(x(1)(x(1)(1)))', False])
                 self.assertEqual(config.data['fold'].indices_output_args, [7])
-                self.assertEqual(config.data['fold'].indices_input_args,
-                                 [5, 6] if path.name == 'ConfigVisu.json' else [6])
+                self.assertEqual(config.data['fold'].indices_input_args, [6])
 
     def test_definition_separates_interval_and_accumulation(self):
         definition = ''.join((ROOT / 'files/definitions/fold.mpl').read_text().split())
@@ -91,15 +90,18 @@ class FoldContractTests(unittest.TestCase):
 
 
 class FoldReadableTests(unittest.TestCase):
+    def setUp(self):
+        self.readable = visu.ReadableForm({}, {})
+
     def test_sum_and_product_with_identity_and_other_functions(self):
-        for operation, kind, glyph in (('+', 'sum', '∑'), ('*', 'prod', '∏')):
+        for operation, glyph in (('+', '∑'), ('*', '∏')):
             for function in ('id', 'f'):
                 with self.subTest(operation=operation, function=function):
                     atom = f'(fold[N,s,+,{operation},{function},2,4,p])'
-                    value = visu.rewrite_expression(atom)
-                    self.assertEqual(value, f'{kind}(i=marker2..marker4)' + ('' if function == 'id' else ' f(i)'))
-                    self.assertEqual(visu.rewrite_expression2(atom), value + ' = markerp')
-                    page = html._htmlify_readable(visu.safe_rewrite_atom(atom))
+                    body = 'i' if function == 'id' else 'f(i)'
+                    self.assertEqual(self.readable.reading(atom, as_html=False),
+                                     f'READS: {glyph}(i=2..4) {body} = p')
+                    page = self.readable.reading(atom)
                     self.assertIn(glyph, page)
                     self.assertNotIn('∑' if glyph == '∏' else '∏', page)
                     self.assertIn('i = 2', page)
@@ -108,24 +110,27 @@ class FoldReadableTests(unittest.TestCase):
     def test_other_operations_and_traversals_remain_explicit(self):
         for atom in ('(fold[N,s,+,op,f,n,m,p])', '(fold[N,s,*,*,id,n,m,p])',
                      '(fold[N,next,+,*,id,n,m,p])'):
-            result = visu.rewrite_fold(atom)
-            self.assertTrue(result.startswith('fold['))
-            self.assertNotIn('sum(', result)
-            self.assertNotIn('prod(', result)
+            result = self.readable.reading(atom, as_html=False)
+            self.assertTrue(result.startswith('READS: fold('))
+            self.assertNotIn('∑', result)
+            self.assertNotIn('∏', result)
 
     def test_nested_product_keeps_function_bounds_and_parentheses(self):
-        atoms = ['(fold[N,s,+,*,f,n,m,p])', '(in3[p,k,r,+])']
-        text = visu.fully_resolve_markers(visu.rewrite_expression(atoms[-1]), atoms[:-1])
-        self.assertEqual(text, '(prod(i=n..m) f(i) + k)')
-        self.assertIn('∏', html._htmlify_readable(text))
+        expression = '(>[f](sequence[N,+,n,m,f])(>[p](fold[N,s,+,*,f,n,m,p])(>[r](in3[p,k,r,+])(=[r,q]))))'
+        caption = self.readable.theorem(expression, as_html=False)
+        self.assertEqual(caption, 'from f: [n, m] → ℕ follows (∏(i=n..m) f(i)) + k = q')
+        self.assertIn('rf-bigparen', self.readable.theorem(expression))
+        self.assertEqual(self.readable.theorem('(>[p](fold[N,s,+,*,f,n,m,p])(>[r](in3[p,k,r,+])(=[r,q])))',
+                                               as_html=False),
+                         'from ∏(i=n..m) f(i) = p follows p + k = q')
 
     def test_negated_product_is_an_inequality(self):
-        self.assertEqual(visu.safe_rewrite_atom('!(fold[N,s,+,*,id,n,m,p])'),
-                         'prod(i=n..m) ≠ p')
+        self.assertEqual(self.readable.reading('!(fold[N,s,+,*,id,n,m,p])', as_html=False),
+                         'READS: ∏(i=n..m) i ≠ p')
 
     def test_seven_arguments_are_not_silently_reinterpreted(self):
         with self.assertRaises(AssertionError):
-            visu.rewrite_fold('(fold[N,s,+,id,n,m,p])')
+            self.readable.reading('(fold[N,s,+,id,n,m,p])')
 
 
 class FoldIncubatorTests(unittest.TestCase):

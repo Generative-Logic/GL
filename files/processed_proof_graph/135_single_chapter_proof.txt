@@ -1,0 +1,10 @@
+(inSequence[N,i1,s])	main	implication	(>[v1](in[v1,N])(>[](in2[v1,i1,s])(inSequence[N,i1,s])))	main	(in2[i0,i1,s])	main	(in[i0,N])	main
+(>[v1](in[v1,N])(>[](in2[v1,i1,s])(inSequence[N,i1,s])))	main	expansion	(implication1873[N,i1,s])	main
+(implication1873[N,i1,s])	main	reformulation for integration >[bound]	!(>[v2](in[v2,N])!(in2[v2,i1,s]))_integration_goal	main
+!(>[v2](in[v2,N])!(in2[v2,i1,s]))_integration_goal	main	expansion for integration	(inSequence[N,i1,s])_integration_goal	main
+(in2[i0,i1,s])	main	disintegration	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main
+(in[i0,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication9[N,i0,s]))(implication10[N,s]))(fXYZ[+,N,N,N]))(implication21[N,i0,+]))(implication22[N,i0,+]))(implication23[N,s,+]))(implication24[N,s,+]))(fXYZ[*,N,N,N]))(implication25[N,i0,*]))(implication26[i0,N,*]))(implication27[N,s,*,+]))(implication28[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main	expansion	(AnchorPeano[N,i0,s,+,*,i1])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	task formulation

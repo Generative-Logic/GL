@@ -7,6 +7,7 @@
 """Output and lifetime regressions for external pipeline acceleration."""
 
 import random
+import re
 import sys
 import tempfile
 import unittest
@@ -117,36 +118,84 @@ class RenderCacheTests(unittest.TestCase):
 
 
 class FinalizationTests(unittest.TestCase):
-    def test_dependencies_counts_and_parent_failure_join(self):
-        for parent_fails in (False, True):
-            with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as patches:
-                root = Path(directory)
-                (root/'.debug').mkdir()
-                calls = []
-                def start(command, **kwargs):
-                    calls.append('spawn')
+    def _finalize(self, failing):
+        """Run _finish_full_graphs with recorded fakes; `failing` names the step that raises."""
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as patches:
+            root = Path(directory)
+            (root/'.debug').mkdir()
+            calls = []
+            def start(command, **kwargs):
+                name = 'processing' if '_process_incubator_worker' in command[2] else 'rendering'
+                calls.append(f'spawn {name}')
+                if name == 'rendering':
                     Path(command[3]).write_text(json.dumps({'success':20,'failure':0}), encoding='utf-8')
-                    return mock.Mock(wait=mock.Mock(side_effect=lambda: calls.append('join') or 0))
-                def lean(*_):
-                    calls.append('lean')
-                    if parent_fails:
-                        raise RuntimeError('parent failure')
-                patches.enter_context(mock.patch.object(run_modes, 'PROJECT_ROOT', root))
-                patches.enter_context(mock.patch.object(run_modes.process_proof_graphs, 'create_processed_proof_graph', side_effect=lambda *_:calls.append('process')))
-                patches.enter_context(mock.patch.object(run_modes.subprocess, 'Popen', side_effect=start))
-                patches.enter_context(mock.patch.object(run_modes.lean_live, 'export_main_graph', side_effect=lean))
-                patches.enter_context(mock.patch.object(run_modes.generate_full_proof_graph, 'generate_proof_graph_pages', side_effect=lambda *_,**__:calls.append('html')))
-                patches.enter_context(mock.patch.object(run_modes.verifier, 'run_verifier', side_effect=lambda *_:calls.append('verify')))
-                patches.enter_context(mock.patch.object(run_modes.verifier, 'print_report'))
-                patches.enter_context(mock.patch.object(run_modes.verifier, 'get_totals', return_value=(10,0)))
-                patches.enter_context(contextlib.redirect_stdout(io.StringIO()))
-                if parent_fails:
-                    with self.assertRaisesRegex(RuntimeError, 'parent failure'):
-                        run_modes._finish_full_graphs(None, True, True)
-                    self.assertEqual(calls, ['process','spawn','lean','join'])
-                else:
-                    self.assertEqual(run_modes._finish_full_graphs(None, True, True), (30,0))
-                    self.assertEqual(calls, ['process','spawn','lean','html','verify','join'])
+                return mock.Mock(wait=mock.Mock(side_effect=lambda: calls.append(f'join {name}') or 0))
+            def step(name, result=None):
+                def run(*_, **keywords):
+                    calls.append(name if 'lean_kernel_check_running' not in keywords
+                                 else (name, keywords['lean_kernel_check_running']))
+                    if failing == name:
+                        raise RuntimeError(f'{name} failure')
+                    return result
+                return run
+            patches.enter_context(mock.patch.object(run_modes, 'PROJECT_ROOT', root))
+            patches.enter_context(mock.patch.object(run_modes.process_proof_graphs, 'create_processed_proof_graph', side_effect=step('process')))
+            patches.enter_context(mock.patch.object(run_modes.subprocess, 'Popen', side_effect=start))
+            patches.enter_context(mock.patch.object(run_modes.lean_live, 'write_main_export', side_effect=step('lean', root/'lean_export')))
+            patches.enter_context(mock.patch.object(run_modes.lean_live, 'find_lake', return_value=root/'lake'))
+            patches.enter_context(mock.patch.object(run_modes.lean_live, 'start_kernel_check', side_effect=step('start kernel', 'check')))
+            patches.enter_context(mock.patch.object(run_modes.lean_live, 'finish_kernel_check', side_effect=step('finish kernel')))
+            patches.enter_context(mock.patch.object(run_modes.generate_full_proof_graph, 'generate_proof_graph_pages', side_effect=step('html')))
+            patches.enter_context(mock.patch.object(run_modes.verifier, 'run_verifier', side_effect=step('verify')))
+            patches.enter_context(mock.patch.object(run_modes.verifier, 'print_report'))
+            patches.enter_context(mock.patch.object(run_modes.verifier, 'get_totals', return_value=(10,0)))
+            patches.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            if failing is None:
+                self.assertEqual(run_modes._finish_full_graphs(None, True, True), (30,0))
+            else:
+                with self.assertRaisesRegex(RuntimeError, f'{failing} failure'):
+                    run_modes._finish_full_graphs(None, True, True)
+            return calls
+
+    def test_dependencies_counts_and_background_kernel_check(self):
+        self.assertEqual(self._finalize(None), [
+            'spawn processing', 'process', 'join processing', 'spawn rendering', 'lean',
+            'start kernel', ('html', True), 'verify', 'finish kernel', 'join rendering'])
+
+    def test_failures_still_join_every_child_and_the_kernel_check(self):
+        self.assertEqual(self._finalize('lean'), [
+            'spawn processing', 'process', 'join processing', 'spawn rendering', 'lean', 'join rendering'])
+        self.assertEqual(self._finalize('process'), ['spawn processing', 'process', 'join processing'])
+        self.assertEqual(self._finalize('html'), [
+            'spawn processing', 'process', 'join processing', 'spawn rendering', 'lean',
+            'start kernel', ('html', True), 'finish kernel', 'join rendering'])
+        self.assertEqual(self._finalize('finish kernel'), [
+            'spawn processing', 'process', 'join processing', 'spawn rendering', 'lean',
+            'start kernel', ('html', True), 'verify', 'finish kernel', 'join rendering'])
+
+    def test_workers_run_their_statement_and_require_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'.debug').mkdir()
+            with mock.patch.object(run_modes, 'PROJECT_ROOT', root), contextlib.redirect_stdout(io.StringIO()) as out:
+                worker = run_modes._start_finalization_worker(
+                    'probe_', "import sys, pathlib; print('probe ran'); pathlib.Path(sys.argv[1]).write_text(sys.argv[2])", ['payload'])
+                run_modes._join_finalization_worker(worker)
+                self.assertEqual(worker[2].read_text(), 'payload')
+                self.assertEqual(worker[2].parent, root/'.debug')
+                failing = run_modes._start_finalization_worker('probe_', 'raise SystemExit(3)', [])
+                with self.assertRaisesRegex(AssertionError, 'Incubator finalization failed'):
+                    run_modes._join_finalization_worker(failing)
+            self.assertIn('probe ran', out.getvalue())
+
+    def test_incubator_processing_worker_arranges_the_incubator_book(self):
+        with mock.patch.object(run_modes, 'configuration_reader', return_value='config'), \
+             mock.patch.object(run_modes.process_proof_graphs, 'create_processed_proof_graph') as process:
+            run_modes._process_incubator_worker()
+        incubator = run_modes.PROJECT_ROOT / 'files' / 'incubator'
+        process.assert_called_once_with('config', raw_dir=incubator / 'raw_proof_graph',
+                                        proc_dir=incubator / 'processed_proof_graph',
+                                        theorems_dir=incubator / 'theorems')
 
     def test_failed_child_asserts_and_disabled_graphs_do_no_work(self):
         self.assertEqual(run_modes._finish_full_graphs(None, False, False), (0,0))
@@ -200,7 +249,10 @@ class ProcessedCacheTests(unittest.TestCase):
         config = configuration_reader(Path(__file__).resolve().parent.parent /
                                       'files/config/ConfigVisu.json')
         theorem = '(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(in[7,1])))'
-        with tempfile.TemporaryDirectory() as directory:
+        # Deliberately duplicate/scaffolded rows exercise renaming, not proof passes.
+        with mock.patch.object(processed, 'process_to_fixed_point', side_effect=lambda ts,ss,*_: (ts,ss)), \
+             mock.patch.object(processed, 'order_main_hierarchies', side_effect=lambda ts,ss,*_: ss), \
+             tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             raw = root / 'raw_proof_graph'
             raw.mkdir()
@@ -223,6 +275,80 @@ class ProcessedCacheTests(unittest.TestCase):
             oracle = {p.name: p.read_bytes() for p in (root/'oracle').iterdir()}
             for label in ('cached', 'again'):
                 self.assertEqual(oracle, {p.name:p.read_bytes() for p in (root/label).iterdir()})
+
+
+class IncubatorTheoremListTests(unittest.TestCase):
+    ANCHOR = '(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])'
+
+    def _raw(self, root, theorems):
+        raw = root / 'raw_proof_graph'
+        raw.mkdir()
+        (root / 'theorems').mkdir()
+        (raw / 'global_theorem_list.txt').write_text(
+            ''.join(f'{theorem}\tsingle chapter proof\t-1\n' for theorem in theorems), encoding='utf-8')
+        for index, theorem in enumerate(theorems):
+            (raw / f'{index}_single_chapter_proof.txt').write_text(f'{theorem}\tmain\ttask formulation\n', encoding='utf-8')
+        return raw
+
+    def test_list_holds_the_arranged_lines_in_prover_order_without_chapters(self):
+        config = configuration_reader(Path(__file__).resolve().parent.parent / 'files/config/ConfigVisu.json')
+        theorems = [self.ANCHOR + '(>[10](in[10,1])(in[10,1])))', self.ANCHOR + '(>[10](in[10,2])(in[10,2])))']
+        # The arrangement is replaced by a reversal: the book reorders, the list does not.
+        with mock.patch.object(processed, 'process_to_fixed_point', side_effect=lambda ts, ss, *_: (ts[::-1], ss)), \
+             mock.patch.object(processed, 'order_main_hierarchies', side_effect=lambda ts, ss, *_: ss), \
+             tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory)
+            raw = self._raw(root, theorems)
+            processed.create_processed_proof_graph(config, raw, root / 'book', root / 'theorems')
+            processed.create_processed_theorem_list(config, raw, root / 'list', root / 'theorems')
+            book = (root / 'book' / 'global_theorem_list.txt').read_text(encoding='utf-8').splitlines()
+            listed = (root / 'list' / 'global_theorem_list.txt').read_text(encoding='utf-8').splitlines()
+            self.assertEqual(listed, book[::-1])
+            self.assertEqual({p.name for p in (root / 'list').iterdir()},
+                             {'global_theorem_list.txt', 'external_theorems.txt'})
+            prepared, stacks, externals, folder = processed._prepare_processed_graph(
+                config, raw, root / 'list', root / 'theorems')
+            self.assertEqual(['\t'.join(row) for row in prepared], listed)
+            self.assertEqual(sorted(stacks), ['0_single_chapter_proof.txt', '1_single_chapter_proof.txt'])
+            self.assertEqual((externals, folder), (set(), root / 'list'))
+            self.assertEqual({p.name for p in folder.iterdir()}, {'external_theorems.txt'})
+
+    def test_main_book_theorems_are_refused(self):
+        config = configuration_reader(Path(__file__).resolve().parent.parent / 'files/config/ConfigVisu.json')
+        theorem = '(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(in[7,1])))'
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory)
+            raw = self._raw(root, [theorem])
+            with self.assertRaisesRegex(AssertionError, 'incubator book only'):
+                processed.create_processed_theorem_list(config, raw, root / 'list', root / 'theorems')
+
+    def test_theorem_list_writer_keeps_rows_and_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            processed._write_theorem_list(folder, [['(b[x])', 'induction', 'x'], ['(a[y])', 'single chapter proof', '-1']])
+            self.assertEqual((folder / 'global_theorem_list.txt').read_text(encoding='utf-8'),
+                             '(b[x])\tinduction\tx\n(a[y])\tsingle chapter proof\t-1\n')
+
+
+class TheoremRenameTests(unittest.TestCase):
+    def test_theorem_takes_its_own_names_in_any_numbering(self):
+        config = configuration_reader(Path(__file__).resolve().parent.parent /
+                                      'files/config/ConfigVisu.json')
+        # Supplied FTA row 110 and a compact implication's reconstruction of
+        # it in first-appearance numbering: one theorem, one display form.
+        anchor = '(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])'
+        registered = anchor + ('(>[9,11](sequence[1,4,2,9,11])(>[10,12,13](appendToSequence[10,12,11,13])'
+                               '(>[14](fold[1,3,4,5,13,2,9,14])(fold[1,3,4,5,11,2,9,14])))))')
+        reconstructed = anchor + ('(>[9,10](sequence[1,4,2,9,10])(>[11,12,13](appendToSequence[11,12,10,13])'
+                                  '(>[14](fold[1,3,4,5,13,2,9,14])(fold[1,3,4,5,10,2,9,14])))))')
+        expected = ('(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])'
+                    '(>[v1,V1](sequence[N,+,i0,v1,V1])(>[v2,v3,V2](appendToSequence[v2,v3,V1,V2])'
+                    '(>[v4](fold[N,s,+,*,V2,i0,v1,v4])(fold[N,s,+,*,V1,i0,v1,v4])))))')
+        for raw in (registered, reconstructed):
+            renamed = processed.replace_keys_in_string(
+                raw, processed.theorem_rename_map(raw, config))
+            self.assertEqual(renamed, expected)
+            self.assertIsNone(re.search(r'(?<=[\[,])\d+(?=[\],])', renamed))
 
 
 if __name__ == '__main__':

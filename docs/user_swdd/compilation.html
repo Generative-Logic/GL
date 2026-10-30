@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 8: Compilation & names (deep dive).
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html" class="current">Compilation &amp; names</a>
@@ -233,6 +233,122 @@ The encoded form (§8.6) makes that an integer-array compare.</li>
 </ul>
 
 <!-- ===================== 8.2 ===================== -->
+<section aria-label="Compiler responsibilities">
+<h3>Compilation uses focused components</h3>
+<p>The prover asks the structural compiler to compile an expression. Separate
+components prepare OR, existence and supporting rules, and ask for compact
+compilation when they need a new implication. A private definition registry owns
+the tables and name counters. Proof operations read those definitions through
+read-only interfaces. Persistence loads and saves the same registry formats.</p>
+<figure><svg viewBox="0 0 860 265" role="img" aria-label="Prover calls structural compilation; rule compilers cooperate over a private registry that supplies read-only definitions to proof operations">
+<g fill="#eaf1fb" stroke="#678">
+<rect x="10" y="20" width="130" height="55" rx="8"/>
+<rect x="190" y="20" width="220" height="55" rx="8"/>
+<rect x="470" y="10" width="375" height="75" rx="8"/>
+<rect x="190" y="140" width="390" height="65" rx="8"/>
+<rect x="635" y="140" width="210" height="65" rx="8"/>
+</g><g fill="#172635" text-anchor="middle" font-size="16">
+<text x="75" y="53">Prover</text><text x="300" y="53">Structural compilation</text>
+<text x="657" y="40">OR · Existence · Supporting rules</text>
+<text x="657" y="66">Request compact compilation</text>
+<text x="385" y="166">Private definition registry</text>
+<text x="385" y="190">Definitions · metadata · name counters</text>
+<text x="740" y="167">Proof operations</text><text x="740" y="190">Read-only definitions</text>
+</g><g stroke="#678" stroke-width="2" fill="none">
+<path d="M140 47H190 M410 40H470 M470 63H410 M300 75V140 M657 85V115H450V140 M580 172H635"/>
+</g><text x="430" y="242" text-anchor="middle" fill="currentColor">Persistence loads and saves the registry at the existing batch boundaries.</text>
+</svg></figure>
+<p>Parsing, normalization, definition reuse, expansion and implication construction
+each keep their own operations. The recursive compilation order and resulting
+names stay the same.</p>
+</section>
+
+<section aria-label="Argument type analysis">
+<h3>Argument types are analyzed below compilation</h3>
+<p>The argument analyzer checks configured types and recognizes set definitions.
+Its parser builds the expression tree, combines free argument types, and removes
+variables bound by each implication. Both use read-only source definitions.</p>
+<figure><svg viewBox="0 0 820 125" role="img" aria-label="Argument analyzer delegates parsing and binder handling to the argument type parser, which returns an owned analysis tree">
+<g fill="#eaf1fb" stroke="#678"><rect x="10" y="20" width="230" height="65" rx="8"/><rect x="290" y="20" width="250" height="65" rx="8"/><rect x="590" y="20" width="220" height="65" rx="8"/></g>
+<g fill="#172635" text-anchor="middle" font-size="16"><text x="125" y="47">Argument analyzer</text><text x="125" y="69">Consistency and set recognition</text><text x="415" y="47">Argument type parser</text><text x="415" y="69">Tree and binder traversal</text><text x="700" y="47">Analysis tree</text><text x="700" y="69">Free argument types</text></g>
+<path d="M240 52H290 M540 52H590" stroke="#678" stroke-width="2" fill="none"/>
+</svg></figure>
+</section>
+
+<section aria-label="Expression parsing responsibilities">
+<h3>Expression syntax has its own component</h3>
+<p>The compiler asks <code>ExpressionParser</code> to read expression trees,
+normalize conjunction premises, split independent conclusions, and rename a
+bound compilation variable. Parsing needs no proof-block state; its recursive
+helpers are private. Definition registration and name allocation remain compiler
+responsibilities.</p>
+<figure><svg viewBox="0 0 760 110" role="img" aria-label="Compiler calls the expression parser, which returns syntax trees and normalized text">
+<rect x="20" y="25" width="185" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="112" y="60" text-anchor="middle" fill="#172b45">Compiler</text>
+<path d="M205 54 H270 M259 48 L270 54 L259 60" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="275" y="25" width="210" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="380" y="60" text-anchor="middle" fill="#172b45">ExpressionParser</text>
+<path d="M485 54 H550 M539 48 L550 54 L539 60" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="555" y="25" width="185" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="647" y="60" text-anchor="middle" fill="#172b45">Tree / normalized text</text>
+</svg></figure>
+</section>
+
+<section aria-label="Compilation normalization responsibilities">
+<h3>Reuse normalization has its own component</h3>
+<p><code>CompilationNormalizer</code> constructs normalized compiler keys and
+argument mappings, and puts a body's premises in canonical order: sorted by
+operator name, and inside each same-name group in the order whose normalized form
+is smallest, an implication's conclusion last. Every definition therefore has
+exactly one reuse key, and a body written in another premise order or with other
+variable names finds it. The stored element order stays as compiled.
+It carries no prover state. Inference keeps its separate integer-key algorithm.</p>
+<figure><svg viewBox="0 0 760 110" role="img" aria-label="Compiled expressions pass through CompilationNormalizer to produce normalized reuse keys and argument mappings">
+<rect x="15" y="25" width="190" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="110" y="60" text-anchor="middle" fill="#172b45">Compiled expressions</text>
+<path d="M205 54 H258 M247 48 L258 54 L247 60" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="263" y="25" width="230" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="378" y="60" text-anchor="middle" fill="#172b45">CompilationNormalizer</text>
+<path d="M493 54 H545 M534 48 L545 54 L534 60" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="550" y="25" width="195" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="647" y="60" text-anchor="middle" fill="#172b45">Canonical key / mapping</text>
+</svg></figure></section>
+
+<section aria-label="Compilation reuse ownership">
+<h3>Reuse state is private to its owner</h3>
+<p><code>CompilationReuse</code> owns normalized identities, public-name
+precedence, OR argument mappings and generated-name replacements. Callers request
+registration, lookup or retirement through operations; readers receive immutable
+views of the records. Definition stores remain separate.</p>
+<figure><svg viewBox="0 0 760 120" role="img" aria-label="Compiler requests registration or lookup from CompilationReuse, which owns private identity and replacement maps">
+<rect x="15" y="30" width="165" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="97" y="65" text-anchor="middle" fill="#172b45">Compiler</text>
+<path d="M180 59 H254 M243 53 L254 59 L243 65" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="259" y="30" width="220" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="369" y="65" text-anchor="middle" fill="#172b45">CompilationReuse</text>
+<path d="M479 59 H533 M522 53 L533 59 L522 65" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="538" y="15" width="207" height="89" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="641" y="45" text-anchor="middle" fill="#172b45">Private identities</text>
+<text x="641" y="72" text-anchor="middle" fill="#172b45">and replacements</text>
+</svg></figure></section>
+
+<section aria-label="Definition expansion responsibilities">
+<h3>Expansion reads definitions through a separate component</h3>
+<p><code>DefinitionExpansion</code> reads source and compiled definitions, expands
+expressions, and transforms argument bindings. It carries no prover object.
+Allocation-free binding operations continue to use the caller's scratch arena;
+worker selection retains the same thread-local identity and lifetime.</p>
+<figure><svg viewBox="0 0 760 110" role="img" aria-label="Read-only definition tables feed DefinitionExpansion, which returns expanded and bound expression text">
+<rect x="15" y="25" width="195" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="112" y="60" text-anchor="middle" fill="#172b45">Read-only definitions</text>
+<path d="M210 54 H269 M258 48 L269 54 L258 60" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="274" y="25" width="215" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="381" y="60" text-anchor="middle" fill="#172b45">DefinitionExpansion</text>
+<path d="M489 54 H545 M534 48 L545 54 L534 60" fill="none" stroke="#466587" stroke-width="2"/>
+<rect x="550" y="25" width="195" height="58" rx="8" fill="#e8eef7" stroke="#466587"/>
+<text x="647" y="60" text-anchor="middle" fill="#172b45">Expression text</text>
+</svg></figure></section>
+
 <h2 id="pre">8.2 &nbsp;Precompilation — <b>I-1</b></h2>
 <p>
 <code>precompileStructuralOperators</code> is the first thing every theorem-load
@@ -251,6 +367,12 @@ universal requirement.</p>
 obligation to its ordinary generated conjectures. This bypasses discovery of
 the helper, not its proof: it is not a trusted external theorem. Later batches
 can use it only after the prover establishes and registers it.</p>
+<p><b>Canonical spelling.</b> After compilation every conjecture is renamed to
+its canonical spelling: variables are numbered in the order they first occur,
+and each is bound at the premise that first uses it. GL's own conjectures
+already have this form. A supplied row may not, and a theorem registered under
+another spelling could not be cited through its compiled form, whose expansion
+always has the canonical spelling.</p>
 <figure><svg viewBox="0 0 760 100" role="img" aria-label="A supplied Peano conjecture must be proved before it becomes a theorem">
 <rect x="10" y="20" width="210" height="55" rx="6" fill="#e8eef5"/>
 <text x="115" y="52" text-anchor="middle" fill="#172534">Supplied conjecture</text>
@@ -274,10 +396,33 @@ One definition keeps <code>a*b=n</code> and both bounds
 E6 asserts that such an <code>a</code> exists for every non-prime
 <code>n &ge; i2</code>. The operator has one output slot; the second factor
 is its witness.</p>
+<p>The property <code>coprime[N,i0,s,*,a,b]</code> says that every natural
+common divisor of <code>a</code> and <code>b</code> is the successor of
+zero, hence one. The definition uses the two multiplication witnesses
+of that same divisor; it constructs no greatest-common-divisor object.
+G1 supplies the Euclidean-step implication: if <code>a</code> and
+<code>b</code> are coprime and <code>a=q*b+r</code>, then <code>b</code>
+and <code>r</code> are coprime. Both configurations retain this named
+property and its original definition.</p>
+<p>The Bezout equation <code>bezEq[N,+,*,i1,a,x,b,y]</code> states
+<code>a*x=b*y+i1</code> for given coefficients. The symmetric Bezout
+property <code>bez1[N,+,*,i1,a,b]</code> binds natural coefficients
+<code>x,y</code> and requires <code>bezEq(a,x,b,y)</code> or
+<code>bezEq(b,y,a,x)</code>; zero coefficients are allowed. Unfolding
+<code>bez1</code> therefore yields two cases stated with the same
+predicate the helper lemmas use. G2 transports the property from
+<code>(b,r)</code> to <code>(a,b)</code> when <code>b</code> divides
+<code>t</code> and <code>a=t+r</code>, using two supplied helper lemmas that
+turn one orientation for <code>(b,r)</code> into the opposite orientation
+for <code>(a,b)</code>.
+Inside each case GL builds at most one new value per lemma use, so two further
+lemmas state the coefficient <code>z</code> as an existence: a use inside
+a case builds only the product <code>w=q*y</code>. Both are ordinary properties with no output slot or
+recursive definition.</p>
 
 <table>
 <tr><th>Input shape</th><th>Output shape</th><th>Why compiled</th></tr>
-<tr><td><code>!(&amp;X₁X₂…X_K)</code></td><td><code>or&lt;N&gt;[args]</code></td><td>De Morgan turns <code>!(&amp;)</code> into a disjunction; OR is the load-bearing branching form (Chapter&nbsp;4) and needs a single canonical name to dispatch against.</td></tr>
+<tr><td><code>!(&amp;(&amp;X₁X₂)…X_K)</code></td><td><code>or&lt;N&gt;[args]</code></td><td>De Morgan turns <code>!(&amp;)</code> into a disjunction; OR is the load-bearing branching form (Chapter&nbsp;4) and needs a single canonical name to dispatch against. A conjunction has exactly two children, so K&nbsp;&gt;&nbsp;2 conjuncts nest; either nesting compiles to one OR with all K disjuncts.</td></tr>
 <tr><td><code>!(&gt;[bound](body))</code></td><td><code>existence&lt;N&gt;[args]</code></td><td>De Morgan turns a negated universal into an existential. Existentials must hash by their <i>shape</i>, not by the names of their witnesses.</td></tr>
 <tr><td><code>(=[a,b])</code> with <code>a==b</code></td><td>(trivial — pruned in head only, <b>I-8</b>)</td><td>Trivial reflexive equalities clutter the index without contributing.</td></tr>
 <tr><td><code>(>[](…)…)</code> top-level</td><td>(unchanged — never compiled to <code>implication&lt;N&gt;</code> on load)</td><td>A top-level implication is the theorem itself; compaction (§3.5.3) runs <i>after</i> proof, never before.</td></tr>
@@ -339,7 +484,7 @@ the analyzer-level table mapping a compact name (<code>or7</code>,
 <code>existence2</code>, …) to the structural template it stands for: head shape,
 arity, the bound-variable signature, the original MPL body, a <code>category</code>
 label (<code>or</code> / <code>existence</code> / <code>and</code> /
-<code>implication</code>). An <code>or</code> row additionally carries its <i>or implications</i>: the K mutual-exclusion rules and the subset-exclusion rules of that OR, compiled once as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens (the K rules when the OR is registered, the subset-exclusion family at the reduced-OR closure seam) and written to the GL binary under <code>implications</code> — a selected exclusion firing instantiates the required rule for proof history; the complete family is not installed as runtime rules. An <code>existence</code> row carries its two <i>existence implications</i> the same way — <code>left → !right</code> and <code>right → !left</code>, the rules its negation disintegrates into, compiled once as compacts over the existence's own tokens when the existence is registered. Every later mechanism that needs to know “what is
+<code>implication</code>). An <code>or</code> row additionally carries its <i>or implications</i>: the K mutual-exclusion rules and the subset-exclusion rules of that OR, compiled once as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens (the K rules when the OR is registered, the subset-exclusion family at the reduced-OR closure seam) and written to the GL binary under <code>implications</code> — a selected exclusion firing instantiates the required rule for proof history; the complete family is not installed as runtime rules. An <code>existence</code> row carries its two <i>existence implications</i> the same way — <code>left → !right</code> and <code>right → !left</code>, the rules its negation disintegrates into, compiled once as compacts over the existence's own tokens when the existence is registered. These lists form the row's <i>disintegration set</i>. An <code>and</code> or <code>existence</code> row also carries an <i>integration set</i>: every rule integration installs for an instance of the row — its one-level rule (the elements imply the entity), for an existence the same rule with the witness given, and, for the entity as integration goal, its flat variants, the introductions of their OR premises and the flat rules of those disjuncts — compiled as compacts when the row is registered and written under <code>integration_implications</code>. Both lists are written for every row of their categories and loaded exactly as written; no later pass fills a list in. Every later mechanism that needs to know “what is
 <code>or7</code>, really?” reads it from this registry — never from the string.
 </p>
 <p>
@@ -536,8 +681,9 @@ one. Theorem pools and fact tables also cross batch boundaries.</figcaption>
 
 <p><b>Public names take precedence.</b> A loaded predicate such as
 <code>preorder</code> participates in body-based reuse as well as lookup by name.
-If two public predicates have the same normalized body and category, the first
-registered public name is reused; both public definitions remain available.
+If two public predicates have the same normalized body and category, in any
+element order, the first registered public name is reused; both public
+definitions remain available.
 Loading registers public names alphabetically.</p>
 <p>If a public name supersedes a numbered operator, its numbered definition is
 removed. All applications are rewritten with the correct argument order:
@@ -924,6 +1070,7 @@ artefacts it describes inherit the same terms — commercial terms at
 <section id="conjunction-refutation"><h2>Compile direct supporting rules</h2><p>For a conjunction premise <code>not (A and B)</code>, preparation keeps one complemented part and every other part as a guard. If the owning implication is <code>not (A and B) implies H</code>, the compiler prepares <code>not A and B implies H</code> and <code>A and not B implies H</code>.</p><p>The original implication remains available. The intermediate guarded rules are retained only as proof derivations and are not installed. Owners with additional premises keep their guarded helpers under the existing composition boundary. No recursive support or composition closure is generated.</p><p>Direct support for concrete conjunction alternatives of admitted ORs retains its local fixed-argument path.</p><svg viewBox="0 0 920 155" role="img" aria-label="Compile direct supporting rules"><rect x="10" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="150" y="52" text-anchor="middle" fill="#172635">Prepare complete guards</text><text x="150" y="77" text-anchor="middle" fill="#172635">Complement one immediate part</text><rect x="320" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="460" y="52" text-anchor="middle" fill="#172635">Compose with unary owner</text><text x="460" y="77" text-anchor="middle" fill="#172635">Preserve fixed and bound names</text><rect x="630" y="20" width="280" height="76" rx="9" fill="#eaf1fb" stroke="#678"/><text x="770" y="52" text-anchor="middle" fill="#172635">Install direct final-head rules</text><text x="770" y="77" text-anchor="middle" fill="#172635">Retain original implication</text><path d="M290 57 H320 M600 57 H630" stroke="#678" stroke-width="2"/><text x="460" y="135" text-anchor="middle" fill="currentColor">The intermediate negative conjunction is not produced by a composed helper.</text></svg></section>
 <section id="compiled-contraposition"><h2>Prepared contrapositives</h2>
 <p>One explicit exception preserves the existing search boundary: a negated existence may refute a candidate's membership in its domain, but contraposition does not turn domain membership into negative body facts for every candidate.</p>
+<p>A second exception concerns definitions whose whole body is one implication. When the conclusion does not mention every variable the premise binds, as in the prime-sequence property (if P(i)=x then x is prime, where the index i does not reach the conclusion), the reversed rule would leave that variable unbound. Such a definition keeps its forward rule and gets no contrapositive; rules compiled from theorems are not affected.</p>
 <p>Forward definitions keep their separate conclusions. During compilation, implications from the same definition family with the same complete premise can also supply a grouped conclusion. Every combination covering all bound variables is prepared, including larger covering combinations.</p>
 <svg viewBox="0 0 760 190" role="img" aria-label="Separate forward rules produce a prepared grouped rule and its contrapositive, activated only with the source family">
 <rect x="10" y="15" width="210" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="115" y="45" text-anchor="middle" fill="#172635">f(i,p) implies i in I</text><text x="115" y="78" text-anchor="middle" fill="#172635">f(i,p) implies p in N</text>
@@ -931,6 +1078,24 @@ artefacts it describes inherit the same terms — commercial terms at
 <path d="M480 60 H530" stroke="#678" stroke-width="2"/><rect x="530" y="15" width="220" height="90" rx="8" fill="#eaf1fb" stroke="#678"/><text x="640" y="45" text-anchor="middle" fill="#172635">Negated typing conjunction</text><text x="640" y="78" text-anchor="middle" fill="#172635">implies not f(i,p)</text>
 <text x="380" y="145" text-anchor="middle" fill="currentColor">Prepared compact → own statement → ordinary rule expansion.</text><text x="380" y="175" text-anchor="middle" fill="currentColor">Forward definitions and construction obligations stay intact.</text></svg>
 <p>At disintegration, the prover substitutes actual arguments into prepared templates in the source scope. Each result has its own compact statement and ordinary rule expansion, like an implication attached to an existence. This preserves its normal ownership through mail, equality rewriting and removal; the fixed domain and range remain parameters. Grouping cites every contributing implication; contraposition cites the exact grouped or original implication. The verifier checks the substitutions and scopes, and Lean replays the derivations. Facts from separate cases cannot be combined.</p></section>
+<section id="disintegration-package"><h2>What an existence already says about its witnesses</h2>
+<p>Some definitions contain rules about their own witnesses. "D is the set of divisors of n from 2 to n" contains the rule "every member of D is at least 2, at most n and divides n"; "p is the least element of D" contains "p is in D". Together they say that the least divisor p is at least 2, at most n and divides n, before any witness exists. For every existence the compiler fires each rule inside it once on the facts inside it, with the bound variables as placeholders, and keeps the results as the existence's disintegration package. Each result is attached to the witness it is about. Results are never fired at again.</p>
+<p>The package is derived from the definitions. It is computed at the same compilation steps as the prepared contrapositives, before any proof work, and is not stored in the binary. The prover uses it when it expands the existence (chapter 4).</p>
+<svg viewBox="0 0 760 130" role="img" aria-label="Rules inside an existence are fired once on its own facts at compilation; the results are attached to the witness they are about">
+<rect x="10" y="15" width="220" height="80" rx="8" fill="#eaf1fb" stroke="#678"/><text x="120" y="45" text-anchor="middle" fill="#172635">Divisor set D of n</text><text x="120" y="72" text-anchor="middle" fill="#172635">least element p</text>
+<path d="M230 55 H270" stroke="#678" stroke-width="2"/><rect x="270" y="15" width="220" height="80" rx="8" fill="#eaf1fb" stroke="#678"/><text x="380" y="45" text-anchor="middle" fill="#172635">Member rule of D</text><text x="380" y="72" text-anchor="middle" fill="#172635">fired once on p in D</text>
+<path d="M490 55 H530" stroke="#678" stroke-width="2"/><rect x="530" y="15" width="220" height="80" rx="8" fill="#eaf1fb" stroke="#678"/><text x="640" y="45" text-anchor="middle" fill="#172635">Package of p</text><text x="640" y="72" text-anchor="middle" fill="#172635">2 ≤ p, p ≤ n, p | n</text>
+<text x="380" y="120" text-anchor="middle" fill="currentColor">Placeholders at compilation; the actual witnesses at expansion.</text></svg></section>
+<section id="sequence-membership"><h2>A value belongs to a sequence</h2>
+<p><code>inSequence[N,p,P]</code> means that some natural index <i>i</i> satisfies <i>P(i)=p</i>. The index belongs to the definition, so a theorem about the member value need not expose it as another parameter. Membership alone does not claim that the relation is a sequence: the separate sequence premise supplies its exact domain, totality and natural-number values.</p>
+<svg viewBox="0 0 760 135" role="img" aria-label="Sequence membership hides one natural index shared by natural membership and the graph relation">
+<rect x="10" y="20" width="210" height="70" rx="8" fill="#eaf1fb" stroke="#678"/><text x="115" y="60" text-anchor="middle" fill="#172635">p belongs to P</text>
+<path d="M220 55 H270" stroke="#678" stroke-width="2"/>
+<rect x="270" y="20" width="210" height="70" rx="8" fill="#eaf1fb" stroke="#678"/><text x="375" y="60" text-anchor="middle" fill="#172635">There exists one index i</text>
+<path d="M480 55 H530" stroke="#678" stroke-width="2"/>
+<rect x="530" y="20" width="220" height="70" rx="8" fill="#eaf1fb" stroke="#678"/><text x="640" y="48" text-anchor="middle" fill="#172635">i belongs to N</text><text x="640" y="73" text-anchor="middle" fill="#172635">P(i) = p</text>
+<text x="380" y="120" text-anchor="middle" fill="currentColor">Both conditions refer to the same existential index.</text></svg>
+<p>For F8, a sequence on [0,n], its Fold product q and a member p imply that p divides q. The membership definition introduces no new prover rule.</p></section>
 </main>
 </body>
 </html>

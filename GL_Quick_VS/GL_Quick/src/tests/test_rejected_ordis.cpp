@@ -33,7 +33,18 @@
 /// re-mail, never a direct re-insert). The mirror contract with
 /// `rejectedMap` is the tested property throughout.
 
+#include "../compiler/compact_expression_syntax.hpp"
+#include "../memory.hpp"
+#include <cstddef>
+#include <cstring>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "disintegration_processor_fixture.hpp"
+#include "equality_propagation_fixture.hpp"
+#include "equivalence_admission_rewriter_fixture.hpp"
+
+#include "compiled_definition_fixture.hpp"
 #include "canonical_test_helpers.hpp"
 
 #include "../prover.hpp"
@@ -201,70 +212,70 @@ TEST(rejected_ordis, snapshot_matches_records_at) {
 // exactly the keys whose validity half is closed, survivors untouched (the
 // same eraseBlobIf predicate shape wipeSubtree applies).
 TEST(rejected_ordis, scope_erase_blob_if_drops_closed_validity) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t pkMain = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkMain = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(in2[marker,mm,3])", "main");
-    const int64_t pkSub = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkSub = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(in2[marker,mm,3])", "main_boundary_sub_(h[1])");
     const gl::NameId subVid = gl::Codec<gl::StatementKey>::decode(pkSub).validity;
 
-    const int32_t sMM = m.valueInterner.encode("(or0[1,mm,3,2])");
+    const int32_t sMM = ((m).valueInterner).encode("(or0[1,mm,3,2])");
     const int lv[] = { 1 };
-    gl::insertRejectedOrdisValue(m.overallHashMemory.rejectedMapOrdis, pkMain,
-        gl::RejectedMapOrdisValue(sMM, lv, 1), m.valueInterner, tArena);
-    gl::insertRejectedOrdisValue(m.overallHashMemory.rejectedMapOrdis, pkSub,
-        gl::RejectedMapOrdisValue(sMM, lv, 1), m.valueInterner, tArena);
+    gl::insertRejectedOrdisValue(((((m).overallHashMemory)).rejectedMapOrdis), pkMain,
+        gl::RejectedMapOrdisValue(sMM, lv, 1), ((m).valueInterner), tArena);
+    gl::insertRejectedOrdisValue(((((m).overallHashMemory)).rejectedMapOrdis), pkSub,
+        gl::RejectedMapOrdisValue(sMM, lv, 1), ((m).valueInterner), tArena);
 
-    m.overallHashMemory.rejectedMapOrdis.eraseBlobIf(
+    ((((m).overallHashMemory)).rejectedMapOrdis).eraseBlobIf(
         [subVid](int64_t k) {
             return gl::Codec<gl::StatementKey>::decode(k).validity == subVid;
         });
 
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(pkSub) == 0);
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(pkMain) != 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(pkSub) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(pkMain) != 0);
 }
 
 // applyEquivalenceClassToRejectedMapOrdis — drops the changed key and mails
 // the rewritten OR STATEMENT onto sameIterationInternalMail (drop + mail,
 // never a direct re-key into rejectedMapOrdis) — I-37 for the parked map.
 TEST(prover, apply_equi_rejected_ordis_drops_and_mails) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t oldPk = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(in2[marker,it_5_lev_1_2,3])", "main");
     const int32_t stmtId =
-        m.valueInterner.encode("(or0[1,it_5_lev_1_2,3,2])");
+        ((m).valueInterner).encode("(or0[1,it_5_lev_1_2,3,2])");
     const int lv[] = { 0, 4 };
-    gl::insertRejectedOrdisValue(m.overallHashMemory.rejectedMapOrdis, oldPk,
-        gl::RejectedMapOrdisValue(stmtId, lv, 2), m.valueInterner, tArena);
+    gl::insertRejectedOrdisValue(((((m).overallHashMemory)).rejectedMapOrdis), oldPk,
+        gl::RejectedMapOrdisValue(stmtId, lv, 2), ((m).valueInterner), tArena);
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, ((m).nameMap));
 
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::RejectedValidityBuckets buckets(&tArena, &dirty);
     seedFixtureClassEvidence(m,cls,gl::StrSpan("main"));
-    ea.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
+    ea.equivalenceAdmissionRewriter.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
 
     // Old key dropped; NO direct re-key under the canonical template.
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(oldPk) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(oldPk) == 0);
     int64_t canonPk = 0;
-    if (gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+    if (gl::lookupTemplateKey(((m).templateInterner), ((m).nameMap),
             "(in2[marker,it_0_lev_1_2,3])", "main", canonPk)) {
-        ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(canonPk) == 0);
+        ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(canonPk) == 0);
     }
 
     // Rewritten or statement mailed onto sameIterationInternalMail at "main".
     bool foundMail = false;
-    const gl::Mail mailSnap = gl::makeHeapMail(m.sameIterationInternalMail,
-                                               m.nameMap, m.originInterner);
+    const gl::Mail mailSnap = gl::makeHeapMail(((m).sameIterationInternalMail),
+                                               ((m).nameMap), ((m).originInterner));
     for (const auto& pr : mailSnap.statements) {
         if (pr.first.original == "(or0[1,it_0_lev_1_2,3,2])"
             && pr.first.validityName == "main") {
@@ -276,36 +287,36 @@ TEST(prover, apply_equi_rejected_ordis_drops_and_mails) {
 
 TEST(prover, canonical_or_value_rewrite_preserves_other_values_and_ancestor_citations) {
     for(bool second : {false,true}) {
-        gl::ExpressionAnalyzer analyzer("Peano");
+        gl::tests::ProverFixture analyzer("Peano");
         analyzer.parameters.trackHistory=true;
         gl::Memory memory;
         auto& arena=gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount()-1);
-        const auto child=memory.nameMap.encodePush(gl::NameMap::MAIN_ID,"park_child");
-        const std::string validity=memory.nameMap.decode(child);
-        const auto key=gl::mintTemplateKey(memory.templateInterner,memory.nameMap,"(in2[c,marker,d])",validity);
-        gl::EquivalenceClass cls; cls.setMembersFromNames({"a","b"},memory.nameMap);
+        const auto child=((memory).nameMap).encodePush(gl::NameMap::MAIN_ID,"park_child");
+        const std::string validity=((memory).nameMap).decode(child);
+        const auto key=gl::mintTemplateKey(((memory).templateInterner),((memory).nameMap),"(in2[c,marker,d])",validity);
+        gl::EquivalenceClass cls; cls.setMembersFromNames({"a","b"},((memory).nameMap));
         seedFixtureClassEvidence(memory,cls,gl::StrSpan("main"));
         const int level=2;
-        const int changed=memory.valueInterner.encode("(or0[b,c])");
-        const int untouched=memory.valueInterner.encode("(or0[f,g])");
+        const int changed=((memory).valueInterner).encode("(or0[b,c])");
+        const int untouched=((memory).valueInterner).encode("(or0[f,g])");
         const auto check=[&](auto& map) {
-            gl::insertRejectedOrdisValue(map,key,gl::RejectedMapOrdisValue(changed,&level,1),memory.valueInterner,arena);
-            gl::insertRejectedOrdisValue(map,key,gl::RejectedMapOrdisValue(untouched,&level,1),memory.valueInterner,arena);
+            gl::insertRejectedOrdisValue(map,key,gl::RejectedMapOrdisValue(changed,&level,1),((memory).valueInterner),arena);
+            gl::insertRejectedOrdisValue(map,key,gl::RejectedMapOrdisValue(untouched,&level,1),((memory).valueInterner),arena);
             gl::DirtyState dirty=gl::DirtyState::Clean;
             gl::RejectedValidityBuckets buckets(&arena,&dirty);
             gl::TypedColdSet<int64_t> selected(&arena,&dirty); selected.mint(key);
-            analyzer.applyEquivalenceClassToRejectedOrdisCore(cls,memory,gl::StrSpan(validity),map,buckets,&selected);
+            gl::tests::EquivalenceAdmissionRewriterFixture::applyEquivalenceClassToRejectedOrdisCore(analyzer.equivalenceAdmissionRewriter, cls,memory,gl::StrSpan(validity),map,buckets,&selected);
             const int run=map.lookup(key);
             ASSERT_TRUE(run!=0);
             ASSERT_EQ(map.runLen(run),1);
             ASSERT_EQ(map.recordAt(run,0).orStatement,untouched);
         };
-        if(second) check(memory.overallHashMemory.rejectedMapOrdis2);
-        else check(memory.overallHashMemory.rejectedMapOrdis);
-        const auto mail=gl::makeHeapMail(memory.sameIterationInternalMail,memory.nameMap,memory.originInterner);
+        if(second) check(((((memory).overallHashMemory)).rejectedMapOrdis2));
+        else check(((((memory).overallHashMemory)).rejectedMapOrdis));
+        const auto mail=gl::makeHeapMail(((memory).sameIterationInternalMail),((memory).nameMap),((memory).originInterner));
         ASSERT_EQ(mail.statements.size(),size_t(1));
         bool cited=false;
-        for(const auto& item:mail.exprOriginMap) for(const auto& row:item.second)
+        for(const auto& item:((mail).exprOriginMap)) for(const auto& row:item.second)
             for(const auto& dependency:row.second)
                 if(dependency.original=="(=[b,a])") {
                     ASSERT_EQ(dependency.validityName,std::string("main")); cited=true;
@@ -322,18 +333,18 @@ TEST(prover, canonical_or_value_rewrite_preserves_other_values_and_ancestor_cita
 // a key parked AFTER the index was built (the map's insert epoch moved) is
 // visited by the next call — the index is refreshed, not a snapshot.
 TEST(prover, apply_equi_rejected_ordis_uses_token_postings_and_refreshes) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
-    auto& rmo = m.overallHashMemory.rejectedMapOrdis;
+    auto& rmo = ((((m).overallHashMemory)).rejectedMapOrdis);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
     auto park = [&](const char* tmpl, const char* vld, const char* stmt) {
-        const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        const int64_t pk = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
                                                tmpl, vld);
-        const int32_t stmtId = m.valueInterner.encode(stmt);
+        const int32_t stmtId = ((m).valueInterner).encode(stmt);
         const int lv[] = { 0 };
         gl::insertRejectedOrdisValue(rmo, pk,
-            gl::RejectedMapOrdisValue(stmtId, lv, 1), m.valueInterner, tArena);
+            gl::RejectedMapOrdisValue(stmtId, lv, 1), ((m).valueInterner), tArena);
         return pk;
     };
     const int64_t hitFlat = park("(in2[marker,it_5_lev_1_2,3])", "main",
@@ -348,15 +359,15 @@ TEST(prover, apply_equi_rejected_ordis_uses_token_postings_and_refreshes) {
                                     "(or0[1,it_5_lev_1_22,3,2])");
     // Production statements mint their argument names; the fixture mints the
     // one whose posting must NOT match the member (its token is longer).
-    m.nameMap.encode(gl::StrSpan("it_5_lev_1_22", 13));
+    ((m).nameMap).encode(gl::StrSpan("it_5_lev_1_22", 13));
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, ((m).nameMap));
 
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::RejectedValidityBuckets buckets(&tArena, &dirty);
     seedFixtureClassEvidence(m,cls,gl::StrSpan("main"));
-    ea.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
+    ea.equivalenceAdmissionRewriter.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
 
     ASSERT_TRUE(buckets.built());
     ASSERT_EQ(buckets.countAtBuild(), 5);
@@ -368,8 +379,8 @@ TEST(prover, apply_equi_rejected_ordis_uses_token_postings_and_refreshes) {
     ASSERT_EQ(rmo.count(), 3);
     {
         bool mailedFlat = false, mailedNested = false;
-        const gl::Mail mailSnap = gl::makeHeapMail(m.sameIterationInternalMail,
-                                                   m.nameMap, m.originInterner);
+        const gl::Mail mailSnap = gl::makeHeapMail(((m).sameIterationInternalMail),
+                                                   ((m).nameMap), ((m).originInterner));
         for (const auto& pr : mailSnap.statements) {
             if (pr.first.validityName != "main") continue;
             if (pr.first.original == "(or0[1,it_0_lev_1_2,3,2])") mailedFlat = true;
@@ -384,14 +395,14 @@ TEST(prover, apply_equi_rejected_ordis_uses_token_postings_and_refreshes) {
     const int64_t late = park("(in2[marker,it_5_lev_1_2,6])", "main",
                               "(or0[1,it_5_lev_1_2,6,2])");
     seedFixtureClassEvidence(m,cls,gl::StrSpan("main"));
-    ea.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
+    ea.equivalenceAdmissionRewriter.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
     ASSERT_EQ(buckets.countAtBuild(), 4);
     ASSERT_TRUE(rmo.lookup(late) == 0);
     ASSERT_EQ(rmo.count(), 3);
 
     // No insert since: the index is the cached one, nothing to drop.
     seedFixtureClassEvidence(m,cls,gl::StrSpan("main"));
-    ea.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
+    ea.equivalenceAdmissionRewriter.applyEquivalenceClassToRejectedMapOrdis(cls, m, gl::StrSpan("main", 4), buckets);
     ASSERT_EQ(buckets.countAtBuild(), 4);
     ASSERT_EQ(rmo.count(), 3);
 }
@@ -417,7 +428,7 @@ namespace {
     /// sit one level down, under each compact's key. Visit the key's own
     /// rules, then every child's.
     template <typename Fn>
-    void forImplsDeep(const gl::ExpressionAnalyzer::CollectedArena& collected,
+    void forImplsDeep(const gl::CollectedArena& collected,
                       const std::string& key, Fn fn) {
         collected.forImpls(gl::StrSpan(key), fn);
         collected.forChildren(gl::StrSpan(key), [&](gl::StrSpan child) {
@@ -443,63 +454,64 @@ TEST(prover, ordis_park_on_probe_miss_and_revive) {
     buildOrInstruction(wi, "(or98[u_4,u_5])",
                        { "(existence97[u_1,u_4,u_3])", "(=[u_4,u_5])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     // Artificial isolated registry entry (the test_memory synthetic-seed
     // pattern): the existence-category disjunct must be operator-backed
     // WITHOUT reading the on-disk spontaneous binaries — the unit-test
     // gate runs before any pipeline priming, on a possibly empty
     // files/GL_binaries. Elements use config-level operator cores only;
     // w1 is the single non-u_ witness the product-template route marks.
-    analyzer.compiledExpressions["existence97"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["existence97"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in2[u_2,w1,u_3])" },
             "(existence97[u_1,u_2,u_3])", 3);
+    analyzer.supportingRuleCompiler.compileDisintegrationPackages();
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
 
     // Hypothetical path first: neither open nor park.
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or98[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/false);
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis.count(), 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis).count(), 0);
 
     // Real deposit, no demand: PARK.
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or98[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/true);
 
-    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-        memory.lbStateInterner.encode(gl::StrSpan("(or98[4,5])", 11)));
-    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) == 0);
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) == 0);
+    const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+        ((memory).lbStateInterner).encode(gl::StrSpan("(or98[4,5])", 11)));
+    ASSERT_TRUE(((memory).orDisjunctCount).lookup(cohortId) == 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) == 0);
     ASSERT_EQ(gl::decodeInternalMailStatements(
-        memory.sameIterationInternalMail, memory.nameMap).size(),
+        ((memory).sameIterationInternalMail), ((memory).nameMap)).size(),
         static_cast<std::size_t>(0));
 
-    const int32_t parkedKeys = memory.overallHashMemory.rejectedMapOrdis.count();
+    const int32_t parkedKeys = ((((memory).overallHashMemory)).rejectedMapOrdis).count();
     ASSERT_TRUE(parkedKeys >= 1);
     std::string firstTemplate;
     for (int32_t id = 1; id <= parkedKeys; ++id) {
-        const int64_t pk = memory.overallHashMemory.rejectedMapOrdis.keyAt(id);
-        const auto tv = gl::decodeTemplateKey(pk, memory.templateInterner,
-                                              memory.nameMap);
+        const int64_t pk = ((((memory).overallHashMemory)).rejectedMapOrdis).keyAt(id);
+        const auto tv = gl::decodeTemplateKey(pk, ((memory).templateInterner),
+                                              ((memory).nameMap));
         // Every park key sits at main and no equality-shaped template exists.
         ASSERT_EQ(tv.second, std::string("main"));
         ASSERT_TRUE(tv.first.rfind("(=[", 0) != 0);
         if (id == 1) firstTemplate = tv.first;
         const gl::RejectedOrdisValueSet vals = gl::rejectedOrdisRecordsAt(
-            memory.overallHashMemory.rejectedMapOrdis, pk, memory.valueInterner);
+            ((((memory).overallHashMemory)).rejectedMapOrdis), pk, ((memory).valueInterner));
         ASSERT_EQ(vals.size(), static_cast<std::size_t>(1));
-        ASSERT_EQ(memory.valueInterner.decode(vals.begin()->orStatement),
+        ASSERT_EQ(((memory).valueInterner).decode(vals.begin()->orStatement),
                   std::string("(or98[4,5])"));
         ASSERT_TRUE((vals.begin()->levels == std::set<int>{ 0 }));
     }
@@ -507,28 +519,28 @@ TEST(prover, ordis_park_on_probe_miss_and_revive) {
     // Seed the statement as a KNOWN local statement (the state a real park
     // leaves behind: the or was consumed flat at arrival), then revive and
     // pin the un-know.
-    const gl::NameId stmtId = memory.nameMap.encode("(or98[4,5])");
-    gl::upsertStatementKey(memory.intKnownStatements,
+    const gl::NameId stmtId = ((memory).nameMap).encode("(or98[4,5])");
+    gl::upsertStatementKey(((memory).intKnownStatements),
         gl::packStatementKey(stmtId, gl::NameMap::MAIN_ID),
         /*local=*/true);
-    ASSERT_TRUE(memory.intKnownStatements.find(
+    ASSERT_TRUE(((memory).intKnownStatements).find(
         gl::StatementKey{ stmtId, gl::NameMap::MAIN_ID }) != nullptr);
 
-    analyzer.revisitRejectedOrdis(gl::StrSpan(firstTemplate),
+    analyzer.rejectedSourceReplay.revisitRejectedOrdis(gl::StrSpan(firstTemplate),
                                   memory, gl::StrSpan("main", 4));
 
     // The woken key is erased; the known row is reset; the statement is
     // re-deposited at main with the parked level run.
     {
         int64_t wokenPk = 0;
-        ASSERT_TRUE(gl::lookupTemplateKey(memory.templateInterner,
-            memory.nameMap, firstTemplate, "main", wokenPk));
-        ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.lookup(wokenPk) == 0);
+        ASSERT_TRUE(gl::lookupTemplateKey(((memory).templateInterner),
+            ((memory).nameMap), firstTemplate, "main", wokenPk));
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).lookup(wokenPk) == 0);
     }
-    ASSERT_TRUE(memory.intKnownStatements.find(
+    ASSERT_TRUE(((memory).intKnownStatements).find(
         gl::StatementKey{ stmtId, gl::NameMap::MAIN_ID }) == nullptr);
     const auto mailRows = gl::decodeInternalMailStatements(
-        memory.sameIterationInternalMail, memory.nameMap);
+        ((memory).sameIterationInternalMail), ((memory).nameMap));
     ASSERT_EQ(mailRows.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(mailRows[0].first.original == "(or98[4,5])");
     ASSERT_TRUE(mailRows[0].first.validityName == "main");
@@ -547,52 +559,52 @@ TEST(prover, ordis_algebra_admission_alone_keeps_cohort_parked) {
     buildOrInstruction(wi, "(or98[u_4,u_5])",
                        { "(in3[u_7,u_8,u_9,4])", "(in2[u_4,u_7,3])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
     // Register the demand: the in2 disjunct's product template (an operator
     // disjunct probes as itself).
-    const int64_t demandPk = gl::mintTemplateKey(memory.templateInterner,
-        memory.nameMap, "(in2[4,7,3])", "main");
+    const int64_t demandPk = gl::mintTemplateKey(((memory).templateInterner),
+        ((memory).nameMap), "(in2[4,7,3])", "main");
     gl::AdmissionMapValue demand;
     demand.standardMaxAdmissionDepth = 30;
     demand.standardMaxSecondaryNumber = 1;
     demand.ordisOnly = true;   // the probe reads tagged and untagged alike
-    gl::insertAdmissionValue(memory.overallHashMemory.admissionMap, demandPk,
-                             demand, memory.valueInterner, tArena);
+    gl::insertAdmissionValue(((((memory).overallHashMemory)).admissionMap), demandPk,
+                             demand, ((memory).valueInterner), tArena);
 
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or98[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/true);
 
     // The algebra demand does not authorize cohort creation.
-    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-        memory.lbStateInterner.encode(gl::StrSpan("(or98[4,5])", 11)));
-    ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.count() > 0);
-    const int32_t cntRow = memory.orDisjunctCount.lookup(cohortId);
+    const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+        ((memory).lbStateInterner).encode(gl::StrSpan("(or98[4,5])", 11)));
+    ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).count() > 0);
+    const int32_t cntRow = ((memory).orDisjunctCount).lookup(cohortId);
     ASSERT_TRUE(cntRow == 0);
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) == 0);
-    ASSERT_TRUE(memory.orStarterPick.find(cohortId) == nullptr);
-    ASSERT_TRUE(memory.overallHashMemory.admissionMap.lookup(demandPk) != 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) == 0);
+    ASSERT_TRUE(((memory).orStarterPick).find(cohortId) == nullptr);
+    ASSERT_TRUE(((((memory).overallHashMemory)).admissionMap).lookup(demandPk) != 0);
 
     // No pending cohort means the release drain emits no branch seed.
-    analyzer.drainPendingOrReleases(memory);
+    analyzer.caseProcessor.drainPendingOrReleases(memory);
     const auto mailRows = gl::decodeInternalMailStatements(
-        memory.sameIterationInternalMail, memory.nameMap);
+        ((memory).sameIterationInternalMail), ((memory).nameMap));
     ASSERT_EQ(mailRows.size(), static_cast<std::size_t>(0));
-    ASSERT_TRUE(memory.orStarterPick.find(cohortId) == nullptr);
-    const int32_t pRow = memory.orPendingBranches.lookup(cohortId);
+    ASSERT_TRUE(((memory).orStarterPick).find(cohortId) == nullptr);
+    const int32_t pRow = ((memory).orPendingBranches).lookup(cohortId);
     ASSERT_TRUE(pRow == 0);
 }
 
@@ -611,45 +623,45 @@ TEST(prover, ternary_or_stages_source_without_exclusion_rules) {
                        { "(in[u_1,u_2])", "(in2[u_1,u_10,u_2])",
                          "(in3[u_1,u_2,u_10,u_11])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["or96"] =
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["or96"] =
         gl::LogicalEntity("or",
             { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])",
               "(in3[u_1,u_2,u_3,u_4])" },
             "(or96[u_1,u_2,u_3,u_4])", 4);
     // A hand-registered or takes the mint door's K-rule step explicitly
     // (every production mint site does it); the seam adds the rest.
-    analyzer.compileOrKRules("or96");
-    analyzer.preMintReducedOrs();
+    analyzer.orRuleCompiler.compileOrKRules("or96");
+    analyzer.orRuleCompiler.preMintReducedOrs();
 
     // The three pre-minted reduced operators, keyed by their canonical
     // (renumbered) element lists, in exclusion order.
     const std::string m0a = "(in2[u_1,u_2,u_3])";
     const std::string m0b = "(in3[u_1,u_3,u_2,u_4])";
     gl::StrSpan s0[2] = { gl::StrSpan(m0a), gl::StrSpan(m0b) };
-    const std::string* red0 = analyzer.compiledOrByElements(s0, 2);
+    const std::string* red0 = analyzer.compilationReuse.compiledOrByElements(s0, 2);
     ASSERT_TRUE(red0 != nullptr);
     const std::string m1a = "(in[u_1,u_2])";
     const std::string m1b = "(in3[u_1,u_2,u_3,u_4])";
     gl::StrSpan s1[2] = { gl::StrSpan(m1a), gl::StrSpan(m1b) };
-    const std::string* red1 = analyzer.compiledOrByElements(s1, 2);
+    const std::string* red1 = analyzer.compilationReuse.compiledOrByElements(s1, 2);
     ASSERT_TRUE(red1 != nullptr);
     const std::string m2a = "(in[u_1,u_2])";
     const std::string m2b = "(in2[u_1,u_3,u_2])";
     gl::StrSpan s2[2] = { gl::StrSpan(m2a), gl::StrSpan(m2b) };
-    const std::string* red2 = analyzer.compiledOrByElements(s2, 2);
+    const std::string* red2 = analyzer.compilationReuse.compiledOrByElements(s2, 2);
     ASSERT_TRUE(red2 != nullptr);
 
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
     const std::string orInst = "(or96[u_1,u_2,u_10,u_11])";
-    analyzer.disintegrateExprCore2(gl::StrSpan(orInst), wi, memory, 0,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan(orInst), wi, memory, 0,
         collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/false);
@@ -669,7 +681,7 @@ TEST(prover, ternary_or_stages_source_without_exclusion_rules) {
     const std::string sePrem = "!(in[u_1,u_2])";
     const std::string seHead = "(" + *red0 + "[u_1,u_10,u_2,u_11])";
     const gl::StrSpan seRun[1] = { gl::StrSpan(sePrem) };
-    ASSERT_TRUE(analyzer.isSubsetExclusionInstall(seRun, 1,
+    ASSERT_TRUE(analyzer.hashRuleClassifier.isSubsetExclusionInstall(seRun, 1,
         gl::StrSpan(seHead)));
 }
 
@@ -682,24 +694,24 @@ TEST(prover, single_exclusion_not_emitted_for_binary_or) {
     buildOrInstruction(wi, "(or97[u_1,u_2,u_10])",
                        { "(in[u_1,u_2])", "(in2[u_1,u_10,u_2])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["or97"] =
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["or97"] =
         gl::LogicalEntity("or",
             { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])" },
             "(or97[u_1,u_2,u_3])", 3);
-    analyzer.compileOrKRules("or97");
-    analyzer.preMintReducedOrs();
+    analyzer.orRuleCompiler.compileOrKRules("or97");
+    analyzer.orRuleCompiler.preMintReducedOrs();
 
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
     const std::string orInst = "(or97[u_1,u_2,u_10])";
-    analyzer.disintegrateExprCore2(gl::StrSpan(orInst), wi, memory, 0,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan(orInst), wi, memory, 0,
         collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/false);
@@ -733,38 +745,38 @@ TEST(prover, quaternary_or_stages_source_without_exclusion_rules) {
                        { "(ina[u_1])", "(inb[u_2])", "(inc[u_1,u_2])",
                          "(ind[u_2,u_10])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["or98"] =
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["or98"] =
         gl::LogicalEntity("or",
             { "(ina[u_1])", "(inb[u_2])", "(inc[u_1,u_2])",
               "(ind[u_2,u_3])" },
             "(or98[u_1,u_2,u_3])", 3);
-    analyzer.compileOrKRules("or98");
-    analyzer.preMintReducedOrs();
+    analyzer.orRuleCompiler.compileOrKRules("or98");
+    analyzer.orRuleCompiler.preMintReducedOrs();
 
     // Two of the pre-minted reduced operators, keyed by their canonical
     // (renumbered) element lists: survivors of excluding {0,1} and {1,3}.
     const std::string r01a = "(inc[u_1,u_2])";
     const std::string r01b = "(ind[u_2,u_3])";
     gl::StrSpan s01[2] = { gl::StrSpan(r01a), gl::StrSpan(r01b) };
-    const std::string* red01 = analyzer.compiledOrByElements(s01, 2);
+    const std::string* red01 = analyzer.compilationReuse.compiledOrByElements(s01, 2);
     ASSERT_TRUE(red01 != nullptr);
     const std::string r13a = "(ina[u_1])";
     const std::string r13b = "(inc[u_1,u_2])";
     gl::StrSpan s13[2] = { gl::StrSpan(r13a), gl::StrSpan(r13b) };
-    const std::string* red13 = analyzer.compiledOrByElements(s13, 2);
+    const std::string* red13 = analyzer.compilationReuse.compiledOrByElements(s13, 2);
     ASSERT_TRUE(red13 != nullptr);
 
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
     const std::string orInst = "(or98[u_1,u_2,u_10])";
-    analyzer.disintegrateExprCore2(gl::StrSpan(orInst), wi, memory, 0,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan(orInst), wi, memory, 0,
         collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/false);
@@ -786,9 +798,9 @@ TEST(prover, quaternary_or_stages_source_without_exclusion_rules) {
     const std::string head01 = "(" + *red01 + "[u_1,u_2,u_10])";
     const gl::StrSpan fwd[2] = { gl::StrSpan(p0), gl::StrSpan(p1) };
     const gl::StrSpan rev[2] = { gl::StrSpan(p1), gl::StrSpan(p0) };
-    ASSERT_TRUE(analyzer.isSubsetExclusionInstall(fwd, 2,
+    ASSERT_TRUE(analyzer.hashRuleClassifier.isSubsetExclusionInstall(fwd, 2,
         gl::StrSpan(head01)));
-    ASSERT_TRUE(analyzer.isSubsetExclusionInstall(rev, 2,
+    ASSERT_TRUE(analyzer.hashRuleClassifier.isSubsetExclusionInstall(rev, 2,
         gl::StrSpan(head01)));
 }
 
@@ -859,31 +871,31 @@ TEST(ordis2, blob_view_matches_deserialize) {
 // demand keys whose validity half is closed (dead-scope demands must not
 // open cohorts later), survivors untouched.
 TEST(ordis2, scope_erase_blob_if_drops_closed_validity) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t pkMain = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkMain = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(strictOrder[1,4,10,12])", "main");
-    const int64_t pkSub = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkSub = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(strictOrder[1,4,10,12])", "main_boundary_sub_(h[1])");
     const gl::NameId subVid = gl::Codec<gl::StatementKey>::decode(pkSub).validity;
 
-    const int32_t rMM = m.ruleInterner.encode("(>[]!(mm[u_1])(a[u_1]))");
+    const int32_t rMM = ((m).ruleInterner).encode("(>[]!(mm[u_1])(a[u_1]))");
     const int lv[] = { 1 };
-    gl::insertAdmissionOrdis2IdsBlob(m.overallHashMemory.admissionMapOrdis2,
-        pkMain, rMM, lv, 1, m.ruleInterner, tArena);
-    gl::insertAdmissionOrdis2IdsBlob(m.overallHashMemory.admissionMapOrdis2,
-        pkSub, rMM, lv, 1, m.ruleInterner, tArena);
+    gl::insertAdmissionOrdis2IdsBlob(((((m).overallHashMemory)).admissionMapOrdis2),
+        pkMain, rMM, lv, 1, ((m).ruleInterner), tArena);
+    gl::insertAdmissionOrdis2IdsBlob(((((m).overallHashMemory)).admissionMapOrdis2),
+        pkSub, rMM, lv, 1, ((m).ruleInterner), tArena);
 
-    m.overallHashMemory.admissionMapOrdis2.eraseBlobIf(
+    ((((m).overallHashMemory)).admissionMapOrdis2).eraseBlobIf(
         [subVid](int64_t k) {
             return gl::Codec<gl::StatementKey>::decode(k).validity == subVid;
         });
 
-    ASSERT_TRUE(m.overallHashMemory.admissionMapOrdis2.lookup(pkSub) == 0);
-    ASSERT_TRUE(m.overallHashMemory.admissionMapOrdis2.lookup(pkMain) != 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).admissionMapOrdis2).lookup(pkSub) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).admissionMapOrdis2).lookup(pkMain) != 0);
 }
 
 // applyEquivalenceClassToAdmissionMapOrdis2 — drop-and-rekey: the stale
@@ -891,31 +903,31 @@ TEST(ordis2, scope_erase_blob_if_drops_closed_validity) {
 // canonicalized template at the same validity (the admission-path D-106
 // discipline; no mail — a demand is not a statement).
 TEST(prover, apply_equi_admission_ordis2_drops_and_rekeys) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
-    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((m).nameMap).encode("main"), gl::NameMap::MAIN_ID);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t oldPk = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(strictOrder[1,4,it_5_lev_1_2,12])", "main");
-    const int32_t srcImpl = m.ruleInterner.encode("(>[]b5dummy(=[10,12]))");
+    const int32_t srcImpl = ((m).ruleInterner).encode("(>[]b5dummy(=[10,12]))");
     const int lv[] = { 1 };
     gl::insertAdmissionOrdis2IdsBlob(
-        m.overallHashMemory.admissionMapOrdis2, oldPk, srcImpl,
-        lv, 1, m.ruleInterner, tArena);
+        ((((m).overallHashMemory)).admissionMapOrdis2), oldPk, srcImpl,
+        lv, 1, ((m).ruleInterner), tArena);
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, ((m).nameMap));
 
-    ea.applyEquivalenceClassToAdmissionMapOrdis2(cls, m, gl::StrSpan("main", 4));
+    ea.equivalenceAdmissionRewriter.applyEquivalenceClassToAdmissionMapOrdis2(cls, m, gl::StrSpan("main", 4));
 
-    ASSERT_TRUE(m.overallHashMemory.admissionMapOrdis2.lookup(oldPk) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).admissionMapOrdis2).lookup(oldPk) == 0);
     int64_t newPk = 0;
-    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+    ASSERT_TRUE(gl::lookupTemplateKey(((m).templateInterner), ((m).nameMap),
         "(strictOrder[1,4,it_0_lev_1_2,12])", "main", newPk));
     const gl::AdmissionOrdis2ValueSet vals = gl::admissionOrdis2RecordsAt(
-        m.overallHashMemory.admissionMapOrdis2, newPk, m.ruleInterner);
+        ((((m).overallHashMemory)).admissionMapOrdis2), newPk, ((m).ruleInterner));
     ASSERT_EQ(vals.size(), static_cast<std::size_t>(1));
     ASSERT_EQ(vals.begin()->sourceImplId, srcImpl);
     ASSERT_TRUE((vals.begin()->levels == std::set<int>{ 1 }));
@@ -935,22 +947,22 @@ TEST(rejected_ordis2, reused_family_rmw_on_second_instance) {
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pk = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(preorder[1,4,10,12])", "main");
-    const int32_t stmtId = m.valueInterner.encode("(or7[1,4,10,12])");
+    const int32_t stmtId = ((m).valueInterner).encode("(or7[1,4,10,12])");
     const int lv[] = { 0, 2 };
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        pk, stmtId, lv, 2, m.valueInterner, tArena);
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        pk, stmtId, lv, 2, m.valueInterner, tArena);  // dup — RMW dedups
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        pk, stmtId, lv, 2, ((m).valueInterner), tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        pk, stmtId, lv, 2, ((m).valueInterner), tArena);  // dup — RMW dedups
 
     const gl::RejectedOrdisValueSet vals = gl::rejectedOrdisRecordsAt(
-        m.overallHashMemory.rejectedMapOrdis2, pk, m.valueInterner);
+        ((((m).overallHashMemory)).rejectedMapOrdis2), pk, ((m).valueInterner));
     ASSERT_EQ(vals.size(), static_cast<std::size_t>(1));
     ASSERT_EQ(vals.begin()->orStatement, stmtId);
     ASSERT_TRUE((vals.begin()->levels == std::set<int>{ 0, 2 }));
     // Independence: the OLD park index never sees the filing.
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(pk) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(pk) == 0);
 }
 
 // Scope-wipe semantics: the wipeHashMem enrollment erases exactly the
@@ -960,26 +972,26 @@ TEST(rejected_ordis2, scope_erase_blob_if_drops_closed_validity) {
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t pkMain = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkMain = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(preorder[1,4,10,12])", "main");
-    const int64_t pkSub = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkSub = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(preorder[1,4,10,12])", "main_boundary_sub_(h[1])");
     const gl::NameId subVid = gl::Codec<gl::StatementKey>::decode(pkSub).validity;
 
-    const int32_t stmtId = m.valueInterner.encode("(or7[1,4,10,12])");
+    const int32_t stmtId = ((m).valueInterner).encode("(or7[1,4,10,12])");
     const int lv[] = { 1 };
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        pkMain, stmtId, lv, 1, m.valueInterner, tArena);
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        pkSub, stmtId, lv, 1, m.valueInterner, tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        pkMain, stmtId, lv, 1, ((m).valueInterner), tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        pkSub, stmtId, lv, 1, ((m).valueInterner), tArena);
 
-    m.overallHashMemory.rejectedMapOrdis2.eraseBlobIf(
+    ((((m).overallHashMemory)).rejectedMapOrdis2).eraseBlobIf(
         [subVid](int64_t k) {
             return gl::Codec<gl::StatementKey>::decode(k).validity == subVid;
         });
 
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(pkSub) == 0);
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(pkMain) != 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(pkSub) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(pkMain) != 0);
 }
 
 // revisitRejectedOrdis2: the wake erases exactly the probed key, resets the
@@ -987,53 +999,53 @@ TEST(rejected_ordis2, scope_erase_blob_if_drops_closed_validity) {
 // on sameIterationInternalMail with the filed level run. Entries under
 // OTHER ordis2 keys and in the OLD rejectedMapOrdis survive untouched.
 TEST(prover, revisit_rejected_ordis2_wakes_erases_and_unknows) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory m;
-    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((m).nameMap).encode("main"), gl::NameMap::MAIN_ID);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int32_t stmtId = m.valueInterner.encode("(or7[1,4,10,12])");
+    const int32_t stmtId = ((m).valueInterner).encode("(or7[1,4,10,12])");
     const int lv[] = { 0 };
-    const int64_t pkA = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkA = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(preorder[1,4,10,12])", "main");
-    const int64_t pkB = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkB = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(preorder[1,4,12,10])", "main");
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        pkA, stmtId, lv, 1, m.valueInterner, tArena);
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        pkB, stmtId, lv, 1, m.valueInterner, tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        pkA, stmtId, lv, 1, ((m).valueInterner), tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        pkB, stmtId, lv, 1, ((m).valueInterner), tArena);
     // An old-map park under a product-template key must not be touched.
-    const int64_t pkOld = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pkOld = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(in3[10,marker,12,4])", "main");
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis,
-        pkOld, stmtId, lv, 1, m.valueInterner, tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis),
+        pkOld, stmtId, lv, 1, ((m).valueInterner), tArena);
 
     // Seed the statement as a KNOWN local statement (the state a real park
     // leaves behind), then wake key A and pin the un-know.
-    const gl::NameId sId = m.nameMap.encode("(or7[1,4,10,12])");
-    gl::upsertStatementKey(m.intKnownStatements,
+    const gl::NameId sId = ((m).nameMap).encode("(or7[1,4,10,12])");
+    gl::upsertStatementKey(((m).intKnownStatements),
         gl::packStatementKey(sId, gl::NameMap::MAIN_ID), /*local=*/true);
 
-    analyzer.revisitRejectedOrdis2(gl::StrSpan("(preorder[1,4,10,12])", 21),
+    analyzer.rejectedSourceReplay.revisitRejectedOrdis2(gl::StrSpan("(preorder[1,4,10,12])", 21),
                                    m, gl::StrSpan("main", 4));
 
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(pkA) == 0);
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(pkB) != 0);
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(pkOld) != 0);
-    ASSERT_TRUE(m.intKnownStatements.find(
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(pkA) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(pkB) != 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(pkOld) != 0);
+    ASSERT_TRUE(((m).intKnownStatements).find(
         gl::StatementKey{ sId, gl::NameMap::MAIN_ID }) == nullptr);
     const auto mailRows = gl::decodeInternalMailStatements(
-        m.sameIterationInternalMail, m.nameMap);
+        ((m).sameIterationInternalMail), ((m).nameMap));
     ASSERT_EQ(mailRows.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(mailRows[0].first.original == "(or7[1,4,10,12])");
     ASSERT_TRUE(mailRows[0].first.validityName == "main");
     ASSERT_EQ(mailRows[0].second, (std::set<int>{ 0 }));
     // A wake on a never-filed text is a defined miss (no crash, no mail).
-    analyzer.revisitRejectedOrdis2(gl::StrSpan("(neverfiled[1])", 15),
+    analyzer.rejectedSourceReplay.revisitRejectedOrdis2(gl::StrSpan("(neverfiled[1])", 15),
                                    m, gl::StrSpan("main", 4));
     ASSERT_EQ(gl::decodeInternalMailStatements(
-        m.sameIterationInternalMail, m.nameMap).size(),
+        ((m).sameIterationInternalMail), ((m).nameMap)).size(),
         static_cast<std::size_t>(1));
 }
 
@@ -1041,39 +1053,39 @@ TEST(prover, revisit_rejected_ordis2_wakes_erases_and_unknows) {
 // second park index: stale key dropped, NO direct re-key, the rewritten or
 // statement mailed onto sameIterationInternalMail.
 TEST(prover, apply_equi_rejected_ordis2_drops_and_mails) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t oldPk = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(preorder[1,4,it_5_lev_1_2,12])", "main");
     const int32_t stmtId =
-        m.valueInterner.encode("(or7[1,4,it_5_lev_1_2,12])");
+        ((m).valueInterner).encode("(or7[1,4,it_5_lev_1_2,12])");
     const int lv[] = { 0, 4 };
-    gl::insertRejectedOrdisValue(m.overallHashMemory.rejectedMapOrdis2, oldPk,
-        gl::RejectedMapOrdisValue(stmtId, lv, 2), m.valueInterner, tArena);
+    gl::insertRejectedOrdisValue(((((m).overallHashMemory)).rejectedMapOrdis2), oldPk,
+        gl::RejectedMapOrdisValue(stmtId, lv, 2), ((m).valueInterner), tArena);
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, ((m).nameMap));
 
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::RejectedValidityBuckets buckets(&tArena, &dirty);
     seedFixtureClassEvidence(m,cls,gl::StrSpan("main"));
-    ea.applyEquivalenceClassToRejectedMapOrdis2(cls, m, gl::StrSpan("main", 4), buckets);
+    ea.equivalenceAdmissionRewriter.applyEquivalenceClassToRejectedMapOrdis2(cls, m, gl::StrSpan("main", 4), buckets);
 
     // Old key dropped; NO direct re-key under the canonical text.
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(oldPk) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(oldPk) == 0);
     int64_t canonPk = 0;
-    if (gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+    if (gl::lookupTemplateKey(((m).templateInterner), ((m).nameMap),
             "(preorder[1,4,it_0_lev_1_2,12])", "main", canonPk)) {
-        ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(canonPk) == 0);
+        ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(canonPk) == 0);
     }
 
     // Rewritten or statement mailed onto sameIterationInternalMail at "main".
     bool foundMail = false;
-    const gl::Mail mailSnap = gl::makeHeapMail(m.sameIterationInternalMail,
-                                               m.nameMap, m.originInterner);
+    const gl::Mail mailSnap = gl::makeHeapMail(((m).sameIterationInternalMail),
+                                               ((m).nameMap), ((m).originInterner));
     for (const auto& pr : mailSnap.statements) {
         if (pr.first.original == "(or7[1,4,it_0_lev_1_2,12])"
             && pr.first.validityName == "main") {
@@ -1091,35 +1103,36 @@ TEST(prover, apply_equi_rejected_ordis2_drops_and_mails) {
 // ordis2KeyEligible matrix: compiled non-atomic 4-arg compacts pass (both
 // polarities), equalities / atomic facts / short arities / anchors fail.
 TEST(ordis2, key_eligible_matrix) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     // Synthetic isolated registry entries (the test_memory seed pattern —
     // no on-disk binaries at unit-test time).
-    analyzer.compiledExpressions["preorder97"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder97"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in3[u_3,w1,u_4,u_2])" },
             "(preorder97[u_1,u_2,u_3,u_4])", 4);
-    analyzer.compiledExpressions["short97"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["short97"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])" },
             "(short97[u_1,u_2,u_3])", 3);
-    analyzer.compiledExpressions["atomic97"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["atomic97"] =
         gl::LogicalEntity("atomic", {}, "(atomic97[u_1,u_2,u_3,u_4])", 4);
+    analyzer.supportingRuleCompiler.compileDisintegrationPackages();
 
     // Eligible: compiled non-atomic, 4 args, both polarities.
-    ASSERT_TRUE(analyzer.ordis2KeyEligible(
+    ASSERT_TRUE(analyzer.admissionPolicy.ordis2KeyEligible(
         gl::StrSpan("(preorder97[1,2,10,12])", 23)));
-    ASSERT_TRUE(analyzer.ordis2KeyEligible(
+    ASSERT_TRUE(analyzer.admissionPolicy.ordis2KeyEligible(
         gl::StrSpan("!(preorder97[1,2,10,12])", 24)));
     // Equality: no compiled entity.
-    ASSERT_FALSE(analyzer.ordis2KeyEligible(gl::StrSpan("(=[10,12])", 10)));
+    ASSERT_FALSE(analyzer.admissionPolicy.ordis2KeyEligible(gl::StrSpan("(=[10,12])", 10)));
     // Atomic category refuses even at arity 4.
-    ASSERT_FALSE(analyzer.ordis2KeyEligible(
+    ASSERT_FALSE(analyzer.admissionPolicy.ordis2KeyEligible(
         gl::StrSpan("(atomic97[1,2,10,12])", 21)));
     // Arity below kOrdis2DemandMinArity refuses.
-    ASSERT_FALSE(analyzer.ordis2KeyEligible(
+    ASSERT_FALSE(analyzer.admissionPolicy.ordis2KeyEligible(
         gl::StrSpan("(short97[1,2,10])", 17)));
     // Anchors never enter the key language.
-    ASSERT_FALSE(analyzer.ordis2KeyEligible(
+    ASSERT_FALSE(analyzer.admissionPolicy.ordis2KeyEligible(
         gl::StrSpan("(AnchorFTA[1,2,3,4,5,6,7,8])", 28)));
 }
 
@@ -1134,22 +1147,23 @@ TEST(prover, ordis2_park_files_disjunct_texts) {
     buildOrInstruction(wi, "(or96[u_4,u_5])",
                        { "(preorder96[u_1,u_2,u_4,u_5])", "(=[u_4,u_5])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["preorder96"] =
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder96"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
             "(preorder96[u_1,u_2,u_4,u_5])", 4);
+    analyzer.supportingRuleCompiler.compileDisintegrationPackages();
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
 
     // Real deposit, no route: PARK — dual filing.
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or96[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or96[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/true);
@@ -1157,19 +1171,19 @@ TEST(prover, ordis2_park_files_disjunct_texts) {
     // Old index: at least one product-template key (the witness-marker
     // body fact), none of them the disjunct text itself is required —
     // discipline unchanged (I-178).
-    ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.count() >= 1);
+    ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).count() >= 1);
 
     // New index: exactly ONE key — the eligible disjunct's clean ground
     // text; the equality disjunct contributes nothing.
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis2.count(), 1);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis2).count(), 1);
     int64_t filedPk = 0;
-    ASSERT_TRUE(gl::lookupTemplateKey(memory.templateInterner,
-        memory.nameMap, "(preorder96[1,2,4,5])", "main", filedPk));
+    ASSERT_TRUE(gl::lookupTemplateKey(((memory).templateInterner),
+        ((memory).nameMap), "(preorder96[1,2,4,5])", "main", filedPk));
     const gl::RejectedOrdisValueSet vals = gl::rejectedOrdisRecordsAt(
-        memory.overallHashMemory.rejectedMapOrdis2, filedPk,
-        memory.valueInterner);
+        ((((memory).overallHashMemory)).rejectedMapOrdis2), filedPk,
+        ((memory).valueInterner));
     ASSERT_EQ(vals.size(), static_cast<std::size_t>(1));
-    ASSERT_EQ(memory.valueInterner.decode(vals.begin()->orStatement),
+    ASSERT_EQ(((memory).valueInterner).decode(vals.begin()->orStatement),
               std::string("(or96[4,5])"));
     ASSERT_TRUE((vals.begin()->levels == std::set<int>{ 0 }));
 }
@@ -1190,54 +1204,57 @@ TEST(prover, ordis2_route_c_opens_on_demand_and_preserves_it) {
     buildOrInstruction(wi, "(or95[u_4,u_5])",
                        { "(preorder95[u_1,u_2,u_4,u_5])", "(=[u_4,u_5])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["preorder95"] =
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder95"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
             "(preorder95[u_1,u_2,u_4,u_5])", 4);
+    analyzer.supportingRuleCompiler.compileDisintegrationPackages();
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);   // no goals, no or branches: keep the cohort opening live
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
     int seedLv[1] = { 0 };
 
     // The GROUND demand arrives FIRST (the drain's map insert, done
     // directly here).
-    const int64_t demandPk = gl::mintTemplateKey(memory.templateInterner,
-        memory.nameMap, "(preorder95[1,2,4,5])", "main");
-    const int32_t srcImpl = memory.ruleInterner.encode("(>[]dummy(d[1]))");
+    const int64_t demandPk = gl::mintTemplateKey(((memory).templateInterner),
+        ((memory).nameMap), "(preorder95[1,2,4,5])", "main");
+    const int32_t srcImpl = ((memory).ruleInterner).encode("(>[]dummy(d[1]))");
     const int dlv[] = { 0 };
     gl::insertAdmissionOrdis2IdsBlob(
-        memory.overallHashMemory.admissionMapOrdis2, demandPk, srcImpl,
-        dlv, 1, memory.ruleInterner, tArena);
+        ((((memory).overallHashMemory)).admissionMapOrdis2), demandPk, srcImpl,
+        dlv, 1, ((memory).ruleInterner), tArena);
 
     // Deposit: route (c) hits -> the cohort OPENS without ever parking.
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or95[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or95[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/true);
 
-    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-        memory.lbStateInterner.encode(gl::StrSpan("(or95[4,5])", 11)));
-    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) != 0);
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+    const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+        ((memory).lbStateInterner).encode(gl::StrSpan("(or95[4,5])", 11)));
+    ASSERT_TRUE(((memory).orDisjunctCount).lookup(cohortId) != 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) != 0);
+    // An ordinary rule's demand: no I-328 exemption.
+    ASSERT_TRUE(memory.lbMemory.hypothesisOrCohorts.lookup(cohortId) == 0);
     // No park in either index (demand-first: opened at deposit).
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis2.count(), 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
     // Starter = the demand-matched disjunct (wrapped payload form).
     {
-        const int32_t* starter = memory.orStarterPick.find(cohortId);
+        const int32_t* starter = ((memory).orStarterPick).find(cohortId);
         ASSERT_TRUE(starter != nullptr);
-        ASSERT_TRUE(memory.lbStateInterner.decode(*starter)
+        ASSERT_TRUE(((memory).lbStateInterner).decode(*starter)
                     == std::string("((preorder95[1,2,4,5]))"));
     }
     // A case split does not establish the demanded fact.
-    ASSERT_TRUE(memory.overallHashMemory.admissionMapOrdis2.lookup(demandPk)
+    ASSERT_TRUE(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(demandPk)
                 != 0);
 }
 
@@ -1261,20 +1278,20 @@ TEST(prover, ordis2_shared_demand_opens_all_sources_in_both_arrival_orders) {
                 "(or95[u_4,u_5])", "(or96[u_4,u_5])", "(or97[u_4,u_5])" };
             const char* ground[] = { "(or95[4,5])", "(or96[4,5])", "(or97[4,5])" };
 
-            gl::ExpressionAnalyzer analyzer("Peano");
-            analyzer.compiledExpressions["preorder95"] = gl::LogicalEntity(
+            gl::tests::ProverFixture analyzer("Peano");
+            gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder95"] = gl::LogicalEntity(
                 "existence", { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
                 "(preorder95[u_1,u_2,u_4,u_5])", 4);
             gl::Memory memory;
-            ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-            memory.intToBeProved.assignSet(gl::packStatementKey(
-                memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+            ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+            ((memory).intToBeProved).assignSet(gl::packStatementKey(
+                ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
                 nullptr, 0);
-            gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-            gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+            gl::CollectedArena collected(&lb);
+            gl::NewVarStore newVarMap(&lb);
             const int levels[] = { 0 };
             const auto deposit = [&](int index) {
-                analyzer.disintegrateExprCore2(gl::StrSpan(signatures[index],
+                gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan(signatures[index],
                     static_cast<int32_t>(std::strlen(signatures[index]))),
                     *instructions[index], memory, 0, collected, newVarMap,
                     gl::StrSpan("main", 4), true, false, levels, 1, true);
@@ -1282,7 +1299,7 @@ TEST(prover, ordis2_shared_demand_opens_all_sources_in_both_arrival_orders) {
             if (parkFirst) {
                 deposit(0);
                 deposit(1);
-                ASSERT_EQ(memory.orDisjunctCount.count(), 0);
+                ASSERT_EQ(((memory).orDisjunctCount).count(), 0);
             }
 
             gl::SealedPageSet pages;
@@ -1294,48 +1311,48 @@ TEST(prover, ordis2_shared_demand_opens_all_sources_in_both_arrival_orders) {
             gl::Ordis2DemandRecord record;
             record.expression = seal("(preorder95[1,2,4,5])");
             record.validityName = seal("main");
-            record.sourceImplId = memory.ruleInterner.encode("(>[]dummy(d[1]))");
+            record.sourceImplId = ((memory).ruleInterner).encode("(>[]dummy(d[1]))");
             record.levels = gl::SealedSpan<int>::copyFrom(pages, levels, 1);
-            memory.admissionKeysOrdis2.push_back(record);
-            analyzer.drainAdmissionKeysOrdis2(memory);
-            memory.admissionKeysOrdis2.clear();
+            ((memory).admissionKeysOrdis2).push_back(record);
+            analyzer.admissionMemory.drainAdmissionKeysOrdis2(memory);
+            ((memory).admissionKeysOrdis2).clear();
             pages.seal();
             pages.freePages();
             ASSERT_EQ(gl::decodeInternalMailStatements(
-                memory.sameIterationInternalMail, memory.nameMap).size(),
+                ((memory).sameIterationInternalMail), ((memory).nameMap)).size(),
                 static_cast<std::size_t>(parkFirst ? 2 : 0));
 
             int64_t demand = 0;
-            ASSERT_TRUE(gl::lookupTemplateKey(memory.templateInterner,
-                memory.nameMap, "(preorder95[1,2,4,5])", "main", demand));
+            ASSERT_TRUE(gl::lookupTemplateKey(((memory).templateInterner),
+                ((memory).nameMap), "(preorder95[1,2,4,5])", "main", demand));
             deposit(2); // A fresh source arrives before the queued sources.
             deposit(reverseQueued ? 1 : 0);
             deposit(reverseQueued ? 0 : 1);
-            ASSERT_TRUE(memory.overallHashMemory.admissionMapOrdis2.lookup(demand) != 0);
-            ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis2.count(), 0);
-            ASSERT_EQ(memory.orDisjunctCount.count(), 3);
+            ASSERT_TRUE(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(demand) != 0);
+            ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
+            ASSERT_EQ(((memory).orDisjunctCount).count(), 3);
 
             // Repeated consumption cannot reset or duplicate any cohort.
             for (int index = 0; index < 3; ++index) {
                 deposit(index);
-                const int32_t cohort = gl::mintOrCohortId(memory.lbStateInterner,
-                    memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-                    memory.lbStateInterner.encode(gl::StrSpan(ground[index],
+                const int32_t cohort = gl::mintOrCohortId(((memory).lbStateInterner),
+                    ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+                    ((memory).lbStateInterner).encode(gl::StrSpan(ground[index],
                         static_cast<int32_t>(std::strlen(ground[index])))));
-                const int32_t* count = memory.orDisjunctCount.find(cohort);
+                const int32_t* count = ((memory).orDisjunctCount).find(cohort);
                 ASSERT_TRUE(count != nullptr);
                 ASSERT_EQ(*count, 2);
-                const int32_t pending = memory.orPendingBranches.lookup(cohort);
+                const int32_t pending = ((memory).orPendingBranches).lookup(cohort);
                 ASSERT_TRUE(pending != 0);
-                ASSERT_EQ(memory.orPendingBranches.runLen(pending), 2);
-                const int32_t* starter = memory.orStarterPick.find(cohort);
+                ASSERT_EQ(((memory).orPendingBranches).runLen(pending), 2);
+                const int32_t* starter = ((memory).orStarterPick).find(cohort);
                 ASSERT_TRUE(starter != nullptr);
-                ASSERT_EQ(memory.lbStateInterner.decode(*starter),
+                ASSERT_EQ(((memory).lbStateInterner).decode(*starter),
                     std::string("((preorder95[1,2,4,5]))"));
             }
-            ASSERT_EQ(memory.orDisjunctCount.count(), 3);
-            ASSERT_EQ(memory.pendingOrReleases.count(), 3);
-            ASSERT_TRUE(memory.overallHashMemory.admissionMapOrdis2.lookup(demand) != 0);
+            ASSERT_EQ(((memory).orDisjunctCount).count(), 3);
+            ASSERT_EQ(((memory).pendingOrReleases).count(), 3);
+            ASSERT_TRUE(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(demand) != 0);
         }
     }
 }
@@ -1346,9 +1363,9 @@ TEST(prover, ordis2_shared_demand_opens_all_sources_in_both_arrival_orders) {
 // The OLD rejectedMapOrdis is NEVER probed (an entry under the same text
 // survives untouched).
 TEST(prover, drain_admission_keys_ordis2_mints_and_wakes) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
-    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((m).nameMap).encode("main"), gl::NameMap::MAIN_ID);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -1356,18 +1373,18 @@ TEST(prover, drain_admission_keys_ordis2_mints_and_wakes) {
     // name — and in the OLD index under the SAME text (an
     // operator-application disjunct's product template IS its text), to
     // pin the no-cross-wake contract.
-    const int64_t parkPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t parkPk = gl::mintTemplateKey(((m).templateInterner), ((m).nameMap),
         "(strictOrder[1,4,10,12])", "main");
-    const int32_t stmtId = m.valueInterner.encode("(or90[1,4,10,12])");
+    const int32_t stmtId = ((m).valueInterner).encode("(or90[1,4,10,12])");
     const int plv[] = { 2 };
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2,
-        parkPk, stmtId, plv, 1, m.valueInterner, tArena);
-    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis,
-        parkPk, stmtId, plv, 1, m.valueInterner, tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis2),
+        parkPk, stmtId, plv, 1, ((m).valueInterner), tArena);
+    gl::insertRejectedOrdisIdsBlob(((((m).overallHashMemory)).rejectedMapOrdis),
+        parkPk, stmtId, plv, 1, ((m).valueInterner), tArena);
 
     // Seed the statement as KNOWN (the state a real park leaves behind).
-    const gl::NameId sId = m.nameMap.encode("(or90[1,4,10,12])");
-    gl::upsertStatementKey(m.intKnownStatements,
+    const gl::NameId sId = ((m).nameMap).encode("(or90[1,4,10,12])");
+    gl::upsertStatementKey(((m).intKnownStatements),
         gl::packStatementKey(sId, gl::NameMap::MAIN_ID), /*local=*/true);
 
     // Stage one demand record the way applyFiringRecords does.
@@ -1377,23 +1394,23 @@ TEST(prover, drain_admission_keys_ordis2_mints_and_wakes) {
         return gl::SealedString::copyFrom(pages, v.data(),
                                           static_cast<int32_t>(v.size()));
     };
-    const int32_t srcImpl = m.ruleInterner.encode("(>[]b5dummy(=[10,12]))");
+    const int32_t srcImpl = ((m).ruleInterner).encode("(>[]b5dummy(=[10,12]))");
     const int lvArr[2] = { 0, 3 };
     gl::Ordis2DemandRecord rec;
     rec.expression = s("(strictOrder[1,4,10,12])");
     rec.validityName = s("main");
     rec.sourceImplId = srcImpl;
     rec.levels = gl::SealedSpan<int>::copyFrom(pages, lvArr, 2);
-    m.admissionKeysOrdis2.push_back(rec);
+    ((m).admissionKeysOrdis2).push_back(rec);
 
-    ea.drainAdmissionKeysOrdis2(m);
+    ea.admissionMemory.drainAdmissionKeysOrdis2(m);
 
     // The demand entry landed with the staged payload.
     int64_t pk = 0;
-    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+    ASSERT_TRUE(gl::lookupTemplateKey(((m).templateInterner), ((m).nameMap),
         "(strictOrder[1,4,10,12])", "main", pk));
     const gl::AdmissionOrdis2ValueSet vals = gl::admissionOrdis2RecordsAt(
-        m.overallHashMemory.admissionMapOrdis2, pk, m.ruleInterner);
+        ((((m).overallHashMemory)).admissionMapOrdis2), pk, ((m).ruleInterner));
     ASSERT_EQ(vals.size(), static_cast<std::size_t>(1));
     ASSERT_EQ(vals.begin()->sourceImplId, srcImpl);
     ASSERT_TRUE((vals.begin()->levels == std::set<int>{ 0, 3 }));
@@ -1401,18 +1418,18 @@ TEST(prover, drain_admission_keys_ordis2_mints_and_wakes) {
     // The wake hit the NEW index only: its key erased, the OLD index's
     // entry under the same text intact, the known row reset, the statement
     // re-deposited with the filed levels.
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(parkPk) == 0);
-    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis.lookup(parkPk) != 0);
-    ASSERT_TRUE(m.intKnownStatements.find(
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis2).lookup(parkPk) == 0);
+    ASSERT_TRUE(((((m).overallHashMemory)).rejectedMapOrdis).lookup(parkPk) != 0);
+    ASSERT_TRUE(((m).intKnownStatements).find(
         gl::StatementKey{ sId, gl::NameMap::MAIN_ID }) == nullptr);
     const auto mailRows = gl::decodeInternalMailStatements(
-        m.sameIterationInternalMail, m.nameMap);
+        ((m).sameIterationInternalMail), ((m).nameMap));
     ASSERT_EQ(mailRows.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(mailRows[0].first.original == "(or90[1,4,10,12])");
     ASSERT_TRUE(mailRows[0].first.validityName == "main");
     ASSERT_EQ(mailRows[0].second, (std::set<int>{ 2 }));
 
-    m.admissionKeysOrdis2.clear();
+    ((m).admissionKeysOrdis2).clear();
     pages.seal();
     pages.freePages();
 }
@@ -1430,33 +1447,34 @@ TEST(prover, ordis2_pair_or_first_park_wake_open) {
         buildOrInstruction(wi, "(or94[u_4,u_5])",
                            { "(preorder94[u_1,u_2,u_4,u_5])", "(=[u_4,u_5])" });
 
-        gl::ExpressionAnalyzer analyzer("Peano");
-        analyzer.compiledExpressions["preorder94"] =
+        gl::tests::ProverFixture analyzer("Peano");
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder94"] =
             gl::LogicalEntity("existence",
                 { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
                 "(preorder94[u_1,u_2,u_4,u_5])", 4);
+        analyzer.supportingRuleCompiler.compileDisintegrationPackages();
         gl::Memory memory;
-        ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-        memory.isActive = true;
-        memory.primedForContradiction = contradiction;
+        ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+        ((memory).isActive) = true;
+        ((memory).primedForContradiction) = contradiction;
         if (!contradiction) {
-            memory.intToBeProved.assignSet(gl::packStatementKey(
-                memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+            ((memory).intToBeProved).assignSet(gl::packStatementKey(
+                ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
                 nullptr, 0);
         }
-        gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-        gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+        gl::CollectedArena collected(&lb);
+        gl::NewVarStore newVarMap(&lb);
         int seedLv[1] = { 0 };
 
         // 1. Or-first: the deposit parks (no route), dual-filed.
-        analyzer.disintegrateExprCore2(gl::StrSpan("(or94[u_4,u_5])", 15), wi,
+        gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or94[u_4,u_5])", 15), wi,
             memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
             /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
             seedLv, 1, /*allowOrProbe=*/true);
         int64_t filedPk = 0;
-        ASSERT_TRUE(gl::lookupTemplateKey(memory.templateInterner,
-            memory.nameMap, "(preorder94[1,2,4,5])", "main", filedPk));
-        ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis2.lookup(filedPk)
+        ASSERT_TRUE(gl::lookupTemplateKey(((memory).templateInterner),
+            ((memory).nameMap), "(preorder94[1,2,4,5])", "main", filedPk));
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis2).lookup(filedPk)
                     != 0);
 
         // 2. The demand fires later; its drain record wakes the filed head.
@@ -1469,46 +1487,46 @@ TEST(prover, ordis2_pair_or_first_park_wake_open) {
         gl::Ordis2DemandRecord rec;
         rec.expression = s("(preorder94[1,2,4,5])");
         rec.validityName = s("main");
-        rec.sourceImplId = memory.ruleInterner.encode("(>[]b5dummy(=[4,5]))");
+        rec.sourceImplId = ((memory).ruleInterner).encode("(>[]b5dummy(=[4,5]))");
         const int dl[1] = { 0 };
         rec.levels = gl::SealedSpan<int>::copyFrom(pages, dl, 1);
-        memory.admissionKeysOrdis2.push_back(rec);
-        analyzer.drainAdmissionKeysOrdis2(memory);
-        memory.admissionKeysOrdis2.clear();
+        ((memory).admissionKeysOrdis2).push_back(rec);
+        analyzer.admissionMemory.drainAdmissionKeysOrdis2(memory);
+        ((memory).admissionKeysOrdis2).clear();
         pages.seal();
         pages.freePages();
 
         // Wake evidence: ordis2 key erased, statement re-deposited on mail,
         // demand entry standing.
-        ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis2.lookup(filedPk)
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis2).lookup(filedPk)
                     == 0);
         ASSERT_EQ(gl::decodeInternalMailStatements(
-            memory.sameIterationInternalMail, memory.nameMap).size(),
+            ((memory).sameIterationInternalMail), ((memory).nameMap)).size(),
             static_cast<std::size_t>(1));
 
         // 3. The absorb re-runs the opener (done directly): route (c) hits the
         // standing demand -> OPEN, starter = the demand-matched leaf, demand
         // retained for other eligible sources.
-        analyzer.disintegrateExprCore2(gl::StrSpan("(or94[u_4,u_5])", 15), wi,
+        gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or94[u_4,u_5])", 15), wi,
             memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
             /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
             seedLv, 1, /*allowOrProbe=*/true);
-        const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-            memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-            memory.lbStateInterner.encode(gl::StrSpan("(or94[4,5])", 11)));
-        ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) != 0);
+        const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+            ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+            ((memory).lbStateInterner).encode(gl::StrSpan("(or94[4,5])", 11)));
+        ASSERT_TRUE(((memory).orDisjunctCount).lookup(cohortId) != 0);
         {
-            const int32_t* starter = memory.orStarterPick.find(cohortId);
+            const int32_t* starter = ((memory).orStarterPick).find(cohortId);
             ASSERT_TRUE(starter != nullptr);
-            ASSERT_TRUE(memory.lbStateInterner.decode(*starter)
+            ASSERT_TRUE(((memory).lbStateInterner).decode(*starter)
                         == std::string("((preorder94[1,2,4,5]))"));
         }
-        ASSERT_TRUE(memory.overallHashMemory.admissionMapOrdis2.lookup(filedPk)
+        ASSERT_TRUE(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(filedPk)
                     != 0);
-        analyzer.drainPendingOrReleases(memory);
-        const int32_t pending = memory.orPendingBranches.lookup(cohortId);
+        analyzer.caseProcessor.drainPendingOrReleases(memory);
+        const int32_t pending = ((memory).orPendingBranches).lookup(cohortId);
         ASSERT_TRUE(pending != 0);
-        ASSERT_EQ(memory.orPendingBranches.runLen(pending), 1);
+        ASSERT_EQ(((memory).orPendingBranches).runLen(pending), 1);
     }
 }
 
@@ -1521,14 +1539,15 @@ TEST(prover, ordis2_pair_or_first_park_wake_open) {
 // qualify, anchor-only-bound args reject (the A14 shape mints no demand —
 // the maintainer's 2026-08-10 filter decision).
 TEST(ordis2, slot_qualification_matrix) {
-    gl::ExpressionAnalyzer ea("Peano");
-    ea.compiledExpressions["zzcomp"] =
+    gl::tests::ProverFixture ea("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["zzcomp"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in2[u_2,w1,u_3])" },
             "(zzcomp[u_1,u_2,u_3,u_4])", 4);
-    ea.compiledExpressions["zzthree"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["zzthree"] =
         gl::LogicalEntity("existence", { "(in[w1,u_1])" },
             "(zzthree[u_1,u_2,u_3])", 3);
+    ea.supportingRuleCompiler.compileDisintegrationPackages();
 
     const std::string anchor = "(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])";
     const std::string b1 = "(in3[u_1,u_4,u_10,u_5])";
@@ -1542,33 +1561,33 @@ TEST(ordis2, slot_qualification_matrix) {
         const gl::StrSpan key[5] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(slotOk) };
-        ASSERT_TRUE(ea.ordis2DemandSlotQualifies(key, 5, 4));
+        ASSERT_TRUE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 4));
         // The anchor premise itself never qualifies.
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 5, 0));
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 0));
         // An atomic function-application premise (in3) never qualifies,
         // even at arity 4.
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 5, 1));
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 1));
     }
     {   // Below kOrdis2DemandMinPremises non-anchor premises (the former
         // 3-premise shape): rejected — only premise-rich rules mint
         // demand (maintainer-set minimum, 2026-08-10).
         const gl::StrSpan key[4] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(slotOk) };
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 4, 3));
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 4, 3));
     }
     {   // Polarity-transparent: the NEGATED compound qualifies on its core.
         const std::string slotNeg = "!(zzcomp[u_1,u_4,u_10,u_12])";
         const gl::StrSpan key[5] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(slotNeg) };
-        ASSERT_TRUE(ea.ordis2DemandSlotQualifies(key, 5, 4));
+        ASSERT_TRUE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 4));
     }
     {   // Arity below kOrdis2DemandMinArity: rejected.
         const std::string slot3 = "(zzthree[u_1,u_4,u_10])";
         const gl::StrSpan key[5] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(slot3) };
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 5, 4));
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 4));
     }
     {   // An anchor-slot argument is ground by construction and counts as
         // bound (D-287): u_6 appears nowhere non-anchor, but u_10 does, so
@@ -1578,7 +1597,7 @@ TEST(ordis2, slot_qualification_matrix) {
         const gl::StrSpan key[5] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(slotAnch) };
-        ASSERT_TRUE(ea.ordis2DemandSlotQualifies(key, 5, 4));
+        ASSERT_TRUE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 4));
     }
     {   // Every argument an anchor slot, none substantive: still rejected
         // (the A14 shape) — a slot the anchor alone binds mints no demand.
@@ -1588,7 +1607,7 @@ TEST(ordis2, slot_qualification_matrix) {
         const gl::StrSpan key[5] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(slotAllAnch) };
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 5, 4));
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 5, 4));
     }
 }
 
@@ -1601,11 +1620,12 @@ TEST(ordis2, slot_qualification_matrix) {
 // Every other gate (key language, subset, substantive binder) is shared
 // and pinned by slot_qualification_matrix above.
 TEST(ordis2, integration_floor_qualifies_six_premise_rule) {
-    gl::ExpressionAnalyzer ea("Peano");
-    ea.compiledExpressions["zzcomp"] =
+    gl::tests::ProverFixture ea("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["zzcomp"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in2[u_2,w1,u_3])" },
             "(zzcomp[u_1,u_2,u_3,u_4])", 4);
+    ea.supportingRuleCompiler.compileDisintegrationPackages();
 
     const std::string anchor = "(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])";
     const std::string b1 = "(in3[u_1,u_4,u_10,u_5])";
@@ -1620,9 +1640,9 @@ TEST(ordis2, integration_floor_qualifies_six_premise_rule) {
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(b4), gl::StrSpan(b5),
                                      gl::StrSpan(slotOk) };
-        ASSERT_TRUE(ea.ordis2DemandSlotQualifies(key, 7, 6,
+        ASSERT_TRUE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 7, 6,
             /*integrationJustified=*/true));
-        ASSERT_TRUE(ea.ordis2DemandSlotQualifies(key, 7, 6,
+        ASSERT_TRUE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 7, 6,
             /*integrationJustified=*/false));
     }
     {   // Five non-anchor premises: the general floor admits, the
@@ -1630,17 +1650,17 @@ TEST(ordis2, integration_floor_qualifies_six_premise_rule) {
         const gl::StrSpan key[6] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(b3),
                                      gl::StrSpan(b4), gl::StrSpan(slotOk) };
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 6, 5,
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 6, 5,
             /*integrationJustified=*/true));
-        ASSERT_TRUE(ea.ordis2DemandSlotQualifies(key, 6, 5,
+        ASSERT_TRUE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 6, 5,
             /*integrationJustified=*/false));
     }
     {   // Three non-anchor premises (two binders + slot): below both floors.
         const gl::StrSpan key[4] = { gl::StrSpan(anchor), gl::StrSpan(b1),
                                      gl::StrSpan(b2), gl::StrSpan(slotOk) };
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 4, 3,
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 4, 3,
             /*integrationJustified=*/true));
-        ASSERT_FALSE(ea.ordis2DemandSlotQualifies(key, 4, 3,
+        ASSERT_FALSE(ea.admissionPolicy.ordis2DemandSlotQualifies(key, 4, 3,
             /*integrationJustified=*/false));
     }
 }
@@ -1663,24 +1683,25 @@ TEST(ordis2, install_route_integration_floor_gates_demand_variant) {
 
     const auto countDemand = [&](int binderN, bool integrationJustified,
                                  int& integrationTagged) -> int {
-        gl::ExpressionAnalyzer ea("Peano");
+        gl::tests::ProverFixture ea("Peano");
         ea.parameters.minLenLongKey = 100;
-        ea.compiledExpressions["zzcomp"] =
+        gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["zzcomp"] =
             gl::LogicalEntity("existence",
                 { "(in[w1,u_1])", "(in2[u_2,w1,u_3])" },
                 "(zzcomp[u_1,u_2,u_3,u_4])", 4);
+        ea.supportingRuleCompiler.compileDisintegrationPackages();
         gl::Memory m;
-        if (m.nameMap.encode("main") != gl::NameMap::MAIN_ID) return -1;
+        if (((m).nameMap).encode("main") != gl::NameMap::MAIN_ID) return -1;
         std::vector<std::string> key = { anchor };
         for (int i = 0; i < binderN; ++i) key.push_back(binders[i]);
         key.push_back(slot);
-        ea.makeNormalizedKeysForAdmission(key, m.overallHashMemory, m.nameMap,
-            m.ruleInterner, "(=[u_10,u_12])", /*minNumOperatorsKey=*/100,
+        ea.admissionMarkers.makeNormalizedKeysForAdmission(key, ((m).overallHashMemory), ((m).nameMap),
+            ((m).ruleInterner), "(=[u_10,u_12])", /*minNumOperatorsKey=*/100,
             "(>[9]dummyImpl(=[9,9]))", "main", /*mbTrap=*/nullptr,
             integrationJustified);
         int found = 0;
         integrationTagged = 0;
-        const auto& em = m.overallHashMemory.encodedMap;
+        const auto& em = ((((m).overallHashMemory)).encodedMap);
         for (int32_t id = 1; id <= em.count(); ++id) {
             const std::vector<gl::LocalMemoryValue> run = em.recordsAt(id);
             for (const gl::LocalMemoryValue& lmv : run) {
@@ -1713,12 +1734,13 @@ TEST(ordis2, install_route_integration_floor_gates_demand_variant) {
 // VALUE is the slot verbatim. The regular/ordis routes stay off (head is
 // an equality; minNumOperatorsKey set out of reach).
 TEST(ordis2, install_route_installs_verbatim_tagged_variant) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     ea.parameters.minLenLongKey = 100;
-    ea.compiledExpressions["zzcomp"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["zzcomp"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in2[u_2,w1,u_3])" },
             "(zzcomp[u_1,u_2,u_3,u_4])", 4);
+    ea.supportingRuleCompiler.compileDisintegrationPackages();
     // Deliberately NO operators.insert: the demand pass never consults
     // `operators` (the eligibility contract, pinned by
     // ordis2.key_eligible_matrix), and with zzcomp outside `operators`
@@ -1727,7 +1749,7 @@ TEST(ordis2, install_route_installs_verbatim_tagged_variant) {
     // operator.
 
     gl::Memory m;
-    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((m).nameMap).encode("main"), gl::NameMap::MAIN_ID);
     // Four non-anchor premises reach kOrdis2DemandMinPremises. The anchor is
     // excluded from that eligibility count but retained in the installed
     // derivative key. The raised long-key threshold keeps this synthetic
@@ -1738,12 +1760,12 @@ TEST(ordis2, install_route_installs_verbatim_tagged_variant) {
         "(in3[u_12,u_9,u_11,u_5])",
         "(in2[u_10,u_12,u_5])",
         "(zzcomp[u_1,u_4,u_10,u_12])" };
-    ea.makeNormalizedKeysForAdmission(key, m.overallHashMemory, m.nameMap,
-        m.ruleInterner, "(=[u_10,u_12])", /*minNumOperatorsKey=*/100,
+    ea.admissionMarkers.makeNormalizedKeysForAdmission(key, ((m).overallHashMemory), ((m).nameMap),
+        ((m).ruleInterner), "(=[u_10,u_12])", /*minNumOperatorsKey=*/100,
         "(>[9]dummyImpl(=[9,9]))", "main");
 
     int found = 0;
-    const auto& em = m.overallHashMemory.encodedMap;
+    const auto& em = ((((m).overallHashMemory)).encodedMap);
     for (int32_t id = 1; id <= em.count(); ++id) {
         const std::vector<gl::LocalMemoryValue> run = em.recordsAt(id);
         for (const gl::LocalMemoryValue& lmv : run) {
@@ -1752,7 +1774,7 @@ TEST(ordis2, install_route_installs_verbatim_tagged_variant) {
             ASSERT_EQ(em.decodeKey(id).numberExpressions, 4);
             bool hasAnchor = false;
             for (const int32_t keyId : lmv.keyIds) {
-                const std::string keyElem = m.ruleInterner.decode(keyId);
+                const std::string keyElem = ((m).ruleInterner).decode(keyId);
                 if (keyElem.rfind("(Anchor", 0) == 0) hasAnchor = true;
             }
             ASSERT_TRUE(hasAnchor);
@@ -1764,7 +1786,7 @@ TEST(ordis2, install_route_installs_verbatim_tagged_variant) {
             // the stored value is the slot byte-for-byte (no marker token).
             // At fire the u_-strip grounds them to the literally-matched
             // bytes, exactly as marker values ground today.
-            const std::string val = m.ruleInterner.decode(lmv.valueId);
+            const std::string val = ((m).ruleInterner).decode(lmv.valueId);
             ASSERT_TRUE(val == "(zzcomp[u_1,u_4,u_10,u_12])");
         }
     }
@@ -1780,40 +1802,40 @@ TEST(prover, ordis_no_goals_neither_opens_nor_parks) {
     gl::WorkInstruction wi(&lb);
     buildOrInstruction(wi, "(or98[u_4,u_5])",
                        { "(existence3[u_1,u_4,u_3])", "(=[u_4,u_5])" });
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     int seedLv[1] = { 0 };
-    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-        memory.lbStateInterner.encode(gl::StrSpan("(or98[4,5])", 11)));
+    const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+        ((memory).lbStateInterner).encode(gl::StrSpan("(or98[4,5])", 11)));
 
     // Empty goal registry, route (b) on, real deposit: neither open nor park.
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or98[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/true,
         seedLv, 1, /*allowOrProbe=*/true);
-    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) == 0);
-    ASSERT_TRUE(memory.orPendingBranches.lookup(cohortId) == 0);
-    ASSERT_EQ(memory.pendingOrReleases.count(), 0);
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis.count(), 0);
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis2.count(), 0);
+    ASSERT_TRUE(((memory).orDisjunctCount).lookup(cohortId) == 0);
+    ASSERT_TRUE(((memory).orPendingBranches).lookup(cohortId) == 0);
+    ASSERT_EQ(((memory).pendingOrReleases).count(), 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis).count(), 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
     ASSERT_EQ(gl::decodeInternalMailStatements(
-        memory.sameIterationInternalMail, memory.nameMap).size(),
+        ((memory).sameIterationInternalMail), ((memory).nameMap)).size(),
         static_cast<std::size_t>(0));
 
     // Seed a goal: the same deposit opens the cohort.
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or98[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/true,
         seedLv, 1, /*allowOrProbe=*/true);
-    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) != 0);
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+    ASSERT_TRUE(((memory).orDisjunctCount).lookup(cohortId) != 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) != 0);
 }
 
 TEST(prover, refused_ancestor_known_deposit_still_stages_or_release) {
@@ -1823,48 +1845,48 @@ TEST(prover, refused_ancestor_known_deposit_still_stages_or_release) {
     // must survive — the branch still derived the expression, and without
     // the refusal-side probe the cohort would never release its next
     // pending branch.
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    const gl::NameId branchVid = memory.nameMap.encodePush(
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    const gl::NameId branchVid = ((memory).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or98[4,5])_((in2[4,7,3]))");
-    const std::string branch = memory.nameMap.decode(branchVid);
+    const std::string branch = ((memory).nameMap).decode(branchVid);
 
     // Cohort with a queued pending branch (sequenced release live).
-    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-        memory.lbStateInterner.encode(gl::StrSpan("(or98[4,5])", 11)));
-    memory.orPendingBranches.insertSorted(cohortId,
-        memory.lbStateInterner.encode(gl::StrSpan("((in3[7,8,9,4]))", 16)),
-        gl::DecodedIdLess{ &memory.lbStateInterner });
+    const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+        ((memory).lbStateInterner).encode(gl::StrSpan("(or98[4,5])", 11)));
+    ((memory).orPendingBranches).insertSorted(cohortId,
+        ((memory).lbStateInterner).encode(gl::StrSpan("((in3[7,8,9,4]))", 16)),
+        gl::DecodedIdLess{ &((memory).lbStateInterner) });
 
     // An open goal at main; the same expression is already KNOWN at main,
     // so the branch deposit below is ancestor-known.
     const std::string goal = "(in[7,N])";
-    const gl::NameId goalId = memory.nameMap.encode(goal);
+    const gl::NameId goalId = ((memory).nameMap).encode(goal);
     const int lv[1] = { 0 };
-    memory.intToBeProved.assignSetRange(
+    ((memory).intToBeProved).assignSetRange(
         gl::packStatementKey(goalId, gl::NameMap::MAIN_ID), lv, lv + 1);
-    gl::upsertStatementKey(memory.intKnownStatements,
+    gl::upsertStatementKey(((memory).intKnownStatements),
         gl::packStatementKey(goalId, gl::NameMap::MAIN_ID), /*local=*/true);
-    memory.intStatementLevelsMap.assignSetRange(
+    ((memory).intStatementLevelsMap).assignSetRange(
         gl::packStatementKey(goalId, gl::NameMap::MAIN_ID), lv, lv + 1);
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(
         &gl::genScratchArenas().forSlot(0), &outDirty);
     const gl::TransientOrigin noOrigin{};
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) == 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) == 0);
 
-    analyzer.addStatement(gl::StrSpan(goal), memory, true, lv, 1, noOrigin,
+    analyzer.statementMemory.addStatement(gl::StrSpan(goal), memory, true, lv, 1, noOrigin,
                           gl::StrSpan(branch), out);
 
     // Refused: no branch row, no out-param row...
-    ASSERT_TRUE(gl::lookupStatementLevels(memory.intStatementLevelsMap,
-        memory.nameMap, gl::StrSpan(goal), gl::StrSpan(branch)) == 0);
+    ASSERT_TRUE(gl::lookupStatementLevels(((memory).intStatementLevelsMap),
+        ((memory).nameMap), gl::StrSpan(goal), gl::StrSpan(branch)) == 0);
     ASSERT_EQ(out.size(), 0);
     // ...but the sequenced-release resolution signal survived.
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) != 0);
 }
 
 // WitnessMetaStore records witness -> (spawning compact, enclosing witness)
@@ -1877,7 +1899,7 @@ TEST(prover, relay_selection_marks_highest_uncovered_group) {
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::LbArena lb(&g);
 
-    gl::ExpressionAnalyzer::WitnessMetaStore meta(lb);
+    gl::WitnessMetaStore meta(lb);
     meta.append(gl::TemporaryWitnessKind::Algebra, 0, 0, 0,
         gl::StrSpan("(existenceA[x])", 15));
     meta.append(gl::TemporaryWitnessKind::Integration, 0, 0, 1,
@@ -1901,19 +1923,19 @@ TEST(prover, relay_selection_marks_highest_uncovered_group) {
     bool relay[4];
 
     // A covered, C uncovered: relay C alone.
-    int32_t n = gl::ExpressionAnalyzer::selectRelayWitnesses(sig, par, 4,
+    int32_t n = gl::tests::EqualityPropagationFixture::selectRelayWitnesses(sig, par, 4,
         [](int32_t s) { return s == 1; }, relay);
     ASSERT_EQ(n, 2);
     ASSERT_TRUE(!relay[0] && !relay[1] && relay[2] && relay[3]);
 
     // Both uncovered: relay A alone (C rides inside it).
-    n = gl::ExpressionAnalyzer::selectRelayWitnesses(sig, par, 4,
+    n = gl::tests::EqualityPropagationFixture::selectRelayWitnesses(sig, par, 4,
         [](int32_t) { return false; }, relay);
     ASSERT_EQ(n, 2);
     ASSERT_TRUE(relay[0] && relay[1] && !relay[2] && !relay[3]);
 
     // All covered: nothing to relay.
-    n = gl::ExpressionAnalyzer::selectRelayWitnesses(sig, par, 4,
+    n = gl::tests::EqualityPropagationFixture::selectRelayWitnesses(sig, par, 4,
         [](int32_t) { return true; }, relay);
     ASSERT_EQ(n, 0);
     ASSERT_TRUE(!relay[0] && !relay[1] && !relay[2] && !relay[3]);
@@ -1925,24 +1947,41 @@ TEST(prover, relay_selection_marks_highest_uncovered_group) {
 TEST(prover, pending_relay_stage_merge_erase) {
     gl::Memory memory;
     const gl::NameId id =
-        memory.nameMap.encode("(existence1[1,int_0_lev_1_1,int_0_lev_2_1,4])");
+        ((memory).nameMap).encode("(existence1[1,int_0_lev_1_1,int_0_lev_2_1,4])");
     const int lv[2] = { 1, 2 };
     memory.stagePendingRelay(id, 5, lv, 2);
     memory.stagePendingRelay(id, 3, nullptr, 0);   // min-merge; levels kept
     memory.stagePendingRelay(id, -1, nullptr, 0);  // none loses to real
-    ASSERT_EQ(memory.pendingRelayIter.count(), 1);
-    const int32_t vid = memory.pendingRelayIter.lookup(static_cast<int32_t>(id));
+    ASSERT_EQ(((memory).pendingRelayIter).count(), 1);
+    const int32_t vid = ((memory).pendingRelayIter).lookup(static_cast<int32_t>(id));
     ASSERT_TRUE(vid != 0);
-    ASSERT_EQ(memory.pendingRelayIter.valueAt(vid), 3);
+    ASSERT_EQ(((memory).pendingRelayIter).valueAt(vid), 3);
     const int32_t lvId =
-        memory.pendingRelayLevels.lookup(static_cast<int32_t>(id));
+        ((memory).pendingRelayLevels).lookup(static_cast<int32_t>(id));
     ASSERT_TRUE(lvId != 0);
-    ASSERT_EQ(memory.pendingRelayLevels.runLen(lvId), 2);
-    ASSERT_EQ(memory.pendingRelayLevels.valueAt(lvId, 0), 1);
-    ASSERT_EQ(memory.pendingRelayLevels.valueAt(lvId, 1), 2);
+    ASSERT_EQ(((memory).pendingRelayLevels).runLen(lvId), 2);
+    ASSERT_EQ(((memory).pendingRelayLevels).valueAt(lvId, 0), 1);
+    ASSERT_EQ(((memory).pendingRelayLevels).valueAt(lvId, 1), 2);
     memory.erasePendingRelay(id);
-    ASSERT_EQ(memory.pendingRelayIter.count(), 0);
-    ASSERT_TRUE(memory.pendingRelayLevels.lookup(static_cast<int32_t>(id)) == 0);
+    ASSERT_EQ(((memory).pendingRelayIter).count(), 0);
+    ASSERT_TRUE(((memory).pendingRelayLevels).lookup(static_cast<int32_t>(id)) == 0);
+}
+
+// Unconditional-ordis staging (D-528): a restage
+// keeps one entry, erasing an OR that is not staged is a no-op, erasing the
+// staged OR empties the set.
+TEST(prover, pending_unconditional_ordis_stage_erase) {
+    gl::Memory memory;
+    const gl::NameId id = ((memory).nameMap).encode("(or8[1,4,5,6,9,x,10,y])");
+    const gl::NameId other = ((memory).nameMap).encode("(in[x,1])");
+    memory.stageUnconditionalOrdis(id);
+    memory.stageUnconditionalOrdis(id);
+    ASSERT_EQ(((memory).lbMemory.pendingUnconditionalOrdis).count(), 1);
+    ASSERT_TRUE(((memory).lbMemory.pendingUnconditionalOrdis).lookup(id) != 0);
+    memory.eraseUnconditionalOrdis(other);
+    ASSERT_EQ(((memory).lbMemory.pendingUnconditionalOrdis).count(), 1);
+    memory.eraseUnconditionalOrdis(id);
+    ASSERT_TRUE(((memory).lbMemory.pendingUnconditionalOrdis).empty());
 }
 
 // copyOriginRowsToMailOut mirrors one expression's cold origin rows into the
@@ -1950,32 +1989,32 @@ TEST(prover, pending_relay_stage_merge_erase) {
 // mirror): rows land under the same key with tag + dependencies preserved; a
 // key without rows is a defined no-op.
 TEST(prover, copy_origin_rows_to_mail_out) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = true;
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
 
     const gl::StrSpan key("(in3[2,3,5,4])", 14);
     const gl::StrSpan dep("(in3[3,2,5,4])", 14);
     gl::OriginDep deps[1] = { { dep, gl::StrSpan("main", 4) } };
-    gl::addOriginEncoded(memory.exprOriginMap, memory.originInterner,
+    gl::addOriginEncoded(((memory).exprOriginMap), ((memory).originInterner),
         key, gl::StrSpan("main", 4), gl::OriginTag::expansion, deps, 1, 8);
 
-    analyzer.copyOriginRowsToMailOut(memory, key, gl::StrSpan("main", 4), 8);
+    analyzer.proofHistory.copyOriginRowsToMailOut(memory, key, gl::StrSpan("main", 4), 8);
     const gl::Mail m =
-        gl::routingMailOutToHeap(memory.mailOut, memory.mailOutInterner);
+        gl::routingMailOutToHeap(((memory).mailOut), ((memory).mailOutInterner));
     const gl::ExpressionWithValidity k("(in3[2,3,5,4])", "main");
-    ASSERT_EQ(m.exprOriginMap.at(k).size(), static_cast<std::size_t>(1));
-    ASSERT_TRUE(m.exprOriginMap.at(k)[0].first == "expansion");
-    ASSERT_EQ(m.exprOriginMap.at(k)[0].second.size(),
+    ASSERT_EQ(((m).exprOriginMap).at(k).size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(((m).exprOriginMap).at(k)[0].first == "expansion");
+    ASSERT_EQ(((m).exprOriginMap).at(k)[0].second.size(),
               static_cast<std::size_t>(1));
-    ASSERT_TRUE(m.exprOriginMap.at(k)[0].second[0].original
+    ASSERT_TRUE(((m).exprOriginMap).at(k)[0].second[0].original
                 == "(in3[3,2,5,4])");
 
     // Absent key: defined no-op (statements channel untouched either way).
-    analyzer.copyOriginRowsToMailOut(memory, gl::StrSpan("(in[9,1])", 10),
+    analyzer.proofHistory.copyOriginRowsToMailOut(memory, gl::StrSpan("(in[9,1])", 10),
         gl::StrSpan("main", 4), 8);
-    ASSERT_TRUE(memory.mailOut.statementsEmpty());
+    ASSERT_TRUE(((memory).mailOut).statementsEmpty());
 }
 
 // Status-5 door (the flag-5 relay receiver half): a positive existence
@@ -1985,55 +2024,56 @@ TEST(prover, copy_origin_rows_to_mail_out) {
 // registers as a NON-local row (absent from the local delta, so it can never
 // be re-forwarded); no relay is re-staged from a mailed carrier (no cascade).
 TEST(prover, status5_relay_arrival_disintegrates_at_receiver) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ea.compiledExpressions["existence97"] =
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["existence97"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in2[u_2,w1,u_3])" },
             "(existence97[u_1,u_2,u_3])", 3);
+    ea.supportingRuleCompiler.compileDisintegrationPackages();
     // A receiving LB sits at a positive tree level (the root sentinel's -1
     // would put a '-' into the minted int_lev name, outside the recognized
     // witness pattern — production relay arrivals never land at the root).
     gl::Memory memory;
-    memory.level = 3;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ((memory).level) = 3;
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
 
     const std::string compact = "(existence97[1,2,3])";
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{
         true, gl::OriginTag::taskFormulation, nullptr, 0 };
-    const int startIntBefore = memory.startInt;
-    ea.addExprToMemoryBlock(gl::StrSpan(compact), memory, -1, 5, lv, 1,
+    const int startIntBefore = ((memory).startInt);
+    ea.statementMemory.addExprToMemoryBlock(gl::StrSpan(compact), memory, -1, 5, lv, 1,
         origin, -1, -1, gl::StrSpan("main", 4), false);
 
     // Carrier registered...
-    ASSERT_TRUE(gl::lookupStatementLevels(memory.intStatementLevelsMap,
-        memory.nameMap, gl::StrSpan(compact), gl::StrSpan("main", 4)) != 0);
+    ASSERT_TRUE(gl::lookupStatementLevels(((memory).intStatementLevelsMap),
+        ((memory).nameMap), gl::StrSpan(compact), gl::StrSpan("main", 4)) != 0);
     // ...but NON-local: no local-delta row for it.
-    const gl::NameId compactId = memory.nameMap.encode(compact);
+    const gl::NameId compactId = ((memory).nameMap).encode(compact);
     bool inDelta = false;
-    for (int32_t i = 0; i < memory.intLocalEncodedStatementsDelta.size(); ++i)
-        if (memory.intLocalEncodedStatementsDelta[i].originalId == compactId)
+    for (int32_t i = 0; i < ((memory).intLocalEncodedStatementsDelta).size(); ++i)
+        if (((memory).intLocalEncodedStatementsDelta)[i].originalId == compactId)
             inDelta = true;
     ASSERT_TRUE(!inDelta);
 
     // An undemanded source allocates no permanent witness.
-    ASSERT_EQ(memory.startInt, startIntBefore);
-    ASSERT_TRUE(memory.overallHashMemory.rejectedMapIntegration.count() >= 1);
-    ASSERT_EQ(memory.pendingRelayIter.count(), 0);
+    ASSERT_EQ(((memory).startInt), startIntBefore);
+    ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapIntegration).count() >= 1);
+    ASSERT_EQ(((memory).pendingRelayIter).count(), 0);
 
     const std::string marked = "(in2[2,marker,3])";
-    const int64_t demand = gl::mintTemplateKey(memory.templateInterner, memory.nameMap,
+    const int64_t demand = gl::mintTemplateKey(((memory).templateInterner), ((memory).nameMap),
         marked, std::string("main"));
-    memory.overallHashMemory.admissionSetIntegration.mint(demand);
-    ea.revisitRejectedIntegration2(gl::StrSpan(marked), memory, gl::StrSpan("main",4));
-    ASSERT_EQ(memory.startInt, startIntBefore);
-    ea.standardProcessing(memory, nullptr, memory.sameIterationInternalMail,
-        memory.nextIterationInternalMail, -1);
-    ASSERT_EQ(memory.startInt, startIntBefore + 1);
-    const auto* carrier = gl::lookupStatementFlags(memory.intKnownStatements,
-        memory.nameMap, gl::StrSpan(compact), gl::StrSpan("main",4));
+    ((((memory).overallHashMemory)).admissionSetIntegration).mint(demand);
+    ea.rejectedSourceReplay.revisitRejectedIntegration2(gl::StrSpan(marked), memory, gl::StrSpan("main",4));
+    ASSERT_EQ(((memory).startInt), startIntBefore);
+    ea.logicBlockOperations.standardProcessing(memory, nullptr, ((memory).sameIterationInternalMail),
+        ((memory).nextIterationInternalMail), -1);
+    ASSERT_EQ(((memory).startInt), startIntBefore + 1);
+    const auto* carrier = gl::lookupStatementFlags(((memory).intKnownStatements),
+        ((memory).nameMap), gl::StrSpan(compact), gl::StrSpan("main",4));
     ASSERT_TRUE(carrier != nullptr && !carrier->local);
-    ASSERT_EQ(memory.pendingRelayIter.count(), 0);
+    ASSERT_EQ(((memory).pendingRelayIter).count(), 0);
 }
 
 // "Really missing" gate at branch creation
@@ -2050,54 +2090,55 @@ TEST(prover, ordis2_route_c_skips_known_leaf_and_consumes_stale_demand) {
     buildOrInstruction(wi, "(or95[u_4,u_5])",
                        { "(preorder95[u_1,u_2,u_4,u_5])", "(=[u_4,u_5])" });
 
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["preorder95"] =
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder95"] =
         gl::LogicalEntity("existence",
             { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
             "(preorder95[u_1,u_2,u_4,u_5])", 4);
+    analyzer.supportingRuleCompiler.compileDisintegrationPackages();
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
     int seedLv[1] = { 0 };
 
     // A pending goal keeps OR parking enabled under the goal-presence contract.
-    memory.intToBeProved.assignSet(gl::packStatementKey(
-        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(
+        ((memory).nameMap).encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
         nullptr, 0);
 
     // A standing demand for the eligible disjunct ...
-    const int64_t demandPk = gl::mintTemplateKey(memory.templateInterner,
-        memory.nameMap, "(preorder95[1,2,4,5])", "main");
-    const int32_t srcImpl = memory.ruleInterner.encode("(>[]dummy(d[1]))");
+    const int64_t demandPk = gl::mintTemplateKey(((memory).templateInterner),
+        ((memory).nameMap), "(preorder95[1,2,4,5])", "main");
+    const int32_t srcImpl = ((memory).ruleInterner).encode("(>[]dummy(d[1]))");
     const int dlv[] = { 0 };
     gl::insertAdmissionOrdis2IdsBlob(
-        memory.overallHashMemory.admissionMapOrdis2, demandPk, srcImpl,
-        dlv, 1, memory.ruleInterner, tArena);
+        ((((memory).overallHashMemory)).admissionMapOrdis2), demandPk, srcImpl,
+        dlv, 1, ((memory).ruleInterner), tArena);
     // ... whose text is ALREADY KNOWN at main.
-    memory.intKnownStatements.insert(
-        gl::StatementKey{ memory.nameMap.encode("(preorder95[1,2,4,5])"),
+    ((memory).intKnownStatements).insert(
+        gl::StatementKey{ ((memory).nameMap).encode("(preorder95[1,2,4,5])"),
                           gl::NameMap::MAIN_ID },
         gl::StatementFlags{ true, false });
 
-    analyzer.disintegrateExprCore2(gl::StrSpan("(or95[u_4,u_5])", 15), wi,
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or95[u_4,u_5])", 15), wi,
         memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
         /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false,
         seedLv, 1, /*allowOrProbe=*/true);
 
     // No cohort opened on the satisfied demand ...
-    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
-        memory.lbStateInterner.encode(gl::StrSpan("(or95[4,5])", 11)));
-    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) == 0);
-    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) == 0);
+    const int32_t cohortId = gl::mintOrCohortId(((memory).lbStateInterner),
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4)),
+        ((memory).lbStateInterner).encode(gl::StrSpan("(or95[4,5])", 11)));
+    ASSERT_TRUE(((memory).orDisjunctCount).lookup(cohortId) == 0);
+    ASSERT_TRUE(((memory).pendingOrReleases).lookup(cohortId) == 0);
     // ... the satisfied or is not parked ...
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis.count(), 0);
-    ASSERT_EQ(memory.overallHashMemory.rejectedMapOrdis2.count(), 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis).count(), 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
     // ... and the stale demand entry was consumed.
-    ASSERT_TRUE(memory.overallHashMemory.admissionMapOrdis2.lookup(demandPk)
+    ASSERT_TRUE(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(demandPk)
                 == 0);
 }
 
@@ -2113,48 +2154,48 @@ TEST(prover, ordis2_retained_demand_cleanup_respects_fact_scope) {
             { "(preorder95[u_1,u_2,u_4,u_5])", "(=[u_4,u_5])" });
         buildOrInstruction(second, "(or96[u_4,u_5])",
             { "(preorder95[u_1,u_2,u_4,u_5])", "!(=[u_4,u_5])" });
-        gl::ExpressionAnalyzer analyzer("Peano");
-        analyzer.compiledExpressions["preorder95"] = gl::LogicalEntity(
+        gl::tests::ProverFixture analyzer("Peano");
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder95"] = gl::LogicalEntity(
             "existence", { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
             "(preorder95[u_1,u_2,u_4,u_5])", 4);
         gl::Memory memory;
-        ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-        const gl::NameId target = memory.nameMap.encodePush(
+        ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+        const gl::NameId target = ((memory).nameMap).encodePush(
             gl::NameMap::MAIN_ID, "demand_target");
-        const gl::NameId sibling = memory.nameMap.encodePush(
+        const gl::NameId sibling = ((memory).nameMap).encodePush(
             gl::NameMap::MAIN_ID, "demand_sibling");
-        const std::string validity = memory.nameMap.decode(target);
-        memory.intToBeProved.assignSet(gl::packStatementKey(
-            memory.nameMap.encode("(freeze_goal[1])"), target), nullptr, 0);
+        const std::string validity = ((memory).nameMap).decode(target);
+        ((memory).intToBeProved).assignSet(gl::packStatementKey(
+            ((memory).nameMap).encode("(freeze_goal[1])"), target), nullptr, 0);
         auto& arena = gl::genScratchArenas().forSlot(
             gl::genScratchArenas().slotCount() - 1);
-        const int64_t demand = gl::mintTemplateKey(memory.templateInterner,
-            memory.nameMap, "(preorder95[1,2,4,5])", validity);
-        const int32_t source = memory.ruleInterner.encode("(>[]dummy(d[1]))");
+        const int64_t demand = gl::mintTemplateKey(((memory).templateInterner),
+            ((memory).nameMap), "(preorder95[1,2,4,5])", validity);
+        const int32_t source = ((memory).ruleInterner).encode("(>[]dummy(d[1]))");
         const int levels[] = { 0 };
-        gl::insertAdmissionOrdis2IdsBlob(memory.overallHashMemory.admissionMapOrdis2,
-            demand, source, levels, 1, memory.ruleInterner, arena);
-        gl::ExpressionAnalyzer::CollectedArena collected(&lb);
-        gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
-        analyzer.disintegrateExprCore2(gl::StrSpan("(or95[u_4,u_5])", 15), first,
+        gl::insertAdmissionOrdis2IdsBlob(((((memory).overallHashMemory)).admissionMapOrdis2),
+            demand, source, levels, 1, ((memory).ruleInterner), arena);
+        gl::CollectedArena collected(&lb);
+        gl::NewVarStore newVarMap(&lb);
+        gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or95[u_4,u_5])", 15), first,
             memory, 0, collected, newVarMap, gl::StrSpan(validity),
             true, false, levels, 1, true);
-        ASSERT_EQ(memory.orDisjunctCount.count(), 1);
-        ASSERT_TRUE(memory.overallHashMemory.admissionMapOrdis2.lookup(demand) != 0);
+        ASSERT_EQ(((memory).orDisjunctCount).count(), 1);
+        ASSERT_TRUE(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(demand) != 0);
 
         const gl::NameId factScope = knownScope == 0 ? target
             : knownScope == 1 ? gl::NameMap::MAIN_ID : sibling;
         const auto fact = gl::packStatementKey(
-            memory.nameMap.encode("(preorder95[1,2,4,5])"), factScope);
-        gl::upsertStatementKey(memory.intKnownStatements, fact, true);
-        memory.intStatementLevelsMap.assignSet(fact, levels, 1);
-        analyzer.disintegrateExprCore2(gl::StrSpan("(or96[u_4,u_5])", 15), second,
+            ((memory).nameMap).encode("(preorder95[1,2,4,5])"), factScope);
+        gl::upsertStatementKey(((memory).intKnownStatements), fact, true);
+        ((memory).intStatementLevelsMap).assignSet(fact, levels, 1);
+        gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor, gl::StrSpan("(or96[u_4,u_5])", 15), second,
             memory, 0, collected, newVarMap, gl::StrSpan(validity),
             true, false, levels, 1, true);
         const bool stillMissing = knownScope == 2;
-        ASSERT_EQ(memory.overallHashMemory.admissionMapOrdis2.lookup(demand) != 0,
+        ASSERT_EQ(((((memory).overallHashMemory)).admissionMapOrdis2).lookup(demand) != 0,
             stillMissing);
-        ASSERT_EQ(memory.orDisjunctCount.count(), stillMissing ? 2 : 1);
+        ASSERT_EQ(((memory).orDisjunctCount).count(), stillMissing ? 2 : 1);
     }
 }
 
@@ -2172,41 +2213,41 @@ namespace {
 // the digit-prefix near-miss "(or9[" vs "(or98["; the clear is
 // idempotent (several park keys of one or each wake once).
 TEST(prover, or_unique_ledger_record_probe_clear) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "a", "b" }, memory.nameMap);
+    cls.setMembersFromNames({ "a", "b" }, ((memory).nameMap));
     memory.assignClassesById(gl::NameMap::MAIN_ID, { cls });
     seedFixtureCanonicalClasses(memory);
 
-    const gl::NameId recId = memory.nameMap.encode("(or98[b,7])");
-    analyzer.recordProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
+    const gl::NameId recId = ((memory).nameMap).encode("(or98[b,7])");
+    analyzer.caseLedger.recordProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
 
     // Byte-equal recorded text.
-    ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[b,7])"), orSpan("main")));
     // Equi variant: the recorded spelling canonicalizes (b -> a) to the
     // probe text.
-    ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
     // Different argument / different operator / digit-prefix near-miss.
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,8])"), orSpan("main")));
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or99[a,7])"), orSpan("main")));
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or9[a,7])"), orSpan("main")));
     // A scope with no ledger row is a defined miss.
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("elsewhere")));
 
     // Clear: the row leaves; a second clear is the defined no-op.
-    analyzer.clearProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    analyzer.caseLedger.clearProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
-    analyzer.clearProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
+    analyzer.caseLedger.clearProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
 }
 
 // I-219's ledger rows are (canonical id, original id) pairs: a probe is an
@@ -2214,65 +2255,65 @@ TEST(prover, or_unique_ledger_record_probe_clear) {
 // (recanonicalizeProcessedOrLedger) is what keeps the canonical half current
 // — a class formed AFTER the record is invisible until the seam runs.
 TEST(prover, or_unique_ledger_recanonicalizes_on_class_change) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
 
-    const gl::NameId recId = memory.nameMap.encode("(or98[b,7])");
-    analyzer.recordProcessedOr(memory, recId, gl::NameMap::MAIN_ID);   // no classes yet
+    const gl::NameId recId = ((memory).nameMap).encode("(or98[b,7])");
+    analyzer.caseLedger.recordProcessedOr(memory, recId, gl::NameMap::MAIN_ID);   // no classes yet
     {
-        const int32_t row = memory.processedOrLedger.lookup(gl::NameMap::MAIN_ID);
+        const int32_t row = ((memory).processedOrLedger).lookup(gl::NameMap::MAIN_ID);
         ASSERT_NE(row, 0);
-        ASSERT_EQ(memory.processedOrLedger.runLen(row), 1);
-        const int64_t v = memory.processedOrLedger.valueAt(row, 0);
-        ASSERT_EQ(gl::ExpressionAnalyzer::ledgerOriginalId(v), recId);
-        ASSERT_EQ(gl::ExpressionAnalyzer::ledgerCanonicalId(v), recId);   // nothing substitutes
+        ASSERT_EQ(((memory).processedOrLedger).runLen(row), 1);
+        const int64_t v = ((memory).processedOrLedger).valueAt(row, 0);
+        ASSERT_EQ(gl::CaseLedger::ledgerOriginalId(v), recId);
+        ASSERT_EQ(gl::CaseLedger::ledgerCanonicalId(v), recId);   // nothing substitutes
     }
-    ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[b,7])"), orSpan("main")));
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
 
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "a", "b" }, memory.nameMap);
+    cls.setMembersFromNames({ "a", "b" }, ((memory).nameMap));
     memory.assignClassesById(gl::NameMap::MAIN_ID, { cls });
     seedFixtureCanonicalClasses(memory);
     // The class store changed behind the ledger: stale until the seam runs.
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
     // The canonical text is minted by this call; look it up afterwards.
     const gl::NameId canonNow =
-        analyzer.canonicalOrIdAtScope(memory, recId, orSpan("main"));
+        analyzer.caseLedger.canonicalOrIdAtScope(memory, recId, orSpan("main"));
     ASSERT_NE(canonNow, 0);
-    ASSERT_EQ(canonNow, memory.nameMap.lookup(orSpan("(or98[a,7])")));
+    ASSERT_EQ(canonNow, ((memory).nameMap).lookup(orSpan("(or98[a,7])")));
 
-    analyzer.recanonicalizeProcessedOrLedger(memory, gl::NameMap::MAIN_ID);
-    ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory,
+    analyzer.caseLedger.recanonicalizeProcessedOrLedger(memory, gl::NameMap::MAIN_ID);
+    ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
-    ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[b,7])"), orSpan("main")));
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,8])"), orSpan("main")));
     {
-        const int32_t row = memory.processedOrLedger.lookup(gl::NameMap::MAIN_ID);
-        ASSERT_EQ(memory.processedOrLedger.runLen(row), 1);
-        const int64_t v = memory.processedOrLedger.valueAt(row, 0);
-        ASSERT_EQ(gl::ExpressionAnalyzer::ledgerOriginalId(v), recId);
-        ASSERT_EQ(gl::ExpressionAnalyzer::ledgerCanonicalId(v),
-                  memory.nameMap.lookup(orSpan("(or98[a,7])")));
+        const int32_t row = ((memory).processedOrLedger).lookup(gl::NameMap::MAIN_ID);
+        ASSERT_EQ(((memory).processedOrLedger).runLen(row), 1);
+        const int64_t v = ((memory).processedOrLedger).valueAt(row, 0);
+        ASSERT_EQ(gl::CaseLedger::ledgerOriginalId(v), recId);
+        ASSERT_EQ(gl::CaseLedger::ledgerCanonicalId(v),
+                  ((memory).nameMap).lookup(orSpan("(or98[a,7])")));
     }
     // Idempotent: a second seam run on unchanged classes rewrites nothing.
-    analyzer.recanonicalizeProcessedOrLedger(memory, gl::NameMap::MAIN_ID);
-    ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory,
+    analyzer.caseLedger.recanonicalizeProcessedOrLedger(memory, gl::NameMap::MAIN_ID);
+    ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
     // A scope without rows is the defined no-op.
-    analyzer.recanonicalizeProcessedOrLedger(memory,
-        memory.nameMap.encode("elsewhere"));
+    analyzer.caseLedger.recanonicalizeProcessedOrLedger(memory,
+        ((memory).nameMap).encode("elsewhere"));
     // Clearing keys on the original id, canonical half notwithstanding.
-    analyzer.clearProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    analyzer.caseLedger.clearProcessedOr(memory, recId, gl::NameMap::MAIN_ID);
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[a,7])"), orSpan("main")));
-    ASSERT_FALSE(analyzer.orEquiRepresentativeRecorded(memory,
+    ASSERT_FALSE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory,
         orSpan("(or98[b,7])"), orSpan("main")));
 }
 
@@ -2283,29 +2324,29 @@ TEST(prover, or_unique_ledger_recanonicalizes_on_class_change) {
 // fullyDisintegrated stamp, no ledger row. An unrelated or of the same
 // operator still processes fully.
 TEST(prover, or_unique_gate_suppresses_equi_variant_deposit) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     ea.parameters.trackHistory = true;
     gl::Memory& lb = ea.body;
-    ASSERT_EQ(lb.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((lb).nameMap).encode("main"), gl::NameMap::MAIN_ID);
     // An LB with goals keeps the or consumption live (a goal-less LB
     // neither opens nor parks — I-206 clause 6).
-    lb.intToBeProved.assignSet(gl::packStatementKey(
-        gl::encodeExpression(orSpan("(in3[1,2,3])"), orSpan("main"), lb.nameMap).originalId, gl::NameMap::MAIN_ID),
+    ((lb).intToBeProved).assignSet(gl::packStatementKey(
+        gl::encodeExpression(orSpan("(in3[1,2,3])"), orSpan("main"), ((lb).nameMap)).originalId, gl::NameMap::MAIN_ID),
         nullptr, 0);
     // Hand-registered binary or (the registry-or rig): two
     // operator-application leaves over config-level cores.
-    ea.compiledExpressions["or97"] =
+    gl::CompiledDefinitionFixture::compiledExpressions(ea.definitions)["or97"] =
         gl::LogicalEntity("or",
             { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])" },
             "(or97[u_1,u_2,u_3])", 3);
-    ea.compileOrKRules("or97");
-    ea.preMintReducedOrs();
+    ea.orRuleCompiler.compileOrKRules("or97");
+    ea.orRuleCompiler.preMintReducedOrs();
 
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{
         true, gl::OriginTag::taskFormulation, nullptr, 0 };
     const auto orDeposit = [&](const char* expr) {
-        ea.addExprToMemoryBlock(orSpan(expr), lb, 0, 1, lv, 1,
+        ea.statementMemory.addExprToMemoryBlock(orSpan(expr), lb, 0, 1, lv, 1,
             origin, -1, -1, orSpan("main"), /*doNotDisintegrate=*/false,
             /*allowOrDisintegration=*/false, nullptr);
     };
@@ -2314,20 +2355,20 @@ TEST(prover, or_unique_gate_suppresses_equi_variant_deposit) {
     // and recorded in the ledger.
     orDeposit("(or97[b,7,9])");
     const gl::StatementFlags* firstRow = gl::lookupStatementFlags(
-        lb.intKnownStatements, lb.nameMap,
+        ((lb).intKnownStatements), ((lb).nameMap),
         std::string("(or97[b,7,9])"), std::string("main"));
     ASSERT_TRUE(firstRow != nullptr);
     ASSERT_TRUE(firstRow->fullyDisintegrated);
     const int32_t parkedAfterFirst =
-        lb.overallHashMemory.rejectedMapOrdis.count();
+        ((((lb).overallHashMemory)).rejectedMapOrdis).count();
     ASSERT_TRUE(parkedAfterFirst >= 1);
-    ASSERT_TRUE(ea.orEquiRepresentativeRecorded(lb,
+    ASSERT_TRUE(ea.caseLedger.orEquiRepresentativeRecorded(lb,
         orSpan("(or97[b,7,9])"), orSpan("main")));
 
     // The class {a, b} (canonical `a`) lands AFTER the first or was
     // processed — the leak window the gate closes.
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "a", "b" }, lb.nameMap);
+    cls.setMembersFromNames({ "a", "b" }, ((lb).nameMap));
     lb.assignClassesById(gl::NameMap::MAIN_ID, { cls });
     seedFixtureCanonicalClasses(lb);
 
@@ -2335,28 +2376,28 @@ TEST(prover, or_unique_gate_suppresses_equi_variant_deposit) {
     // Site F passes (new text) — only the or-uniqueness gate suppresses.
     orDeposit("(or97[a,7,9])");
     const gl::StatementFlags* variantRow = gl::lookupStatementFlags(
-        lb.intKnownStatements, lb.nameMap,
+        ((lb).intKnownStatements), ((lb).nameMap),
         std::string("(or97[a,7,9])"), std::string("main"));
     ASSERT_TRUE(variantRow != nullptr);            // registered (passive)
     ASSERT_FALSE(variantRow->fullyDisintegrated);  // never disintegrated
-    ASSERT_EQ(lb.overallHashMemory.rejectedMapOrdis.count(),
+    ASSERT_EQ(((((lb).overallHashMemory)).rejectedMapOrdis).count(),
               parkedAfterFirst);                   // no new park keys
     {
-        const int32_t ledgerRow = lb.processedOrLedger.lookup(
+        const int32_t ledgerRow = ((lb).processedOrLedger).lookup(
             gl::NameMap::MAIN_ID);
         ASSERT_TRUE(ledgerRow != 0);
-        ASSERT_EQ(lb.processedOrLedger.runLen(ledgerRow), 1);
+        ASSERT_EQ(((lb).processedOrLedger).runLen(ledgerRow), 1);
     }
 
     // An unrelated or of the same operator processes fully: new park
     // keys, second ledger row.
     orDeposit("(or97[c,7,9])");
-    ASSERT_TRUE(lb.overallHashMemory.rejectedMapOrdis.count()
+    ASSERT_TRUE(((((lb).overallHashMemory)).rejectedMapOrdis).count()
                 > parkedAfterFirst);
     {
-        const int32_t ledgerRow = lb.processedOrLedger.lookup(
+        const int32_t ledgerRow = ((lb).processedOrLedger).lookup(
             gl::NameMap::MAIN_ID);
-        ASSERT_EQ(lb.processedOrLedger.runLen(ledgerRow), 2);
+        ASSERT_EQ(((lb).processedOrLedger).runLen(ledgerRow), 2);
     }
 }
 
@@ -2365,15 +2406,15 @@ TEST(prover, or_unique_gate_suppresses_equi_variant_deposit) {
 // never-minted pair or a zero component.
 TEST(prover, symmetric_or_deposits_keep_one_cohort_and_two_facts) {
     for (bool reversed : {false, true}) {
-        gl::ExpressionAnalyzer analyzer("Peano");
+        gl::tests::ProverFixture analyzer("Peano");
         auto& memory = analyzer.body;
         analyzer.parameters.trackHistory = true;
         analyzer.parameters.max_or_depth = 3;
-        const std::string name = analyzer.findOrMintOrOperator(
+        const std::string name = analyzer.orRuleCompiler.findOrMintOrOperator(
             {"(in2[u_1,u_2,u_3])", "(=[u_1,u_2])", "(in2[u_2,u_1,u_3])"}, 3);
-        analyzer.preMintReducedOrs();
-        memory.intToBeProved.assignSet(gl::packStatementKey(
-            memory.nameMap.encode("(in[x,N])"), gl::NameMap::MAIN_ID), nullptr, 0);
+        analyzer.orRuleCompiler.preMintReducedOrs();
+        ((memory).intToBeProved).assignSet(gl::packStatementKey(
+            ((memory).nameMap).encode("(in[x,N])"), gl::NameMap::MAIN_ID), nullptr, 0);
         const std::string forward = "(" + name + "[a,b,f])";
         const std::string backward = "(" + name + "[b,a,f])";
         const std::string first = reversed ? backward : forward;
@@ -2381,34 +2422,34 @@ TEST(prover, symmetric_or_deposits_keep_one_cohort_and_two_facts) {
         const int levels[] = {0};
         const gl::TransientOrigin origin{true, gl::OriginTag::taskFormulation, nullptr, 0};
         for (const auto& text : {first, second})
-            analyzer.addExprToMemoryBlock(gl::StrSpan(text), memory, 0, 1,
+            analyzer.statementMemory.addExprToMemoryBlock(gl::StrSpan(text), memory, 0, 1,
                 levels, 1, origin, -1, -1, orSpan("main"), false, true);
-        const auto* firstFlags = gl::lookupStatementFlags(memory.intKnownStatements,
-            memory.nameMap, first, "main");
-        const auto* secondFlags = gl::lookupStatementFlags(memory.intKnownStatements,
-            memory.nameMap, second, "main");
+        const auto* firstFlags = gl::lookupStatementFlags(((memory).intKnownStatements),
+            ((memory).nameMap), first, "main");
+        const auto* secondFlags = gl::lookupStatementFlags(((memory).intKnownStatements),
+            ((memory).nameMap), second, "main");
         ASSERT_TRUE(firstFlags != nullptr && firstFlags->fullyDisintegrated);
         ASSERT_TRUE(secondFlags != nullptr && !secondFlags->fullyDisintegrated);
-        ASSERT_EQ(memory.orDisjunctCount.count(), 1);
-        ASSERT_EQ(memory.orImplications.sources.count(), 1);
-        const auto row = memory.processedOrLedger.lookup(gl::NameMap::MAIN_ID);
+        ASSERT_EQ(((memory).orDisjunctCount).count(), 1);
+        ASSERT_EQ(((memory).orImplications).sources.count(), 1);
+        const auto row = ((memory).processedOrLedger).lookup(gl::NameMap::MAIN_ID);
         ASSERT_NE(row, 0);
-        ASSERT_EQ(memory.processedOrLedger.runLen(row), 1);
-        ASSERT_TRUE(analyzer.orEquiRepresentativeRecorded(memory, gl::StrSpan(second), orSpan("main")));
+        ASSERT_EQ(((memory).processedOrLedger).runLen(row), 1);
+        ASSERT_TRUE(analyzer.caseLedger.orEquiRepresentativeRecorded(memory, gl::StrSpan(second), orSpan("main")));
     }
 }
 
 TEST(prover, nested_symmetric_or_consumption_marks_only_one_source) {
-    gl::ExpressionAnalyzer analyzer("Peano");
-    const std::string name = analyzer.findOrMintOrOperator(
+    gl::tests::ProverFixture analyzer("Peano");
+    const std::string name = analyzer.orRuleCompiler.findOrMintOrOperator(
         {"(in2[u_1,u_2,u_3])", "(in2[u_2,u_1,u_3])"}, 3);
-    analyzer.compiledExpressions["and999"] = gl::LogicalEntity("and",
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["and999"] = gl::LogicalEntity("and",
         {"(" + name + "[u_1,u_2,u_3])", "(" + name + "[u_2,u_1,u_3])"},
         "(and999[u_1,u_2,u_3])", 3);
-    analyzer.preMintReducedOrs();
+    analyzer.orRuleCompiler.preMintReducedOrs();
     auto& arena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
     gl::DisintProducts products(&arena);
-    analyzer.disintegrateExpr2(orSpan("(and999[a,b,f])"), analyzer.body, 0,
+    analyzer.disintegrationProcessor.disintegrateExpr2(orSpan("(and999[a,b,f])"), analyzer.body, 0,
         true, orSpan("main"), products, false, false, nullptr, 0, true);
     ASSERT_TRUE(products.orSources.contains(gl::StrSpan("(" + name + "[a,b,f])"), orSpan("main")));
     ASSERT_FALSE(products.orSources.contains(gl::StrSpan("(" + name + "[b,a,f])"), orSpan("main")));
@@ -2416,13 +2457,13 @@ TEST(prover, nested_symmetric_or_consumption_marks_only_one_source) {
 
 TEST(memory, lookup_or_cohort_id_matches_mint) {
     gl::Memory memory;
-    const int32_t p = memory.lbStateInterner.encode(gl::StrSpan("main", 4));
-    const int32_t s = memory.lbStateInterner.encode(orSpan("(or97[b,7,9])"));
-    const int32_t minted = gl::mintOrCohortId(memory.lbStateInterner, p, s);
-    ASSERT_EQ(gl::lookupOrCohortId(memory.lbStateInterner, p, s), minted);
-    ASSERT_EQ(gl::lookupOrCohortId(memory.lbStateInterner, s, p), 0);
-    ASSERT_EQ(gl::lookupOrCohortId(memory.lbStateInterner, 0, s), 0);
-    ASSERT_EQ(gl::lookupOrCohortId(memory.lbStateInterner, p, 0), 0);
+    const int32_t p = ((memory).lbStateInterner).encode(gl::StrSpan("main", 4));
+    const int32_t s = ((memory).lbStateInterner).encode(orSpan("(or97[b,7,9])"));
+    const int32_t minted = gl::mintOrCohortId(((memory).lbStateInterner), p, s);
+    ASSERT_EQ(gl::lookupOrCohortId(((memory).lbStateInterner), p, s), minted);
+    ASSERT_EQ(gl::lookupOrCohortId(((memory).lbStateInterner), s, p), 0);
+    ASSERT_EQ(gl::lookupOrCohortId(((memory).lbStateInterner), 0, s), 0);
+    ASSERT_EQ(gl::lookupOrCohortId(((memory).lbStateInterner), p, 0), 0);
 }
 
 // Duplicate-or-cohort retirement: two OPEN cohorts at one parent whose
@@ -2433,41 +2474,41 @@ TEST(memory, lookup_or_cohort_id_matches_mint) {
 // ledger row leave; the keeper's rows and the loser's history stay. A
 // second drain is the defined no-op.
 TEST(prover, retire_duplicate_or_cohorts_keeps_most_advanced) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory memory;
-    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
 
     const char* textB = "(or97[b,7,9])";
     const char* textA = "(or97[a,7,9])";
-    const gl::NameId idB = memory.nameMap.encode(textB);
-    const gl::NameId idA = memory.nameMap.encode(textA);
+    const gl::NameId idB = ((memory).nameMap).encode(textB);
+    const gl::NameId idA = ((memory).nameMap).encode(textA);
 
     // Both ors were fully processed pre-merge: ledger rows + open cohorts.
-    analyzer.recordProcessedOr(memory, idB, gl::NameMap::MAIN_ID);
-    analyzer.recordProcessedOr(memory, idA, gl::NameMap::MAIN_ID);
+    analyzer.caseLedger.recordProcessedOr(memory, idB, gl::NameMap::MAIN_ID);
+    analyzer.caseLedger.recordProcessedOr(memory, idA, gl::NameMap::MAIN_ID);
     const int32_t parentId =
-        memory.lbStateInterner.encode(gl::StrSpan("main", 4));
-    const int32_t sigB = memory.lbStateInterner.encode(orSpan(textB));
-    const int32_t sigA = memory.lbStateInterner.encode(orSpan(textA));
+        ((memory).lbStateInterner).encode(gl::StrSpan("main", 4));
+    const int32_t sigB = ((memory).lbStateInterner).encode(orSpan(textB));
+    const int32_t sigA = ((memory).lbStateInterner).encode(orSpan(textA));
     const int32_t cidB =
-        gl::mintOrCohortId(memory.lbStateInterner, parentId, sigB);
+        gl::mintOrCohortId(((memory).lbStateInterner), parentId, sigB);
     const int32_t cidA =
-        gl::mintOrCohortId(memory.lbStateInterner, parentId, sigA);
-    memory.orDisjunctCount.insert(cidB, 2);
-    memory.orDisjunctCount.insert(cidA, 2);
+        gl::mintOrCohortId(((memory).lbStateInterner), parentId, sigA);
+    ((memory).orDisjunctCount).insert(cidB, 2);
+    ((memory).orDisjunctCount).insert(cidA, 2);
     const int32_t wB =
-        memory.lbStateInterner.encode(orSpan("((in2[b,9,7]))"));
+        ((memory).lbStateInterner).encode(orSpan("((in2[b,9,7]))"));
     const int32_t wA =
-        memory.lbStateInterner.encode(orSpan("((in2[a,9,7]))"));
-    memory.orPendingBranches.insertSorted(cidB, wB,
-        gl::DecodedIdLess{ &memory.lbStateInterner });
-    memory.orPendingBranches.insertSorted(cidA, wA,
-        gl::DecodedIdLess{ &memory.lbStateInterner });
-    memory.orPendingLevels.insertSorted(cidB, 0,
+        ((memory).lbStateInterner).encode(orSpan("((in2[a,9,7]))"));
+    ((memory).orPendingBranches).insertSorted(cidB, wB,
+        gl::DecodedIdLess{ &((memory).lbStateInterner) });
+    ((memory).orPendingBranches).insertSorted(cidA, wA,
+        gl::DecodedIdLess{ &((memory).lbStateInterner) });
+    ((memory).orPendingLevels).insertSorted(cidB, 0,
         [](int32_t x, int32_t y) { return x < y; });
-    memory.orPendingLevels.insertSorted(cidA, 0,
+    ((memory).orPendingLevels).insertSorted(cidA, 0,
         [](int32_t x, int32_t y) { return x < y; });
-    memory.orStarterPick.upsert(cidB, wB);
+    ((memory).orStarterPick).upsert(cidB, wB);
 
     // One live branch each; the keeper (A) carries two registered branch
     // statements, the loser (B) none.
@@ -2475,21 +2516,21 @@ TEST(prover, retire_duplicate_or_cohorts_keeps_most_advanced) {
         std::string("main_boundary_ordis_") + textB + "_(in[b,7])";
     const std::string branchA =
         std::string("main_boundary_ordis_") + textA + "_(in[a,7])";
-    const gl::NameId bvB = memory.nameMap.encode(branchB);
-    const gl::NameId bvA = memory.nameMap.encode(branchA);
-    ASSERT_EQ(memory.nameMap.parentOf(bvB), gl::NameMap::MAIN_ID);
-    memory.orLiveBranches.mint(bvB);
-    memory.orLiveBranches.mint(bvA);
+    const gl::NameId bvB = ((memory).nameMap).encode(branchB);
+    const gl::NameId bvA = ((memory).nameMap).encode(branchA);
+    ASSERT_EQ(((memory).nameMap).parentOf(bvB), gl::NameMap::MAIN_ID);
+    ((memory).orLiveBranches).mint(bvB);
+    ((memory).orLiveBranches).mint(bvA);
     for (const char* st : { "(in3[1,2,3])", "(in3[4,5,6])" }) {
-        memory.intEncodedStatements.push_back(gl::encodeExpression(
-            orSpan(st), gl::StrSpan(branchA), memory.nameMap));
+        ((memory).intEncodedStatements).push_back(gl::encodeExpression(
+            orSpan(st), gl::StrSpan(branchA), ((memory).nameMap)));
     }
 
     // Pre-merge: two distinct canonical spellings — the drain must not
     // touch anything.
-    analyzer.retireDuplicateOrCohorts(memory);
-    ASSERT_NE(memory.orDisjunctCount.lookup(cidB), 0);
-    ASSERT_NE(memory.orDisjunctCount.lookup(cidA), 0);
+    analyzer.caseProcessor.retireDuplicateOrCohorts(memory);
+    ASSERT_NE(((memory).orDisjunctCount).lookup(cidB), 0);
+    ASSERT_NE(((memory).orDisjunctCount).lookup(cidA), 0);
 
     // The merge lands: {a, b}, canonical `a`. `assignClassesById` is the
     // test-only class door; production stores a merged class through
@@ -2497,45 +2538,45 @@ TEST(prover, retire_duplicate_or_cohorts_keeps_most_advanced) {
     // re-keys the ledger rows — run it here for the same effect, since
     // the drain groups by the ledger's canonical half.
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({ "a", "b" }, memory.nameMap);
+    cls.setMembersFromNames({ "a", "b" }, ((memory).nameMap));
     memory.assignClassesById(gl::NameMap::MAIN_ID, { cls });
     seedFixtureCanonicalClasses(memory);
-    analyzer.recanonicalizeProcessedOrLedger(memory, gl::NameMap::MAIN_ID);
+    analyzer.caseLedger.recanonicalizeProcessedOrLedger(memory, gl::NameMap::MAIN_ID);
 
-    analyzer.retireDuplicateOrCohorts(memory);
+    analyzer.caseProcessor.retireDuplicateOrCohorts(memory);
 
     // Loser B retired: scheduling rows gone, live branch queued for wipe
     // and out of the live registry, ledger row cleared.
-    ASSERT_EQ(memory.orDisjunctCount.lookup(cidB), 0);
-    ASSERT_EQ(memory.orPendingBranches.lookup(cidB), 0);
-    ASSERT_EQ(memory.orPendingLevels.lookup(cidB), 0);
-    ASSERT_TRUE(memory.orStarterPick.find(cidB) == nullptr);
-    ASSERT_NE(memory.pendingWipeScopes.lookup(bvB), 0);
-    ASSERT_EQ(memory.orLiveBranches.lookup(bvB), 0);
-    ASSERT_TRUE(memory.mutatedThisBurst);
+    ASSERT_EQ(((memory).orDisjunctCount).lookup(cidB), 0);
+    ASSERT_EQ(((memory).orPendingBranches).lookup(cidB), 0);
+    ASSERT_EQ(((memory).orPendingLevels).lookup(cidB), 0);
+    ASSERT_TRUE(((memory).orStarterPick).find(cidB) == nullptr);
+    ASSERT_NE(((memory).pendingWipeScopes).lookup(bvB), 0);
+    ASSERT_EQ(((memory).orLiveBranches).lookup(bvB), 0);
+    ASSERT_TRUE(((memory).mutatedThisBurst));
 
     // Keeper A intact.
-    ASSERT_NE(memory.orDisjunctCount.lookup(cidA), 0);
-    ASSERT_NE(memory.orPendingBranches.lookup(cidA), 0);
-    ASSERT_NE(memory.orLiveBranches.lookup(bvA), 0);
+    ASSERT_NE(((memory).orDisjunctCount).lookup(cidA), 0);
+    ASSERT_NE(((memory).orPendingBranches).lookup(cidA), 0);
+    ASSERT_NE(((memory).orLiveBranches).lookup(bvA), 0);
     {
         const int32_t row =
-            memory.processedOrLedger.lookup(gl::NameMap::MAIN_ID);
+            ((memory).processedOrLedger).lookup(gl::NameMap::MAIN_ID);
         ASSERT_NE(row, 0);
-        ASSERT_EQ(memory.processedOrLedger.runLen(row), 1);
-        ASSERT_EQ(gl::ExpressionAnalyzer::ledgerOriginalId(
-                      memory.processedOrLedger.valueAt(row, 0)), idA);
+        ASSERT_EQ(((memory).processedOrLedger).runLen(row), 1);
+        ASSERT_EQ(gl::CaseLedger::ledgerOriginalId(
+                      ((memory).processedOrLedger).valueAt(row, 0)), idA);
     }
 
     // Idempotent: a second drain finds one open cohort per group.
-    analyzer.retireDuplicateOrCohorts(memory);
-    ASSERT_NE(memory.orDisjunctCount.lookup(cidA), 0);
+    analyzer.caseProcessor.retireDuplicateOrCohorts(memory);
+    ASSERT_NE(((memory).orDisjunctCount).lookup(cidA), 0);
 }
 
 
 namespace {
     struct InheritedOrFixture {
-        gl::ExpressionAnalyzer analyzer{"Peano"};
+        gl::tests::ProverFixture analyzer{"Peano"};
         gl::Memory memory;
         std::string name, expression;
         const std::string leaf = "(preorder95[1,2,4,5])";
@@ -2544,40 +2585,41 @@ namespace {
             analyzer.parameters.trackHistory = true;
             analyzer.parameters.max_origin_per_expr = 16;
             analyzer.parameters.max_or_depth = 2;
-            memory.isActive = true;
-            memory.level = 1;
-            memory.parentMemory = &analyzer.body;
-            ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
-            analyzer.compiledExpressions["preorder95"] =
+            ((memory).isActive) = true;
+            ((memory).level) = 1;
+            ((memory).parentMemory) = &analyzer.body;
+            ASSERT_EQ(((memory).nameMap).encode("main"), gl::NameMap::MAIN_ID);
+            gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder95"] =
                 gl::LogicalEntity("existence",
                     {"(in[w1,u_1])", "(in3[u_3,w1,u_4,u_2])"},
                     "(preorder95[u_1,u_2,u_3,u_4])", 4);
-            analyzer.compileExistenceImplications("preorder95");
+            analyzer.supportingRuleCompiler.compileDisintegrationPackages();
+            analyzer.existenceRuleCompiler.compileExistenceImplications("preorder95");
             std::vector<std::string> leaves{
                 "(preorder95[u_1,u_2,u_3,u_4])", "(in[u_3,u_4])"};
             if (leafCount == 3) leaves.push_back("(in[u_4,u_3])");
-            name = analyzer.findOrMintOrOperator(leaves, 4);
-            analyzer.preMintReducedOrs();
+            name = analyzer.orRuleCompiler.findOrMintOrOperator(leaves, 4);
+            analyzer.orRuleCompiler.preMintReducedOrs();
             expression = "(" + name + "[1,2,4,5])";
         }
 
         void goal() {
             const auto encoded = gl::encodeExpression(orSpan("(in[91,92])"),
-                orSpan("main"), memory.nameMap);
-            memory.intToBeProved.assignSet(gl::StatementKey{
+                orSpan("main"), ((memory).nameMap));
+            ((memory).intToBeProved).assignSet(gl::StatementKey{
                 encoded.originalId, encoded.validityId}, nullptr, 0);
         }
 
         int64_t demand() {
-            const int64_t key = gl::mintTemplateKey(memory.templateInterner,
-                memory.nameMap, leaf, "main");
-            const int32_t rule = memory.ruleInterner.encode("(>[]dummy(d[1]))");
+            const int64_t key = gl::mintTemplateKey(((memory).templateInterner),
+                ((memory).nameMap), leaf, "main");
+            const int32_t rule = ((memory).ruleInterner).encode("(>[]dummy(d[1]))");
             const int levels[] = {0};
             auto& arena = gl::genScratchArenas().forSlot(
                 gl::genScratchArenas().slotCount() - 1);
             gl::insertAdmissionOrdis2IdsBlob(
-                memory.overallHashMemory.admissionMapOrdis2,
-                key, rule, levels, 1, memory.ruleInterner, arena);
+                ((((memory).overallHashMemory)).admissionMapOrdis2),
+                key, rule, levels, 1, ((memory).ruleInterner), arena);
             return key;
         }
 
@@ -2585,57 +2627,60 @@ namespace {
             const int levels[] = {0};
             const gl::TransientOrigin origin{
                 true, gl::OriginTag::taskFormulation, nullptr, 0};
-            analyzer.addExprToMemoryBlock(gl::StrSpan(expression), memory,
+            analyzer.statementMemory.addExprToMemoryBlock(gl::StrSpan(expression), memory,
                 0, 3, levels, 1, origin, -1, -1, orSpan("main"),
                 suppress, forceOpen);
         }
 
-        void receive() {
+        void receive(int32_t flagCode = gl::kMailStatementFlagNone) {
             const int32_t original = gl::mailInterner().mint(gl::StrSpan(expression));
             const int32_t validity = gl::mailInterner().mint(orSpan("main"));
             const int levels[] = {0};
-            memory.mailIn.insertStatement(original, validity, levels, 1);
-            gl::addMailOriginRecord(memory.mailIn.origins_,
+            ((memory).mailIn).insertStatement(original, validity, levels, 1);
+            if (flagCode != gl::kMailStatementFlagNone)
+                ((memory).mailIn).mergeStatementFlag(gl::packOriginKey(original, validity),
+                    gl::packMailStatementFlag(flagCode, -1));
+            gl::addMailOriginRecord(((memory).mailIn).origins_,
                 gl::packOriginKey(original, validity),
                 static_cast<uint8_t>(gl::OriginTag::taskFormulation),
                 nullptr, 0, 16);
-            analyzer.standardProcessing(memory, &memory.mailIn,
-                memory.sameIterationInternalMail,
-                memory.nextIterationInternalMail, -1);
+            analyzer.logicBlockOperations.standardProcessing(memory, &((memory).mailIn),
+                ((memory).sameIterationInternalMail),
+                ((memory).nextIterationInternalMail), -1);
             // The phase caller clears the external inbox after absorption.
-            memory.mailIn.clear();
-            ASSERT_TRUE(memory.mailIn.empty());
+            ((memory).mailIn).clear();
+            ASSERT_TRUE(((memory).mailIn).empty());
         }
 
         int32_t cohort() {
-            return gl::lookupOrCohortId(memory.lbStateInterner,
-                memory.lbStateInterner.lookup("main"),
-                memory.lbStateInterner.lookup(expression));
+            return gl::lookupOrCohortId(((memory).lbStateInterner),
+                ((memory).lbStateInterner).lookup("main"),
+                ((memory).lbStateInterner).lookup(expression));
         }
 
         bool known(const std::string& text, gl::NameId validity) const {
-            const gl::NameId original = memory.nameMap.lookup(gl::StrSpan(text));
-            return original != 0 && memory.intKnownStatements.lookup(
+            const gl::NameId original = ((memory).nameMap).lookup(gl::StrSpan(text));
+            return original != 0 && ((memory).intKnownStatements).lookup(
                 gl::StatementKey{original, validity}) != 0;
         }
 
         void internal(const std::string& text, gl::NameId validity) {
-            const std::string scope = memory.nameMap.decode(validity);
+            const std::string scope = ((memory).nameMap).decode(validity);
             const int levels[] = {0};
-            gl::insertInternalStatement(memory.sameIterationInternalMail,
-                memory.nameMap, gl::StrSpan(text), gl::StrSpan(scope), levels, 1);
-            gl::addInternalMailOrigin(memory.sameIterationInternalMail,
-                memory.originInterner, gl::StrSpan(text), gl::StrSpan(scope),
+            gl::insertInternalStatement(((memory).sameIterationInternalMail),
+                ((memory).nameMap), gl::StrSpan(text), gl::StrSpan(scope), levels, 1);
+            gl::addInternalMailOrigin(((memory).sameIterationInternalMail),
+                ((memory).originInterner), gl::StrSpan(text), gl::StrSpan(scope),
                 gl::OriginTag::taskFormulation, nullptr, 0, 16);
         }
 
         void absorbInternal() {
-            analyzer.standardProcessing(memory, nullptr,
-                memory.sameIterationInternalMail,
-                memory.nextIterationInternalMail, -1);
-            analyzer.standardProcessing(memory, nullptr,
-                memory.nextIterationInternalMail,
-                memory.sameIterationInternalMail, -1);
+            analyzer.logicBlockOperations.standardProcessing(memory, nullptr,
+                ((memory).sameIterationInternalMail),
+                ((memory).nextIterationInternalMail), -1);
+            analyzer.logicBlockOperations.standardProcessing(memory, nullptr,
+                ((memory).nextIterationInternalMail),
+                ((memory).sameIterationInternalMail), -1);
         }
     };
 }
@@ -2644,16 +2689,16 @@ TEST(or_mail, recipient_eligibility_and_suppression) {
     for (int mode = 0; mode < 5; ++mode) {
         InheritedOrFixture f;
         if (mode == 1 || mode == 4) f.goal();
-        if (mode == 2 || mode == 3) f.memory.primedForContradiction = true;
-        if (mode == 3) f.memory.isActive = false;
+        if (mode == 2 || mode == 3) ((f.memory).primedForContradiction) = true;
+        if (mode == 3) ((f.memory).isActive) = false;
         f.deposit(mode == 4, true);
         const bool eligible = mode == 1 || mode == 2;
-        ASSERT_EQ(f.memory.overallHashMemory.originals.count(), 0);
-        ASSERT_EQ(f.memory.orImplications.sources.count() > 0, eligible);
-        ASSERT_EQ(f.memory.orDisjunctCount.count() > 0, eligible);
+        ASSERT_EQ(((((f.memory).overallHashMemory)).originals).count(), 0);
+        ASSERT_EQ(((f.memory).orImplications).sources.count() > 0, eligible);
+        ASSERT_EQ(((f.memory).orDisjunctCount).count() > 0, eligible);
         if (!eligible) {
-            ASSERT_EQ(f.memory.overallHashMemory.rejectedMapOrdis.count(), 0);
-            ASSERT_EQ(f.memory.overallHashMemory.rejectedMapOrdis2.count(), 0);
+            ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis).count(), 0);
+            ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
         }
         ASSERT_TRUE(f.known(f.expression, gl::NameMap::MAIN_ID));
     }
@@ -2662,51 +2707,105 @@ TEST(or_mail, recipient_eligibility_and_suppression) {
 TEST(or_mail, external_absorption_opens_demanded_cases_and_keeps_carrier_nonlocal) {
     for (bool contradiction : {false, true}) {
         InheritedOrFixture f;
-        if (contradiction) f.memory.primedForContradiction = true;
+        if (contradiction) ((f.memory).primedForContradiction) = true;
         else f.goal();
         const int64_t demand = f.demand();
         f.receive();
         ASSERT_TRUE(f.cohort() != 0);
-        ASSERT_EQ(*f.memory.orDisjunctCount.find(f.cohort()), 2);
-        ASSERT_TRUE(f.memory.overallHashMemory.admissionMapOrdis2.lookup(demand) != 0);
+        ASSERT_EQ(*((f.memory).orDisjunctCount).find(f.cohort()), 2);
+        ASSERT_TRUE(((((f.memory).overallHashMemory)).admissionMapOrdis2).lookup(demand) != 0);
         const auto* flags = gl::lookupStatementFlags(
-            f.memory.intKnownStatements, f.memory.nameMap, f.expression, "main");
+            ((f.memory).intKnownStatements), ((f.memory).nameMap), f.expression, "main");
         ASSERT_TRUE(flags != nullptr);
         ASSERT_FALSE(flags->local);
         ASSERT_TRUE(flags->fullyDisintegrated);
-        ASSERT_EQ(f.memory.workingMemory.originals.count(), 0);
-        ASSERT_EQ(f.memory.orImplications.sources.count(), 1);
-        ASSERT_EQ(f.memory.localHashMemory.originals.count(), 0);
-        f.analyzer.drainPendingOrReleases(f.memory);
+        ASSERT_EQ(((((f.memory).workingMemory)).originals).count(), 0);
+        ASSERT_EQ(((f.memory).orImplications).sources.count(), 1);
+        ASSERT_EQ(((((f.memory).localHashMemory)).originals).count(), 0);
+        f.analyzer.caseProcessor.drainPendingOrReleases(f.memory);
         const auto seeds = gl::decodeInternalMailStatements(
-            f.memory.sameIterationInternalMail, f.memory.nameMap);
+            ((f.memory).sameIterationInternalMail), ((f.memory).nameMap));
         ASSERT_EQ(seeds.size(), static_cast<std::size_t>(1));
         ASSERT_EQ(seeds[0].first.original, f.leaf);
-        ASSERT_EQ(seeds[0].second, (std::set<int>{0}));
+        ASSERT_EQ(seeds[0].second, (std::set<int>{-1}));
+        const int32_t sourceLevels = f.memory.orPendingLevels.lookup(f.cohort());
+        ASSERT_TRUE(sourceLevels != 0);
+        ASSERT_EQ(f.memory.orPendingLevels.valueAt(sourceLevels, 0), 0);
         ASSERT_TRUE(seeds[0].first.validityName.find("_ordis_") != std::string::npos);
         const auto history = gl::decodeInternalMailOrigins(
-            f.memory.sameIterationInternalMail, f.memory.originInterner);
+            ((f.memory).sameIterationInternalMail), ((f.memory).originInterner));
         ASSERT_FALSE(history.empty());
         f.receive();
-        ASSERT_EQ(f.memory.orDisjunctCount.count(), 1);
+        ASSERT_EQ(((f.memory).orDisjunctCount).count(), 1);
+    }
+}
+
+// Flag 6 (D-528): an OR arriving with the
+// unconditional-ordis flag opens its case split without any demand where the
+// receiver has proof work (a goal, or an active primed contradiction block);
+// without proof work it stays a passive statement. The carrier is never staged
+// for the flag again and never parks.
+TEST(or_mail, unconditional_ordis_flag_opens_without_demand_only_with_proof_work) {
+    for (int mode = 0; mode < 3; ++mode) {
+        InheritedOrFixture f;
+        if (mode == 1) f.goal();
+        if (mode == 2) ((f.memory).primedForContradiction) = true;
+        f.receive(gl::kMailStatementFlagUnconditionalOrdis);
+        const bool proofWork = mode != 0;
+        ASSERT_EQ(((f.memory).orDisjunctCount).count(), proofWork ? 1 : 0);
+        if (proofWork) ASSERT_EQ(*((f.memory).orDisjunctCount).find(f.cohort()), 2);
+        ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis).count(), 0);
+        ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
+        ASSERT_TRUE(((f.memory).lbMemory.pendingUnconditionalOrdis).empty());
+        ASSERT_EQ(((f.memory).lbMemory.forcedOrCohorts).count(), proofWork ? 1 : 0);
+        ASSERT_TRUE(f.known(f.expression, gl::NameMap::MAIN_ID));
+        const auto* flags = gl::lookupStatementFlags(
+            ((f.memory).intKnownStatements), ((f.memory).nameMap), f.expression, "main");
+        ASSERT_TRUE(flags != nullptr);
+        ASSERT_FALSE(flags->local);
+    }
+}
+
+// Forced case assumptions (D-527): the case a
+// forced cohort releases carries the forced signal; a case of a cohort opened
+// by demand does not.
+TEST(or_mail, release_forces_only_the_cases_of_premise_or_cohorts) {
+    for (bool premiseOr : {true, false}) {
+        InheritedOrFixture f;
+        f.goal();
+        if (!premiseOr) f.demand();
+        f.receive(premiseOr ? gl::kMailStatementFlagUnconditionalOrdis
+                            : gl::kMailStatementFlagNone);
+        ASSERT_EQ(((f.memory).orDisjunctCount).count(), 1);
+        ASSERT_EQ(((f.memory).lbMemory.forcedOrCohorts).count(), premiseOr ? 1 : 0);
+        f.analyzer.caseProcessor.drainPendingOrReleases(f.memory);
+        const auto seeds = gl::decodeInternalMailStatements(
+            ((f.memory).sameIterationInternalMail), ((f.memory).nameMap));
+        ASSERT_EQ(seeds.size(), static_cast<std::size_t>(1));
+        const auto signals = gl::decodeInternalMailDisintegrationSignals(
+            ((f.memory).sameIterationInternalMail), ((f.memory).nameMap));
+        bool forcedSeed = false;
+        for (const auto& row : signals)
+            if (row.first == seeds[0].first) forcedSeed = row.second.forced;
+        ASSERT_EQ(forcedSeed, premiseOr);
     }
 }
 
 TEST(or_mail, external_supply_parks_then_demand_wakes_known_statement) {
     InheritedOrFixture f;
-    f.memory.primedForContradiction = true;
+    ((f.memory).primedForContradiction) = true;
     f.receive();
-    ASSERT_EQ(f.memory.orDisjunctCount.count(), 0);
-    ASSERT_TRUE(f.memory.overallHashMemory.rejectedMapOrdis2.count() > 0);
+    ASSERT_EQ(((f.memory).orDisjunctCount).count(), 0);
+    ASSERT_TRUE(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count() > 0);
     ASSERT_TRUE(f.known(f.expression, gl::NameMap::MAIN_ID));
     f.demand();
-    f.analyzer.revisitRejectedOrdis2(gl::StrSpan(f.leaf),
+    f.analyzer.rejectedSourceReplay.revisitRejectedOrdis2(gl::StrSpan(f.leaf),
         f.memory, orSpan("main"));
     ASSERT_FALSE(f.known(f.expression, gl::NameMap::MAIN_ID));
-    ASSERT_FALSE(f.memory.sameIterationInternalMail.empty());
+    ASSERT_FALSE(((f.memory).sameIterationInternalMail).empty());
     f.absorbInternal();
     ASSERT_TRUE(f.cohort() != 0);
-    ASSERT_EQ(*f.memory.orDisjunctCount.find(f.cohort()), 2);
+    ASSERT_EQ(*((f.memory).orDisjunctCount).find(f.cohort()), 2);
 }
 
 TEST(or_mail, selected_exclusions_cite_history_only_compacts_including_reduced_ors) {
@@ -2719,13 +2818,13 @@ TEST(or_mail, selected_exclusions_cite_history_only_compacts_including_reduced_o
             f.expression = "(" + f.name + "[1,2,4,6])";
         }
         f.receive();
-        ASSERT_EQ(f.memory.orImplications.sources.count(), 1);
-        ASSERT_EQ(f.memory.compactExpansions.count(), 0);
-        ASSERT_EQ(f.memory.overallHashMemory.originals.count(), 0);
+        ASSERT_EQ(((f.memory).orImplications).sources.count(), 1);
+        ASSERT_EQ(((f.memory).compactExpansions).count(), 0);
+        ASSERT_EQ(((((f.memory).overallHashMemory)).originals).count(), 0);
         f.internal("!(in[4,5])", gl::NameMap::MAIN_ID);
         f.absorbInternal();
         const auto origins = gl::decodeOriginMapSorted(
-            f.memory.exprOriginMap, f.memory.originInterner);
+            ((f.memory).exprOriginMap), ((f.memory).originInterner));
         int selected = 0;
         for (const auto& entry : origins) {
             const std::string& compact = entry.first.first;
@@ -2756,34 +2855,104 @@ TEST(or_mail, depth_limit_keeps_exclusion_source_without_cases_or_parks) {
     f.analyzer.parameters.max_or_depth = 0;
     f.demand();
     f.receive();
-    ASSERT_EQ(f.memory.overallHashMemory.originals.count(), 0);
-    ASSERT_EQ(f.memory.orImplications.sources.count(), 1);
-    ASSERT_EQ(f.memory.orDisjunctCount.count(), 0);
-    ASSERT_EQ(f.memory.overallHashMemory.rejectedMapOrdis.count(), 0);
-    ASSERT_EQ(f.memory.overallHashMemory.rejectedMapOrdis2.count(), 0);
+    ASSERT_EQ(((((f.memory).overallHashMemory)).originals).count(), 0);
+    ASSERT_EQ(((f.memory).orImplications).sources.count(), 1);
+    ASSERT_EQ(((f.memory).orDisjunctCount).count(), 0);
+    ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis).count(), 0);
+    ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count(), 0);
+}
+
+namespace {
+    /// @brief Deposit the fixture's OR at a fresh child scope of `main`.
+    ///
+    /// @details A status-0 local deposit, optionally flagged as an
+    /// integration premise (D-460).
+    ///
+    /// @param f                  The fixture.
+    /// @param payload            The child scope's payload.
+    /// @param integrationPremise The door's integration-premise flag.
+    /// @return The child scope's validity name.
+    std::string depositOrAtChildScope(InheritedOrFixture& f, const char* payload,
+                                      bool integrationPremise) {
+        const gl::NameId scope = ((f.memory).nameMap).encodePush(gl::NameMap::MAIN_ID,
+            gl::StrSpan(payload, static_cast<int32_t>(std::strlen(payload))));
+        const std::string scopeName = ((f.memory).nameMap).decode(scope);
+        const int levels[] = {0};
+        const gl::TransientOrigin origin{
+            true, gl::OriginTag::premiseElement, nullptr, 0};
+        f.analyzer.statementMemory.addExprToMemoryBlock(gl::StrSpan(f.expression), f.memory,
+            -1, 0, levels, 1, origin, -1, -1, gl::StrSpan(scopeName),
+            /*doNotDisintegrate=*/false, /*allowOrDisintegration=*/false,
+            /*registeredOut=*/nullptr, /*recursionHead=*/false,
+            /*convergenceMailOut=*/nullptr, /*replayKinds=*/0,
+            /*replayIntegrationDepth=*/-1, integrationPremise);
+        return scopeName;
+    }
+
+    /// @brief The cohort id of the fixture's OR under `parent`, 0 if none.
+    ///
+    /// @param f      The fixture.
+    /// @param parent The cohort's parent validity name.
+    /// @return The interned cohort id, or 0.
+    int32_t cohortAt(InheritedOrFixture& f, const std::string& parent) {
+        return gl::lookupOrCohortId(((f.memory).lbStateInterner),
+            ((f.memory).lbStateInterner).lookup(gl::StrSpan(parent)),
+            ((f.memory).lbStateInterner).lookup(gl::StrSpan(f.expression)));
+    }
+}
+
+TEST(or_mail, integration_premise_or_opens_without_demand) {
+    // The same OR parks as an ordinary local deposit and opens its case
+    // split, without any demand, as an integration premise.
+    InheritedOrFixture f;
+    f.goal();
+    const std::string plain = depositOrAtChildScope(f, "(implication901[1,2,4,5])", false);
+    ASSERT_EQ(cohortAt(f, plain), 0);
+    ASSERT_TRUE(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count() > 0);
+    const int32_t parked = ((((f.memory).overallHashMemory)).rejectedMapOrdis2).count();
+
+    const std::string premise = depositOrAtChildScope(f, "(implication902[1,2,4,5])", true);
+    const int32_t cohort = cohortAt(f, premise);
+    ASSERT_TRUE(cohort != 0);
+    ASSERT_TRUE(((f.memory).orDisjunctCount).lookup(cohort) != 0);
+    ASSERT_TRUE(((f.memory).pendingOrReleases).lookup(cohort) != 0);
+    ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count(), parked);
+}
+
+TEST(or_mail, depth_counts_only_ordis_scopes) {
+    // At max_or_depth 1 a case split opens inside an `_orint_` branch and
+    // stays closed inside an `_ordis_` case (D-458).
+    InheritedOrFixture f;
+    f.goal();
+    f.analyzer.parameters.max_or_depth = 1;
+    const std::string orint = depositOrAtChildScope(f, "orint_(or77[1,2])_((in[1,2]))", true);
+    ASSERT_TRUE(cohortAt(f, orint) != 0);
+    const std::string ordis = depositOrAtChildScope(f, "ordis_(or77[1,2])_((in[1,2]))", true);
+    ASSERT_EQ(cohortAt(f, ordis), 0);
+    ASSERT_EQ(((f.memory).orDisjunctCount).count(), 1);
 }
 
 TEST(or_mail, equivalent_inherited_or_is_not_processed_twice) {
     InheritedOrFixture f;
     f.goal();
     f.deposit();
-    const int32_t parks = f.memory.overallHashMemory.rejectedMapOrdis2.count();
-    const int32_t rules = f.memory.overallHashMemory.originals.count();
+    const int32_t parks = ((((f.memory).overallHashMemory)).rejectedMapOrdis2).count();
+    const int32_t rules = ((((f.memory).overallHashMemory)).originals).count();
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames({"5", "6"}, f.memory.nameMap);
+    cls.setMembersFromNames({"5", "6"}, ((f.memory).nameMap));
     f.memory.assignClassesById(gl::NameMap::MAIN_ID, {cls});
     seedFixtureCanonicalClasses(f.memory);
     f.expression = "(" + f.name + "[1,2,4,6])";
     f.deposit();
-    ASSERT_EQ(f.memory.overallHashMemory.rejectedMapOrdis2.count(), parks);
-    ASSERT_EQ(f.memory.overallHashMemory.originals.count(), rules);
+    ASSERT_EQ(((((f.memory).overallHashMemory)).rejectedMapOrdis2).count(), parks);
+    ASSERT_EQ(((((f.memory).overallHashMemory)).originals).count(), rules);
 }
 
 TEST(or_mail, inherited_cases_refute_then_converge_and_discharge_at_main) {
     InheritedOrFixture f;
-    f.memory.primedForContradiction = true;
+    ((f.memory).primedForContradiction) = true;
     f.memory.setExprKey("__contradiction__!(in[91,92])");
-    f.memory.contradictionTheoremId = f.memory.nameMap.encode(
+    ((f.memory).contradictionTheoremId) = ((f.memory).nameMap).encode(
         "(>[1,2,4,5,91,92]" + f.expression + "(in[91,92]))");
     f.analyzer.updateGlobalSingleChapterPages.emplace();
     f.analyzer.updateGlobalSingleChapterPages->bind(&gl::staticMemory());
@@ -2791,30 +2960,30 @@ TEST(or_mail, inherited_cases_refute_then_converge_and_discharge_at_main) {
     f.absorbInternal();
     f.demand();
     f.receive();
-    f.analyzer.drainPendingOrReleases(f.memory);
+    f.analyzer.caseProcessor.drainPendingOrReleases(f.memory);
     auto seeds = gl::decodeInternalMailStatements(
-        f.memory.sameIterationInternalMail, f.memory.nameMap);
+        ((f.memory).sameIterationInternalMail), ((f.memory).nameMap));
     ASSERT_EQ(seeds.size(), static_cast<std::size_t>(1));
-    const gl::NameId first = f.memory.nameMap.encode(seeds[0].first.validityName);
+    const gl::NameId first = ((f.memory).nameMap).encode(seeds[0].first.validityName);
     f.internal("(in[91,92])", first);
     f.absorbInternal();
-    ASSERT_TRUE(f.memory.isActive);
+    ASSERT_TRUE(((f.memory).isActive));
     ASSERT_TRUE(f.known("!" + f.leaf, gl::NameMap::MAIN_ID));
     const int levels[] = {0};
-    const std::string firstScope = f.memory.nameMap.decode(first);
-    f.analyzer.ordisMerge(orSpan("(in[91,92])"),
+    const std::string firstScope = ((f.memory).nameMap).decode(first);
+    f.analyzer.caseProcessor.ordisMerge(orSpan("(in[91,92])"),
         gl::StrSpan(firstScope), levels, 1, f.memory);
-    ASSERT_TRUE(f.memory.pendingDeadOrBranches.contains(first));
-    f.analyzer.drainDeadOrBranches(f.memory);
-    ASSERT_EQ(*f.memory.orDisjunctCount.find(f.cohort()), 1);
-    f.analyzer.drainPendingOrReleases(f.memory);
+    ASSERT_TRUE(((f.memory).pendingDeadOrBranches).contains(first));
+    f.analyzer.caseProcessor.drainDeadOrBranches(f.memory);
+    ASSERT_EQ(*((f.memory).orDisjunctCount).find(f.cohort()), 1);
+    f.analyzer.caseProcessor.drainPendingOrReleases(f.memory);
     seeds = gl::decodeInternalMailStatements(
-        f.memory.sameIterationInternalMail, f.memory.nameMap);
+        ((f.memory).sameIterationInternalMail), ((f.memory).nameMap));
     bool secondFound = false;
     gl::NameId second = 0;
     for (const auto& seed : seeds) {
         if (seed.first.original == "(in[4,5])") {
-            second = f.memory.nameMap.encode(seed.first.validityName);
+            second = ((f.memory).nameMap).encode(seed.first.validityName);
             secondFound = true;
         }
     }
@@ -2822,8 +2991,8 @@ TEST(or_mail, inherited_cases_refute_then_converge_and_discharge_at_main) {
     ASSERT_TRUE(first != second);
     f.internal("(in[91,92])", second);
     f.absorbInternal();
-    ASSERT_FALSE(f.memory.isActive);
-    ASSERT_EQ(f.memory.contradictionTheoremId, 0);
+    ASSERT_FALSE(((f.memory).isActive));
+    ASSERT_EQ(((f.memory).contradictionTheoremId), 0);
     f.analyzer.updateGlobalSingleChapterPages->seal();
     f.analyzer.updateGlobalSingleChapterPages->freePages();
     f.analyzer.updateGlobalSingleChapterPages.reset();
@@ -2832,54 +3001,56 @@ TEST(or_mail, inherited_cases_refute_then_converge_and_discharge_at_main) {
 
 TEST(prover, unresolved_existence_cannot_open_or_park_or) {
     for (bool routeB : {false, true}) {
-        gl::ExpressionAnalyzer analyzer("Peano");
-        analyzer.compiledExpressions["or97"] = gl::LogicalEntity("or",
+        gl::tests::ProverFixture analyzer("Peano");
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["or97"] = gl::LogicalEntity("or",
             {"(in2[u_1,u_2,u_3])", "(=[u_1,u_2])"},
             "(or97[u_1,u_2,u_3])", 3);
-        analyzer.compiledExpressions["existence97"] = gl::LogicalEntity("existence",
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["existence97"] = gl::LogicalEntity("existence",
             {"(in[w,u_1])", "(or97[w,u_2,u_3])"},
             "(existence97[u_1,u_2,u_3])", 3);
+        analyzer.supportingRuleCompiler.compileDisintegrationPackages();
         gl::Memory memory;
-        memory.level = 2;
-        const auto mainId = memory.nameMap.encode("main");
+        ((memory).level) = 2;
+        const auto mainId = ((memory).nameMap).encode("main");
         const int levels[] = {0};
-        memory.intToBeProved.assignSetRange(gl::packStatementKey(
-            memory.nameMap.encode("(=[2,3])"), mainId), levels, levels + 1);
+        ((memory).intToBeProved).assignSetRange(gl::packStatementKey(
+            ((memory).nameMap).encode("(=[2,3])"), mainId), levels, levels + 1);
         gl::DisintProducts output(&gl::genScratchArenas().forSlot(
             gl::genScratchArenas().slotCount() - 1));
-        analyzer.disintegrateExpr2(gl::StrSpan("(existence97[1,2,3])"), memory,
+        analyzer.disintegrationProcessor.disintegrateExpr2(gl::StrSpan("(existence97[1,2,3])"), memory,
             analyzer.parameters.maxIterationNumberVariable + 1, false,
             gl::StrSpan("main", 4), output, true, routeB, levels, 1, true);
         ASSERT_EQ(output.orSources.count(), 0);
-        ASSERT_TRUE(memory.pendingOrReleases.empty());
-        ASSERT_TRUE(memory.orPendingBranches.empty());
-        ASSERT_TRUE(memory.processedOrLedger.empty());
-        ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.empty());
-        ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis2.empty());
+        ASSERT_TRUE(((memory).pendingOrReleases).empty());
+        ASSERT_TRUE(((memory).orPendingBranches).empty());
+        ASSERT_TRUE(((memory).processedOrLedger).empty());
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).empty());
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis2).empty());
         output.statements.forEachSorted([&](gl::StrSpan statement, gl::StrSpan) {
-            ASSERT_FALSE(gl::ExpressionAnalyzer::isOrCompactSpan(statement));
+            ASSERT_FALSE(gl::CompactExpressionSyntax::isOrCompactSpan(statement));
         });
     }
 }
 
 TEST(prover, admitted_existence_releases_only_its_admitted_or_path) {
     for (bool routeB : {false, true}) {
-        gl::ExpressionAnalyzer analyzer("Peano");
-        analyzer.compiledExpressions["or97"] = gl::LogicalEntity("or",
+        gl::tests::ProverFixture analyzer("Peano");
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["or97"] = gl::LogicalEntity("or",
             {"(in2[u_1,u_2,u_3])", "(=[u_1,u_2])"},
             "(or97[u_1,u_2,u_3])", 3);
-        analyzer.compiledExpressions["existence97"] = gl::LogicalEntity("existence",
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["existence97"] = gl::LogicalEntity("existence",
             {"(in[w,u_1])", "(or97[w,u_2,u_3])"},
             "(existence97[u_1,u_2,u_3])", 3);
+        analyzer.supportingRuleCompiler.compileDisintegrationPackages();
         gl::Memory memory;
-        memory.level = 2;
-        const auto mainId = memory.nameMap.encode("main");
+        ((memory).level) = 2;
+        const auto mainId = ((memory).nameMap).encode("main");
         const int levels[] = {0};
-        memory.intToBeProved.assignSetRange(gl::packStatementKey(
-            memory.nameMap.encode("(=[2,3])"), mainId), levels, levels + 1);
+        ((memory).intToBeProved).assignSetRange(gl::packStatementKey(
+            ((memory).nameMap).encode("(=[2,3])"), mainId), levels, levels + 1);
         gl::DisintProducts output(&gl::genScratchArenas().forSlot(
             gl::genScratchArenas().slotCount() - 1));
-        analyzer.disintegrateExpr2(gl::StrSpan("(existence97[1,2,3])"), memory,
+        analyzer.disintegrationProcessor.disintegrateExpr2(gl::StrSpan("(existence97[1,2,3])"), memory,
             0, true, gl::StrSpan("main", 4), output, true, routeB, levels, 1, true);
         ASSERT_EQ(output.orSources.count(), 1);
         output.orSources.forEachSorted([&](gl::StrSpan statement, gl::StrSpan) {
@@ -2887,53 +3058,313 @@ TEST(prover, admitted_existence_releases_only_its_admitted_or_path) {
             ASSERT_TRUE(gl::containsSpan(statement, gl::StrSpan("force_lev_", 10)));
         });
         if (routeB) {
-            ASSERT_EQ(memory.pendingOrReleases.count(), 1);
-            ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.empty());
+            ASSERT_EQ(((memory).pendingOrReleases).count(), 1);
+            ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).empty());
         } else {
-            ASSERT_TRUE(memory.pendingOrReleases.empty());
-            ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.count() > 0);
+            ASSERT_TRUE(((memory).pendingOrReleases).empty());
+            ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).count() > 0);
         }
     }
 }
 
 
-TEST(prover, admitted_inner_witness_coadmits_outer_before_or_processing) {
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.operators.clear();
-    analyzer.compiledExpressions["or97"] = gl::LogicalEntity("or",
-        {"(in2[u_1,u_2,u_3])", "(=[u_1,u_2])"},
-        "(or97[u_1,u_2,u_3])", 3);
-    analyzer.compiledExpressions["existence98"] = gl::LogicalEntity("existence",
-        {"(in[v,u_1])", "(or97[v,u_2,u_3])"},
-        "(existence98[u_1,u_2,u_3])", 3);
-    analyzer.compiledExpressions["existence97"] = gl::LogicalEntity("existence",
-        {"(in[w,u_1])", "(existence98[u_1,u_2,u_3])"},
-        "(existence97[u_1,u_2,u_3])", 3);
+// The inner witness's admission-set route admits nothing beyond it
+// (D-482): with the outer witness admitted through its own
+// demand, the inner one follows and its OR source is processed; without that
+// demand neither is minted and no OR source appears.
+TEST(prover, inner_witness_follows_its_admitted_outer_witness_before_or_processing) {
+    for (const bool outerDemand : { true, false }) {
+        gl::tests::ProverFixture analyzer("Peano");
+        gl::CompiledDefinitionFixture::operators(analyzer.definitions).clear();
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["or97"] = gl::LogicalEntity("or",
+            {"(in2[u_1,u_2,u_3])", "(=[u_1,u_2])"},
+            "(or97[u_1,u_2,u_3])", 3);
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["existence98"] = gl::LogicalEntity("existence",
+            {"(in[v,u_1])", "(or97[v,u_2,u_3])"},
+            "(existence98[u_1,u_2,u_3])", 3);
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["existence97"] = gl::LogicalEntity("existence",
+            {"(in[w,u_1])", "(existence98[u_1,u_2,u_3])"},
+            "(existence97[u_1,u_2,u_3])", 3);
+        analyzer.supportingRuleCompiler.compileDisintegrationPackages();
+        gl::Memory memory;
+        ((memory).level) = 2;
+        const auto mainId = ((memory).nameMap).encode("main");
+        const int levels[] = {0};
+        ((memory).intToBeProved).assignSetRange(gl::packStatementKey(
+            ((memory).nameMap).encode("(=[2,3])"), mainId), levels, levels + 1);
+        const auto demand = gl::mintTemplateKey(((memory).templateInterner), ((memory).nameMap),
+            "(or97[marker,2,3])", "main");
+        ((((memory).overallHashMemory)).admissionSetIntegration).mint(demand);
+        if (outerDemand)
+            ((((memory).overallHashMemory)).admissionSetIntegration).mint(gl::mintTemplateKey(
+                ((memory).templateInterner), ((memory).nameMap), "(in[marker,1])", "main"));
+        gl::DisintProducts output(&gl::genScratchArenas().forSlot(
+            gl::genScratchArenas().slotCount() - 1));
+        analyzer.disintegrationProcessor.disintegrateExpr2(gl::StrSpan("(existence97[1,2,3])"), memory,
+            0, false, gl::StrSpan("main", 4), output, true, true, levels, 1, true);
+        bool admittedInnerTyping = false;
+        bool admittedOuterTyping = false;
+        output.statements.forEachSorted([&](gl::StrSpan statement, gl::StrSpan) {
+            if (gl::equalSpans(statement, gl::StrSpan("(in[int_0_lev_2_1,1])")))
+                admittedInnerTyping = true;
+            if (gl::equalSpans(statement, gl::StrSpan("(in[int_0_lev_2_0,1])")))
+                admittedOuterTyping = true;
+        });
+        ASSERT_EQ(admittedInnerTyping, outerDemand);
+        ASSERT_EQ(admittedOuterTyping, outerDemand);
+        ASSERT_EQ(output.orSources.count(), outerDemand ? 1 : 0);
+        ASSERT_EQ(((memory).pendingOrReleases).count(), outerDemand ? 1 : 0);
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis).empty());
+        ASSERT_TRUE(((((memory).overallHashMemory)).rejectedMapOrdis2).empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The induction hypothesis's missing expression as an OR demand
+// (D-575).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+    /// @brief Span over a NUL-terminated literal (no terminator). `StrSpan`
+    ///        has no `const char*` constructor: a literal converts through a
+    ///        temporary `std::string`, which dies with its full expression.
+    ///
+    /// @param text The literal.
+    /// @return The span.
+    gl::StrSpan literalSpan(const char* text) {
+        return gl::StrSpan(text, static_cast<int32_t>(std::strlen(text)));
+    }
+
+    /// @brief Register the synthetic 4-argument compound `preorder94` and the
+    ///        3-argument `short94` in a Peano fixture (the test_memory seed
+    ///        pattern) and compile their packages.
+    ///
+    /// @param analyzer The fixture.
+    void seedHypothesisDemandDefinitions(gl::tests::ProverFixture& analyzer) {
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder94"] =
+            gl::LogicalEntity("existence", { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
+                "(preorder94[u_1,u_2,u_4,u_5])", 4);
+        gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["short94"] =
+            gl::LogicalEntity("existence", { "(in[w1,u_1])" }, "(short94[u_1,u_2,u_3])", 3);
+        analyzer.supportingRuleCompiler.compileDisintegrationPackages();
+    }
+
+    /// @brief The ordis2 demand records of a ground text at a scope; empty
+    ///        when the key was never minted.
+    ///
+    /// @param m     The block.
+    /// @param text  The ground text.
+    /// @param scope The scope name.
+    /// @return The decoded record set.
+    gl::AdmissionOrdis2ValueSet hypothesisDemandsAt(const gl::Memory& m, const std::string& text,
+            const std::string& scope) {
+        int64_t pk = 0;
+        if (!gl::lookupTemplateKey(m.templateInterner, m.nameMap, text, scope, pk))
+            return gl::AdmissionOrdis2ValueSet(gl::DecodedAdmissionOrdis2ValueLess{ &m.ruleInterner });
+        return gl::admissionOrdis2RecordsAt(m.overallHashMemory.admissionMapOrdis2, pk, m.ruleInterner);
+    }
+
+} // namespace
+
+// A premise is fully bound when each of its arguments lies in the chain's
+// sorted fixed-argument run; one variable makes it unbound.
+TEST(ordis2, fully_bound_element_matrix) {
+    const gl::StrSpan fixed[5] = { literalSpan("1"), literalSpan("4"), literalSpan("7"), literalSpan("9"),
+        literalSpan("int_0_lev_2_6") };
+    ASSERT_TRUE(gl::AdmissionMemory::fullyBoundElement(literalSpan("(preorder[1,4,7,int_0_lev_2_6])"), fixed, 5));
+    ASSERT_TRUE(gl::AdmissionMemory::fullyBoundElement(literalSpan("!(=[int_0_lev_2_6,9])"), fixed, 5));
+    ASSERT_TRUE(gl::AdmissionMemory::fullyBoundElement(literalSpan("(preorder[1,4,7,9])"), fixed, 5));
+    ASSERT_FALSE(gl::AdmissionMemory::fullyBoundElement(literalSpan("(in3[12,int_0_lev_2_6,9,4])"), fixed, 5));
+    ASSERT_FALSE(gl::AdmissionMemory::fullyBoundElement(literalSpan("(preorder[1,4,7,int_0_lev_2_60])"), fixed, 5));
+    ASSERT_FALSE(gl::AdmissionMemory::fullyBoundElement(literalSpan("(preorder[1,4,7,9])"), fixed, 3));
+}
+
+// The hypothesis's missing expression is written as a ground demand at its
+// scope, with the hypothesis rule as source and no levels; the same premise
+// known at the scope or at an ancestor, or outside the park-key language,
+// files nothing. Knowledge at a sibling scope does not count.
+TEST(prover, hypothesis_or_demand_files_only_a_missing_eligible_premise) {
+    gl::tests::ProverFixture analyzer("Peano");
+    seedHypothesisDemandDefinitions(analyzer);
+    gl::Memory m;
+    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    const gl::NameId scopeId = m.nameMap.encodePush(gl::NameMap::MAIN_ID, std::string("is_(in3[marker,5,1,4])_9"));
+    const gl::NameId siblingId = m.nameMap.encodePush(gl::NameMap::MAIN_ID, std::string("is_(in3[marker,5,1,4])_8"));
+    const std::string scope = m.nameMap.decode(scopeId);
+    m.recursionAuxyImplId = m.ruleInterner.encode("(>[11](in3[11,u_5,u_1,u_4])(preorder94[u_1,u_2,11,u_5]))");
+    m.recursionProductImplId = m.ruleInterner.encode("(>[12](in3[12,u_5,u_1,u_5])(preorder94[u_1,u_2,12,u_5]))");
+    const auto known = [&](const char* text, gl::NameId at) {
+        gl::upsertStatementKey(m.intKnownStatements, gl::packStatementKey(m.nameMap.encode(text), at), true);
+    };
+
+    analyzer.admissionMemory.fileHypothesisOrDemand(m, literalSpan("(preorder94[1,2,9,5])"),
+        gl::StrSpan(scope), m.recursionAuxyImplId);
+    const gl::AdmissionOrdis2ValueSet filed = hypothesisDemandsAt(m, "(preorder94[1,2,9,5])", scope);
+    ASSERT_EQ(filed.size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(filed.begin()->sourceImplId, m.recursionAuxyImplId);
+    ASSERT_TRUE(filed.begin()->levels.empty());
+    ASSERT_TRUE(hypothesisDemandsAt(m, "(preorder94[1,2,9,5])", "main").empty());
+    // A second hypothesis rule adds its own record under the same key.
+    analyzer.admissionMemory.fileHypothesisOrDemand(m, literalSpan("(preorder94[1,2,9,5])"),
+        gl::StrSpan(scope), m.recursionProductImplId);
+    ASSERT_EQ(hypothesisDemandsAt(m, "(preorder94[1,2,9,5])", scope).size(), static_cast<std::size_t>(2));
+    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+
+    known("(preorder94[1,2,9,6])", scopeId);
+    known("(preorder94[1,2,9,7])", gl::NameMap::MAIN_ID);
+    known("(preorder94[1,2,9,8])", siblingId);
+    for (const char* premise : { "(preorder94[1,2,9,6])", "(preorder94[1,2,9,7])", "(short94[1,2,9])",
+            "(=[9,5])", "!(=[9,5])" })
+        analyzer.admissionMemory.fileHypothesisOrDemand(m, literalSpan(premise), gl::StrSpan(scope),
+            m.recursionAuxyImplId);
+    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+    analyzer.admissionMemory.fileHypothesisOrDemand(m, literalSpan("(preorder94[1,2,9,8])"),
+        gl::StrSpan(scope), m.recursionAuxyImplId);
+    ASSERT_EQ(hypothesisDemandsAt(m, "(preorder94[1,2,9,8])", scope).size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 2);
+}
+
+// An OR already parked under the missing expression at the demand's scope is
+// woken: its park key is erased, the statement un-known and re-deposited on
+// the absorb's output channel while an absorb runs. The same OR parked at a
+// sibling scope stays parked.
+TEST(prover, hypothesis_or_demand_wakes_the_or_parked_at_its_scope_only) {
+    gl::tests::ProverFixture analyzer("Peano");
+    seedHypothesisDemandDefinitions(analyzer);
+    gl::Memory m;
+    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    const gl::NameId scopeId = m.nameMap.encodePush(gl::NameMap::MAIN_ID, std::string("is_(in3[marker,5,1,4])_9"));
+    const gl::NameId siblingId = m.nameMap.encodePush(gl::NameMap::MAIN_ID, std::string("is_(in3[marker,5,1,4])_8"));
+    const std::string scope = m.nameMap.decode(scopeId);
+    const std::string sibling = m.nameMap.decode(siblingId);
+    analyzer.canonicalizer.initializeCanonicalScope(m, scopeId);
+    analyzer.canonicalizer.initializeCanonicalScope(m, siblingId);
+    m.recursionAuxyImplId = m.ruleInterner.encode("(>[11](in3[11,u_5,u_1,u_4])(preorder94[u_1,u_2,11,u_5]))");
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+
+    const int32_t orId = m.valueInterner.encode("(or94[9,5])");
+    const int lv[] = { 0 };
+    const int64_t pkScope = gl::mintTemplateKey(m.templateInterner, m.nameMap, "(preorder94[1,2,9,5])", scope);
+    const int64_t pkSibling = gl::mintTemplateKey(m.templateInterner, m.nameMap, "(preorder94[1,2,9,5])", sibling);
+    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2, pkScope, orId, lv, 1, m.valueInterner, tArena);
+    gl::insertRejectedOrdisIdsBlob(m.overallHashMemory.rejectedMapOrdis2, pkSibling, orId, lv, 1, m.valueInterner, tArena);
+    const gl::NameId orName = m.nameMap.encode("(or94[9,5])");
+    gl::upsertStatementKey(m.intKnownStatements, gl::packStatementKey(orName, scopeId), true);
+    gl::upsertStatementKey(m.intKnownStatements, gl::packStatementKey(orName, siblingId), true);
+
+    m.replayMailDuringAbsorb = &m.nextIterationInternalMail;
+    analyzer.admissionMemory.fileHypothesisOrDemand(m, literalSpan("(preorder94[1,2,9,5])"),
+        gl::StrSpan(scope), m.recursionAuxyImplId);
+    m.replayMailDuringAbsorb = nullptr;
+
+    ASSERT_EQ(hypothesisDemandsAt(m, "(preorder94[1,2,9,5])", scope).size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(pkScope) == 0);
+    ASSERT_TRUE(m.overallHashMemory.rejectedMapOrdis2.lookup(pkSibling) != 0);
+    ASSERT_TRUE(m.intKnownStatements.find(gl::StatementKey{ orName, scopeId }) == nullptr);
+    ASSERT_TRUE(m.intKnownStatements.find(gl::StatementKey{ orName, siblingId }) != nullptr);
+    ASSERT_TRUE(m.sameIterationInternalMail.statementsEmpty());
+    const auto rows = gl::decodeInternalMailStatements(m.nextIterationInternalMail, m.nameMap);
+    ASSERT_EQ(rows.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(rows[0].first.original == "(or94[9,5])");
+    ASSERT_TRUE(rows[0].first.validityName == scope);
+    ASSERT_EQ(rows[0].second, (std::set<int>{ 0 }));
+}
+
+// At main the hypothesis's missing expressions are its premises with only
+// fixed arguments: each is filed as a ground demand at main when it can key
+// an OR park; a premise with a bound variable, or an equality, files nothing.
+TEST(prover, hypothesis_demands_at_main_file_the_fixed_premises) {
+    gl::tests::ProverFixture analyzer("Peano");
+    seedHypothesisDemandDefinitions(analyzer);
+    gl::Memory m;
+    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    m.recursionAuxyImplId = m.ruleInterner.encode(
+        "(>[11](in3[11,u_5,u_9,u_4])(>[](preorder94[u_1,u_2,11,u_5])(>[]!(=[u_9,u_5])(>[](preorder94[u_1,u_2,u_9,u_5])(d[11])))))");
+    const gl::StrSpan premises[4] = { literalSpan("(in3[11,u_5,u_9,u_4])"), literalSpan("(preorder94[u_1,u_2,11,u_5])"),
+        literalSpan("!(=[u_9,u_5])"), literalSpan("(preorder94[u_1,u_2,u_9,u_5])") };
+    analyzer.admissionMemory.fileHypothesisDemandsAtMain(m, premises, 4, m.recursionAuxyImplId);
+    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+    const gl::AdmissionOrdis2ValueSet filed = hypothesisDemandsAt(m, "(preorder94[1,2,9,5])", "main");
+    ASSERT_EQ(filed.size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(filed.begin()->sourceImplId, m.recursionAuxyImplId);
+    ASSERT_TRUE(filed.begin()->levels.empty());
+}
+
+// A matched demand belongs to the induction hypothesis when one of its
+// records has a hypothesis rule of the block as source; another rule's record
+// does not count (D-575).
+TEST(prover, induction_hypothesis_demanded_reads_the_record_sources) {
+    gl::Memory m;
+    ASSERT_EQ(m.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    const int32_t ordinaryRule = m.ruleInterner.encode("(>[]dummy(d[1]))");
+    const int32_t hypothesisRule = m.ruleInterner.encode("(>[]hypothesis(h[1]))");
+    m.recursionProductImplId = hypothesisRule;
+    const int lv[] = { 0 };
+    const int64_t ordinaryKey = gl::mintTemplateKey(m.templateInterner, m.nameMap, "(preorder94[1,2,9,5])", "main");
+    const int64_t sharedKey = gl::mintTemplateKey(m.templateInterner, m.nameMap, "(preorder94[1,2,9,6])", "main");
+    gl::insertAdmissionOrdis2IdsBlob(m.overallHashMemory.admissionMapOrdis2, ordinaryKey, ordinaryRule, lv, 1,
+        m.ruleInterner, tArena);
+    gl::insertAdmissionOrdis2IdsBlob(m.overallHashMemory.admissionMapOrdis2, sharedKey, ordinaryRule, lv, 1,
+        m.ruleInterner, tArena);
+    gl::insertAdmissionOrdis2IdsBlob(m.overallHashMemory.admissionMapOrdis2, sharedKey, hypothesisRule, nullptr, 0,
+        m.ruleInterner, tArena);
+    gl::ScratchScope frame(tArena);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::PagedVector<int64_t> keys(&tArena, &dirty);
+    keys.push_back(ordinaryKey);
+    ASSERT_FALSE(gl::CaseProcessor::inductionHypothesisDemanded(m, keys, tArena));
+    keys.push_back(sharedKey);
+    ASSERT_TRUE(gl::CaseProcessor::inductionHypothesisDemanded(m, keys, tArena));
+    m.recursionProductImplId = 0;
+    ASSERT_FALSE(gl::CaseProcessor::inductionHypothesisDemanded(m, keys, tArena));
+}
+
+// A demand of the induction hypothesis opens its OR at deposit like any
+// demand, its disjunct first; the fresh cohort is recorded for the release
+// below an unsettled induction scope (D-575).
+TEST(prover, ordis2_route_c_marks_a_hypothesis_demanded_cohort) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::WorkInstruction wi(&lb);
+    buildOrInstruction(wi, "(or93[u_4,u_5])",
+                       { "(preorder93[u_1,u_2,u_4,u_5])", "(=[u_4,u_5])" });
+
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["preorder93"] =
+        gl::LogicalEntity("existence",
+            { "(in[w1,u_1])", "(in3[u_4,w1,u_5,u_2])" },
+            "(preorder93[u_1,u_2,u_4,u_5])", 4);
+    analyzer.supportingRuleCompiler.compileDisintegrationPackages();
     gl::Memory memory;
-    memory.level = 2;
-    const auto mainId = memory.nameMap.encode("main");
-    const int levels[] = {0};
-    memory.intToBeProved.assignSetRange(gl::packStatementKey(
-        memory.nameMap.encode("(=[2,3])"), mainId), levels, levels + 1);
-    const auto demand = gl::mintTemplateKey(memory.templateInterner, memory.nameMap,
-        "(or97[marker,2,3])", "main");
-    memory.overallHashMemory.admissionSetIntegration.mint(demand);
-    gl::DisintProducts output(&gl::genScratchArenas().forSlot(
-        gl::genScratchArenas().slotCount() - 1));
-    analyzer.disintegrateExpr2(gl::StrSpan("(existence97[1,2,3])"), memory,
-        0, false, gl::StrSpan("main", 4), output, true, true, levels, 1, true);
-    bool admittedInnerTyping = false;
-    bool admittedOuterTyping = false;
-    output.statements.forEachSorted([&](gl::StrSpan statement, gl::StrSpan) {
-        if (gl::equalSpans(statement, gl::StrSpan("(in[int_0_lev_2_1,1])")))
-            admittedInnerTyping = true;
-        if (gl::equalSpans(statement, gl::StrSpan("(in[int_0_lev_2_0,1])")))
-            admittedOuterTyping = true;
-    });
-    ASSERT_TRUE(admittedInnerTyping);
-    ASSERT_TRUE(admittedOuterTyping);
-    ASSERT_EQ(output.orSources.count(), 1);
-    ASSERT_EQ(memory.pendingOrReleases.count(), 1);
-    ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis.empty());
-    ASSERT_TRUE(memory.overallHashMemory.rejectedMapOrdis2.empty());
+    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    memory.intToBeProved.assignSet(gl::packStatementKey(
+        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID), nullptr, 0);
+    gl::CollectedArena collected(&lb);
+    gl::NewVarStore newVarMap(&lb);
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    int seedLv[1] = { 0 };
+
+    memory.recursionProductImplId = memory.ruleInterner.encode(
+        "(>[11,12](in3[12,11,u_9,u_5])(>[](preorder93[u_1,u_2,u_4,u_5])(h[11])))");
+    const int64_t demandPk = gl::mintTemplateKey(memory.templateInterner, memory.nameMap,
+        "(preorder93[1,2,4,5])", "main");
+    gl::insertAdmissionOrdis2IdsBlob(memory.overallHashMemory.admissionMapOrdis2, demandPk,
+        memory.recursionProductImplId, nullptr, 0, memory.ruleInterner, tArena);
+
+    gl::tests::DisintegrationProcessorFixture::disintegrateExprCore2(analyzer.disintegrationProcessor,
+        literalSpan("(or93[u_4,u_5])"), wi, memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
+        /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/false, seedLv, 1, /*allowOrProbe=*/true);
+
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(literalSpan("(or93[4,5])")));
+    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohortId) != 0);
+    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+    ASSERT_TRUE(memory.lbMemory.hypothesisOrCohorts.lookup(cohortId) != 0);
+    const int32_t* starter = memory.orStarterPick.find(cohortId);
+    ASSERT_TRUE(starter != nullptr);
+    ASSERT_TRUE(memory.lbStateInterner.decode(*starter) == std::string("((preorder93[1,2,4,5]))"));
 }

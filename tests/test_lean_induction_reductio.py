@@ -11,6 +11,19 @@ import unittest
 from proof_export.lean import _render_induction_theorem
 
 
+def binary_definitions(natural_numbers_count=14):
+    """Compiled anchor fixture: AnchorPeano and a NaturalNumbers conjunction
+    whose first element is `N zero`."""
+    elements = ["(in[u_2,u_1])", "(fXY[u_3,u_1,u_1])"] + [
+        f"(implication{index}[u_1,u_2,u_3])" for index in range(natural_numbers_count - 2)]
+    return {"AnchorPeano": {"elements": ["(NaturalNumbers[u_1,u_2,u_3,u_4,u_5])", "(in2[u_2,u_6,u_3])"]},
+            "NaturalNumbers": {"elements": elements}}
+
+
+def render_induction(fixture, natural_numbers_count=14):
+    return _render_induction_theorem(fixture, "AnchorPeano", binary_definitions(natural_numbers_count))
+
+
 def induction_fixture(negative=False, reductio_roles=("check_zero", "check_induction_condition"),
                       unrelated_role=None):
     goal = "!(=[v1,i0])" if negative else "(=[v1,v1])"
@@ -48,7 +61,7 @@ def induction_fixture(negative=False, reductio_roles=("check_zero", "check_induc
 
 class InductionReductioTests(unittest.TestCase):
     def render(self, **kwargs):
-        lines, _ = _render_induction_theorem(induction_fixture(**kwargs))
+        lines, _ = render_induction(induction_fixture(**kwargs))
         return "\n".join(lines)
 
     def test_positive_head_discharges_each_recorded_negated_goal(self):
@@ -90,12 +103,50 @@ class InductionReductioTests(unittest.TestCase):
             "(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])"
             "(>[v1](in[v1,N])(>[](=[v1,v1])(>[]!(=[v1,v1])(=[v1,v1])))))"
         )
-        lines, _ = _render_induction_theorem(fixture)
+        lines, _ = render_induction(fixture)
         source = "\n".join(lines)
         self.assertNotIn("intro base_reductio", source)
         self.assertNotIn("intro step_reductio", source)
         self.assertIn("exact zeroRule zero base_premise_1 base_premise_2", source)
         self.assertIn("exact stepRule induction_m step_premise_1 step_premise_2", source)
+
+
+    def test_strong_induction_composes_through_the_strong_principle(self):
+        """A strong triad keeps the helpers; its step receives the property at
+        every value below the step value and the public proof composes through
+        strongRelationalInduction."""
+        fixture = induction_fixture(reductio_roles=())
+        fixture["method"] = "strong induction"
+        lines, manifest = render_induction(fixture)
+        source = "\n".join(lines)
+        self.assertEqual(manifest["method"], "strong induction")
+        self.assertIn("(∀ induction_j induction_x, add induction_j induction_x induction_m → "
+                      "¬ induction_j = induction_m →", source)
+        self.assertIn("intro induction_n induction_n_member induction_m induction_successor", source)
+        self.assertIn("    intro induction_hypothesis", source)
+        self.assertIn("exact strongRelationalInduction", source)
+        self.assertNotIn("exact relationalInduction", source)
+        weak = "\n".join(render_induction(induction_fixture(reductio_roles=()))[0])
+        self.assertIn("exact relationalInduction", weak)
+        self.assertNotIn("exact strongRelationalInduction", weak)
+
+    def test_unknown_method_is_rejected(self):
+        fixture = induction_fixture()
+        fixture["method"] = "single chapter proof"
+        with self.assertRaises(AssertionError):
+            render_induction(fixture)
+
+    def test_zero_membership_follows_the_compiled_anchor(self):
+        """`N zero` is projected through the compiled anchor and NaturalNumbers
+        conjunctions: one left projection per later element of each."""
+        for count in (13, 14):
+            with self.subTest(natural_numbers_count=count):
+                lines, _ = render_induction(induction_fixture(), count)
+                self.assertIn("    exact anchor" + ".1" * count, lines)
+
+    def test_zero_membership_requires_the_compiled_definitions(self):
+        with self.assertRaises(AssertionError):
+            _render_induction_theorem(induction_fixture())
 
 
 if __name__ == "__main__":

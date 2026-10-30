@@ -1,0 +1,10 @@
+(&
+	(sequence[N,+,i0,k,P])
+	(&
+		(primeseq[N,+,*,i1,i2,P])
+		(&
+			(ordered[N,+,P])
+			(fold[N,s,+,*,P,i0,k,n])
+		)
+	)
+)

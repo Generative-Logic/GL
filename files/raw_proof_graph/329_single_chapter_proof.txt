@@ -1,0 +1,12 @@
+(in2[9,10,12])	main	equality1	(in2[9_copy,10_copy,12])	main	(=[10_copy,10])	main	(=[9_copy,9])	main
+(in2[9_copy,10_copy,12])	main	implication	(>[1,2](or5[1,2,u_11,u_9,u_10])(in2[1,2,u_12]))	main	(or5[9_copy,10_copy,11,9,10])	main
+(>[1,2](or5[1,2,u_11,u_9,u_10])(in2[1,2,u_12]))	main	expansion	(implication2453[11,9,10,12])	main
+(implication2453[11,9,10,12])	main	disintegration	(&(implication2452[12,11,9,10])(implication2453[11,9,10,12]))	main
+(&(implication2452[12,11,9,10])(implication2453[11,9,10,12]))	main	expansion	(appendToSequence[9,10,11,12])	main
+(appendToSequence[9,10,11,12])	main	task formulation
+(or5[9_copy,10_copy,11,9,10])	main	implication	(>[1](=[1,u_9])(>[2](=[2,u_10])(or5[1,2,u_11,u_9,u_10])))	main	(=[10_copy,10])	main	(=[9_copy,9])	main
+(>[1](=[1,u_9])(>[2](=[2,u_10])(or5[1,2,u_11,u_9,u_10])))	main	expansion	(implication2453[11,9,10,12])	main
+(=[10_copy,10])	main	symmetry of equality	(=[10,10_copy])	main
+(=[10,10_copy])	main	variable copy
+(=[9_copy,9])	main	symmetry of equality	(=[9,9_copy])	main
+(=[9,9_copy])	main	variable copy

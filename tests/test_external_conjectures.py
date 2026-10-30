@@ -31,10 +31,24 @@ class ExternalConjectureTests(unittest.TestCase):
                 patch.object(run_modes, "_finish_full_graphs", return_value=(0, 0)), \
                 contextlib.redirect_stdout(io.StringIO()):
             run_modes.full_run(phase2_backend="cuda")
+        # One AnchorFTA batch: FTA runs last, on the Peano and Gauss pool.
         self.assertEqual([tag for tag, _ in calls], ["Peano", "Gauss", "FTA"])
         self.assertEqual(calls[-1][1]["prev_tags"], ["Peano", "Gauss"])
         self.assertFalse(calls[-1][1]["add_cross_anchor"])
         self.assertTrue(all(options["phase2_backend"] == "cuda" for _, options in calls))
+
+    def test_anchor_connection_binds_every_slot_of_the_current_anchor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_modes.generate_anchor_connection("Gauss", "Peano", theorems_dir=target)
+                run_modes.generate_anchor_connection("IncubatorGauss1", "Peano", theorems_dir=target)
+            rows = (target / "conjectures.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(rows, [
+            "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(AnchorPeano[1,2,3,4,5,6]))",
+            "(>[1,2,3,4,5,6,7,8,9,10,11,12,13,14]"
+            "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(AnchorPeano[1,2,3,4,5,6]))",
+        ])
 
     def test_finalization_worker_uses_utf8_even_with_a_legacy_parent_encoding(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -43,7 +57,12 @@ class ExternalConjectureTests(unittest.TestCase):
             def spawn(command, **options):
                 encoding = options["env"]["PYTHONIOENCODING"]
                 options["stdout"].buffer.write("worker — complete\n".encode(encoding))
-                Path(command[-2]).write_text(json.dumps({"success": 2, "failure": 0}), encoding="utf-8")
+                # command = [python, -c, statement, result path, *arguments]; only
+                # the rendering worker reports verification counts.
+                result_path = Path(command[3])
+                self.assertEqual(result_path.parent, root / ".debug")
+                if "_finalize_incubator_worker" in command[2]:
+                    result_path.write_text(json.dumps({"success": 2, "failure": 0}), encoding="utf-8")
                 return SimpleNamespace(wait=lambda: 0)
             output = io.StringIO()
             with patch.object(run_modes, "PROJECT_ROOT", root), \
@@ -102,6 +121,28 @@ class ExternalConjectureTests(unittest.TestCase):
         self.assertFalse(config.generate_conjectures)
         self.assertTrue((root / config.external_conjectures_file).read_text().strip())
         self.assertEqual(config.theorems_folder, "files/theorems")
+        # FTA is the only AnchorFTA batch: it runs weak and strong induction
+        # and declares appendToSequence as an operator (D-569).
+        self.assertFalse((root / "files/config/ConfigFTA2.json").exists())
+        raw = json.loads((root / "files/config/ConfigFTA.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["anchor_name"], "AnchorFTA")
+        self.assertEqual((raw["prover_parameters"]["weak_induction"],
+                          raw["prover_parameters"]["strong_induction"]), (True, True))
+        self.assertEqual([raw["appendToSequence"][slot] for slot in ("input_args", "output_args")],
+                         [["n", "a", "f"], ["g"]])
+
+    def test_supplied_conjectures_reads_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            goals = Path(directory) / "goals.txt"
+            goals.write_text("(a)\n\n(b)\n", encoding="utf-8")
+            config = SimpleNamespace(generate_conjectures=False, external_conjectures_file=str(goals))
+            self.assertEqual(run_modes._supplied_conjectures("FTA", config), ["(a)", "(b)"])
+            goals.write_text("\n", encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "external conjectures are empty"):
+                run_modes._supplied_conjectures("FTA", config)
+            goals.write_text("not an expression\n", encoding="utf-8")
+            with self.assertRaises(AssertionError):
+                run_modes._supplied_conjectures("FTA", config)
 
 
 if __name__ == "__main__":

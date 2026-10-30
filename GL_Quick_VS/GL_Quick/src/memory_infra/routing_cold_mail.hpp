@@ -64,7 +64,8 @@ namespace gl {
     /// Three live columns: `statements_` keyed on the whole pair (id-form
     /// `IntMailStatementKey`); `origins_` as a per-EWV blob run of `OriginLine`;
     /// `statementFlags_` as the packed-key per-statement flag side column
-    /// (flag 5 = "external, may be disintegrated" + generation stamp — a side
+    /// (flag 5 = "external, may be disintegrated", flag 6 = "unconditional
+    /// ordis", + generation stamp — a side
     /// column, never part of the statement set key, so set identity and the
     /// dump stay untouched). The heap-`Mail` fields `disintegrationSignals` and
     /// `expandedImplications` are DROPPED (the former is internal-channel-only;
@@ -195,7 +196,7 @@ namespace gl {
         ///        the blob-decode write door (GLOBAL ids).
         ///
         /// @details On a hit the stored value merges through
-        /// `mergeMailStatementFlag` (flag 5 wins, iterations min-merge), so
+        /// `mergeMailStatementFlag` (a real flag wins, iterations min-merge), so
         /// folding multiple ancestors' blobs is order-free and deterministic;
         /// on a miss the packed value inserts directly. Called by
         /// `deserializeMailBlobInto` with the wire's packed value verbatim.
@@ -225,11 +226,12 @@ namespace gl {
         ///                  absent).
         /// @param iteration Out: the carried witness-generation stamp (-1 when
         ///                  absent or none carried).
-        /// @param integrated Optional out: the sender's integrated mark
-        ///                  (`false` when absent; D-444).
+        /// @param fromPremise Optional out: whether the sender marked the
+        ///                  statement a product of its forced disintegration
+        ///                  (false when absent; D-522).
         void getStatementFlag(int64_t key, int32_t& flagCode,
-            int32_t& iteration, bool* integrated = nullptr) const {
-            if (integrated != nullptr) *integrated = false;
+            int32_t& iteration, bool* fromPremise = nullptr) const {
+            if (fromPremise != nullptr) *fromPremise = false;
             if (!arenaInited_) {
                 flagCode = kMailStatementFlagNone;
                 iteration = -1;
@@ -244,8 +246,7 @@ namespace gl {
             const int32_t packed = statementFlags_.valueAt(id);
             flagCode = unpackMailStatementFlagCode(packed);
             iteration = unpackMailStatementFlagIteration(packed);
-            if (integrated != nullptr)
-                *integrated = unpackMailStatementFlagIntegrated(packed);
+            if (fromPremise != nullptr) *fromPremise = unpackMailStatementFromPremise(packed);
         }
 
         /// @brief Whether the statements column is empty.

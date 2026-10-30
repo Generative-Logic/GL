@@ -92,7 +92,7 @@ namespace gl {
         /// (no reserve cap — the pool's own exhaustion assert is the backstop,
         /// and the per-task release keeps the footprint transient). Idempotent
         /// for an identical shape (run modes construct several
-        /// `ExpressionAnalyzer`s per process); asserts on a mismatching
+        /// `Prover`s per process); asserts on a mismatching
         /// re-init.
         ///
         /// @param global    Pool the arenas draw blocks from.
@@ -152,7 +152,7 @@ namespace gl {
     /// @details
     /// Thin forwarder to `scratchArenas().init(&staticMemory(), ...)`; carries
     /// the same idempotent-same-shape / assert-on-mismatch contract. Called
-    /// by the `ExpressionAnalyzer` constructor after `initStaticMemory` and
+    /// by the `Prover` constructor after `initStaticMemory` and
     /// after `logicalCores` is known.
     ///
     /// @param slotCount Number of worker slots (`logicalCores`).
@@ -186,10 +186,10 @@ namespace gl {
     /// @details
     /// Thin forwarder to `genScratchArenas().init(&staticMemory(), ...)`; same
     /// idempotent-same-shape / assert-on-mismatch contract as
-    /// `initScratchArenas`. Called by the `ExpressionAnalyzer` constructor right
+    /// `initScratchArenas`. Called by the `Prover` constructor right
     /// after `initScratchArenas`, with the same `logicalCores + 1` slot count:
     /// the last slot is the reserved single-threaded slot every
-    /// `g_currentCoreId == -1` caller resolves to (`currentGenSlot()`), so no
+    /// `WorkerContext::coreId() == -1` caller resolves to (`currentGenSlot()`), so no
     /// worker's arena or rule-index staging pool is ever shared with a
     /// non-worker thread.
     ///
@@ -220,7 +220,7 @@ namespace gl {
     /// Thin forwarder to `compactionScratchArenas().init(&lbMemory(), ...)`
     /// with the container-scratch purpose; same idempotent-same-shape /
     /// assert-on-mismatch contract as `initScratchArenas`. Called by the
-    /// `ExpressionAnalyzer` constructor after `initLbMemory`.
+    /// `Prover` constructor after `initLbMemory`.
     ///
     /// @param slotCount Number of worker slots (`logicalCores` plus the
     ///                  reserved single-threaded slot).

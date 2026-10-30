@@ -23,8 +23,12 @@
 ///        bytes in every rule-index map as two sequential single-target
 ///        installs (D-333, idea D).
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "../prover.hpp"
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include <cstring>
 #include <string>
@@ -74,14 +78,14 @@ namespace {
     // Every rule-index map of one instance, in a fixed order.
     std::vector<std::vector<char>> imagesOf(const gl::HashMemory& hm) {
         std::vector<std::vector<char>> v;
-        v.push_back(imageOf(hm.encodedMap));
-        v.push_back(imageOf(hm.normalizedEncodedKeys));
-        v.push_back(imageOf(hm.normalizedEncodedSubkeys));
-        v.push_back(imageOf(hm.remainingArgsNormalizedEncodedMap));
-        v.push_back(imageOf(hm.remainingArgsOwners));
-        v.push_back(imageOf(hm.originals));
-        v.push_back(imageOf(hm.copyOwners));
-        v.push_back(imageOf(hm.admissionMap));
+        v.push_back(imageOf(((hm).encodedMap)));
+        v.push_back(imageOf(((hm).normalizedEncodedKeys)));
+        v.push_back(imageOf(((hm).normalizedEncodedSubkeys)));
+        v.push_back(imageOf(((hm).remainingArgsNormalizedEncodedMap)));
+        v.push_back(imageOf(((hm).remainingArgsOwners)));
+        v.push_back(imageOf(((hm).originals)));
+        v.push_back(imageOf(((hm).copyOwners)));
+        v.push_back(imageOf(((hm).admissionMap)));
         return v;
     }
 
@@ -94,11 +98,11 @@ namespace {
         std::string impl = "(>[1,2,3](in3[1,2,3,u_4])(=[2,3])(=[1,3]))";
     };
 
-    void install(gl::ExpressionAnalyzer& ea, const Rule& r,
+    void install(gl::tests::ProverFixture& ea, const Rule& r,
                  gl::HashMemory& target, gl::HashMemory* second) {
         const int lv[1] = { 0 };
         const gl::StrSpan chainRun[2] = { gl::StrSpan(r.chain0), gl::StrSpan(r.chain1) };
-        ea.addToHashMemory(chainRun, 2, gl::StrSpan(r.head), nullptr, 0,
+        ea.hashRuleInstaller.addToHashMemory(chainRun, 2, gl::StrSpan(r.head), nullptr, 0,
             ea.body, target, lv, 1, gl::StrSpan(r.impl),
             ea.parameters.maxIterationNumberVariable,
             ea.parameters.standardMaxSecondaryNumber, false,
@@ -111,21 +115,21 @@ namespace {
 TEST(two_target_install, one_build_matches_two_sequential_installs) {
     const Rule r;
 
-    gl::ExpressionAnalyzer one(std::string("IncubatorGauss3"));
-    install(one, r, one.body.overallHashMemory, &one.body.workingMemory);
+    gl::tests::ProverFixture one(std::string("IncubatorGauss3"));
+    install(one, r, ((one.body).overallHashMemory), &((one.body).workingMemory));
 
-    gl::ExpressionAnalyzer two(std::string("IncubatorGauss3"));
-    install(two, r, two.body.overallHashMemory, nullptr);
-    install(two, r, two.body.workingMemory, nullptr);
+    gl::tests::ProverFixture two(std::string("IncubatorGauss3"));
+    install(two, r, ((two.body).overallHashMemory), nullptr);
+    install(two, r, ((two.body).workingMemory), nullptr);
 
     // Something was installed on both sides.
-    ASSERT_TRUE(one.body.overallHashMemory.encodedMap.count() > 0);
-    ASSERT_TRUE(one.body.workingMemory.encodedMap.count() > 0);
+    ASSERT_TRUE(((((one.body).overallHashMemory)).encodedMap).count() > 0);
+    ASSERT_TRUE(((((one.body).workingMemory)).encodedMap).count() > 0);
 
-    const auto oneOverall = imagesOf(one.body.overallHashMemory);
-    const auto twoOverall = imagesOf(two.body.overallHashMemory);
-    const auto oneWorking = imagesOf(one.body.workingMemory);
-    const auto twoWorking = imagesOf(two.body.workingMemory);
+    const auto oneOverall = imagesOf(((one.body).overallHashMemory));
+    const auto twoOverall = imagesOf(((two.body).overallHashMemory));
+    const auto oneWorking = imagesOf(((one.body).workingMemory));
+    const auto twoWorking = imagesOf(((two.body).workingMemory));
     ASSERT_EQ(static_cast<int>(oneOverall.size()), 8);
     for (std::size_t i = 0; i < oneOverall.size(); ++i) {
         ASSERT_TRUE(oneOverall[i] == twoOverall[i]);
@@ -133,8 +137,8 @@ TEST(two_target_install, one_build_matches_two_sequential_installs) {
     }
     // The second target received the same records as the first.
     for (std::size_t i = 0; i < 7; ++i) ASSERT_TRUE(oneOverall[i] == oneWorking[i]);
-    ASSERT_EQ(one.body.workingMemory.maxKeyLength, one.body.overallHashMemory.maxKeyLength);
+    ASSERT_EQ(((((one.body).workingMemory)).maxKeyLength), ((((one.body).overallHashMemory)).maxKeyLength));
 
     // Both installs closed their windows: nothing staged on the seam.
-    ASSERT_TRUE(gl::ruleStagings().slotIsEmpty(gl::ExpressionAnalyzer::currentGenSlot()));
+    ASSERT_TRUE(gl::ruleStagings().slotIsEmpty(gl::HashRuleIndex::currentGenSlot()));
 }

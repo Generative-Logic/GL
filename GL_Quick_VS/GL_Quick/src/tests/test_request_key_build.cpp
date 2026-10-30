@@ -53,7 +53,7 @@
 #include "test_harness.hpp"
 
 #include "../memory.hpp"
-#include "../prover.hpp"
+#include "../inference/hash_key_builder.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -85,21 +85,18 @@ namespace {
     }
 
     // Full build vs prefix-then-append over the same premise array.
-    bool splitMatchesFull(gl::ExpressionAnalyzer& ea,
-                          const gl::IntEncodedExpr* const* exprs,
+    bool splitMatchesFull(const gl::IntEncodedExpr* const* exprs,
                           gl::NameId count) {
         gl::NameId full[kCap];
         const gl::NameId fullLen =
-            ea.makeIntNormalizedKeyFromEncoded(exprs, count, full, kCap);
+            gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(exprs, count, full, kCap);
 
         gl::NameId split[kCap];
-        gl::ExpressionAnalyzer::NormKeyBuildState st;
-        gl::ExpressionAnalyzer::buildIntNormalizedKeyPrefix(
-            exprs, static_cast<gl::NameId>(count - 1), split, kCap, st);
-        gl::ExpressionAnalyzer::appendExprToIntNormalizedKey(
-            *exprs[count - 1], st, split, kCap);
+        gl::HashKeyBuilder st;
+        st.buildPrefix(exprs, static_cast<gl::NameId>(count - 1), split, kCap);
+        st.append(*exprs[count - 1], split, kCap);
 
-        return st.pos == fullLen
+        return st.length() == fullLen
             && std::memcmp(full, split,
                            static_cast<std::size_t>(fullLen)
                                * sizeof(gl::NameId)) == 0;
@@ -111,7 +108,6 @@ namespace {
 // reproduces the whole-candidate key exactly. Arities stay small enough that
 // eight premises fit MAX_KEY_SLOTS.
 TEST(request_key_build, split_at_last_premise_matches_full_build) {
-    gl::ExpressionAnalyzer ea("Peano");
     uint32_t seed = 20260821u;
     gl::IntEncodedExpr pool[64];
     for (int p = 0; p < 64; ++p) {
@@ -134,7 +130,7 @@ TEST(request_key_build, split_at_last_premise_matches_full_build) {
         const gl::IntEncodedExpr* ptrs[gl::ExecutionParameters::MAX_EXPRESSIONS];
         for (gl::NameId k = 0; k < count; ++k)
             ptrs[k] = &pool[nextRandom(seed) % 64u];
-        ASSERT_TRUE(splitMatchesFull(ea, ptrs, count));
+        ASSERT_TRUE(splitMatchesFull(ptrs, count));
         ++checked;
     }
     ASSERT_EQ(checked, 600);
@@ -157,33 +153,26 @@ TEST(request_key_build, rewind_reuses_one_prefix_across_positions) {
         pool[p] = keyExpr(nameId, negation, args, arity);
     }
 
-    gl::ExpressionAnalyzer ea("Peano");
 
     for (gl::NameId prefixCount = 0; prefixCount <= 4; ++prefixCount) {
         const gl::IntEncodedExpr* ptrs[gl::ExecutionParameters::MAX_EXPRESSIONS];
         for (gl::NameId k = 0; k < prefixCount; ++k) ptrs[k] = &pool[k * 3 + 1];
 
         gl::NameId shared[kCap];
-        gl::ExpressionAnalyzer::NormKeyBuildState st;
-        gl::ExpressionAnalyzer::buildIntNormalizedKeyPrefix(
-            ptrs, prefixCount, shared, kCap, st);
-        const gl::NameId prefixVars = st.nVars;
-        const gl::NameId prefixNext = st.nextNormId;
-        const gl::NameId prefixLen = st.pos;
+        gl::HashKeyBuilder st;
+        st.buildPrefix(ptrs, prefixCount, shared, kCap);
+        const auto prefixCheckpoint = st.checkpoint();
 
         for (int last = 0; last < 32; ++last) {
-            st.nVars = prefixVars;
-            st.nextNormId = prefixNext;
-            st.pos = prefixLen;
-            gl::ExpressionAnalyzer::appendExprToIntNormalizedKey(
-                pool[last], st, shared, kCap);
+            st.restore(prefixCheckpoint);
+            st.append(pool[last], shared, kCap);
 
             ptrs[prefixCount] = &pool[last];
             gl::NameId full[kCap];
-            const gl::NameId fullLen = ea.makeIntNormalizedKeyFromEncoded(
+            const gl::NameId fullLen = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
                 ptrs, static_cast<gl::NameId>(prefixCount + 1), full, kCap);
 
-            ASSERT_EQ(st.pos, fullLen);
+            ASSERT_EQ(st.length(), fullLen);
             ASSERT_EQ(std::memcmp(full, shared,
                                   static_cast<std::size_t>(fullLen)
                                       * sizeof(gl::NameId)), 0);
@@ -194,7 +183,6 @@ TEST(request_key_build, rewind_reuses_one_prefix_across_positions) {
 // Named edge shapes, so a regression names itself instead of surfacing as one
 // failed trial out of six hundred.
 TEST(request_key_build, edge_shapes_match_full_build) {
-    gl::ExpressionAnalyzer ea("Peano");
     const gl::NameId same[gl::ExecutionParameters::MAX_ARITY] = {
         5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5 };
     const gl::NameId distinct[gl::ExecutionParameters::MAX_ARITY] = {
@@ -204,21 +192,21 @@ TEST(request_key_build, edge_shapes_match_full_build) {
     const gl::IntEncodedExpr nullary0 = keyExpr(31, 0, same, 0);
     const gl::IntEncodedExpr nullary1 = keyExpr(31, 1, same, 0);
     const gl::IntEncodedExpr* nullaryPair[2] = { &nullary0, &nullary1 };
-    ASSERT_TRUE(splitMatchesFull(ea, nullaryPair, 2));
+    ASSERT_TRUE(splitMatchesFull(nullaryPair, 2));
 
     // Maximum arity, all arguments identical: one slot minted, reused fifteen
     // times, and the appended premise mints nothing at all.
     const gl::IntEncodedExpr wideSame =
         keyExpr(32, 0, same, gl::ExecutionParameters::MAX_ARITY);
     const gl::IntEncodedExpr* sharedVarPair[2] = { &wideSame, &wideSame };
-    ASSERT_TRUE(splitMatchesFull(ea, sharedVarPair, 2));
+    ASSERT_TRUE(splitMatchesFull(sharedVarPair, 2));
 
     // Maximum arity, all arguments distinct: the prefix mints every slot and
     // the appended premise reuses all of them in the same order.
     const gl::IntEncodedExpr wideDistinct =
         keyExpr(33, 1, distinct, gl::ExecutionParameters::MAX_ARITY);
     const gl::IntEncodedExpr* distinctPair[2] = { &wideDistinct, &wideDistinct };
-    ASSERT_TRUE(splitMatchesFull(ea, distinctPair, 2));
+    ASSERT_TRUE(splitMatchesFull(distinctPair, 2));
 
     // Appended premise introduces only new arguments — the numbering must
     // continue from the prefix, not restart.
@@ -226,9 +214,38 @@ TEST(request_key_build, edge_shapes_match_full_build) {
     const gl::NameId beyond[4] = { 90, 91, 92, 93 };
     const gl::IntEncodedExpr newArgs = keyExpr(35, 0, beyond, 4);
     const gl::IntEncodedExpr* growPair[2] = { &freshArgs, &newArgs };
-    ASSERT_TRUE(splitMatchesFull(ea, growPair, 2));
+    ASSERT_TRUE(splitMatchesFull(growPair, 2));
 
     // A single premise: the prefix is empty and the append does all the work.
     const gl::IntEncodedExpr* lone[1] = { &freshArgs };
-    ASSERT_TRUE(splitMatchesFull(ea, lone, 1));
+    ASSERT_TRUE(splitMatchesFull(lone, 1));
+}
+
+TEST(request_key_build, private_checkpoint_and_reset_keep_first_occurrence_slots) {
+    const gl::NameId firstArgs[]{100, 200};
+    const gl::NameId trialArgs[]{300, 100};
+    const gl::NameId otherArgs[]{400, 200};
+    const auto first = keyExpr(17, 0, firstArgs, 2);
+    const auto trial = keyExpr(18, 1, trialArgs, 2);
+    const auto other = keyExpr(19, 0, otherArgs, 2);
+    gl::HashKeyBuilder builder;
+    gl::NameId output[kCap];
+    ASSERT_EQ(builder.length(), gl::NameId(0));
+    builder.append(first, output, kCap);
+    const auto prefix = builder.checkpoint();
+    builder.append(trial, output, kCap);
+    builder.restore(prefix);
+    ASSERT_EQ(builder.length(), gl::NameId(6));
+    builder.append(other, output, kCap);
+    const gl::NameId expected[]{17, 0, 1, 0, 2, 0, 19, 0, 3, 0, 2, 0};
+    ASSERT_EQ(builder.length(), gl::NameId(12));
+    ASSERT_EQ(std::memcmp(output, expected, sizeof(expected)), 0);
+    builder.reset();
+    ASSERT_EQ(builder.length(), gl::NameId(0));
+    builder.append(other, output, kCap);
+    const gl::NameId afterReset[]{19, 0, 1, 0, 2, 0};
+    ASSERT_EQ(builder.length(), gl::NameId(6));
+    ASSERT_EQ(std::memcmp(output, afterReset, sizeof(afterReset)), 0);
+    builder.buildPrefix(nullptr, 0, output, kCap);
+    ASSERT_EQ(builder.length(), gl::NameId(0));
 }

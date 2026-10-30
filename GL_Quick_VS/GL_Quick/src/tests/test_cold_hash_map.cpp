@@ -39,11 +39,14 @@
 #include "test_harness.hpp"
 
 #include "../memory_infra/cold_hash_map.hpp"
+#include "../memory_infra/cold_string_table.hpp"
 
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -2401,4 +2404,625 @@ TEST(cold_hash_map, shared_rule_values_preserve_large_records_and_private_lifeti
     first.release(); copied.release(); loaded.release();
     peer.blobAt(1, 0, a); ASSERT_TRUE(a == std::vector<char>(small.begin(), small.end()));
     peer.release(); pool.release(); ASSERT_EQ(pool.count(), 0);
+}
+
+
+TEST(cold_hash_map, three_quarter_growth_preserves_collision_chains_and_ids) {
+    gl::GlobalMemoryManager global;
+    global.init(kMapTestCfg);
+    gl::LbArena arena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    PodMap ordinary(&arena, &dirty), hinted(&arena, &dirty);
+    std::vector<int32_t> keys;
+    for (int32_t key = 0; keys.size() < 192; ++key) {
+        const auto hash = gl::hashSpan(gl::StrSpan(reinterpret_cast<const char*>(&key), sizeof(key)));
+        if ((hash & 63) == 63) keys.push_back(key);
+    }
+    for (int32_t i = 0; i < 191; ++i) {
+        PodMap::InsertHint hint;
+        ASSERT_EQ(hinted.lookupForInsert(keys[i], hint), 0);
+        ASSERT_EQ(hinted.insertAt(keys[i], int64_t(i + 100), hint), i + 1);
+        ASSERT_EQ(ordinary.insert(keys[i], int64_t(i + 100)), i + 1);
+        PodMap::InsertHint capacity;
+        ASSERT_EQ(ordinary.lookupForInsert(keys[191], capacity), 0);
+        const int32_t count = i + 1;
+        ASSERT_EQ(capacity.capacity, count < 48 ? 64 : count < 96 ? 128 : 256);
+        if (count == 47 || count == 48 || count == 95 || count == 96 || count == 191) {
+            ordinary.rebuildIndex(); hinted.rebuildIndex();
+            for (int32_t j = 0; j <= i; ++j) {
+                ASSERT_EQ(ordinary.lookup(keys[j]), j + 1);
+                ASSERT_EQ(hinted.lookup(keys[j]), j + 1);
+                ASSERT_EQ(hinted.valueAt(j + 1), int64_t(j + 100));
+            }
+            ASSERT_EQ(hinted.lookup(keys[191]), 0);
+        }
+    }
+    const auto remove = [&](int32_t key) { return key >= keys[24]; };
+    ASSERT_EQ(ordinary.eraseIf(remove), 167);
+    ASSERT_EQ(hinted.eraseIf(remove), 167);
+    PodMap::InsertHint hint;
+    ASSERT_EQ(ordinary.lookupForInsert(keys[191], hint), 0);
+    ASSERT_EQ(hint.capacity, 64);
+    for (int32_t i = 0; i < 24; ++i) {
+        ASSERT_EQ(ordinary.lookup(keys[i]), i + 1);
+        ASSERT_EQ(hinted.valueAt(i + 1), int64_t(i + 100));
+    }
+    PodMap copied(&arena, &dirty);
+    copied.copyFrom(ordinary);
+    ASSERT_EQ(copied.lookup(keys[191]), 0);
+    ASSERT_EQ(copied.lookupForInsert(keys[0], hint), 1);
+    ASSERT_EQ(hint.capacity, 64);
+}
+
+TEST(cold_hash_map, prefix_keys_keep_ids_hashes_canonical_bytes_and_caller_lifetimes) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{32 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global), copies(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::PrefixKeyMetadata metadata(&arena, &dirty);
+    gl::ColdStringTable packed(&arena, &dirty), oracle(&arena, &dirty);
+    packed.keyStore().bindPrefixes(metadata);
+    std::vector<std::string> expected;
+    expected.push_back("");
+    for (int i = 0; i < 2300; ++i)
+        expected.push_back(std::string(600, 'x') + std::to_string((i * 137) % 2300) + std::string(i % 11, 'z'));
+    for (int i = 0; i < 1100; ++i) {
+        ASSERT_EQ(packed.intern(gl::StrSpan(expected[i])), i + 1);
+        oracle.intern(gl::StrSpan(expected[i]));
+    }
+    const auto before = packed.liveBytes();
+    packed.keyStore().packPrefixes(scratch);
+    ASSERT_EQ(metadata.rows.size(), 1100);
+    ASSERT_TRUE(packed.liveBytes() < before);
+    const gl::StrSpan firstCopy = packed.keyStore().copyView(2, copies);
+    const gl::StrSpan secondCopy = packed.keyStore().copyView(3, copies);
+    for (int i = 1100; i < static_cast<int>(expected.size()); ++i) {
+        packed.intern(gl::StrSpan(expected[i])); oracle.intern(gl::StrSpan(expected[i]));
+    }
+    packed.keyStore().packPrefixes(scratch);
+    ASSERT_EQ(metadata.rows.size(), static_cast<int32_t>(expected.size()));
+    ASSERT_TRUE(gl::equalSpans(firstCopy, gl::StrSpan(expected[1])));
+    ASSERT_TRUE(gl::equalSpans(secondCopy, gl::StrSpan(expected[2])));
+    char buffer[2048];
+    for (int id = 1; id <= packed.count(); ++id) {
+        ASSERT_EQ(packed.lookup(gl::StrSpan(expected[id - 1])), id);
+        ASSERT_EQ(packed.keyStore().copyKeyTo(id, buffer, sizeof(buffer)), static_cast<int32_t>(expected[id - 1].size()));
+        ASSERT_TRUE(gl::equalSpans(gl::StrSpan(buffer, static_cast<int32_t>(expected[id - 1].size())), gl::StrSpan(expected[id - 1])));
+        ASSERT_EQ(packed.decodeString(id), expected[id - 1]);
+        const int other = id == packed.count() ? 1 : id + 1;
+        const int comparison = packed.keyStore().compareKeys(id, other);
+        const int expectedComparison = expected[id - 1].compare(expected[other - 1]);
+        ASSERT_EQ(comparison < 0, expectedComparison < 0);
+        ASSERT_EQ(comparison == 0, expectedComparison == 0);
+        ASSERT_EQ(packed.keyStore().compareKeys(id, id), 0);
+    }
+    ASSERT_EQ(packed.lookup(gl::StrSpan("absent", 6)), 0);
+    std::vector<char> lengths, bytes, expectedLengths, expectedBytes;
+    packed.appendLengthBytes(lengths, 0); packed.appendContentBytes(bytes, 0);
+    oracle.appendLengthBytes(expectedLengths, 0); oracle.appendContentBytes(expectedBytes, 0);
+    ASSERT_TRUE(lengths == expectedLengths && bytes == expectedBytes);
+    gl::ColdStringTable clone(&arena, &dirty), loaded(&arena, &dirty);
+    clone.copyFrom(packed);
+    loaded.keyStore().bulkLoadKeys(reinterpret_cast<const int32_t*>(lengths.data()), bytes.data(), bytes.size(), packed.count());
+    loaded.rebuildIndex();
+    for (int id = 1; id <= packed.count(); ++id) {
+        ASSERT_EQ(clone.decodeString(id), expected[id - 1]);
+        ASSERT_EQ(loaded.lookup(gl::StrSpan(expected[id - 1])), id);
+    }
+    packed.resetToFresh(); ASSERT_TRUE(metadata.rows.empty()); ASSERT_EQ(metadata.examinedCount, 0);
+    ASSERT_EQ(packed.liveBytes(), int64_t(0));
+    packed.intern(gl::StrSpan("fresh", 5)); ASSERT_EQ(packed.decodeString(1), std::string("fresh"));
+    packed.release(); ASSERT_TRUE(metadata.rows.empty());
+}
+
+TEST(cold_hash_map, prefix_format_keeps_short_keys_uncompressed) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::PrefixKeyMetadata metadata(&arena, &dirty);
+    gl::ColdStringTable keys(&arena, &dirty);
+    keys.keyStore().bindPrefixes(metadata);
+    keys.keyStore().packPrefixes(scratch);
+    ASSERT_EQ(metadata.examinedCount, 0);
+    for (int i = 0; i < 1100; ++i) {
+        const std::string text = std::to_string(i);
+        keys.intern(gl::StrSpan(text));
+    }
+    keys.keyStore().packPrefixes(scratch);
+    ASSERT_TRUE(metadata.rows.empty());
+    ASSERT_EQ(keys.view(1).toStdString(), std::string("0"));
+}
+
+
+TEST(cold_hash_map, prefix_key_invalid_view_assertion_probe) {
+    char* mode = nullptr; size_t length = 0;
+#ifdef _WIN32
+    ASSERT_EQ(_dupenv_s(&mode, &length, "GL_TEST_INVALID_PREFIX_KEY"), 0);
+#else
+    mode = std::getenv("GL_TEST_INVALID_PREFIX_KEY");
+#endif
+    if (mode == nullptr) return;
+    const bool shortBuffer = std::strcmp(mode, "capacity") == 0;
+#ifdef _WIN32
+    std::free(mode);
+#endif
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::PrefixKeyMetadata metadata(&arena, &dirty);
+    gl::ColdStringTable keys(&arena, &dirty);
+    keys.keyStore().bindPrefixes(metadata);
+    for (int i = 0; i < 1100; ++i) keys.intern(gl::StrSpan(std::string(300, 'x') + std::to_string(i)));
+    keys.keyStore().packPrefixes(scratch);
+    if (shortBuffer) { char buffer[1]; keys.keyStore().copyKeyTo(1, buffer, 1); }
+    else keys.view(1);
+    ASSERT_TRUE(false);
+}
+
+TEST(cold_hash_map, cold_string_location_packs_length_and_hash_tag) {
+    static_assert(sizeof(gl::ColdStringLocation) == 8);
+    ASSERT_TRUE(gl::kMaxColdStringKeyBytes >= gl::StaticMemoryConfig{}.pageBytes);
+    const uint64_t hash = 0xfedcba9876543210ull;
+    const gl::ColdStringLocation location =
+        gl::makeColdStringLocation(123456, gl::kMaxColdStringKeyBytes, hash);
+    ASSERT_EQ(location.byteStart, 123456);
+    ASSERT_EQ(static_cast<int32_t>(location.len), gl::kMaxColdStringKeyBytes);
+    ASSERT_EQ(location.tag, static_cast<uint32_t>(hash >> 46));
+    ASSERT_EQ(gl::coldKeyTag(hash), static_cast<uint32_t>(location.tag));
+    const gl::ColdStringLocation empty = gl::makeColdStringLocation(7, 0, 0);
+    ASSERT_EQ(empty.byteStart, 7);
+    ASSERT_EQ(static_cast<int32_t>(empty.len), 0);
+    ASSERT_EQ(static_cast<uint32_t>(empty.tag), 0u);
+}
+
+TEST(cold_hash_map, byte_key_store_recomputes_stored_hashes_for_every_layout) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{32 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    std::vector<std::string> keys;
+    keys.push_back("");
+    for (int i = 0; i < 300; ++i)
+        keys.push_back(std::string(40, 'p') + std::to_string((i * 37) % 300) + std::string(i % 7, 'q'));
+    const auto check = [&](gl::ColdStringTable& table, int32_t count) {
+        for (int32_t id = 1; id <= count; ++id) {
+            const gl::StrSpan key(keys[id - 1]);
+            ASSERT_EQ(table.keyStore().hashStored(id), gl::coldKeyHash(key));
+            ASSERT_EQ(table.lookup(key), id);
+        }
+    };
+    // Plain store: minting 300 keys crosses several index rebuilds.
+    gl::ColdStringTable plain(&arena, &dirty);
+    for (int32_t i = 0; i < static_cast<int32_t>(keys.size()); ++i)
+        ASSERT_EQ(plain.intern(gl::StrSpan(keys[i])), i + 1);
+    check(plain, static_cast<int32_t>(keys.size()));
+    plain.rebuildFindIndex();
+    check(plain, static_cast<int32_t>(keys.size()));
+    // Prefix-packed store: hashes come from decoded predecessor chains.
+    gl::PrefixKeyMetadata metadata(&arena, &dirty);
+    gl::ColdStringTable packed(&arena, &dirty);
+    packed.keyStore().bindPrefixes(metadata);
+    for (int32_t i = 0; i < 200; ++i) packed.intern(gl::StrSpan(keys[i]));
+    packed.keyStore().packPrefixes(scratch);
+    for (int32_t i = 200; i < static_cast<int32_t>(keys.size()); ++i)
+        packed.intern(gl::StrSpan(keys[i]));
+    packed.rebuildFindIndex();
+    check(packed, static_cast<int32_t>(keys.size()));
+    // Shared store: hashes come from the shared payload.
+    gl::SharedBytePool pool(&arena, &dirty);
+    gl::ColdHashSet<gl::BytesKeyStore> shared(&arena, &dirty);
+    shared.keyStore().bindSharedBytes(pool);
+    for (int32_t i = 1; i < static_cast<int32_t>(keys.size()); ++i)
+        ASSERT_EQ(shared.mint(gl::StrSpan(keys[i])), i);
+    shared.rebuildFindIndex();
+    for (int32_t id = 1; id < static_cast<int32_t>(keys.size()); ++id) {
+        const gl::StrSpan key(keys[id]);
+        ASSERT_EQ(shared.keyStore().hashStored(id), gl::coldKeyHash(key));
+        ASSERT_EQ(shared.lookup(key), id);
+    }
+}
+
+TEST(cold_hash_map, byte_key_store_tag_collision_falls_back_to_byte_comparison) {
+    // Two equal-length keys whose digests share the 18-bit tag.
+    std::map<uint32_t, std::string> byTag;
+    std::string first, second;
+    for (int i = 0; i < (1 << 22) && first.empty(); ++i) {
+        std::string key = "key" + std::to_string(10000000 + i);
+        const uint32_t tag = gl::coldKeyTag(gl::coldKeyHash(gl::StrSpan(key)));
+        const auto found = byTag.find(tag);
+        if (found != byTag.end()) { first = found->second; second = key; }
+        else byTag.emplace(tag, key);
+    }
+    ASSERT_FALSE(first.empty());
+    ASSERT_EQ(first.size(), second.size());
+    ASSERT_TRUE(first != second);
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdStringTable table(&arena, &dirty);
+    const int32_t firstId = table.intern(gl::StrSpan(first));
+    ASSERT_TRUE(table.keyStore().equalStored(firstId, gl::StrSpan(first),
+        gl::coldKeyHash(gl::StrSpan(first))));
+    ASSERT_FALSE(table.keyStore().equalStored(firstId, gl::StrSpan(second),
+        gl::coldKeyHash(gl::StrSpan(second))));
+    ASSERT_EQ(table.lookup(gl::StrSpan(second)), 0);
+    const int32_t secondId = table.intern(gl::StrSpan(second));
+    ASSERT_EQ(secondId, firstId + 1);
+    ASSERT_EQ(table.lookup(gl::StrSpan(first)), firstId);
+    ASSERT_EQ(table.lookup(gl::StrSpan(second)), secondId);
+}
+
+
+namespace {
+    // Canonical lengths + bytes of a byte-key set: what its deload image streams.
+    std::vector<char> canonicalBytes(const gl::ColdHashSet<gl::BytesKeyStore>& set) {
+        std::vector<char> image;
+        set.keyStore().appendLengthBytes(image, 0);
+        set.keyStore().appendContentBytes(image, 0);
+        return image;
+    }
+
+    // One nomination with the digest the production scan passes along.
+    void nominateBytes(gl::BatchByteCandidateRegistry& registry, gl::StrSpan bytes) {
+        registry.nominate(bytes, gl::coldKeyHash(bytes));
+    }
+
+    // Nominations of one payload summed over the stripes, and the number of
+    // stripes holding it (a payload lives in exactly one stripe).
+    std::pair<int32_t, int32_t> nominationsOf(gl::BatchByteCandidateRegistry& registry,
+                                              gl::StrSpan bytes) {
+        int32_t total = 0, stripes = 0;
+        for (unsigned index = 0; index < registry.stripeCount(); ++index) {
+            const gl::BatchByteCandidates& stripe = registry.stripe(index);
+            for (int32_t id = 1; id <= stripe.count(); ++id) {
+                if (!(stripe.bytesAt(id) == bytes)) continue;
+                total += stripe.nominationsAt(id);
+                ++stripes;
+            }
+        }
+        return { total, stripes };
+    }
+}
+
+TEST(cold_hash_map, batch_dictionary_promotes_repeated_nominations_and_resolves_references) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), otherArena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BatchByteDictionary dictionary(&global);
+    dictionary.activate();
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&global, 4);
+    candidates.init(&global, 4);
+    ASSERT_EQ(candidates.stripeCount(), 4u);
+    const std::string alpha(700, 'a'), beta(500, 'b'), gamma(300, 'g');
+    nominateBytes(candidates, gl::StrSpan(alpha));
+    nominateBytes(candidates, gl::StrSpan(beta));
+    nominateBytes(candidates, gl::StrSpan(alpha));
+    nominateBytes(candidates, gl::StrSpan(gamma));
+    nominateBytes(candidates, gl::StrSpan(gamma));
+    ASSERT_EQ(candidates.distinctCount(), 3);
+    ASSERT_EQ(candidates.nominationTotal(), 5);
+    ASSERT_TRUE(nominationsOf(candidates, gl::StrSpan(gamma)) == std::make_pair(2, 1));
+    ASSERT_TRUE(nominationsOf(candidates, gl::StrSpan(beta)) == std::make_pair(1, 1));
+    int64_t nominatedBytes = 0;
+    for (unsigned index = 0; index < candidates.stripeCount(); ++index)
+        nominatedBytes += candidates.stripe(index).liveBytes();
+    ASSERT_TRUE(nominatedBytes > 0);
+    ASSERT_EQ(dictionary.promoteNominations(candidates), 2);
+    ASSERT_EQ(candidates.distinctCount(), 0);
+    ASSERT_EQ(candidates.nominationTotal(), 0);
+    for (unsigned index = 0; index < candidates.stripeCount(); ++index)
+        ASSERT_EQ(candidates.stripe(index).liveBytes(), 0);
+    ASSERT_EQ(dictionary.count(), 2);
+    ASSERT_EQ(dictionary.logicalByteCount(), static_cast<int64_t>(alpha.size() + gamma.size()));
+    ASSERT_TRUE(dictionary.liveBytes() >= dictionary.logicalByteCount());
+    const int32_t alphaReference = dictionary.referenceOf(gl::StrSpan(alpha), gl::coldKeyHash(gl::StrSpan(alpha)));
+    ASSERT_TRUE(alphaReference < 0);
+    const gl::StrSpan alphaEntry = dictionary.bytesAt(alphaReference, static_cast<int32_t>(alpha.size()));
+    ASSERT_TRUE(alphaEntry == gl::StrSpan(alpha));
+    const int32_t gammaReference = dictionary.referenceOf(gl::StrSpan(gamma), gl::coldKeyHash(gl::StrSpan(gamma)));
+    ASSERT_TRUE(gammaReference < 0 && gammaReference != alphaReference);
+    const gl::StrSpan gammaEntry = dictionary.bytesAt(gammaReference, static_cast<int32_t>(gamma.size()));
+    ASSERT_TRUE(gammaEntry == gl::StrSpan(gamma));
+    ASSERT_EQ(dictionary.referenceOf(gl::StrSpan(beta), gl::coldKeyHash(gl::StrSpan(beta))), 0);
+
+    using Bytes = gl::ColdHashSet<gl::BytesKeyStore>;
+    Bytes shared(&arena, &dirty), oracle(&otherArena, &dirty);
+    shared.keyStore().enableBatchSharing();
+    for (const std::string* key : { &alpha, &beta, &gamma }) {
+        shared.mint(gl::StrSpan(*key));
+        oracle.mint(gl::StrSpan(*key));
+    }
+    shared.mint(gl::StrSpan());
+    oracle.mint(gl::StrSpan());
+    ASSERT_EQ(shared.keyAt(1).ptr, alphaEntry.ptr);
+    ASSERT_EQ(shared.keyAt(3).ptr, gammaEntry.ptr);
+    ASSERT_TRUE(shared.keyAt(2) == gl::StrSpan(beta));
+    ASSERT_EQ(shared.decodeString(3), gamma);
+    ASSERT_EQ(shared.lookup(gl::StrSpan(gamma)), 3);
+    ASSERT_EQ(shared.lookup(gl::StrSpan()), 4);
+    ASSERT_TRUE(canonicalBytes(shared) == canonicalBytes(oracle));
+    ASSERT_EQ(shared.keyStore().hashStored(1), gl::coldKeyHash(gl::StrSpan(alpha)));
+    shared.rebuildIndex();
+    ASSERT_EQ(shared.lookup(gl::StrSpan(alpha)), 1);
+    ASSERT_EQ(shared.keyStore().contentBytesFrom(0), oracle.keyStore().contentBytesFrom(0));
+
+    Bytes copied(&otherArena, &dirty), reloaded(&arena, &dirty);
+    copied.copyFrom(shared);
+    ASSERT_EQ(copied.keyAt(1).ptr, alphaEntry.ptr);
+    ASSERT_TRUE(canonicalBytes(copied) == canonicalBytes(oracle));
+    reloaded.keyStore().enableBatchSharing();
+    std::vector<char> lengths, bytes;
+    oracle.appendLengthBytes(lengths, 0);
+    oracle.appendContentBytes(bytes, 0);
+    reloaded.stageLengths(lengths.data(), oracle.count());
+    reloaded.consumeStagedLengths(bytes.data(), bytes.size());
+    ASSERT_EQ(reloaded.keyAt(1).ptr, alphaEntry.ptr);
+    ASSERT_EQ(reloaded.keyAt(3).ptr, shared.keyAt(3).ptr);
+    ASSERT_TRUE(canonicalBytes(reloaded) == canonicalBytes(oracle));
+    std::vector<char> tail;
+    reloaded.appendContentBytesFromByte(tail, alpha.size());
+    ASSERT_TRUE(tail == std::vector<char>(bytes.begin() + alpha.size(), bytes.end()));
+
+    shared.release(); copied.release(); reloaded.release(); oracle.release();
+}
+
+TEST(cold_hash_map, batch_candidates_count_concurrent_nominations_once_per_payload) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{16 << 20, 1 << 18, 2048});
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&global, 8);
+    std::vector<std::string> payloads;
+    for (int i = 0; i < 50; ++i) payloads.push_back("payload/" + std::to_string(i) + std::string(40, 'p'));
+    std::vector<std::thread> workers;
+    for (int worker = 0; worker < 8; ++worker)
+        workers.emplace_back([&candidates, &payloads]() {
+            for (int round = 0; round < 20; ++round)
+                for (const std::string& payload : payloads) nominateBytes(candidates, gl::StrSpan(payload));
+        });
+    for (std::thread& worker : workers) worker.join();
+    ASSERT_EQ(candidates.distinctCount(), 50);
+    ASSERT_EQ(candidates.nominationTotal(), 8000);
+    for (const std::string& payload : payloads) {
+        const gl::StrSpan bytes(payload);
+        ASSERT_TRUE(nominationsOf(candidates, bytes) == std::make_pair(160, 1));
+        // The stripe comes from digest bits the stripe's bucket index never uses.
+        const unsigned expected = static_cast<unsigned>((gl::coldKeyHash(bytes) >> 32) % candidates.stripeCount());
+        const gl::BatchByteCandidates& stripe = candidates.stripe(expected);
+        bool held = false;
+        for (int32_t id = 1; id <= stripe.count(); ++id) held = held || stripe.bytesAt(id) == bytes;
+        ASSERT_TRUE(held);
+    }
+    candidates.releaseAll();
+    ASSERT_EQ(candidates.distinctCount(), 0);
+    ASSERT_EQ(candidates.nominationTotal(), 0);
+}
+
+TEST(cold_hash_map, batch_sharing_converts_pending_rows_compacts_and_nominates_once) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena firstArena(&global), secondArena(&global), oracleArena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BatchByteDictionary dictionary(&global);
+    dictionary.activate();
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&global, 2);
+    using Bytes = gl::ColdHashSet<gl::BytesKeyStore>;
+    Bytes first(&firstArena, &dirty), second(&secondArena, &dirty), oracle(&oracleArena, &dirty);
+    first.keyStore().enableBatchSharing();
+    second.keyStore().enableBatchSharing();
+    const std::string a(900, 'a'), b(1500, 'b'), c(1200, 'c'), d(800, 'd'), e(400, 'e');
+    for (const std::string* key : { &a, &b, &c }) { first.mint(gl::StrSpan(*key)); oracle.mint(gl::StrSpan(*key)); }
+    for (const std::string* key : { &b, &c, &d }) second.mint(gl::StrSpan(*key));
+    const auto nominate = [&](gl::StrSpan bytes, uint64_t hash) { candidates.nominate(bytes, hash); };
+    ASSERT_EQ(first.keyStore().sharePendingRows(), 0);
+    ASSERT_EQ(first.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(second.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(first.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 4);
+    ASSERT_TRUE(nominationsOf(candidates, gl::StrSpan(a)) == std::make_pair(1, 1));
+    ASSERT_TRUE(nominationsOf(candidates, gl::StrSpan(b)) == std::make_pair(2, 1));
+    ASSERT_EQ(dictionary.promoteNominations(candidates), 2);
+    const int64_t before = first.liveBytes();
+    ASSERT_EQ(first.keyStore().sharePendingRows(), 2);
+    first.keyStore().compactAfterBatchConversion(scratch);
+    ASSERT_EQ(first.keyStore().sharePendingRows(), 0);
+    ASSERT_EQ(second.keyStore().sharePendingRows(), 2);
+    second.keyStore().compactAfterBatchConversion(scratch);
+    ASSERT_EQ(first.keyAt(2).ptr, second.keyAt(1).ptr);
+    ASSERT_EQ(first.keyAt(3).ptr, second.keyAt(2).ptr);
+    ASSERT_TRUE(first.liveBytes() < before);
+    ASSERT_TRUE(canonicalBytes(first) == canonicalBytes(oracle));
+    ASSERT_EQ(first.decodeString(1), a);
+    ASSERT_EQ(first.lookup(gl::StrSpan(a)), 1);
+    ASSERT_EQ(second.decodeString(3), d);
+
+    first.mint(gl::StrSpan(e)); oracle.mint(gl::StrSpan(e));
+    first.mint(gl::StrSpan(c));
+    ASSERT_EQ(first.count(), 4);
+    Bytes third(&secondArena, &dirty);
+    third.keyStore().enableBatchSharing();
+    third.mint(gl::StrSpan(c));
+    ASSERT_EQ(third.keyAt(1).ptr, first.keyAt(3).ptr);
+    ASSERT_EQ(first.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 1);
+    ASSERT_TRUE(nominationsOf(candidates, gl::StrSpan(e)) == std::make_pair(1, 1));
+    first.keyStore().compactAfterBatchConversion(scratch);
+    ASSERT_TRUE(canonicalBytes(first) == canonicalBytes(oracle));
+    candidates.releaseAll();
+
+    first.release(); second.release(); third.release(); oracle.release();
+}
+
+TEST(cold_hash_map, batch_sharing_marks_follow_stable_erase) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BatchByteDictionary dictionary(&global);
+    dictionary.activate();
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&global, 1);
+    gl::ColdHashSet<gl::BytesKeyStore> keys(&arena, &dirty);
+    keys.keyStore().enableBatchSharing();
+    const auto key = [](int i) { return std::string(static_cast<std::size_t>(64 + i), static_cast<char>(97 + i)); };
+    for (int i = 0; i < 6; ++i) keys.mint(gl::StrSpan(key(i)));
+    const auto nominate = [&](gl::StrSpan bytes, uint64_t hash) { candidates.nominate(bytes, hash); };
+    ASSERT_EQ(keys.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 6);
+    candidates.releaseAll();
+    ASSERT_EQ(keys.eraseIf([&](gl::StrSpan bytes) { return bytes.len == 65 || bytes.len == 68; }), 2);
+    ASSERT_EQ(keys.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 0);
+    keys.mint(gl::StrSpan(key(7)));
+    ASSERT_EQ(keys.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 1);
+    ASSERT_TRUE(nominationsOf(candidates, gl::StrSpan(key(7))) == std::make_pair(1, 1));
+    nominateBytes(candidates, gl::StrSpan(key(7)));
+    ASSERT_EQ(dictionary.promoteNominations(candidates), 1);
+    ASSERT_EQ(keys.keyStore().sharePendingRows(), 1);
+    keys.keyStore().compactAfterBatchConversion(scratch);
+    ASSERT_EQ(keys.decodeString(5), key(7));
+    ASSERT_EQ(keys.decodeString(4), key(5));
+    keys.resetToFresh();
+    keys.mint(gl::StrSpan(key(2)));
+    ASSERT_EQ(keys.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 1);
+    candidates.releaseAll();
+    keys.release();
+}
+
+TEST(cold_hash_map, batch_sharing_repacks_prefix_packed_local_rows) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{32 << 20, 1 << 18, 2048});
+    gl::LbArena arena(&global), otherArena(&global), oracleArena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BatchByteDictionary dictionary(&global);
+    dictionary.activate();
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&global, 4);
+    gl::PrefixKeyMetadata prefixes(&arena, &dirty);
+    gl::ColdStringTable packed(&arena, &dirty), peer(&otherArena, &dirty), oracle(&oracleArena, &dirty);
+    packed.keyStore().bindPrefixes(prefixes);
+    packed.keyStore().enableBatchSharing();
+    peer.keyStore().enableBatchSharing();
+    std::vector<std::string> keys;
+    for (int i = 0; i < 1500; ++i) keys.push_back("origin/history/line/" + std::to_string(100000 + 7 * i));
+    for (const std::string& k : keys) { packed.intern(gl::StrSpan(k)); oracle.intern(gl::StrSpan(k)); }
+    for (int i = 0; i < 1500; i += 3) peer.intern(gl::StrSpan(keys[i]));
+    packed.keyStore().packPrefixes(scratch);
+    const int64_t packedBytes = packed.liveBytes();
+    ASSERT_TRUE(canonicalBytes(packed) == canonicalBytes(oracle));
+    const auto nominate = [&](gl::StrSpan bytes, uint64_t hash) { candidates.nominate(bytes, hash); };
+    ASSERT_EQ(packed.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(peer.keyStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(dictionary.promoteNominations(candidates), 500);
+    ASSERT_EQ(packed.keyStore().sharePendingRows(), 500);
+    packed.keyStore().compactAfterBatchConversion(scratch);
+    ASSERT_EQ(peer.keyStore().sharePendingRows(), 500);
+    const gl::StrSpan firstKey(keys[0]);
+    ASSERT_EQ(peer.view(1).ptr, dictionary.bytesAt(dictionary.referenceOf(firstKey, gl::coldKeyHash(firstKey)),
+                                                  static_cast<int32_t>(keys[0].size())).ptr);
+    ASSERT_TRUE(packed.liveBytes() < packedBytes);
+    ASSERT_TRUE(canonicalBytes(packed) == canonicalBytes(oracle));
+    gl::LbArena copyScratch(&global);
+    for (int id = 1; id <= 1500; ++id) {
+        ASSERT_EQ(packed.decodeString(id), keys[id - 1]);
+        ASSERT_TRUE(packed.keyStore().copyView(id, copyScratch) == gl::StrSpan(keys[id - 1]));
+    }
+    copyScratch.releaseAll();
+    for (int i = 0; i < 1500; i += 250) ASSERT_EQ(packed.lookup(gl::StrSpan(keys[i])), i + 1);
+    ASSERT_EQ(packed.keyStore().compareKeys(1, 2) < 0, keys[0] < keys[1]);
+    gl::ColdStringTable copy(&otherArena, &dirty);
+    copy.copyFrom(packed);
+    ASSERT_TRUE(canonicalBytes(copy) == canonicalBytes(oracle));
+    packed.release(); peer.release(); oracle.release(); copy.release();
+}
+
+TEST(cold_hash_map, shared_native_pool_payload_rows_take_part_in_batch_sharing) {
+    gl::GlobalMemoryManager global;
+    global.init(gl::StaticMemoryConfig{8 << 20, 1 << 18, 2048});
+    gl::LbArena firstArena(&global), secondArena(&global), scratch(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BatchByteDictionary dictionary(&global);
+    dictionary.activate();
+    gl::BatchByteCandidateRegistry candidates;
+    candidates.init(&global, 2);
+    gl::SharedBytePool firstPool(&firstArena, &dirty), secondPool(&secondArena, &dirty);
+    firstPool.payloadStore().enableBatchSharing();
+    secondPool.payloadStore().enableBatchSharing();
+    using Bytes = gl::ColdHashSet<gl::BytesKeyStore>;
+    Bytes firstKeys(&firstArena, &dirty), secondKeys(&secondArena, &dirty);
+    firstKeys.keyStore().bindSharedBytes(firstPool);
+    secondKeys.keyStore().bindSharedBytes(secondPool);
+    const std::string rule(1100, 'r'), dead(900, 'x');
+    firstKeys.mint(gl::StrSpan(dead));
+    firstKeys.mint(gl::StrSpan(rule));
+    secondKeys.mint(gl::StrSpan(rule));
+    const auto nominate = [&](gl::StrSpan bytes, uint64_t hash) { candidates.nominate(bytes, hash); };
+    ASSERT_EQ(firstPool.payloadStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(secondPool.payloadStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(dictionary.promoteNominations(candidates), 1);
+    ASSERT_EQ(firstPool.payloadStore().sharePendingRows(), 1);
+    firstPool.payloadStore().compactAfterBatchConversion(scratch);
+    ASSERT_EQ(secondPool.payloadStore().sharePendingRows(), 1);
+    secondPool.payloadStore().compactAfterBatchConversion(scratch);
+    ASSERT_EQ(firstKeys.keyAt(2).ptr, secondKeys.keyAt(1).ptr);
+    ASSERT_EQ(firstKeys.lookup(gl::StrSpan(rule)), 2);
+    ASSERT_EQ(firstKeys.eraseIf([&](gl::StrSpan key) { return key.len == static_cast<int>(dead.size()); }), 1);
+    firstPool.collect(scratch);
+    ASSERT_EQ(firstPool.count(), 1);
+    ASSERT_EQ(firstKeys.decodeString(1), rule);
+    ASSERT_EQ(firstPool.payloadStore().shareNewRows(nominate), 0);
+    ASSERT_EQ(candidates.distinctCount(), 0);
+    firstKeys.release(); secondKeys.release();
+    firstPool.release(); secondPool.release();
+}
+
+TEST(cold_hash_map, mint_hashed_matches_mint) {
+    gl::GlobalMemoryManager global;
+    global.init(kMapTestCfg);
+    gl::LbArena arena(&global), otherArena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> plain(&arena, &dirty), hashed(&otherArena, &dirty);
+    for (int i = 0; i < 600; ++i) {
+        const std::string key = "key/" + std::to_string(i % 250);
+        const gl::StrSpan span(key);
+        ASSERT_EQ(hashed.mintHashed(span, gl::coldKeyHash(span)), plain.mint(span));
+    }
+    ASSERT_EQ(hashed.count(), 250);
+    for (int i = 0; i < 260; ++i) {
+        const std::string key = "key/" + std::to_string(i);
+        ASSERT_EQ(hashed.lookup(gl::StrSpan(key)), plain.lookup(gl::StrSpan(key)));
+    }
+    PodSet podPlain(&arena, &dirty), podHashed(&otherArena, &dirty);
+    for (int32_t i = 0; i < 90; ++i) {
+        const int32_t key = (i * 7) % 40;
+        ASSERT_EQ(podHashed.mintHashed(key, podHashed.keyStore().hashProbe(key)), podPlain.mint(key));
+    }
+    ASSERT_EQ(podHashed.count(), 40);
+    ASSERT_EQ(podHashed.lookup(13), podPlain.lookup(13));
+}
+
+TEST(cold_hash_map, lookup_hashed_matches_lookup) {
+    gl::GlobalMemoryManager global;
+    global.init(kMapTestCfg);
+    gl::LbArena arena(&global);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdStringTable table(&arena, &dirty);
+    ASSERT_EQ(table.lookupHashed(gl::StrSpan("k", 1), gl::coldKeyHash(gl::StrSpan("k", 1))), 0);
+    for (int i = 0; i < 200; ++i) table.intern(gl::StrSpan(std::to_string(i)));
+    for (int i = 0; i < 220; ++i) {
+        const std::string key = std::to_string(i);
+        ASSERT_EQ(table.lookupHashed(gl::StrSpan(key), gl::coldKeyHash(gl::StrSpan(key))),
+                  table.lookup(gl::StrSpan(key)));
+    }
+    PodSet ids(&arena, &dirty);
+    for (int32_t i = 0; i < 10; ++i) ids.mint(i);
+    ASSERT_EQ(ids.eraseIf([](int32_t id) { return (id & 1) != 0; }), 5);
+    ASSERT_EQ(ids.lookup(4), 3);
 }

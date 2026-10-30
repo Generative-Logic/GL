@@ -55,5 +55,39 @@ class UnitTestGateTests(unittest.TestCase):
             main._run_unit_test_gate(None)
 
 
+class PeakModeConfigurationTests(unittest.TestCase):
+    """Normal runs need no collector; capture inherits an explicit interpreter."""
+
+    def test_unset_mode_leaves_collector_unset(self) -> None:
+        with mock.patch.dict(main.os.environ, {}, clear=True):
+            main._configure_peak_snapshot()
+            self.assertNotIn("GL_PEAK_PYTHON", main.os.environ)
+
+    def test_scan_leaves_collector_unset(self) -> None:
+        with mock.patch.dict(main.os.environ, {"GL_PEAK_MODE": "scan"}, clear=True):
+            main._configure_peak_snapshot()
+            self.assertNotIn("GL_PEAK_PYTHON", main.os.environ)
+
+    def test_capture_uses_pipeline_interpreter(self) -> None:
+        with mock.patch.dict(main.os.environ, {"GL_PEAK_MODE": "capture"}, clear=True):
+            main._configure_peak_snapshot()
+            self.assertEqual(main.os.environ["GL_PEAK_PYTHON"], sys.executable)
+
+    def test_capture_preserves_explicit_interpreter(self) -> None:
+        with mock.patch.dict(main.os.environ, {"GL_PEAK_MODE": "capture", "GL_PEAK_PYTHON": "custom-python"}, clear=True):
+            main._configure_peak_snapshot()
+            self.assertEqual(main.os.environ["GL_PEAK_PYTHON"], "custom-python")
+
+    def test_invalid_mode_asserts(self) -> None:
+        with mock.patch.dict(main.os.environ, {"GL_PEAK_MODE": "both"}, clear=True):
+            with self.assertRaises(AssertionError):
+                main._configure_peak_snapshot()
+
+    def test_empty_explicit_interpreter_asserts(self) -> None:
+        with mock.patch.dict(main.os.environ, {"GL_PEAK_MODE": "capture", "GL_PEAK_PYTHON": ""}, clear=True):
+            with self.assertRaises(AssertionError):
+                main._configure_peak_snapshot()
+
+
 if __name__ == "__main__":
     unittest.main()

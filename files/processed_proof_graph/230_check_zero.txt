@@ -1,0 +1,7 @@
+(preorder[N,+,v2,v1])	main	equality1	(preorder[N,+,i0,v1])	main	(=[i0,v2])	main
+(=[i0,v2])	main	symmetry of equality	(=[v2,i0])	main
+(=[v2,i0])	main	recursion
+(preorder[N,+,i0,v1])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(preorder[N,+,i0,w1])))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in[v1,N])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(preorder[N,+,i0,v1])))	main	theorem
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in[v1,N])	main	task formulation

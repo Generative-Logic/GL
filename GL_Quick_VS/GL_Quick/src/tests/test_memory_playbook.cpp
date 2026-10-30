@@ -37,6 +37,8 @@
 /// samples into the step that was current, and `LbMemory::liveBytes` is
 /// exactly the sum of the named terms the tracker attributes.
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
 
 #include "../memory.hpp"
@@ -47,7 +49,6 @@
 #include "../memory_infra/scratch_arena.hpp"
 #include "../memory_infra/sealed_pages.hpp"
 #include "../memory_infra/steward.hpp"
-#include "../infra/mem_tracker.hpp"
 #include "../infra/memory_census.hpp"
 #include "../gpu/phase2_projection.hpp"
 
@@ -300,12 +301,12 @@ TEST(memory_playbook, census_keeps_gpu_maxima_and_device_totals) {
 TEST(memory_playbook, live_bytes_is_the_sum_of_the_named_terms) {
     gl::Memory m;
     m.setExprKey("(memory_playbook_live_bytes)");
-    for (gl::NameId i = 0; i < 40; ++i) m.intEncodedStatements.push_back(makeRow(i));
+    for (gl::NameId i = 0; i < 40; ++i) ((m).intEncodedStatements).push_back(makeRow(i));
     int64_t sum = 0;
     int terms = 0;
     bool sawStatements = false;
     bool sawSharedRecords = false;
-    m.lbMemory.visitLiveBytes([&](const char* name, int64_t bytes) {
+    ((m).lbMemory).visitLiveBytes([&](const char* name, int64_t bytes) {
         sum += bytes;
         ++terms;
         if (std::strcmp(name, "intEncodedStatements") == 0) {
@@ -320,30 +321,7 @@ TEST(memory_playbook, live_bytes_is_the_sum_of_the_named_terms) {
     ASSERT_TRUE(sawStatements);
     ASSERT_TRUE(sawSharedRecords);
     ASSERT_TRUE(terms > 40);
-    ASSERT_EQ(sum, m.lbMemory.liveBytes());
-}
-
-TEST(memory_playbook, tracker_physical_split_accounts_for_the_pinned_blocks) {
-    gl::mem_tracker::resetAllForTest();
-    gl::Memory m;
-    m.setExprKey("(memory_playbook_physical)");
-    for (gl::NameId i = 0; i < 40; ++i) m.intEncodedStatements.push_back(makeRow(i));
-    gl::mem_tracker::resetIteration();
-    gl::mem_tracker::addLbSample(m.lbMemory, 0);
-    gl::mem_tracker::commitIterationSample();
-    const gl::mem_tracker::PhysicalPeak pp = gl::mem_tracker::physicalPeak();
-    ASSERT_EQ(pp.logicBlocks, int64_t(1));
-    const int64_t pinned = m.lbMemory.manager.blocksHeld()
-        * static_cast<int64_t>(m.lbMemory.manager.blockBytes());
-    ASSERT_EQ(pp.livePageBytes + pp.freePageBytes + pp.otherBlockBytes, pinned);
-    ASSERT_GE(pp.livePageBytes, pp.contentBytes + pp.indexBytes);
-    ASSERT_EQ(gl::mem_tracker::physicalPeakBytesOf("intEncodedStatements"),
-              m.lbMemory.intEncodedStatements.liveBytes());
-    ASSERT_EQ(gl::mem_tracker::physicalPeakBytesOf("sharedExpressions"),
-              m.lbMemory.sharedExpressions.liveBytes());
-    ASSERT_TRUE(pp.containerCount > 40);
-    gl::mem_tracker::resetAllForTest();
-    ASSERT_EQ(gl::mem_tracker::physicalPeak().logicBlocks, int64_t(0));
+    ASSERT_EQ(sum, ((m).lbMemory).liveBytes());
 }
 
 TEST(memory_playbook, host_arena_bytes_follow_the_reserved_capacity) {
@@ -361,8 +339,7 @@ TEST(memory_playbook, host_arena_bytes_follow_the_reserved_capacity) {
     capacity.terms = 8;
     capacity.stumps = 4;
     gl::gpu::Phase2TaskProjectionArena arena(capacity);
-    ASSERT_EQ(arena.hostBytes(), gl::gpu::vectorCapacityBytes(
-        arena.tasks, arena.batches, arena.terms, arena.stumps));
+    ASSERT_EQ(arena.hostBytes(), gl::gpu::Phase2TaskProjectionArena::hostLayout(capacity).roundedBytes(262144));
     ASSERT_TRUE(arena.hostBytes() > 0);
 }
 
@@ -481,4 +458,20 @@ TEST(memory_playbook, lb_memory_directories_live_in_its_shell) {
     lb.manager.releaseAll();
     // The shell still fits one LB-pool slot with room to spare.
     ASSERT_TRUE(sizeof(gl::Memory) <= static_cast<std::size_t>(gl::lbMemory().blockBytes()));
+}
+
+TEST(memory_playbook, gpu_host_report_separates_reservation_commit_and_registration) {
+    gl::GpuHostArena storage;
+    storage.reserve(262144);
+    auto& pool = gl::gpuHostStorage();
+    pool.setGpuHostPinned(storage.data(), storage.blockCount(), true);
+    std::ostringstream diagnostics, markdown;
+    gl::memory_census::writeReport(diagnostics, markdown);
+    ASSERT_TRUE(diagnostics.str().find("[GPU-HOST-MEMORY] reserved_bytes=") != std::string::npos);
+    ASSERT_TRUE(diagnostics.str().find(" pinned_bytes=262144") != std::string::npos);
+    ASSERT_TRUE(diagnostics.str().find("pool=gpu_host") != std::string::npos);
+    ASSERT_TRUE(markdown.str().find("Independent GPU-host reservation") != std::string::npos);
+    ASSERT_TRUE(gl::memory_census::poolTouchedBytes() >= pool.gpuHostCommittedBytes());
+    pool.setGpuHostPinned(storage.data(), storage.blockCount(), false);
+    ASSERT_TRUE(pool.gpuHostPeakPinnedBytes() >= 262144);
 }

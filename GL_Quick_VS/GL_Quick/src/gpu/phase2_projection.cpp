@@ -25,7 +25,10 @@
 #include "phase2_projection.hpp"
 
 #include "../memory.hpp"
-#include "../prover.hpp"
+#include "../compiler/compiled_definition_registry.hpp"
+#include "../compiler.hpp"
+#include "../parameters.hpp"
+#include "../infra/hashburst_dump.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,7 +50,7 @@ namespace gl::gpu {
     /// @details Owns only construction scratch. Map membership and value runs
     /// remain in their separate projected tables; equal bytes share one offset.
     struct Phase2ProjectionKeyStore {
-        LbArena arena{ &staticMemory() };
+        LbArena arena{ &gpuHostStorage() };
         DirtyState dirty = DirtyState::Clean;
         ColdHashMap<BytesKeyStore, uint32_t> offsets{ &arena, &dirty };
     };
@@ -195,7 +198,7 @@ namespace gl::gpu {
     Phase2ProjectionUsage measurePhase2SharedKeyUsage(const Memory& body,
         uint32_t selectedHashMemories, bool buildPrefixFilter) {
         assert(selectedHashMemories != 0 && (selectedHashMemories & ~0x0fu) == 0);
-        LbArena arena(&staticMemory());
+        LbArena arena(&gpuHostStorage());
         arena.setPurpose(PoolPurpose::GpuHost);
         DirtyState dirty = DirtyState::Clean;
         ColdHashSet<BytesKeyStore> keys(&arena, &dirty);
@@ -242,7 +245,7 @@ namespace gl::gpu {
             for (uint32_t memory = 0; memory < 4; ++memory)
                 visitSelected(memory, recordArity);
             for (uint32_t memory = 0; memory < 4; ++memory) {
-                LbArena prefixArena(&staticMemory());
+                LbArena prefixArena(&gpuHostStorage());
                 prefixArena.setPurpose(PoolPurpose::GpuHost);
                 DirtyState prefixDirty = DirtyState::Clean;
                 ColdHashSet<BytesKeyStore> prefixes(&prefixArena, &prefixDirty);
@@ -307,8 +310,7 @@ namespace gl::gpu {
     /// substitution; callers may reduce the returned integers in any order.
     ///
     /// @param body Resident logical block whose post-Phase-1 read image is measured.
-    /// @param analyzer Analyzer-wide immutable configuration and compiled-core
-    ///                 registry used by Phase 2 evaluation.
+    /// @param anchorInfo Immutable anchor information used to measure its name bytes.
     /// @param selectedHashMemories Bit `1 << DeviceHashMemoryKind` for every
     ///                 request memory consumed by this logical block's tasks.
     /// @param buildPrefixFilter Include bounded derived next-predicate maps.
@@ -318,7 +320,7 @@ namespace gl::gpu {
     ///            proof gate, request, or verdict.
     Phase2ProjectionUsage measurePhase2ProjectionUsage(
         const Memory& body,
-        const ExpressionAnalyzer& analyzer,
+        const ce::AnchorInfo& anchorInfo,
         uint32_t selectedHashMemories,
         bool buildPrefixFilter) {
         assert(selectedHashMemories != 0);
@@ -461,7 +463,7 @@ namespace gl::gpu {
         const StrSpan expressionKey = body.exprKeyView();
         assert(expressionKey.len >= 0);
         usage.metadataBytes = static_cast<uint64_t>(expressionKey.len)
-            + static_cast<uint64_t>(analyzer.anchorInfo.name.size());
+            + static_cast<uint64_t>(anchorInfo.name.size());
         usage.nameSlots = slotsFor(nameCount);
         return usage;
     }
@@ -640,51 +642,120 @@ namespace gl::gpu {
         assert(capacity.metadataBytes > 0);
     }
 
-    /// @brief Reserve every column to `storage` (owning and backing arenas).
-    ///
-    /// @param storage Elements each column reserves.
-    /// @return Nothing.
-    void Phase2ProjectionArena::reserveColumns(const Phase2ProjectionCapacity& storage) {
-        logicalBlocks.reserve(storage.logicalBlocks);
-        statements.reserve(storage.statements);
-        sourceStatementIndices.reserve(storage.statements);
-        nameRecords.reserve(storage.nameRecords);
-        nameBytes.reserve(storage.nameBytes);
-        nameSlots.reserve(storage.nameSlots);
-        ruleStringRecords.reserve(storage.ruleStringRecords);
-        ruleStringBytes.reserve(storage.ruleStringBytes);
-        byteMapViews.reserve(storage.byteMapViews);
-        byteMapEntries.reserve(storage.byteMapEntries);
-        byteMapSlots.reserve(storage.byteMapSlots);
-        byteKeyBytes.reserve(storage.byteKeyBytes);
-        blobRecords.reserve(storage.blobRecords);
-        blobBytes.reserve(storage.blobBytes);
-        reverseMapViews.reserve(storage.reverseMapViews);
-        reverseMapEntries.reserve(storage.reverseMapEntries);
-        reverseMapSlots.reserve(storage.reverseMapSlots);
-        reverseKeyBytes.reserve(storage.reverseKeyBytes);
-        reverseOwners.reserve(storage.reverseOwners);
-        podMapViews.reserve(storage.podMapViews);
-        podMapEntries.reserve(storage.podMapEntries);
-        podMapSlots.reserve(storage.podMapSlots);
-        podRunValues.reserve(storage.podRunValues);
-        mandatoryStatementKeys.reserve(storage.mandatoryStatementKeys);
-        metadataBytes.reserve(storage.metadataBytes);
+    /// @brief Measure exact aligned storage for one projection role.
+    /// @details Uses the same ordered field census as reserveStorage.
+    /// @param fixedCapacity Logical column and scratch ceilings.
+    /// @param storage Physical backing-column ceilings.
+    /// @param role Owning, backing, slice or retained sealing storage.
+    /// @return Measured payload layout, without block rounding.
+    GpuHostLayout Phase2ProjectionArena::hostLayout(
+        const Phase2ProjectionCapacity& fixedCapacity,
+        const Phase2ProjectionCapacity& storage, Role role) {
+        GpuHostLayout layout;
+        if (role == Role::Sealing) {
+            layout.add<DeviceLogicalBlockProjection>(fixedCapacity.logicalBlocks);
+            layout.add<NameId>(fixedCapacity.statements);
+            layout.add<DeviceNameRecord>(fixedCapacity.nameRecords);
+            layout.add<char>(fixedCapacity.nameBytes);
+            layout.add<DeviceRuleStringRecord>(fixedCapacity.ruleStringRecords);
+            layout.add<char>(fixedCapacity.ruleStringBytes);
+        }
+        if (role == Role::Owning || role == Role::Backing) {
+            layout.add<DeviceLogicalBlockProjection>(storage.logicalBlocks);
+            layout.add<IntEncodedExpr>(storage.statements);
+            layout.add<NameId>(storage.statements);
+            layout.add<DeviceNameRecord>(storage.nameRecords);
+            layout.add<char>(storage.nameBytes);
+            layout.add<int32_t>(storage.nameSlots);
+            layout.add<DeviceRuleStringRecord>(storage.ruleStringRecords);
+            layout.add<char>(storage.ruleStringBytes);
+            layout.add<DeviceByteMapView>(storage.byteMapViews);
+            layout.add<DeviceByteMapEntry>(storage.byteMapEntries);
+            layout.add<int32_t>(storage.byteMapSlots);
+            layout.add<char>(storage.byteKeyBytes);
+            layout.add<DeviceBlobRecord>(storage.blobRecords);
+            layout.add<char>(storage.blobBytes);
+            layout.add<DeviceReverseMapView>(storage.reverseMapViews);
+            layout.add<DeviceReverseMapEntry>(storage.reverseMapEntries);
+            layout.add<int32_t>(storage.reverseMapSlots);
+            layout.add<char>(storage.reverseKeyBytes);
+            layout.add<int32_t>(storage.reverseOwners);
+            layout.add<DevicePodMapView>(storage.podMapViews);
+            layout.add<DevicePodMapEntry>(storage.podMapEntries);
+            layout.add<int32_t>(storage.podMapSlots);
+            layout.add<int32_t>(storage.podRunValues);
+            layout.add<int64_t>(storage.mandatoryStatementKeys);
+            layout.add<char>(storage.metadataBytes);
+        }
+        if (role == Role::Owning || role == Role::Slice) {
+            layout.add<NameId>(fixedCapacity.nameRecords);
+            layout.add<uint8_t>(fixedCapacity.nameRecords);
+            layout.add<NameId>(fixedCapacity.nameRecords);
+            layout.add<DecodedRankRange>(fixedCapacity.nameRecords);
+            layout.add<uint32_t>(fixedCapacity.reverseMapEntries);
+            layout.add<SharedNameProjection>(fixedCapacity.logicalBlocks);
+            layout.add<SharedRuleStringProjection>(fixedCapacity.logicalBlocks);
+        }
+        return layout;
     }
 
-    /// @brief Reserve the construction scratch for this arena's `capacity`
-    ///        (owning and slice arenas).
-    ///
+    /// @brief Reserve all owned columns in one measured contiguous lease.
+    /// @details Slice columns retain their backing views; only scratch is owned.
+    /// @param storage Physical backing-column capacities.
     /// @return Nothing.
-    void Phase2ProjectionArena::reserveScratch() {
-        decodedRankScratch_.reserve(capacity.nameRecords);
-        usedAsPremiseScratch_.reserve(capacity.nameRecords);
-        decodedRankWorkScratch_.reserve(capacity.nameRecords);
-        decodedRankRangeScratch_.reserve(capacity.nameRecords);
-        reverseRunScratch_.reserve(capacity.reverseMapEntries);
-        sharedNameProjections_.reserve(capacity.logicalBlocks);
-        sharedRuleStringProjections_.reserve(capacity.logicalBlocks);
+    void Phase2ProjectionArena::reserveStorage(const Phase2ProjectionCapacity& storage) {
+        const auto layout = hostLayout(capacity, storage, role_);
+        hostStorage_.reserve(layout.bytes);
+        const auto reserve = [&](auto& column, uint32_t count) {
+            column.bindStorage(hostStorage_);
+            column.reserve(count);
+        };
+        if (role_ == Role::Sealing) {
+            reserve(logicalBlocks, capacity.logicalBlocks);
+            reserve(sourceStatementIndices, capacity.statements);
+            reserve(nameRecords, capacity.nameRecords);
+            reserve(nameBytes, capacity.nameBytes);
+            reserve(ruleStringRecords, capacity.ruleStringRecords);
+            reserve(ruleStringBytes, capacity.ruleStringBytes);
+        }
+        if (role_ == Role::Owning || role_ == Role::Backing) {
+            reserve(logicalBlocks, storage.logicalBlocks);
+            reserve(statements, storage.statements);
+            reserve(sourceStatementIndices, storage.statements);
+            reserve(nameRecords, storage.nameRecords);
+            reserve(nameBytes, storage.nameBytes);
+            reserve(nameSlots, storage.nameSlots);
+            reserve(ruleStringRecords, storage.ruleStringRecords);
+            reserve(ruleStringBytes, storage.ruleStringBytes);
+            reserve(byteMapViews, storage.byteMapViews);
+            reserve(byteMapEntries, storage.byteMapEntries);
+            reserve(byteMapSlots, storage.byteMapSlots);
+            reserve(byteKeyBytes, storage.byteKeyBytes);
+            reserve(blobRecords, storage.blobRecords);
+            reserve(blobBytes, storage.blobBytes);
+            reserve(reverseMapViews, storage.reverseMapViews);
+            reserve(reverseMapEntries, storage.reverseMapEntries);
+            reserve(reverseMapSlots, storage.reverseMapSlots);
+            reserve(reverseKeyBytes, storage.reverseKeyBytes);
+            reserve(reverseOwners, storage.reverseOwners);
+            reserve(podMapViews, storage.podMapViews);
+            reserve(podMapEntries, storage.podMapEntries);
+            reserve(podMapSlots, storage.podMapSlots);
+            reserve(podRunValues, storage.podRunValues);
+            reserve(mandatoryStatementKeys, storage.mandatoryStatementKeys);
+            reserve(metadataBytes, storage.metadataBytes);
+        }
+        if (role_ == Role::Owning || role_ == Role::Slice) {
+            reserve(decodedRankScratch_, capacity.nameRecords);
+            reserve(usedAsPremiseScratch_, capacity.nameRecords);
+            reserve(decodedRankWorkScratch_, capacity.nameRecords);
+            reserve(decodedRankRangeScratch_, capacity.nameRecords);
+            reserve(reverseRunScratch_, capacity.reverseMapEntries);
+            reserve(sharedNameProjections_, capacity.logicalBlocks);
+            reserve(sharedRuleStringProjections_, capacity.logicalBlocks);
+        }
     }
+
 
     /// @brief Reserve every projection array to an immutable capacity ceiling.
     ///
@@ -701,8 +772,7 @@ namespace gl::gpu {
         Phase2ProjectionCapacity fixedCapacity)
         : capacity(fixedCapacity) {
         assertPositiveCapacity(capacity);
-        reserveColumns(capacity);
-        reserveScratch();
+        reserveStorage(capacity);
     }
 
     /// @brief Reserve the columns of a projection whose construction shards
@@ -721,7 +791,7 @@ namespace gl::gpu {
         : capacity(fixedCapacity), role_(Role::Backing) {
         assertPositiveCapacity(capacity);
         assertPositiveCapacity(storage);
-        reserveColumns(storage);
+        reserveStorage(storage);
     }
 
     /// @brief Reserve the host lookup image retained across streamed uploads.
@@ -737,13 +807,7 @@ namespace gl::gpu {
         : capacity(fixedCapacity), role_(Role::Sealing) {
         (void)mode;
         assertPositiveCapacity(capacity);
-        logicalBlocks.reserve(capacity.logicalBlocks);
-        sourceStatementIndices.reserve(capacity.statements);
-        nameRecords.reserve(capacity.nameRecords);
-        nameBytes.reserve(capacity.nameBytes);
-        ruleStringRecords.reserve(capacity.ruleStringRecords);
-        ruleStringBytes.reserve(capacity.ruleStringBytes);
-        blobRuleOwners.reserve(capacity.blobRecords);
+        reserveStorage(capacity);
     }
 
     /// @brief Build a construction shard as a slice of `backing`'s columns.
@@ -787,7 +851,7 @@ namespace gl::gpu {
         podRunValues.attachSlice(backing.podRunValues, sliceStart.podRunValues, capacity.podRunValues);
         mandatoryStatementKeys.attachSlice(backing.mandatoryStatementKeys, sliceStart.mandatoryStatementKeys, capacity.mandatoryStatementKeys);
         metadataBytes.attachSlice(backing.metadataBytes, sliceStart.metadataBytes, capacity.metadataBytes);
-        reserveScratch();
+        reserveStorage(capacity);
     }
 
     /// @brief Reset all used prefixes without releasing reserved storage.
@@ -827,7 +891,6 @@ namespace gl::gpu {
         podRunValues.clear();
         mandatoryStatementKeys.clear();
         metadataBytes.clear();
-        blobRuleOwners.clear();
         decodedRankScratch_.clear();
         decodedRankWorkScratch_.clear();
         decodedRankRangeScratch_.clear();
@@ -841,7 +904,6 @@ namespace gl::gpu {
             assert(nameBytes.capacity() >= capacity.nameBytes);
             assert(ruleStringRecords.capacity() >= capacity.ruleStringRecords);
             assert(ruleStringBytes.capacity() >= capacity.ruleStringBytes);
-            assert(blobRuleOwners.capacity() >= capacity.blobRecords);
         } else {
             assert(logicalBlocks.capacity() >= capacity.logicalBlocks);
             assert(statements.capacity() >= capacity.statements);
@@ -894,8 +956,9 @@ namespace gl::gpu {
     /// it never truncates, resizes, or skips a semantic row.
     ///
     /// @param body Resident logical block whose read-only Phase 2 state is read.
-    /// @param analyzer Analyzer-wide immutable parameters, anchor name, and
-    ///                 compiled-core categories read by evaluation.
+    /// @param definitions Immutable compiled-core registry.
+    /// @param anchorInfo Immutable anchor information.
+    /// @param parameters Immutable phase-two evaluation parameters.
     /// @param selectedHashMemories Bit `1 << DeviceHashMemoryKind` for every
     ///                 request memory consumed by this logical block's tasks.
     /// @param buildPrefixFilter Build exact-prefix next-predicate maps for growth.
@@ -904,7 +967,9 @@ namespace gl::gpu {
     ///            preserve statement index order and local identifier values.
     DeviceLogicalBlockProjection Phase2ProjectionArena::appendLogicalBlock(
         const Memory& body,
-        const ExpressionAnalyzer& analyzer,
+        const CompiledDefinitionRegistry& definitions,
+            const ce::AnchorInfo& anchorInfo,
+            const ProverParameters& parameters,
         uint32_t selectedHashMemories,
         bool buildPrefixFilter) {
         const auto preflightStarted = std::chrono::steady_clock::now();
@@ -938,11 +1003,11 @@ namespace gl::gpu {
             value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
             return value ^ (value >> 31);
         };
-        const auto compiledCategory = [&analyzer](
+        const auto compiledCategory = [&definitions](
             const StrSpan& value) -> DeviceCompiledCategory {
             const StrSpan core = extractExpressionSpan(value);
             if (core.len == 0) return DeviceCompiledCategory::absent;
-            const LogicalEntity* entity = analyzer.compiledEntity(core);
+            const LogicalEntity* entity = definitions.compiledEntity(core);
             if (entity == nullptr) return DeviceCompiledCategory::absent;
             return equalSpans(StrSpan(entity->category), StrSpan("atomic", 6))
                 ? DeviceCompiledCategory::atomic
@@ -958,10 +1023,16 @@ namespace gl::gpu {
         forEachPremiseCore(body, [&](NameId core, int32_t polarity) {
             usedAsPremiseScratch_[core] |= static_cast<uint8_t>(1u << polarity);
         });
+        // A row is uploaded when its signed core is a premise core and some
+        // live rule premise of the block accepts it on its u_ literals,
+        // repetitions and scope (premisePatternAdmits) — the processor
+        // request filter applies the same union, so both routes keep one row
+        // list and split stumps translate between them.
         const auto usedAsPremise = [&](const IntEncodedExpr& row) {
             assert(row.nameId > 0 && static_cast<std::size_t>(row.nameId) < coreSlots);
             assert(row.negation == 0 || row.negation == 1);
-            return (usedAsPremiseScratch_[row.nameId] & (1u << row.negation)) != 0;
+            return (usedAsPremiseScratch_[row.nameId] & (1u << row.negation)) != 0
+                && premisePatternAdmits(body, row);
         };
         std::size_t statementCount = 0;
         for (int32_t index = 0; index < statementCountSigned; ++index)
@@ -1053,6 +1124,13 @@ namespace gl::gpu {
         assert(retained == statements.size());
         assert(retained - descriptor.statementOffset == descriptor.statementCount);
         assert(sourceStatementIndices.size() == statements.size());
+        // Rule-14 dump of the target block: the rows the device receives and
+        // the premise-core rows the premise patterns held back.
+        if (hashburst_dump::isTargetLB(body)) {
+            hashburst_dump::recordPhase2Upload(body,
+                sourceStatementIndices.data() + descriptor.statementOffset,
+                descriptor.statementCount, usedAsPremiseScratch_.data(), coreSlots);
+        }
 
         const auto statementsFinished = std::chrono::steady_clock::now();
 
@@ -1763,7 +1841,7 @@ namespace gl::gpu {
         descriptor.metadataCount = static_cast<uint32_t>(expressionKey.len);
         metadataBytes.insert(metadataBytes.end(), expressionKey.ptr,
             expressionKey.ptr + expressionKey.len);
-        const StrSpan anchorName(analyzer.anchorInfo.name);
+        const StrSpan anchorName(anchorInfo.name);
         assert(anchorName.len >= 0);
         assert(metadataBytes.size() + static_cast<std::size_t>(anchorName.len)
             <= capacity.metadataBytes);
@@ -1779,16 +1857,17 @@ namespace gl::gpu {
             body.primedForContradiction ? 1 : 0;
         descriptor.isPartOfRecursion = body.isPartOfRecursion ? 1 : 0;
         descriptor.recursionAuxyImplId = body.recursionAuxyImplId;
+        descriptor.recursionProductImplId = body.recursionProductImplId;
         descriptor.contradictionIndex = body.contradictionIndex;
         descriptor.mainValidityId = NameMap::MAIN_ID;
         descriptor.level = body.level;
         descriptor.standardMaxSecondaryNumber =
-            analyzer.parameters.standardMaxSecondaryNumber;
-        if (analyzer.parameters.incubator_mode)
+            parameters.standardMaxSecondaryNumber;
+        if (parameters.incubator_mode)
             descriptor.evaluationFlags |= deviceEvaluationIncubatorMode;
-        if (analyzer.parameters.ban_disintegration)
+        if (parameters.ban_disintegration)
             descriptor.evaluationFlags |= deviceEvaluationBanDisintegration;
-        if (analyzer.parameters.compressor_mode)
+        if (parameters.compressor_mode)
             descriptor.evaluationFlags |= deviceEvaluationCompressorMode;
 
         assert(statements.size() <= capacity.statements);
@@ -1900,7 +1979,7 @@ namespace gl::gpu {
             int16_t bound[ExecutionParameters::MAX_ARITY];
         };
         for (uint32_t memory = 0; memory < 4; ++memory) {
-            LbArena scratch(&staticMemory());
+            LbArena scratch(&gpuHostStorage());
             scratch.setPurpose(PoolPurpose::GpuHost);  // pool attribution
             DirtyState dirty = DirtyState::Clean;
             ColdHashSet<BytesKeyStore> prefixes(&scratch, &dirty);
@@ -2112,10 +2191,6 @@ namespace gl::gpu {
     /// @details Source ordinals support later task construction. Every copied
     /// descriptor already addresses its complete-image column; the device owns
     /// all remaining uploaded data independently of the construction window.
-    /// Of the blob column only the rule copy of each LMV is retained
-    /// (`blobRuleOwners`, read from the window's overall encoded-map runs; zero
-    /// for any other blob record), which names the fired rule of a marker
-    /// record (I-284).
     /// @param source Rebased window whose synchronous upload has completed.
     /// @param bases Assigned complete-image offsets of the window.
     /// @return Nothing.
@@ -2132,34 +2207,6 @@ namespace gl::gpu {
         append(nameBytes, source.nameBytes, bases.nameByte);
         append(ruleStringRecords, source.ruleStringRecords, bases.ruleRecord);
         append(ruleStringBytes, source.ruleStringBytes, bases.ruleByte);
-        // The window's descriptors are rebased; subtracting the bases gives
-        // their positions in the window's own columns.
-        assert(blobRuleOwners.size() == bases.blobRecord);
-        const std::size_t firstRecord = blobRuleOwners.size();
-        blobRuleOwners.resize(firstRecord + source.blobRecords.size(), 0);
-        for (const DeviceByteMapView& view : source.byteMapViews) {
-            if (view.kind != DeviceByteMapKind::overallEncoded) continue;
-            assert(view.entryOffset >= bases.byteEntry);
-            const uint32_t entryBegin = view.entryOffset - bases.byteEntry;
-            assert(entryBegin + view.entryCount <= source.byteMapEntries.size());
-            for (uint32_t e = entryBegin; e < entryBegin + view.entryCount; ++e) {
-                const DeviceByteMapEntry& entry = source.byteMapEntries[e];
-                assert(entry.blobRecordOffset >= bases.blobRecord);
-                const uint32_t recordBegin = entry.blobRecordOffset - bases.blobRecord;
-                assert(recordBegin + entry.blobRecordCount <= source.blobRecords.size());
-                for (uint32_t r = recordBegin; r < recordBegin + entry.blobRecordCount; ++r) {
-                    const DeviceBlobRecord& blob = source.blobRecords[r];
-                    assert(blob.byteOffset >= bases.blobByte);
-                    const uint32_t local = blob.byteOffset - bases.blobByte;
-                    assert(local <= source.blobBytes.size()
-                        && blob.byteLength <= source.blobBytes.size() - local);
-                    const LmvBlobView lmv(source.blobBytes.data() + local,
-                        static_cast<int32_t>(blob.byteLength));
-                    blobRuleOwners[firstRecord + r] =
-                        packRuleOwner(lmv.originalImplicationId(), lmv.validityId());
-                }
-            }
-        }
         addShardTiming(source);
         timing.logicalBlocks = logicalBlocks.size();
         assert(timing.mergeNanoseconds <= std::numeric_limits<uint64_t>::max()
@@ -2638,11 +2685,11 @@ namespace gl::gpu {
     ///
     /// @param threadCount Number of threads; positive.
     /// @return Idle workers.
-    Phase2ProjectionWorkers::Phase2ProjectionWorkers(uint32_t threadCount) {
+    Phase2ProjectionWorkers::Phase2ProjectionWorkers(uint32_t threadCount)
+        : threads_(threadCount) {
         assert(threadCount > 0);
-        threads_.reserve(threadCount);
         for (uint32_t index = 0; index < threadCount; ++index)
-            threads_.emplace_back([this] { work(); });
+            threads_[index] = std::thread([this] { work(); });
     }
 
     /// @brief Stop and join every thread.
@@ -2659,7 +2706,7 @@ namespace gl::gpu {
             stopping_ = true;
         }
         start_.notify_all();
-        for (std::thread& thread : threads_) thread.join();
+        for (std::size_t index = 0; index < threads_.size(); ++index) threads_[index].join();
     }
 
     /// @brief Publish one job to the threads and wait for its last task.
@@ -2719,6 +2766,19 @@ namespace gl::gpu {
         }
     }
 
+    /// @brief Measure fixed host schedule storage before allocation.
+    /// @details The order equals the constructor's aligned suballocations.
+    /// @param capacity Positive schedule capacity.
+    /// @return Exact payload layout, before pool-block rounding.
+    GpuHostLayout Phase2TaskProjectionArena::hostLayout(Phase2TaskProjectionCapacity capacity) {
+        GpuHostLayout layout;
+        layout.add<DevicePhase2Task>(capacity.tasks);
+        layout.add<DeviceRequestBatch>(capacity.batches);
+        layout.add<DeviceMandatoryTerm>(capacity.terms);
+        layout.add<DeviceExpressionStump>(capacity.stumps);
+        return layout;
+    }
+
     /// @brief Reserve every task-projection array to a fixed ceiling.
     ///
     /// @details
@@ -2735,11 +2795,16 @@ namespace gl::gpu {
         assert(capacity.batches > 0);
         assert(capacity.terms > 0);
         assert(capacity.stumps > 0);
+        hostStorage_.reserve(hostLayout(capacity).bytes);
+        tasks.bindStorage(hostStorage_);
         tasks.reserve(capacity.tasks);
+        batches.bindStorage(hostStorage_);
         batches.reserve(capacity.batches);
+        terms.bindStorage(hostStorage_);
         terms.reserve(capacity.terms);
+        stumps.bindStorage(hostStorage_);
         stumps.reserve(capacity.stumps);
-    }
+}
 
     /// @brief Reset task used prefixes while retaining fixed reservations.
     ///
@@ -2889,6 +2954,26 @@ namespace gl::gpu {
         return task;
     }
 
+    /// @brief Measure fixed host schedule storage before allocation.
+    /// @details The order equals the constructor's aligned suballocations.
+    /// @param capacity Positive schedule capacity.
+    /// @return Exact payload layout, before pool-block rounding.
+    GpuHostLayout Phase2FilterScheduleArena::hostLayout(Phase2FilterScheduleCapacity capacity) {
+        GpuHostLayout layout;
+        assert(capacity.calls > 0 && capacity.calls <= UINT32_MAX / 2);
+        uint32_t slots = 1;
+        while (slots < capacity.calls * 2u) {
+            assert(slots <= UINT32_MAX / 2);
+            slots <<= 1u;
+        }
+        layout.add<DevicePhase2FilterCall>(capacity.calls);
+        layout.add<DevicePhase2FilterCall>(capacity.calls);
+        layout.add<uint32_t>(capacity.calls);
+        layout.add<uint32_t>(capacity.calls);
+        layout.add<int32_t>(slots);
+        return layout;
+    }
+
     /// @brief Reserve the global filter-call schedule once.
     ///
     /// @details
@@ -2911,17 +2996,24 @@ namespace gl::gpu {
         assert(capacity.maximumExaminedRowsPerCall
             <= static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
         assert(capacity.calls <= std::numeric_limits<uint32_t>::max() / 2u);
-        calls.reserve(capacity.calls);
-        classes.reserve(capacity.calls);
-        callClassIndices.reserve(capacity.calls);
-        classMultiplicities.reserve(capacity.calls);
         uint32_t slotCapacity = 1;
         while (slotCapacity < capacity.calls * 2u) {
             assert(slotCapacity <= std::numeric_limits<uint32_t>::max() / 2u);
             slotCapacity <<= 1u;
         }
+        hostStorage_.reserve(hostLayout(capacity).bytes);
+        calls.bindStorage(hostStorage_);
+        calls.reserve(capacity.calls);
+        classes.bindStorage(hostStorage_);
+        classes.reserve(capacity.calls);
+        callClassIndices.bindStorage(hostStorage_);
+        callClassIndices.reserve(capacity.calls);
+        classMultiplicities.bindStorage(hostStorage_);
+        classMultiplicities.reserve(capacity.calls);
+        classSlots.bindStorage(hostStorage_);
+        classSlots.reserve(slotCapacity);
         classSlots.assign(slotCapacity, -1);
-    }
+}
 
     /// @brief Reset the global filter schedule without releasing storage.
     ///
@@ -3075,6 +3167,16 @@ namespace gl::gpu {
         return census;
     }
 
+    /// @brief Measure fixed host schedule storage before allocation.
+    /// @details The order equals the constructor's aligned suballocations.
+    /// @param capacity Positive schedule capacity.
+    /// @return Exact payload layout, before pool-block rounding.
+    GpuHostLayout Phase2GrowthScheduleArena::hostLayout(uint32_t capacity) {
+        GpuHostLayout layout;
+        layout.add<DevicePhase2GrowthCall>(capacity);
+        return layout;
+    }
+
     /// @brief Reserve the request-growth call schedule once.
     ///
     /// @details
@@ -3088,8 +3190,10 @@ namespace gl::gpu {
         uint32_t fixedCapacity)
         : capacity(fixedCapacity) {
         assert(capacity > 0);
+        hostStorage_.reserve(hostLayout(capacity).bytes);
+        calls.bindStorage(hostStorage_);
         calls.reserve(capacity);
-    }
+}
 
     /// @brief Clear the request-growth schedule without releasing storage.
     ///

@@ -1,0 +1,32 @@
+(=[10,11])	main	implication	(>[](subset[u_10,u_11])(>[](subset[u_11,u_10])(=[u_10,u_11])))	main	(subset[10,11])	main	(subset[11,10])	main
+(>[](subset[u_10,u_11])(>[](subset[u_11,u_10])(=[u_10,u_11])))	main	expansion	(implication2933[10,11])	main
+(implication2933[10,11])	main	reformulation for integration and	(&(subset[10,11])(subset[11,10]))_integration_goal	main
+(&(subset[10,11])(subset[11,10]))_integration_goal	main	expansion for integration	(=[10,11])_integration_goal	main
+(subset[10,11])	main	validity name	(in[repl_lev_2_0,11])	main_boundary_(=[10,11])_subproof_(subset[10,11])
+(in[repl_lev_2_0,11])	main_boundary_(=[10,11])_subproof_(subset[10,11])	implication	(>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_9])(in[1,u_11])))	main	(preorder[1,4,2,repl_lev_2_0])	main_boundary_(=[10,11])_subproof_(subset[10,11])	(preorder[1,4,repl_lev_2_0,9])	main_boundary_(=[10,11])_subproof_(subset[10,11])
+(>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_9])(in[1,u_11])))	main	expansion	(implication91[1,4,2,9,11])	main
+(implication91[1,4,2,9,11])	main	disintegration	(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,9]))(implication91[1,4,2,9,11]))(in[2,1]))(in[9,1]))	main
+(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,9]))(implication91[1,4,2,9,11]))(in[2,1]))(in[9,1]))	main	expansion	(interval[1,4,2,9,11])	main
+(interval[1,4,2,9,11])	main	task formulation
+(preorder[1,4,2,repl_lev_2_0])	main_boundary_(=[10,11])_subproof_(subset[10,11])	implication	(>[1](in[1,u_10])(preorder[u_1,u_4,u_2,1]))	main	(in[repl_lev_2_0,10])	main_boundary_(=[10,11])_subproof_(subset[10,11])
+(>[1](in[1,u_10])(preorder[u_1,u_4,u_2,1]))	main	expansion	(implication89[10,1,4,2])	main
+(implication89[10,1,4,2])	main	disintegration	(&(&(&(&(implication89[10,1,4,2])(implication90[10,1,4,9]))(implication91[1,4,2,9,10]))(in[2,1]))(in[9,1]))	main
+(&(&(&(&(implication89[10,1,4,2])(implication90[10,1,4,9]))(implication91[1,4,2,9,10]))(in[2,1]))(in[9,1]))	main	expansion	(interval[1,4,2,9,10])	main
+(interval[1,4,2,9,10])	main	task formulation
+(in[repl_lev_2_0,10])	main_boundary_(=[10,11])_subproof_(subset[10,11])	premise element	(>[repl_lev_2_0](in[repl_lev_2_0,10])(in[repl_lev_2_0,11]))_integration_goal	main
+(>[repl_lev_2_0](in[repl_lev_2_0,10])(in[repl_lev_2_0,11]))_integration_goal	main	expansion for integration	(subset[10,11])_integration_goal	main
+(preorder[1,4,repl_lev_2_0,9])	main_boundary_(=[10,11])_subproof_(subset[10,11])	implication	(>[1](in[1,u_10])(preorder[u_1,u_4,1,u_9]))	main	(in[repl_lev_2_0,10])	main_boundary_(=[10,11])_subproof_(subset[10,11])
+(>[1](in[1,u_10])(preorder[u_1,u_4,1,u_9]))	main	expansion	(implication90[10,1,4,9])	main
+(implication90[10,1,4,9])	main	disintegration	(&(&(&(&(implication89[10,1,4,2])(implication90[10,1,4,9]))(implication91[1,4,2,9,10]))(in[2,1]))(in[9,1]))	main
+(subset[11,10])	main	validity name	(in[repl_lev_2_1,10])	main_boundary_(=[10,11])_subproof_(subset[11,10])
+(in[repl_lev_2_1,10])	main_boundary_(=[10,11])_subproof_(subset[11,10])	implication	(>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_9])(in[1,u_10])))	main	(preorder[1,4,2,repl_lev_2_1])	main_boundary_(=[10,11])_subproof_(subset[11,10])	(preorder[1,4,repl_lev_2_1,9])	main_boundary_(=[10,11])_subproof_(subset[11,10])
+(>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_9])(in[1,u_10])))	main	expansion	(implication91[1,4,2,9,10])	main
+(implication91[1,4,2,9,10])	main	disintegration	(&(&(&(&(implication89[10,1,4,2])(implication90[10,1,4,9]))(implication91[1,4,2,9,10]))(in[2,1]))(in[9,1]))	main
+(preorder[1,4,2,repl_lev_2_1])	main_boundary_(=[10,11])_subproof_(subset[11,10])	implication	(>[1](in[1,u_11])(preorder[u_1,u_4,u_2,1]))	main	(in[repl_lev_2_1,11])	main_boundary_(=[10,11])_subproof_(subset[11,10])
+(>[1](in[1,u_11])(preorder[u_1,u_4,u_2,1]))	main	expansion	(implication89[11,1,4,2])	main
+(implication89[11,1,4,2])	main	disintegration	(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,9]))(implication91[1,4,2,9,11]))(in[2,1]))(in[9,1]))	main
+(in[repl_lev_2_1,11])	main_boundary_(=[10,11])_subproof_(subset[11,10])	premise element	(>[repl_lev_2_1](in[repl_lev_2_1,11])(in[repl_lev_2_1,10]))_integration_goal	main
+(>[repl_lev_2_1](in[repl_lev_2_1,11])(in[repl_lev_2_1,10]))_integration_goal	main	expansion for integration	(subset[11,10])_integration_goal	main
+(preorder[1,4,repl_lev_2_1,9])	main_boundary_(=[10,11])_subproof_(subset[11,10])	implication	(>[1](in[1,u_11])(preorder[u_1,u_4,1,u_9]))	main	(in[repl_lev_2_1,11])	main_boundary_(=[10,11])_subproof_(subset[11,10])
+(>[1](in[1,u_11])(preorder[u_1,u_4,1,u_9]))	main	expansion	(implication90[11,1,4,9])	main
+(implication90[11,1,4,9])	main	disintegration	(&(&(&(&(implication89[11,1,4,2])(implication90[11,1,4,9]))(implication91[1,4,2,9,11]))(in[2,1]))(in[9,1]))	main

@@ -1,0 +1,12 @@
+(in3[v3,v5,v1,+])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2](in2[w1,w2,s])(>[w3,w4](in2[w3,w4,s])(>[w5](in3[w5,w2,w4,+])(in3[w5,w1,w3,+])))))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in2[v5,v4,s])	main	(in2[v1,v2,s])	main	(in3[v3,v4,v2,+])	main
+(in2[v5,v4,s])	main	task formulation
+(in2[v1,v2,s])	main	task formulation
+(in3[v3,v4,v2,+])	main	task formulation
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	(NaturalNumbers[N,i0,s,+,*])	main	(in2[i0,i1,s])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	expansion	(implication76[N,i0,s,+,*,i1])	main
+(implication76[N,i0,s,+,*,i1])	main	reformulation for integration and	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main	expansion for integration	(AnchorPeano[N,i0,s,+,*,i1])_integration_goal	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation

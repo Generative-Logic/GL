@@ -1,0 +1,10 @@
+(>[i,x]
+	(in2[i,x,P])
+	(>[j,y]
+		(in2[j,y,P])
+		(>[]
+			(preorder[N,+,i,j])
+			(preorder[N,+,y,x])
+		)
+	)
+)

@@ -18,6 +18,7 @@
       "1"
     ],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 3,
     "max_size_expression_before_existence": 3,
     "max_size_expression_after_existence": 3
@@ -42,6 +43,8 @@
       "2"
     ],
     "output_args": [],
+    "symmetric": true,
+    "uniquely_definable": [],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -69,6 +72,9 @@
       "1"
     ],
     "output_args": [
+      "2"
+    ],
+    "uniquely_definable": [
       "2"
     ],
     "max_size_expression": 4,
@@ -105,6 +111,9 @@
     "output_args": [
       "3"
     ],
+    "uniquely_definable": [
+      "3"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -130,6 +139,7 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -151,6 +161,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 1,
     "max_size_expression_before_existence": 1,
     "max_size_expression_after_existence": 1
@@ -180,6 +191,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -213,6 +225,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -245,6 +258,9 @@
       "m"
     ],
     "output_args": [
+      "p"
+    ],
+    "uniquely_definable": [
       "p"
     ],
     "max_size_expression": 5,
@@ -280,6 +296,9 @@
     "max_count_per_conjecture": 2,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "M"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -319,6 +338,9 @@
       "m"
     ],
     "output_args": [],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -354,6 +376,9 @@
       "n"
     ],
     "output_args": [],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -403,6 +428,9 @@
     "output_args": [
       "p"
     ],
+    "uniquely_definable": [
+      "p"
+    ],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -435,6 +463,8 @@
       "m"
     ],
     "output_args": [],
+    "symmetric": false,
+    "uniquely_definable": [],
     "max_size_expression": 3,
     "max_size_expression_before_existence": 3,
     "max_size_expression_after_existence": 3
@@ -456,6 +486,9 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "id"
+    ],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -491,6 +524,7 @@
       "m"
     ],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -524,6 +558,9 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "L"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -561,6 +598,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -858,6 +896,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 6,
     "max_size_expression_before_existence": 6,
     "max_size_expression_after_existence": 6

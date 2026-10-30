@@ -89,6 +89,9 @@ namespace gl::gpu {
         Phase2DeviceAllocationSize allocations[6]{};
         uint64_t blocks[6]{};
         uint64_t totalBlocks{0};
+        /// Whole blocks of the growth frontier store drawn from the dedicated
+        /// frontier-store reservation instead of the working budget.
+        uint64_t frontierStoreDedicatedBlocks{0};
     };
 
     /// @brief Seed processing proportions from recorded complete-pipeline demand.
@@ -134,14 +137,23 @@ namespace gl::gpu {
     /// dimension. Simultaneous output floors reserve a pending fragment's needs.
     /// Insufficient input space asks for a smaller LB chunk; insufficient output
     /// floors ask for further output segmentation without consuming work.
+    /// With dedicated frontier-store blocks the store takes the largest power
+    /// of two up to `phase2FrontierStoreMaximumRows` whose two buffers fit those
+    /// blocks, whatever the measured level demand, and the blocks are not
+    /// counted against `availableBlocks`, so the store never shrinks the other
+    /// columns.
     ///
     /// @param input Immutable input and schedule column capacities.
-    /// @param availableBlocks Whole 2 MiB blocks available for this chunk.
+    /// @param availableBlocks Whole 2 MiB working blocks available for this chunk.
     /// @param demand Nonzero recent processing demand.
     /// @param minimumOutput Optional simultaneous output requirements for lending.
     /// @param minimumOnly Measure minimum progress storage for chunk packing.
+    /// @param frontierStoreBlocks Dedicated frontier-store blocks beyond
+    ///        `availableBlocks` (`Phase2GpuBudget::frontierStoreBlocks`); zero
+    ///        plans the store inside the working blocks.
     /// @return Fitting capacities or an explicit continuation action.
     Phase2BufferPlan planPhase2Buffers(const Phase2BufferPlanInput& input,
         uint64_t availableBlocks, const Phase2WorkDemand& demand,
-        Phase2OutputUsage minimumOutput = {}, bool minimumOnly = false);
+        Phase2OutputUsage minimumOutput = {}, bool minimumOnly = false,
+        uint64_t frontierStoreBlocks = 0);
 }

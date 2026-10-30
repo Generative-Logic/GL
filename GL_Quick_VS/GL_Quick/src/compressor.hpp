@@ -124,11 +124,11 @@ namespace gl {
     class Compressor {
     public:
         /// @brief Construct a compressor over an existing
-        /// `ExpressionAnalyzer` and the full theorem list.
+        /// `Prover` and the full theorem list.
         /// @param analyzer    Prover instance that provides the hash-engine
         ///                    state for Phase 1.
         /// @param all_theorems Full set of proved theorems (raw MPL).
-        Compressor(ExpressionAnalyzer& analyzer,
+        Compressor(Prover& analyzer,
                const std::vector<std::string>& all_theorems);
 
         /// @brief Run Phase 1 (graph extraction) + Phase 2 (greedy
@@ -138,7 +138,7 @@ namespace gl {
         std::vector<std::string> run();
 
     private:
-        ExpressionAnalyzer&            analyzer;
+        Prover&            analyzer;
         std::vector<std::string>       all_theorems;
         std::vector<CompressorNode>    extracted_graphs;  // N graphs
 

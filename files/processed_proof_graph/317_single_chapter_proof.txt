@@ -1,0 +1,23 @@
+(coprime[N,i0,s,*,v1,v2])	main	validity name	(in2[i0,v3,s])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(in2[i0,v3,s])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	equality1	(in2[i0,i1,s])	main	(=[i1,v3])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(=[i1,v3])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	symmetry of equality	(=[v3,i1])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(=[v3,i1])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](prime[N,+,*,i1,i2,w1])(>[w2]!(preorder[N,*,w1,w2])(>[w3](preorder[N,*,w3,w1])(>[](preorder[N,*,w3,w2])(=[w3,i1]))))))	main	!(preorder[N,*,v1,v2])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(preorder[N,*,v3,v2])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	(preorder[N,*,v3,v1])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	(prime[N,+,*,i1,i2,v1])	main
+(preorder[N,*,v3,v2])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,*])(preorder[N,*,w2,w3])))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in3[v4,v3,v2,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(in3[v4,v3,v2,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,*])(in3[w2,w1,w3,*])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in3[v3,v4,v2,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(in3[v3,v4,v2,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	premise element	(>[v3](in[v3,N])(>[v5](in3[v3,v5,v1,*])(>[v4](in3[v3,v4,v2,*])(in2[i0,v3,s]))))_integration_goal	main
+(preorder[N,*,v3,v1])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,*])(preorder[N,*,w2,w3])))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in3[v5,v3,v1,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(in3[v5,v3,v1,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,*])(in3[w2,w1,w3,*])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in3[v3,v5,v1,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])
+(in3[v3,v5,v1,*])	main_boundary_(coprime[N,i0,s,*,v1,v2])_subproof_(coprime[N,i0,s,*,v1,v2])	premise element	(>[v3](in[v3,N])(>[v5](in3[v3,v5,v1,*])(>[v4](in3[v3,v4,v2,*])(in2[i0,v3,s]))))_integration_goal	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	(NaturalNumbers[N,i0,s,+,*])	main	(in2[i0,i1,s])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	expansion	(implication76[N,i0,s,+,*,i1])	main
+(implication76[N,i0,s,+,*,i1])	main	reformulation for integration and	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main	expansion for integration	(AnchorPeano[N,i0,s,+,*,i1])_integration_goal	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](prime[N,+,*,i1,i2,v1])(>[v2]!(preorder[N,*,v1,v2])(>[v3](preorder[N,*,v3,v1])(>[](preorder[N,*,v3,v2])(=[v3,i1]))))))	main	theorem
+!(preorder[N,*,v1,v2])	main	task formulation
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(preorder[N,*,v2,v3])))	main	theorem
+(>[v3](in[v3,N])(>[v5](in3[v3,v5,v1,*])(>[v4](in3[v3,v4,v2,*])(in2[i0,v3,s]))))_integration_goal	main	expansion for integration	(coprime[N,i0,s,*,v1,v2])_integration_goal	main
+(prime[N,+,*,i1,i2,v1])	main	task formulation

@@ -58,6 +58,52 @@ namespace gl {
             static std::atomic<uint64_t> counter{ 0 };
             return counter.fetch_add(1, std::memory_order_relaxed) + 1;
         }
+
+        /// The process's open positioned-file bytes (`openDeloadBytes`).
+        std::atomic<int64_t> g_openDeloadBytes{ 0 };
+    }
+
+    /// @brief Whether a summed deload size stays within the ceiling.
+    ///
+    /// @details
+    /// Compares @p bytes with `kMaxDeloadBytes`. Pure; no file is touched.
+    ///
+    /// @param bytes A summed logical size in bytes; >= 0.
+    /// @return True iff @p bytes is at most `kMaxDeloadBytes`.
+    bool PositionedFile::deloadWithinCeiling(int64_t bytes) {
+        assert(bytes >= 0);
+        return bytes <= kMaxDeloadBytes;
+    }
+
+    /// @brief The summed logical size of every open `PositionedFile` of the
+    ///        process.
+    ///
+    /// @details
+    /// Reads the process total that `accountDeloadResize` maintains.
+    ///
+    /// @return Bytes; >= 0.
+    int64_t PositionedFile::openDeloadBytes() {
+        return g_openDeloadBytes.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Move the process's open deload total by one file's resize.
+    ///
+    /// @details
+    /// Adds `newSize - oldSize`; a growth asserts the new total stays within
+    /// `kMaxDeloadBytes`, a shrink never asserts.
+    ///
+    /// @param oldSize The file's logical size before; >= 0.
+    /// @param newSize The file's logical size after; >= 0.
+    /// @return The process total after the move.
+    int64_t PositionedFile::accountDeloadResize(int64_t oldSize, int64_t newSize) {
+        assert(oldSize >= 0 && newSize >= 0);
+        const int64_t delta = newSize - oldSize;
+        const int64_t total = g_openDeloadBytes.fetch_add(delta, std::memory_order_relaxed) + delta;
+        assert(total >= 0);
+        assert((delta <= 0 || deloadWithinCeiling(total))
+            && "SSD deload passes PositionedFile::kMaxDeloadBytes (50 GiB): a runaway's "
+               "request frontier or extent file");
+        return total;
     }
 
 #ifdef _WIN32
@@ -138,6 +184,7 @@ namespace gl {
         assert(ok && "extent primary CloseHandle failed");
         (void)ok;
         primaryHandle_ = nullptr;
+        accountDeloadResize(fileSize_, 0);
         fileSize_ = 0;
         // Leave openGeneration_ as-is: the next open draws a fresh global id,
         // so no stale thread-local (this, generation) entry can match.
@@ -148,6 +195,7 @@ namespace gl {
         assert(bytes >= 0);
         std::lock_guard<std::mutex> guard(mutex_);
         assert(open_ && "preallocate on a closed extent file");
+        accountDeloadResize(fileSize_, bytes);
         LARGE_INTEGER li;
         li.QuadPart = bytes;
         const BOOL sk = SetFilePointerEx(
@@ -165,6 +213,7 @@ namespace gl {
         std::lock_guard<std::mutex> guard(mutex_);
         assert(open_ && "grow on a closed extent file");
         assert(newSize >= fileSize_ && "extent grow must not shrink");
+        accountDeloadResize(fileSize_, newSize);
         LARGE_INTEGER li;
         li.QuadPart = newSize;
         const BOOL sk = SetFilePointerEx(
@@ -262,6 +311,7 @@ namespace gl {
         assert(r == 0 && "extent close() failed");
         (void)r;
         fd_ = -1;
+        accountDeloadResize(fileSize_, 0);
         fileSize_ = 0;
         // Next open draws a fresh global id; no stale TLS entry can match.
         open_ = false;
@@ -271,6 +321,7 @@ namespace gl {
         assert(bytes >= 0);
         std::lock_guard<std::mutex> guard(mutex_);
         assert(open_ && "preallocate on a closed extent file");
+        accountDeloadResize(fileSize_, bytes);
         const int r = ::ftruncate(fd_, static_cast<off_t>(bytes));
         assert(r == 0 && "extent preallocate ftruncate failed — free disk or "
                          "lower kExtentInitialBytes");
@@ -282,6 +333,7 @@ namespace gl {
         std::lock_guard<std::mutex> guard(mutex_);
         assert(open_ && "grow on a closed extent file");
         assert(newSize >= fileSize_ && "extent grow must not shrink");
+        accountDeloadResize(fileSize_, newSize);
         const int r = ::ftruncate(fd_, static_cast<off_t>(newSize));
         assert(r == 0 && "extent growth ftruncate failed — free disk, add a "
                          ".deload exclusion, or raise kExtentInitialBytes");

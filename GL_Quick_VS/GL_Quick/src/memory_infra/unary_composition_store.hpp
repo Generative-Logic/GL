@@ -66,6 +66,15 @@ namespace gl {
         TypedColdSetMap<int32_t, int64_t>::RunValuesView consumerDemandValues{&consumerDemands.inner()};
         ColdHashSet<PodKeyStore<int64_t>> observedDemands;
         ColdHashSet<PodKeyStore<int64_t>>::KeysView observedDemandKeys{&observedDemands};
+        // Goal enrollment (D-469): consumers whose head
+        // can establish an open goal up to its one `(1)` constant, keyed by
+        // rule id with the goal keys; observed goals wake older consumers.
+        TypedColdSetMap<int32_t, int64_t> consumerGoals;
+        TypedColdSetMap<int32_t, int64_t>::KeysView consumerGoalKeys{&consumerGoals.inner()};
+        TypedColdSetMap<int32_t, int64_t>::RunStartsView consumerGoalStarts{&consumerGoals.inner()};
+        TypedColdSetMap<int32_t, int64_t>::RunValuesView consumerGoalValues{&consumerGoals.inner()};
+        ColdHashSet<PodKeyStore<int64_t>> observedGoals;
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView observedGoalKeys{&observedGoals};
         // These guards are call-local: a claimed block cannot deload mid-drain.
         bool publishing = false;
         int64_t publishingOwner = 0;
@@ -88,7 +97,8 @@ namespace gl {
             : sources(arena, dirty), sourceInfo(arena, dirty), sourceActive(arena, dirty),
               rules(arena, dirty), ruleInfo(arena, dirty), pending(arena, dirty),
               generated(arena, dirty), heads(arena, dirty), premises(arena, dirty), rebuild(arena, dirty),
-              admissionTransfers(arena, dirty), consumerDemands(arena, dirty), observedDemands(arena, dirty) {}
+              admissionTransfers(arena, dirty), consumerDemands(arena, dirty), observedDemands(arena, dirty),
+              consumerGoals(arena, dirty), observedGoals(arena, dirty) {}
 
         /// @brief Enumerate mutable canonical facets in fixed tag order.
         /// @details Every pending event and root-support bit survives deload.
@@ -126,14 +136,37 @@ namespace gl {
             visit(base+20, consumerDemandValues); visit(base+21, observedDemandKeys);
         }
 
+        /// @brief Enumerate the mutable goal-enrollment facets in fixed tag order.
+        /// @details The twenty-two tags of `visitContainers` are full, so the
+        /// goal facets own a separate appended tag run (consumer goals, then
+        /// observed goals). Every enrollment and wake receipt survives deload.
+        /// @param base First of four reserved tags.
+        /// @param visit Synchronous container visitor.
+        /// @return Void.
+        template<class Visitor> void visitGoalContainers(uint32_t base, Visitor&& visit) {
+            visit(base, consumerGoalKeys); visit(base+1, consumerGoalStarts);
+            visit(base+2, consumerGoalValues); visit(base+3, observedGoalKeys);
+        }
+
+        /// @brief Enumerate the read-only goal-enrollment facets in fixed tag order.
+        /// @details Tags match the mutable goal visitor exactly.
+        /// @param base First of four reserved tags.
+        /// @param visit Synchronous read-only container visitor.
+        /// @return Void.
+        template<class Visitor> void visitGoalContainers(uint32_t base, Visitor&& visit) const {
+            visit(base, consumerGoalKeys); visit(base+1, consumerGoalStarts);
+            visit(base+2, consumerGoalValues); visit(base+3, observedGoalKeys);
+        }
+
         /// @brief Account for every retained source, rule and index byte.
         /// @details Includes pending events and retired root identities.
         /// @return Total pool-backed live bytes.
         int64_t liveBytes() const {
-            return sources.liveBytes()+sourceInfo.liveBytes()+sourceActive.liveBytes()
-                +rules.liveBytes()+ruleInfo.liveBytes()+pending.liveBytes()+generated.liveBytes()
-                +heads.liveBytes()+premises.liveBytes()+rebuild.liveBytes()+admissionTransfers.liveBytes()
-                +consumerDemands.liveBytes()+observedDemands.liveBytes();
+            return peak_snapshot::measure("sources", sources, [&] { return sources.liveBytes(); })+peak_snapshot::measure("sourceInfo", sourceInfo, [&] { return sourceInfo.liveBytes(); })+peak_snapshot::measure("sourceActive", sourceActive, [&] { return sourceActive.liveBytes(); })
+                +peak_snapshot::measure("rules", rules, [&] { return rules.liveBytes(); })+peak_snapshot::measure("ruleInfo", ruleInfo, [&] { return ruleInfo.liveBytes(); })+peak_snapshot::measure("pending", pending, [&] { return pending.liveBytes(); })+peak_snapshot::measure("generated", generated, [&] { return generated.liveBytes(); })
+                +peak_snapshot::measure("heads", heads, [&] { return heads.liveBytes(); })+peak_snapshot::measure("premises", premises, [&] { return premises.liveBytes(); })+peak_snapshot::measure("rebuild", rebuild, [&] { return rebuild.liveBytes(); })+peak_snapshot::measure("admissionTransfers", admissionTransfers, [&] { return admissionTransfers.liveBytes(); })
+                +peak_snapshot::measure("consumerDemands", consumerDemands, [&] { return consumerDemands.liveBytes(); })+peak_snapshot::measure("observedDemands", observedDemands, [&] { return observedDemands.liveBytes(); })
+                +peak_snapshot::measure("consumerGoals", consumerGoals, [&] { return consumerGoals.liveBytes(); })+peak_snapshot::measure("observedGoals", observedGoals, [&] { return observedGoals.liveBytes(); });
         }
     };
 }

@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 9: Anchors & types.
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html">Compilation &amp; names</a>
@@ -432,13 +432,17 @@ stay entirely x-free. Because the trace (9.4.1) accumulates over the whole
 ancestor chain, a descendant's axed set is always a <i>superset</i> of its
 ancestors', so the parent-form x-anchor arriving by mail is refused instead
 of registering. <b>Anchor-numeral exception:</b> when the root's goal (the
-theorem head) cites an integer anchor-slot value — an anchor-numeral-headed
-theorem such as unit-product — the subtree is left untouched: no set, no
+theorem head) uses an integer anchor-slot value as a value it is about — an
+anchor-numeral-headed theorem such as unit-product, <i>a</i>&middot;<i>b</i> = 1
+&rArr; <i>a</i> = 1 — the subtree is left untouched: no set, no
 statement, so the mailed parent form registers at the inert door and the
 historical premise-completion machinery runs inside that grid's induction
 blocks. Such theorems genuinely need it, even though their finished chapters
 cite no x-content: the x-machinery there is search scaffolding, not proof
-content.
+content. A numeral that only fills a definition's fixed parameter does not
+count: "<i>n</i> has a nontrivial factor" passes the numeral 2 to the
+definition because the definition needs "2 &le; <i>k</i>" inside, so the
+theorem is not about 2 and its induction blocks stay x-free.
 </p>
 <p>
 Historically the walk early-returned on ALL recursion stubs — no set, no
@@ -482,6 +486,34 @@ digit is the integer slot's own index (<code>i0</code>→<code>0</code>, <code>i
 <code>0_copy</code> and <code>0_copy_copy</code> (no observed three-level
 nesting in practice).
 </p>
+<p>
+<b>Copies requested by a goal.</b> A goal can also request a second name for one of
+its own arguments, when a rule that would establish it needs that value twice (for
+example the goal P(0)&nbsp;=&nbsp;y and a rule with the premise x&nbsp;=&nbsp;0 yield
+<code>0&nbsp;=&nbsp;0_copy</code>). A premise that becomes 0&nbsp;&ne;&nbsp;0 once the goal's
+values are filled in can never hold, so it requests no copy. Such a copy is written into the goal's own scope,
+not into the block's main scope, and none is made when the argument already has a
+second name there. The argument sits in a natural-number slot of the goal, so only
+the natural-number slots of the anchor (0, 1, 2) can ever be copied this way; a copy
+of the set N, the successor or an operation would mean a rule variable was mistaken
+for the anchor's name, and the prover stops on it.
+</p>
+<p>
+<b>Copies given when a conjecture is loaded.</b> Three conjecture shapes receive a second name for one of their
+variables before the proof starts, written into the main scope of one of the conjecture's blocks: an antisymmetry
+(two premises with two arguments swapped and an equality head over them), two premises that share the result of
+one operation, and a head that states a property of a set D that a premise defines from one number n. In the last
+case (the divisor set D of n has a minimum) the proof needs n as a member of D, so rules must take n for two of
+their variables at once (n&nbsp;&le;&nbsp;n, n divides n); a rule cannot bind two variables to one name, so the
+block receives <code>n&nbsp;=&nbsp;n_copy</code> and the rules fire at the copy.
+</p>
+<figure><svg viewBox="0 0 760 120" role="img" aria-label="A goal-requested copy is written into the goal's scope; only natural-number anchor slots can be copied">
+<rect x="20" y="16" width="330" height="40" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="185" y="41" fill="#F0E8DC" font-size="12" text-anchor="middle">goal in scope S: P(0) = y</text>
+<rect x="410" y="16" width="330" height="40" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="575" y="41" fill="#F0E8DC" font-size="12" text-anchor="middle">copy 0 = 0_copy written in scope S</text>
+<path d="M352 36 L406 36" stroke="#5DCAA5" stroke-width="1.6"/>
+<text x="380" y="84" fill="#8B8FA5" font-size="11" text-anchor="middle">copyable: i0, i1, i2 (slot type (1))   ·   never copied: N, s, +, *, id</text>
+<text x="380" y="104" fill="#8B8FA5" font-size="11" text-anchor="middle">an argument that already has a second name in S gets no copy</text>
+</svg></figure>
 
 <figure>
 <svg viewBox="0 0 760 200" role="img" aria-label="The x-prefix to _copy rename pipeline">
@@ -629,7 +661,7 @@ without re-reading the theorem. Induction is scheduled only over numbers.
 A theorem can reference <i>two</i> anchors. Specifically, the cross-anchor
 bridge theorem
 </p>
-<pre><code>(&gt;[N,i0,s,+,*,i1]
+<pre><code>(&gt;[N,i0,s,+,*,i1,i2,id]
     (AnchorGauss[N,i0,s,+,*,i1,i2,id])
     (AnchorPeano[N,i0,s,+,*,i1]))</code></pre>
 <p>
@@ -640,10 +672,9 @@ given: the Peano theorem's premise <code>AnchorPeano</code> is discharged by
 the bridge from the Gauss context.
 </p>
 <p>
-This bridge is an externally-supplied <code>direct</code> theorem, not
-conjecturer output, so its outer binder need not follow the full-bind rule of
-§9.2.1 — <code>i2</code> and <code>id</code> stay free even though they appear
-in the <code>AnchorGauss</code> premise.
+The pipeline generates this bridge, and like every theorem it follows the
+full-bind rule of §9.2.1: <code>i2</code> and <code>id</code> are bound
+although only the <code>AnchorGauss</code> premise uses them.
 </p>
 <p>
 The FTA batch, in both full and shortcut mode, extends the same idea: its two

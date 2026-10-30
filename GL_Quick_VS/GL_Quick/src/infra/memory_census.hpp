@@ -108,6 +108,7 @@ namespace gl {
             int64_t peakWorkingSetBytes = 0;
             int64_t peakPrivateBytes = 0;
             int64_t heapCommittedPeakBytes = -1;
+            int64_t pageFaultCount = -1;
         };
 
         /// @brief Read the lifetime process peaks.
@@ -115,19 +116,13 @@ namespace gl {
         /// @return The peaks; asserts the operating-system query succeeds.
         ProcessPeaks readProcessPeaks();
 
-        /// @brief Bytes the four static pools have ever handed out — the sum
-        ///        of each pool's carve high-water.
+        /// @brief Current committed backing across the four static pools.
         ///
-        /// @details
-        /// A pool re-grants recycled blocks before carving fresh ones, so
-        /// `peakBlocksInUse() * blockBytes()` is the span of the reservation
-        /// that has ever been touched. Subtracting it from a working-set
-        /// reading estimates the resident memory OUTSIDE the pools (heap, CUDA
-        /// host staging, driver, code). It is an estimate: a carved block need
-        /// not have every operating-system page touched, and the system may
-        /// trim resident pages.
+        /// @details Decommitted returned blocks are excluded. Subtracting this
+        /// from working set remains an estimate of residency outside the pools:
+        /// committed pages may be untouched or trimmed by the operating system.
         ///
-        /// @return Touched pool bytes over the pools that are initialized.
+        /// @return Current committed bytes of initialized pools.
         int64_t poolTouchedBytes();
 
         /// @brief Close the current prover step with a process sample and make
@@ -191,7 +186,8 @@ namespace gl {
         ///
         /// @param totalBytes           Device total.
         /// @param freeBeforePoolBytes  Device free before the reservation.
-        /// @param budgetBytes          The fixed reservation.
+        /// @param budgetBytes          The fixed reservation: the working budget
+        ///                             plus the dedicated frontier-store blocks.
         void noteGpuDevice(uint64_t totalBytes, uint64_t freeBeforePoolBytes,
                            uint64_t budgetBytes);
 

@@ -42,6 +42,7 @@ from verifier import (  # noqa: E402
     check_or_theorem, check_or_disintegration, check_or_convergence,
     check_or_branch_proven, check_or_branch_assumption,
     _negate_expr, _build_or_from_elements, _build_or_subimpls_from_elements,
+    _case_split_disjuncts,
 )
 
 
@@ -81,6 +82,86 @@ def _state_with_nested_or() -> object:
     }
     state.current_gl_binary = state.gl_binaries["Peano"]
     return state
+
+
+def _state_with_and2() -> object:
+    """Install a two-conjunct and entry (two equalities) next to ``or3``.
+
+    The negated conjunction ``!(and88[i,n,p,a])`` is a case-split source
+    whose cases are ``!(=[i,n])`` and ``!(=[p,a])``
+    (D-460).
+    """
+    state = _state_with_or3()
+    state.gl_binaries["Peano"]["and88"] = {
+        "category": "and",
+        "signature": "(and88[u_1,u_2,u_3,u_4])",
+        "arity": 4,
+        "elements": ["(=[u_1,u_2])", "(=[u_3,u_4])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
+@register
+def test_case_split_disjuncts_sources():
+    """A negated and yields its complemented conjuncts in definition order;
+    a compiled OR keeps its flattened leaves; other shapes are rejected."""
+    state = _state_with_and2()
+    binaries = state.binaries_for_chapter()
+    assert _case_split_disjuncts("!(and88[i,n,p,a])", binaries) == [
+        "!(=[i,n])", "!(=[p,a])"]
+    assert _case_split_disjuncts("(or3[a,b,c])", binaries) == [
+        "(=[a,X])", "(=[b,X])", "(=[c,X])"]
+    assert _case_split_disjuncts("!(or3[a,b,c])", binaries) is None
+    assert _case_split_disjuncts("!(and88[i,n])", binaries) is None
+    assert _case_split_disjuncts("(and88[i,n,p,a])", binaries) is None
+
+
+@register
+def test_or_disintegration_negated_and_source_passes():
+    """A case of a negated conjunction integration premise, cited at its
+    parent where the premise has its own row -> PASS."""
+    state = _state_with_and2()
+    line = make_proof_line(
+        "!(=[i,n])",
+        "main_boundary_ordis_!(and88[i,n,p,a])_(!(=[i,n]))",
+        "or disintegration",
+        "!(and88[i,n,p,a])", "main",
+    )
+    origin = make_proof_line("!(and88[i,n,p,a])", "main", "premise element")
+    assert_pass(check_or_disintegration, line, [line, origin], state)
+
+
+@register
+def test_or_disintegration_negated_and_uncomplemented_case_fails():
+    """The positive conjunct is not a case of the negated conjunction."""
+    state = _state_with_and2()
+    line = make_proof_line(
+        "(=[i,n])",
+        "main_boundary_ordis_!(and88[i,n,p,a])_((=[i,n]))",
+        "or disintegration",
+        "!(and88[i,n,p,a])", "main",
+    )
+    origin = make_proof_line("!(and88[i,n,p,a])", "main", "premise element")
+    assert_failure(check_or_disintegration, line, [line, origin], state)
+
+
+@register
+def test_or_convergence_negated_and_source_passes():
+    """Both cases of a negated conjunction derive the conclusion -> PASS."""
+    state = _state_with_and2()
+    case_1 = "main_boundary_ordis_!(and88[i,n,p,a])_(!(=[i,n]))"
+    case_2 = "main_boundary_ordis_!(and88[i,n,p,a])_(!(=[p,a]))"
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "!(and88[i,n,p,a])", "main",
+        "(conclusion)", case_1,
+        "(conclusion)", case_2,
+    )
+    chapter = [convergence,
+               make_proof_line("(conclusion)", case_1, "task formulation"),
+               make_proof_line("(conclusion)", case_2, "task formulation")]
+    assert_pass(check_or_convergence, convergence, chapter, state)
 
 
 # ===========================================================================

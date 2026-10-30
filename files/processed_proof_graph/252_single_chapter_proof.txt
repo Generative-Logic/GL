@@ -1,0 +1,32 @@
+(=[V1,V2])	main	implication	(>[](subset[V1,V2])(>[](subset[V2,V1])(=[V1,V2])))	main	(subset[V1,V2])	main	(subset[V2,V1])	main
+(subset[V1,V2])	main	validity name	(in[v2,V2])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])
+(subset[V2,V1])	main	validity name	(in[v4,V1])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])
+(>[](subset[V1,V2])(>[](subset[V2,V1])(=[V1,V2])))	main	expansion	(implication2933[V1,V2])	main
+(implication2933[V1,V2])	main	reformulation for integration and	(&(subset[V1,V2])(subset[V2,V1]))_integration_goal	main
+(&(subset[V1,V2])(subset[V2,V1]))_integration_goal	main	expansion for integration	(=[V1,V2])_integration_goal	main
+(in[v2,V2])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])	implication	(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V2])))	main	(preorder[N,+,i0,v2])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])	(preorder[N,+,v2,v1])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])
+(preorder[N,+,i0,v2])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])	implication	(>[w1](in[w1,V1])(preorder[N,+,i0,w1]))	main	(in[v2,V1])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])
+(preorder[N,+,v2,v1])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])	implication	(>[w1](in[w1,V1])(preorder[N,+,w1,v1]))	main	(in[v2,V1])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])
+(in[v2,V1])	main_boundary_(=[V1,V2])_subproof_(subset[V1,V2])	premise element	(>[v2](in[v2,V1])(in[v2,V2]))_integration_goal	main
+(in[v4,V1])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])	implication	(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V1])))	main	(preorder[N,+,i0,v4])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])	(preorder[N,+,v4,v1])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])
+(preorder[N,+,i0,v4])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])	implication	(>[w1](in[w1,V2])(preorder[N,+,i0,w1]))	main	(in[v4,V2])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])
+(preorder[N,+,v4,v1])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])	implication	(>[w1](in[w1,V2])(preorder[N,+,w1,v1]))	main	(in[v4,V2])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])
+(in[v4,V2])	main_boundary_(=[V1,V2])_subproof_(subset[V2,V1])	premise element	(>[v4](in[v4,V2])(in[v4,V1]))_integration_goal	main
+(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V2])))	main	expansion	(implication91[N,+,i0,v1,V2])	main
+(implication91[N,+,i0,v1,V2])	main	disintegration	(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main
+(>[w1](in[w1,V2])(preorder[N,+,i0,w1]))	main	expansion	(implication89[V2,N,+,i0])	main
+(implication89[V2,N,+,i0])	main	disintegration	(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main
+(>[w1](in[w1,V2])(preorder[N,+,w1,v1]))	main	expansion	(implication90[V2,N,+,v1])	main
+(implication90[V2,N,+,v1])	main	disintegration	(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V2])	main
+(>[w1](in[w1,V1])(preorder[N,+,i0,w1]))	main	expansion	(implication89[V1,N,+,i0])	main
+(implication89[V1,N,+,i0])	main	disintegration	(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v1]))(implication91[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(>[w1](in[w1,V1])(preorder[N,+,w1,v1]))	main	expansion	(implication90[V1,N,+,v1])	main
+(implication90[V1,N,+,v1])	main	disintegration	(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v1]))(implication91[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V1])))	main	expansion	(implication91[N,+,i0,v1,V1])	main
+(implication91[N,+,i0,v1,V1])	main	disintegration	(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v1]))(implication91[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v1]))(implication91[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V1])	main
+(>[v2](in[v2,V1])(in[v2,V2]))_integration_goal	main	expansion for integration	(subset[V1,V2])_integration_goal	main
+(>[v4](in[v4,V2])(in[v4,V1]))_integration_goal	main	expansion for integration	(subset[V2,V1])_integration_goal	main
+(interval[N,+,i0,v1,V2])	main	task formulation
+(interval[N,+,i0,v1,V1])	main	task formulation

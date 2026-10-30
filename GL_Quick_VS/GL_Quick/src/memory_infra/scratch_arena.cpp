@@ -35,7 +35,7 @@ namespace gl {
     ///
     /// @details
     /// Idempotent for an identical shape (run modes construct several
-    /// `ExpressionAnalyzer`s per process); asserts on a mismatching re-init.
+    /// `Prover`s per process); asserts on a mismatching re-init.
     /// Each slot is default-constructed unbound and then `bind`-ed cold (no
     /// reserve cap; blocks are acquired lazily and released per worker task).
     ///
@@ -84,7 +84,7 @@ namespace gl {
     /// @details
     /// Thin forwarder to `scratchArenas().init(&staticMemory(), ...)`; carries
     /// the same idempotent-same-shape / assert-on-mismatch contract. Called
-    /// by the `ExpressionAnalyzer` constructor after `initStaticMemory` and
+    /// by the `Prover` constructor after `initStaticMemory` and
     /// after `logicalCores` is known.
     ///
     /// @param slotCount Number of worker slots (`logicalCores`).
@@ -112,7 +112,7 @@ namespace gl {
     /// @details
     /// Thin forwarder to `genScratchArenas().init(&staticMemory(), ...)`; same
     /// idempotent-same-shape / assert-on-mismatch contract as
-    /// `initScratchArenas`. Called by the `ExpressionAnalyzer` constructor right
+    /// `initScratchArenas`. Called by the `Prover` constructor right
     /// after `initScratchArenas`.
     ///
     /// @param slotCount Number of worker slots (`logicalCores`).

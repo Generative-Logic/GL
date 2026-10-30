@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschrÃ¤nkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -34,12 +34,22 @@
 /// The global filter/sort twin allocates the measured FTA ceilings and compares
 /// every CUDA-retained index against processor filtering and stable name ordering.
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "request_frontier_fixture.hpp"
+#include "prover_fixture.hpp"
+#include "hash_rule_installer_fixture.hpp"
+
+#include "hash_request_generator_fixture.hpp"
+#include "premise_pattern_fixture.hpp"
+#include "compiled_definition_fixture.hpp"
 
 #include "../gpu/phase2_projection.hpp"
 #ifdef GL_CUDA
 #include "../gpu/phase2_cuda.hpp"
 #include "../gpu/phase2_sealing.hpp"
+#include "../gpu/phase2_host_plan.hpp"
 #include "../gpu/phase2_early_exit.hpp"
 #endif
 #include "../memory.hpp"
@@ -244,6 +254,26 @@ TEST(phase2_projection, growth_order_supports_configured_positions_above_8192) {
     ASSERT_EQ(gl::gpu::growthEventPathComponent(higher, 0), 0u);
 }
 
+TEST(phase2_projection, growth_order_path_keys_fit_exact_radix_width) {
+    const uint32_t mask = (1u << gl::gpu::kDeviceGrowthPathRadixBits) - 1u;
+    uint32_t largest = 0;
+    gl::gpu::DeviceAcceptedGrowthEvent event{};
+    for (int32_t count = 0; count <= gl::ExecutionParameters::MAX_EXPRESSIONS; ++count) {
+        event.count = count;
+        for (uint32_t component = 0;
+             component < gl::ExecutionParameters::MAX_EXPRESSIONS; ++component) {
+            for (uint32_t code = 0; code <= UINT16_MAX; ++code) {
+                event.filteredPositionCodes[component] = static_cast<uint16_t>(code);
+                const uint32_t key = gl::gpu::growthEventPathComponent(event, component);
+                ASSERT_EQ(key & mask, key);
+                largest = std::max(largest, key);
+            }
+        }
+    }
+    ASSERT_EQ(largest, 2u * gl::ExecutionParameters::MAX_FILTERED_POSITION_CODE);
+    ASSERT_GE(largest, 1u << (gl::gpu::kDeviceGrowthPathRadixBits - 1));
+}
+
 TEST(phase2_projection, candidate_node_windows_preserve_exact_coverage) {
     const uint64_t starts[] = {0, 2, 2, 5, 9, 9};
     const uint64_t ends[] = {2, 2, 5, 9, 9, 13};
@@ -415,42 +445,42 @@ TEST(phase2_projection, predicate_ranges_preserve_original_positions) {
 }
 
 TEST(phase2_projection, prefix_index_preserves_polarity_arguments_and_memory_kind) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
-    const gl::NameId main = body.nameMap.encode("main");
-    const gl::NameId a = body.nameMap.encode("prefixA");
-    const gl::NameId b = body.nameMap.encode("prefixB");
-    const gl::NameId c = body.nameMap.encode("prefixC");
-    const int32_t source = body.ruleInterner.encode("prefixSource");
+    const gl::NameId main = ((body).nameMap).encode("main");
+    const gl::NameId a = ((body).nameMap).encode("prefixA");
+    const gl::NameId b = ((body).nameMap).encode("prefixB");
+    const gl::NameId c = ((body).nameMap).encode("prefixC");
+    const int32_t source = ((body).ruleInterner).encode("prefixSource");
     const auto owner = gl::packRuleOwner(source, main);
     auto& ownerScratch = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
     const auto subkey = [](gl::HashMemory& memory, gl::NameId count,
                            std::initializer_list<gl::NameId> values) {
-        memory.normalizedEncodedSubkeys.assignRun(
+        ((memory).normalizedEncodedSubkeys).assignRun(
             gl::NormKey{count, std::vector<gl::NameId>(values)}, std::vector<gl::OwnerSet>{gl::OwnerSet{}});
     };
     const auto whole = [&](gl::HashMemory& memory, gl::NameId count,
                            std::initializer_list<gl::NameId> values) {
         const std::vector<gl::NameId> key(values);
-        gl::ExpressionAnalyzer::addWholeKeyOwner(memory.normalizedEncodedKeys,
+        gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(((memory).normalizedEncodedKeys),
             count, key.data(), static_cast<int32_t>(key.size()), owner, ownerScratch);
     };
-    subkey(body.overallHashMemory, 1, {a, 0, 1, 0});
-    subkey(body.overallHashMemory, 1, {b, 0, 1, 0});
-    subkey(body.overallHashMemory, 1, {c, 0});
-    subkey(body.overallHashMemory, 2, {a, 0, 1, 0, b, 0, 1, 0});
-    subkey(body.overallHashMemory, 2, {a, 0, 1, 0, b, 1, 2, 0});
-    whole(body.overallHashMemory, 2, {a, 0, 1, 0, b, 0, 2, 0});
-    whole(body.overallHashMemory, 3, {a, 0, 1, 0, b, 0, 1, 0, c, 0});
-    whole(body.overallHashMemory, 3, {a, 0, 1, 0, b, 0, 2, 0, c, 1});
-    subkey(body.localHashMemory, 1, {a, 0, 1, 0});
-    subkey(body.localHashMemory, 1, {c, 0});
-    whole(body.localHashMemory, 2, {a, 0, 1, 0, c, 0});
+    subkey(((body).overallHashMemory), 1, {a, 0, 1, 0});
+    subkey(((body).overallHashMemory), 1, {b, 0, 1, 0});
+    subkey(((body).overallHashMemory), 1, {c, 0});
+    subkey(((body).overallHashMemory), 2, {a, 0, 1, 0, b, 0, 1, 0});
+    subkey(((body).overallHashMemory), 2, {a, 0, 1, 0, b, 1, 2, 0});
+    whole(((body).overallHashMemory), 2, {a, 0, 1, 0, b, 0, 2, 0});
+    whole(((body).overallHashMemory), 3, {a, 0, 1, 0, b, 0, 1, 0, c, 0});
+    whole(((body).overallHashMemory), 3, {a, 0, 1, 0, b, 0, 2, 0, c, 1});
+    subkey(((body).localHashMemory), 1, {a, 0, 1, 0});
+    subkey(((body).localHashMemory), 1, {c, 0});
+    whole(((body).localHashMemory), 2, {a, 0, 1, 0, c, 0});
     auto capacity = projectionCapacity(1, 1,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 256);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 256);
     gl::gpu::Phase2ProjectionArena arena(capacity);
-    const auto block = arena.appendLogicalBlock(body, analyzer, 0x0fu, true);
-    const auto bounds = gl::gpu::measurePhase2ProjectionUsage(body, analyzer, 0x0fu, true);
+    const auto block = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
+    const auto bounds = gl::gpu::measurePhase2ProjectionUsage(body, analyzer.anchorInfo, 0x0fu, true);
     ASSERT_EQ(block.byteMapViewCount, 14u);
     ASSERT_EQ(bounds.byteMapViews, 14u);
     ASSERT_EQ(arena.byteMapEntries.size(), bounds.byteMapEntries);
@@ -492,21 +522,21 @@ TEST(phase2_projection, prefix_index_preserves_polarity_arguments_and_memory_kin
 }
 
 TEST(phase2_projection, shared_key_sizing_and_reverse_alias_preserve_membership) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
-    body.nameMap.encode("main");
-    const gl::NameId core = body.nameMap.encode("sharedProjectionKey");
+    ((body).nameMap).encode("main");
+    const gl::NameId core = ((body).nameMap).encode("sharedProjectionKey");
     const gl::NormKey key{1, {core, 0}};
     gl::OwnerSet first;
     gl::OwnerSet second;
     second.hasLooseOwner = true;
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(key, {first});
-    body.localHashMemory.normalizedEncodedSubkeys.assignRun(key, {second});
-    body.workingMemory.normalizedEncodedSubkeys.assignRun(key, {first});
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(key, {first});
+    ((((body).localHashMemory)).normalizedEncodedSubkeys).assignRun(key, {second});
+    ((((body).workingMemory)).normalizedEncodedSubkeys).assignRun(key, {first});
     const gl::Int16SetKey remaining{{core}};
-    body.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(remaining, {key});
+    ((((body).overallHashMemory)).remainingArgsNormalizedEncodedMap).assignRun(remaining, {key});
     const auto shared = gl::gpu::measurePhase2SharedKeyUsage(body, 0x0bu, true);
-    const auto bounds = gl::gpu::measurePhase2ProjectionUsage(body, analyzer, 0x0bu, true);
+    const auto bounds = gl::gpu::measurePhase2ProjectionUsage(body, analyzer.anchorInfo, 0x0bu, true);
     const uint64_t expectedBytes = gl::Codec<gl::NormKey>::encode(key).size()
         + gl::Codec<gl::Int16SetKey>::encode(remaining).size() + 2 * sizeof(gl::NameId);
     ASSERT_EQ(shared.byteKeyBytes, expectedBytes);
@@ -515,10 +545,10 @@ TEST(phase2_projection, shared_key_sizing_and_reverse_alias_preserve_membership)
     ASSERT_EQ(shared.blobRecords, 3u);
     ASSERT_EQ(shared.blobBytes, 24u);
     auto capacity = projectionCapacity(2, 1,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1) * 2, 512);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1) * 2, 512);
     capacity.byteKeyBytes = static_cast<uint32_t>(bounds.byteKeyBytes * 2);
     gl::gpu::Phase2ProjectionArena arena(capacity);
-    const auto block = arena.appendLogicalBlock(body, analyzer, 0x0bu, true);
+    const auto block = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0bu, true);
     ASSERT_EQ(arena.byteKeyBytes.size(), expectedBytes);
     ASSERT_EQ(arena.blobBytes.size(), bounds.blobBytes);
     ASSERT_EQ(arena.reverseKeyBytes.size(), 0u);
@@ -535,16 +565,16 @@ TEST(phase2_projection, shared_key_sizing_and_reverse_alias_preserve_membership)
     const auto& forward = arena.byteMapEntries[arena.byteMapViews[block.byteMapViewOffset + 9].entryOffset];
     const auto& reverse = arena.reverseMapEntries[arena.reverseMapViews[block.reverseMapViewOffset].entryOffset];
     ASSERT_EQ(reverse.keyOffset, arena.blobRecords[forward.blobRecordOffset].byteOffset);
-    const auto secondBlock = arena.appendLogicalBlock(body, analyzer, 0x0bu, true);
+    const auto secondBlock = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0bu, true);
     ASSERT_EQ(arena.byteKeyBytes.size(), expectedBytes * 2);
     const auto& nextKey = arena.byteMapEntries[arena.byteMapViews[secondBlock.byteMapViewOffset + 1].entryOffset];
     ASSERT_TRUE(nextKey.keyOffset != overall.keyOffset);
-    ASSERT_EQ(body.overallHashMemory.normalizedEncodedSubkeys.count(), 1);
-    ASSERT_EQ(body.localHashMemory.normalizedEncodedSubkeys.count(), 1);
+    ASSERT_EQ(((((body).overallHashMemory)).normalizedEncodedSubkeys).count(), 1);
+    ASSERT_EQ(((((body).localHashMemory)).normalizedEncodedSubkeys).count(), 1);
 }
 
 TEST(phase2_projection, shared_key_empty_and_assertion_probe) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
     const auto empty = gl::gpu::measurePhase2SharedKeyUsage(body, 1u, true);
     ASSERT_EQ(empty.byteKeyBytes, 0u);
@@ -564,10 +594,10 @@ TEST(phase2_projection, shared_key_empty_and_assertion_probe) {
         ASSERT_TRUE(false);
     }
     else if (mode == "missing_arity") {
-        body.nameMap.encode("main");
-        const gl::NameId core = body.nameMap.encode("missingSingleton");
+        ((body).nameMap).encode("main");
+        const gl::NameId core = ((body).nameMap).encode("missingSingleton");
         const gl::NormKey key{2, {core, 0, core, 0}};
-        body.overallHashMemory.normalizedEncodedSubkeys.assignRun(key, {gl::OwnerSet{}});
+        ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(key, {gl::OwnerSet{}});
         gl::gpu::measurePhase2SharedKeyUsage(body, 1u, true);
         ASSERT_TRUE(false);
     }
@@ -577,20 +607,21 @@ TEST(phase2_projection, shared_key_empty_and_assertion_probe) {
 }
 
 TEST(phase2_projection, signed_core_prefilter_preserves_order_and_rebuilds) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
     auto first = gl::encodeExpression(gl::StrSpan("(p[a])", 6),
-        gl::StrSpan("main", 4), body.nameMap);
+        gl::StrSpan("main", 4), ((body).nameMap));
     auto negative = gl::encodeExpression(gl::StrSpan("!(p[b])", 7),
-        gl::StrSpan("main", 4), body.nameMap);
+        gl::StrSpan("main", 4), ((body).nameMap));
     auto last = gl::encodeExpression(gl::StrSpan("(p[b])", 6),
-        gl::StrSpan("main", 4), body.nameMap);
-    body.intEncodedStatements.push_back(first);
-    body.intEncodedStatements.push_back(negative);
-    body.intEncodedStatements.push_back(last);
+        gl::StrSpan("main", 4), ((body).nameMap));
+    ((body).intEncodedStatements).push_back(first);
+    ((body).intEncodedStatements).push_back(negative);
+    ((body).intEncodedStatements).push_back(last);
+    gl::tests::admitEveryStatementShape(body);
     const gl::NameId key[] = { first.nameId, 0, 1, 0 };
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-        body.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+        ((((body).localHashMemory)).normalizedEncodedSubkeys), 1, key, 4);
     std::set<std::pair<gl::NameId, int32_t>> cores;
     gl::forEachPremiseCore(body, [&](gl::NameId core, int32_t polarity) {
         cores.emplace(core, polarity);
@@ -599,8 +630,8 @@ TEST(phase2_projection, signed_core_prefilter_preserves_order_and_rebuilds) {
     ASSERT_TRUE(cores.count({first.nameId, 0}) == 1);
     ASSERT_TRUE(cores.count({first.nameId, 1}) == 0);
     gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 2,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 1024));
-    const auto projected = arena.appendLogicalBlock(body, analyzer);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 1024));
+    const auto projected = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(projected.statementCount, 2u);
     ASSERT_EQ(arena.statements[0].originalId, first.originalId);
     ASSERT_EQ(arena.statements[1].originalId, last.originalId);
@@ -608,11 +639,11 @@ TEST(phase2_projection, signed_core_prefilter_preserves_order_and_rebuilds) {
     ASSERT_EQ(arena.projectedStatementIndex(0, 2), 1);
     // Source ordinals survive the in-place adoption of a slice shard.
     const gl::gpu::Phase2ProjectionCapacity oneBlock = projectionCapacity(1, 2,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 1024);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 1024);
     gl::gpu::Phase2ProjectionArena merged(oneBlock, oneBlock);
     gl::gpu::Phase2ProjectionArena slice(
         oneBlock, merged, gl::gpu::Phase2ProjectionCapacity{});
-    slice.appendLogicalBlock(body, analyzer);
+    slice.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::Phase2ProjectionArena* shards[] = { &slice };
     uint32_t firstBlock[1]{ 5 };
     gl::gpu::Phase2ProjectionWorkers mergeWorkers(2);
@@ -621,15 +652,15 @@ TEST(phase2_projection, signed_core_prefilter_preserves_order_and_rebuilds) {
     ASSERT_EQ(firstBlock[0], 0u);
     ASSERT_EQ(merged.projectedStatementIndex(0, 2), 1);
     arena.clear();
-    body.localHashMemory.normalizedEncodedSubkeys.resetToFresh();
-    const auto empty = arena.appendLogicalBlock(body, analyzer);
+    ((((body).localHashMemory)).normalizedEncodedSubkeys).resetToFresh();
+    const auto empty = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(empty.statementCount, 0u);
     arena.clear();
     const gl::NameId negKey[] = { first.nameId, 1, 1, 0 };
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.workingMemory.normalizedEncodedKeys, 1, negKey, 4, 1,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).workingMemory)).normalizedEncodedKeys), 1, negKey, 4, 1,
         gl::genScratchArenas().forSlot(0));
-    const auto refreshed = arena.appendLogicalBlock(body, analyzer);
+    const auto refreshed = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(refreshed.statementCount, 1u);
     ASSERT_EQ(arena.statements[0].originalId, negative.originalId);
 }
@@ -638,104 +669,143 @@ TEST(phase2_projection, upload_is_used_as_premise_only) {
     // The device receives exactly the rows whose SIGNED core is used as a
     // premise: `(p, positive)` is the only premise core here, so the negated
     // `p` row and both `q` rows stay on the host.
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
     auto pPos = gl::encodeExpression(gl::StrSpan("(p[a])", 6),
-        gl::StrSpan("main", 4), body.nameMap);
+        gl::StrSpan("main", 4), ((body).nameMap));
     auto pNeg = gl::encodeExpression(gl::StrSpan("!(p[b])", 7),
-        gl::StrSpan("main", 4), body.nameMap);
+        gl::StrSpan("main", 4), ((body).nameMap));
     auto qPos = gl::encodeExpression(gl::StrSpan("(q[c])", 6),
-        gl::StrSpan("main", 4), body.nameMap);
+        gl::StrSpan("main", 4), ((body).nameMap));
     auto qNeg = gl::encodeExpression(gl::StrSpan("!(q[d])", 7),
-        gl::StrSpan("main", 4), body.nameMap);
-    body.intEncodedStatements.push_back(pPos);
-    body.intEncodedStatements.push_back(pNeg);
-    body.intEncodedStatements.push_back(qPos);
-    body.intEncodedStatements.push_back(qNeg);
+        gl::StrSpan("main", 4), ((body).nameMap));
+    ((body).intEncodedStatements).push_back(pPos);
+    ((body).intEncodedStatements).push_back(pNeg);
+    ((body).intEncodedStatements).push_back(qPos);
+    ((body).intEncodedStatements).push_back(qNeg);
+    gl::tests::admitEveryStatementShape(body);
     const gl::NameId key[] = { pPos.nameId, 0, 1, 0 };
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-        body.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+        ((((body).localHashMemory)).normalizedEncodedSubkeys), 1, key, 4);
     gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 4,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 1024));
-    const auto projected = arena.appendLogicalBlock(body, analyzer);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 1024));
+    const auto projected = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(projected.statementCount, 1u);
     ASSERT_EQ(arena.statements[0].originalId, pPos.originalId);
     ASSERT_EQ(arena.projectedStatementIndex(0, 0), 0);
 }
 
-TEST(phase2_projection, phase1_scope_cleanup_precedes_projection) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+TEST(phase2_projection, upload_requires_a_live_premise_pattern) {
+    // A row whose signed core is a premise core is uploaded only when a live
+    // rule premise accepts it on its u_ literals and scope: the premise fixes
+    // `k`, so `(p[k])` is uploaded and `(p[j])` stays on the host.
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
-    body.isActive = true;
-    body.level = 0;
-    const auto closed = body.nameMap.encodePush(gl::NameMap::MAIN_ID, "closed_case");
-    const auto child = body.nameMap.encodePush(closed, "nested_case");
-    const auto sibling = body.nameMap.encodePush(gl::NameMap::MAIN_ID, "live_case");
+    const auto pj = gl::encodeExpression(gl::StrSpan("(p[j])", 6),
+        gl::StrSpan("main", 4), ((body).nameMap));
+    const auto pk = gl::encodeExpression(gl::StrSpan("(p[k])", 6),
+        gl::StrSpan("main", 4), ((body).nameMap));
+    const auto premise = gl::encodeExpression(gl::StrSpan("(p[u_k])", 8),
+        gl::StrSpan("main", 4), ((body).nameMap));
+    ((body).intEncodedStatements).push_back(pj);
+    ((body).intEncodedStatements).push_back(pk);
+    const gl::NameId key[] = { pk.nameId, 0, 1, 0 };
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+        ((((body).localHashMemory)).normalizedEncodedSubkeys), 1, key, 4);
+    gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 2,
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 1024));
+    ASSERT_EQ(arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo,
+        analyzer.parameters).statementCount, 0u);
+    arena.clear();
+    gl::tests::registerPremisePattern(((body).localHashMemory), premise,
+        gl::NameMap::MAIN_ID, 1);
+    const auto projected = arena.appendLogicalBlock(body, analyzer.definitions,
+        analyzer.anchorInfo, analyzer.parameters);
+    ASSERT_EQ(projected.statementCount, 1u);
+    ASSERT_EQ(arena.statements[0].originalId, pk.originalId);
+    ASSERT_EQ(arena.projectedStatementIndex(0, 1), 0);
+}
+
+TEST(phase2_projection, phase1_scope_cleanup_precedes_projection) {
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::Memory body;
+    ((body).isActive) = true;
+    ((body).level) = 0;
+    const auto closed = ((body).nameMap).encodePush(gl::NameMap::MAIN_ID, "closed_case");
+    const auto child = ((body).nameMap).encodePush(closed, "nested_case");
+    const auto sibling = ((body).nameMap).encodePush(gl::NameMap::MAIN_ID, "live_case");
     const int levels[] = {0};
     for (auto validity : {gl::NameMap::MAIN_ID, closed, child, sibling}) {
         const std::string expression = "(p[" + std::to_string(validity) + "])";
         const auto row = gl::encodeExpression(gl::EncodedExpression(expression,
-            body.nameMap.decode(validity)), body.nameMap);
-        body.intEncodedStatements.push_back(row);
-        body.intLocalEncodedStatements.push_back(row);
-        body.intLocalEncodedStatementsDelta.push_back(row);
+            ((body).nameMap).decode(validity)), ((body).nameMap));
+        ((body).intEncodedStatements).push_back(row);
+        ((body).intLocalEncodedStatements).push_back(row);
+        ((body).intLocalEncodedStatementsDelta).push_back(row);
         const auto key = gl::packStatementKey(row.originalId, validity);
-        body.intLocalEncodedStatementsSet.mint(key);
-        gl::upsertStatementKey(body.intKnownStatements, key, true);
-        body.intStatementLevelsMap.assignSet(key, levels, 1);
-        const std::string scope = body.nameMap.decode(validity);
-        gl::addOriginEncoded(body.exprOriginMap, body.originInterner,
+        ((body).intLocalEncodedStatementsSet).mint(key);
+        gl::upsertStatementKey(((body).intKnownStatements), key, true);
+        ((body).intStatementLevelsMap).assignSet(key, levels, 1);
+        const std::string scope = ((body).nameMap).decode(validity);
+        gl::addOriginEncoded(((body).exprOriginMap), ((body).originInterner),
             gl::StrSpan(expression), gl::StrSpan(scope),
             gl::OriginTag::taskFormulation, nullptr, 0, 8);
     }
-    const auto core = body.nameMap.lookup("p");
+    gl::tests::admitEveryStatementShape(body);
+    const auto core = ((body).nameMap).lookup("p");
     const gl::NameId key[] = {core, 0, 1, 0};
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-        body.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+        ((((body).localHashMemory)).normalizedEncodedSubkeys), 1, key, 4);
     gl::LocalMemoryValue owner{};
     owner.validityId = closed;
     const gl::NormKey normalized{1, {core, 0, 1, 0}};
-    for (auto* hash : {&body.overallHashMemory, &body.localHashMemory, &body.localHashMemoryDelta})
-        hash->encodedMap.assignRun(normalized, {owner});
-    body.pendingWipeScopes.mint(child);
-    body.pendingWipeScopes.mint(closed);
-    analyzer.standardProcessing(body, nullptr,
-        body.nextIterationInternalMail, body.sameIterationInternalMail, -1);
-    ASSERT_EQ(body.intEncodedStatements.size(), 2);
-    ASSERT_TRUE(body.overallHashMemory.encodedMap.empty());
-    ASSERT_TRUE(body.localHashMemory.encodedMap.empty());
-    ASSERT_TRUE(body.localHashMemoryDelta.encodedMap.empty());
-    ASSERT_TRUE(body.intValidityNamesToFilter.contains(closed));
-    ASSERT_TRUE(body.intValidityNamesToFilter.contains(child));
+    for (auto* hash : {&((body).overallHashMemory), &((body).localHashMemory), &((body).localHashMemoryDelta)})
+        ((*(hash)).encodedMap).assignRun(normalized, {owner});
+    ((body).pendingWipeScopes).mint(child);
+    ((body).pendingWipeScopes).mint(closed);
+    analyzer.logicBlockOperations.standardProcessing(body, nullptr,
+        ((body).nextIterationInternalMail), ((body).sameIterationInternalMail), -1);
+    ASSERT_EQ(((body).intEncodedStatements).size(), 2);
+    ASSERT_TRUE(((((body).overallHashMemory)).encodedMap).empty());
+    ASSERT_TRUE(((((body).localHashMemory)).encodedMap).empty());
+    ASSERT_TRUE(((((body).localHashMemoryDelta)).encodedMap).empty());
+    ASSERT_TRUE(((body).intValidityNamesToFilter).contains(closed));
+    ASSERT_TRUE(((body).intValidityNamesToFilter).contains(child));
     gl::gpu::Phase2ProjectionArena arena(projectionCapacity(1, 4,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), 2048));
-    const auto projected = arena.appendLogicalBlock(body, analyzer);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 2048));
+    const auto projected = arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(projected.statementCount, 2u);
     for (uint32_t i = 0; i < projected.statementCount; ++i) {
-        ASSERT_FALSE(body.nameMap.ancContains(arena.statements[i].validityId, closed));
+        ASSERT_FALSE(((body).nameMap).ancContains(arena.statements[i].validityId, closed));
     }
 }
 
-TEST(phase2_projection, backend_defaults_to_processor_and_accepts_explicit_cuda) {
+TEST(phase2_projection, backend_defaults_to_processor_and_accepts_explicit_processor) {
     // The product default is the processor route (`use_gpu` false, no
     // shipped config pins a batch); it keeps its SSD permission and pages.
-    gl::ExpressionAnalyzer defaultAnalyzer("FTA");
+    gl::tests::ProverFixture defaultAnalyzer("FTA");
     ASSERT_FALSE(defaultAnalyzer.parameters.use_gpu);
     ASSERT_TRUE(defaultAnalyzer.parameters.allow_ssd_deload);
     ASSERT_EQ(defaultAnalyzer.phase2Backend, gl::Phase2Backend::cpu);
-#ifdef GL_CUDA
-    // `main.py --GPU` arrives as the explicit CUDA override; a CUDA batch
-    // keeps the SSD permission and pages like a processor batch. A build
-    // without CUDA support refuses the selection at construction instead.
-    gl::ExpressionAnalyzer cudaAnalyzer("FTA", gl::Phase2Backend::cuda);
-    ASSERT_EQ(cudaAnalyzer.phase2Backend, gl::Phase2Backend::cuda);
-    ASSERT_TRUE(cudaAnalyzer.parameters.allow_ssd_deload);
-#endif
     // The explicit processor override is accepted as well.
-    gl::ExpressionAnalyzer cpuAnalyzer("FTA", gl::Phase2Backend::cpu);
+    gl::tests::ProverFixture cpuAnalyzer("FTA", gl::Phase2Backend::cpu);
     ASSERT_EQ(cpuAnalyzer.phase2Backend, gl::Phase2Backend::cpu);
     ASSERT_TRUE(cpuAnalyzer.parameters.allow_ssd_deload);
 }
+
+#ifdef GL_CUDA
+// A CUDA-route test: constructing a CUDA batch starts the CUDA context
+// warm-up, which needs a device, so the processor-route gate of a machine
+// without a GPU does not select it. A build without CUDA support refuses the
+// selection at construction instead.
+CUDA_TEST(phase2_projection, backend_accepts_explicit_cuda) {
+    // `main.py --GPU` arrives as the explicit CUDA override; a CUDA batch
+    // keeps the SSD permission and pages like a processor batch.
+    gl::tests::ProverFixture cudaAnalyzer("FTA", gl::Phase2Backend::cuda);
+    ASSERT_EQ(cudaAnalyzer.phase2Backend, gl::Phase2Backend::cuda);
+    ASSERT_TRUE(cudaAnalyzer.parameters.allow_ssd_deload);
+}
+#endif
 
 TEST(phase2_projection, physical_block_and_task_ceilings_are_independent) {
     const gl::gpu::Phase2ProjectionCapacity shortcut =
@@ -803,63 +873,63 @@ TEST(phase2_projection, physical_block_and_task_ceilings_are_independent) {
 }
 
 TEST(phase2_projection, rows_names_parents_and_ranks_are_lossless) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
-    const gl::NameId mainId = body.nameMap.encode("main");
-    const gl::NameId zetaId = body.nameMap.encode("zeta");
-    const gl::NameId alphaId = body.nameMap.encode("alpha");
-    const gl::NameId childId = body.nameMap.encodePush(mainId, "child");
-    const gl::NameId originalA = body.nameMap.encode("(zeta[alpha])");
-    const gl::NameId originalB = body.nameMap.encode("(alpha[zeta])");
-    body.nameMap.encode("prefix");
-    body.nameMap.encode("prefix0");
-    body.nameMap.encode("prefix00");
-    body.nameMap.encode("prefix01");
-    body.nameMap.encode("prefix1");
+    const gl::NameId mainId = ((body).nameMap).encode("main");
+    const gl::NameId zetaId = ((body).nameMap).encode("zeta");
+    const gl::NameId alphaId = ((body).nameMap).encode("alpha");
+    const gl::NameId childId = ((body).nameMap).encodePush(mainId, "child");
+    const gl::NameId originalA = ((body).nameMap).encode("(zeta[alpha])");
+    const gl::NameId originalB = ((body).nameMap).encode("(alpha[zeta])");
+    ((body).nameMap).encode("prefix");
+    ((body).nameMap).encode("prefix0");
+    ((body).nameMap).encode("prefix00");
+    ((body).nameMap).encode("prefix01");
+    ((body).nameMap).encode("prefix1");
 
     const gl::IntEncodedExpr first =
         projectionStatement(zetaId, originalA, mainId, alphaId);
     const gl::IntEncodedExpr second =
         projectionStatement(alphaId, originalB, childId, zetaId);
-    body.intEncodedStatements.push_back(first);
-    body.intEncodedStatements.push_back(second);
+    ((body).intEncodedStatements).push_back(first);
+    ((body).intEncodedStatements).push_back(second);
 
     uint32_t byteCount = 0;
-    for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id)
-        byteCount += static_cast<uint32_t>(body.nameMap.decodeView(id).len);
+    for (gl::NameId id = 1; id <= ((body).nameMap).nameCount(); ++id)
+        byteCount += static_cast<uint32_t>(((body).nameMap).decodeView(id).len);
 
     gl::gpu::Phase2ProjectionArena arena(projectionCapacity(
         1,
         2,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1),
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1),
         byteCount));
     const gl::gpu::DeviceLogicalBlockProjection projected =
-        arena.appendLogicalBlock(body, analyzer);
+        arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
 
     ASSERT_EQ(projected.statementOffset, 0u);
     ASSERT_EQ(projected.statementCount, 0u);
     ASSERT_EQ(projected.nameRecordOffset, 0u);
     ASSERT_EQ(projected.nameRecordCount,
-              static_cast<uint32_t>(body.nameMap.nameCount() + 1));
+              static_cast<uint32_t>(((body).nameMap).nameCount() + 1));
     ASSERT_EQ(projected.nameByteCount, byteCount);
     ASSERT_TRUE(arena.statements.empty());
 
-    for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id) {
-        ASSERT_EQ(projectedName(arena, projected, id), body.nameMap.decode(id));
+    for (gl::NameId id = 1; id <= ((body).nameMap).nameCount(); ++id) {
+        ASSERT_EQ(projectedName(arena, projected, id), ((body).nameMap).decode(id));
         ASSERT_EQ(arena.nameRecords[static_cast<uint32_t>(id)].parentId,
-                  body.nameMap.parentOf(id));
+                  ((body).nameMap).parentOf(id));
     }
     ASSERT_EQ(arena.nameRecords[static_cast<uint32_t>(childId)].parentId, mainId);
     ASSERT_LT(arena.nameRecords[static_cast<uint32_t>(alphaId)].decodedLexRank,
               arena.nameRecords[static_cast<uint32_t>(zetaId)].decodedLexRank);
 
     std::vector<gl::NameId> expectedOrder;
-    for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id)
+    for (gl::NameId id = 1; id <= ((body).nameMap).nameCount(); ++id)
         expectedOrder.push_back(id);
     std::sort(expectedOrder.begin(), expectedOrder.end(),
         [&body](gl::NameId left, gl::NameId right) {
-            return gl::compareSpans(body.nameMap.decodeView(left),
-                                    body.nameMap.decodeView(right)) < 0;
+            return gl::compareSpans(((body).nameMap).decodeView(left),
+                                    ((body).nameMap).decodeView(right)) < 0;
         });
     for (uint32_t rank = 0; rank < expectedOrder.size(); ++rank) {
         const gl::NameId id = expectedOrder[rank];
@@ -869,36 +939,36 @@ TEST(phase2_projection, rows_names_parents_and_ranks_are_lossless) {
 }
 
 TEST(phase2_projection, append_offsets_and_clear_reuse_fixed_storage) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory firstBody;
-    const gl::NameId firstMain = firstBody.nameMap.encode("main");
-    const gl::NameId firstName = firstBody.nameMap.encode("beta");
-    firstBody.intEncodedStatements.push_back(
+    const gl::NameId firstMain = ((firstBody).nameMap).encode("main");
+    const gl::NameId firstName = ((firstBody).nameMap).encode("beta");
+    ((firstBody).intEncodedStatements).push_back(
         projectionStatement(firstName, firstName, firstMain, firstName));
 
     gl::Memory secondBody;
-    const gl::NameId secondMain = secondBody.nameMap.encode("main");
-    const gl::NameId secondName = secondBody.nameMap.encode("gamma");
-    secondBody.intEncodedStatements.push_back(
+    const gl::NameId secondMain = ((secondBody).nameMap).encode("main");
+    const gl::NameId secondName = ((secondBody).nameMap).encode("gamma");
+    ((secondBody).intEncodedStatements).push_back(
         projectionStatement(secondName, secondName, secondMain, secondName));
 
     uint32_t bytes = 0;
-    for (gl::NameId id = 1; id <= firstBody.nameMap.nameCount(); ++id)
-        bytes += static_cast<uint32_t>(firstBody.nameMap.decodeView(id).len);
-    for (gl::NameId id = 1; id <= secondBody.nameMap.nameCount(); ++id)
-        bytes += static_cast<uint32_t>(secondBody.nameMap.decodeView(id).len);
+    for (gl::NameId id = 1; id <= ((firstBody).nameMap).nameCount(); ++id)
+        bytes += static_cast<uint32_t>(((firstBody).nameMap).decodeView(id).len);
+    for (gl::NameId id = 1; id <= ((secondBody).nameMap).nameCount(); ++id)
+        bytes += static_cast<uint32_t>(((secondBody).nameMap).decodeView(id).len);
 
     const uint32_t records =
-        static_cast<uint32_t>(firstBody.nameMap.nameCount()
-            + secondBody.nameMap.nameCount() + 2);
+        static_cast<uint32_t>(((firstBody).nameMap).nameCount()
+            + ((secondBody).nameMap).nameCount() + 2);
     gl::gpu::Phase2ProjectionArena arena(
         projectionCapacity(2, 2, records, bytes));
     const gl::IntEncodedExpr* statementAllocation = arena.statements.data();
     const gl::gpu::DeviceNameRecord* nameAllocation = arena.nameRecords.data();
     const char* byteAllocation = arena.nameBytes.data();
 
-    const auto firstProjection = arena.appendLogicalBlock(firstBody, analyzer);
-    const auto secondProjection = arena.appendLogicalBlock(secondBody, analyzer);
+    const auto firstProjection = arena.appendLogicalBlock(firstBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    const auto secondProjection = arena.appendLogicalBlock(secondBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(secondProjection.statementOffset,
               firstProjection.statementOffset + firstProjection.statementCount);
     ASSERT_EQ(secondProjection.nameRecordOffset,
@@ -933,7 +1003,7 @@ TEST(phase2_projection, append_offsets_and_clear_reuse_fixed_storage) {
     ASSERT_EQ(arena.timing.finalNanoseconds, 0u);
     ASSERT_EQ(arena.timing.mergeNanoseconds, 0u);
 
-    const auto reused = arena.appendLogicalBlock(firstBody, analyzer);
+    const auto reused = arena.appendLogicalBlock(firstBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(reused.statementOffset, 0u);
     ASSERT_EQ(reused.nameRecordOffset, 0u);
     ASSERT_EQ(reused.nameByteOffset, 0u);
@@ -941,31 +1011,31 @@ TEST(phase2_projection, append_offsets_and_clear_reuse_fixed_storage) {
 }
 
 TEST(phase2_projection, identical_read_only_string_columns_share_exactly) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory firstBody;
-    const gl::NameId firstMain = firstBody.nameMap.encode("main");
-    firstBody.nameMap.encodePush(firstMain, "child");
-    firstBody.ruleInterner.encode("rule_a");
+    const gl::NameId firstMain = ((firstBody).nameMap).encode("main");
+    ((firstBody).nameMap).encodePush(firstMain, "child");
+    ((firstBody).ruleInterner).encode("rule_a");
 
     gl::Memory identicalBody;
-    const gl::NameId identicalMain = identicalBody.nameMap.encode("main");
-    identicalBody.nameMap.encodePush(identicalMain, "child");
-    identicalBody.ruleInterner.encode("rule_a");
+    const gl::NameId identicalMain = ((identicalBody).nameMap).encode("main");
+    ((identicalBody).nameMap).encodePush(identicalMain, "child");
+    ((identicalBody).ruleInterner).encode("rule_a");
 
     gl::Memory differentParentBody;
-    differentParentBody.nameMap.encode("main");
-    differentParentBody.nameMap.encode("child");
-    differentParentBody.ruleInterner.encode("rule_a");
+    ((differentParentBody).nameMap).encode("main");
+    ((differentParentBody).nameMap).encode("child");
+    ((differentParentBody).ruleInterner).encode("rule_a");
 
     gl::Memory differentRuleBody;
     const gl::NameId differentRuleMain =
-        differentRuleBody.nameMap.encode("main");
-    differentRuleBody.nameMap.encodePush(differentRuleMain, "child");
-    differentRuleBody.ruleInterner.encode("rule_b");
+        ((differentRuleBody).nameMap).encode("main");
+    ((differentRuleBody).nameMap).encodePush(differentRuleMain, "child");
+    ((differentRuleBody).ruleInterner).encode("rule_b");
 
     gl::gpu::Phase2ProjectionArena arena(
         projectionCapacity(4, 4, 16, 128));
-    const auto first = arena.appendLogicalBlock(firstBody, analyzer);
+    const auto first = arena.appendLogicalBlock(firstBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     const std::size_t firstNameRecords = arena.nameRecords.size();
     const std::size_t firstNameBytes = arena.nameBytes.size();
     const std::size_t firstNameSlots = arena.nameSlots.size();
@@ -973,7 +1043,7 @@ TEST(phase2_projection, identical_read_only_string_columns_share_exactly) {
     const std::size_t firstRuleBytes = arena.ruleStringBytes.size();
 
     const auto identical =
-        arena.appendLogicalBlock(identicalBody, analyzer);
+        arena.appendLogicalBlock(identicalBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(identical.nameRecordOffset, first.nameRecordOffset);
     ASSERT_EQ(identical.nameByteOffset, first.nameByteOffset);
     ASSERT_EQ(identical.nameSlotOffset, first.nameSlotOffset);
@@ -987,13 +1057,13 @@ TEST(phase2_projection, identical_read_only_string_columns_share_exactly) {
     ASSERT_EQ(arena.ruleStringBytes.size(), firstRuleBytes);
 
     const auto differentParent =
-        arena.appendLogicalBlock(differentParentBody, analyzer);
+        arena.appendLogicalBlock(differentParentBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_NE(differentParent.nameRecordOffset, first.nameRecordOffset);
     ASSERT_EQ(differentParent.ruleStringRecordOffset,
               first.ruleStringRecordOffset);
 
     const auto differentRule =
-        arena.appendLogicalBlock(differentRuleBody, analyzer);
+        arena.appendLogicalBlock(differentRuleBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(differentRule.nameRecordOffset, first.nameRecordOffset);
     ASSERT_NE(differentRule.ruleStringRecordOffset,
               first.ruleStringRecordOffset);
@@ -1003,22 +1073,22 @@ TEST(phase2_projection, identical_read_only_string_columns_share_exactly) {
 // earlier block, so a change to the earlier block after its projection (or its
 // deload) cannot affect the decision.
 TEST(phase2_projection, sharing_compares_the_projected_copy_not_the_live_block) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory firstBody;
-    const gl::NameId firstMain = firstBody.nameMap.encode("main");
-    firstBody.nameMap.encodePush(firstMain, "child");
-    firstBody.ruleInterner.encode("rule_a");
+    const gl::NameId firstMain = ((firstBody).nameMap).encode("main");
+    ((firstBody).nameMap).encodePush(firstMain, "child");
+    ((firstBody).ruleInterner).encode("rule_a");
     gl::Memory laterBody;
-    const gl::NameId laterMain = laterBody.nameMap.encode("main");
-    laterBody.nameMap.encodePush(laterMain, "child");
-    laterBody.ruleInterner.encode("rule_a");
+    const gl::NameId laterMain = ((laterBody).nameMap).encode("main");
+    ((laterBody).nameMap).encodePush(laterMain, "child");
+    ((laterBody).ruleInterner).encode("rule_a");
 
     gl::gpu::Phase2ProjectionArena arena(projectionCapacity(4, 4, 16, 128));
-    const auto first = arena.appendLogicalBlock(firstBody, analyzer);
+    const auto first = arena.appendLogicalBlock(firstBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     // The first block changes after its projection.
-    firstBody.nameMap.encode("extra");
-    firstBody.ruleInterner.encode("rule_extra");
-    const auto later = arena.appendLogicalBlock(laterBody, analyzer);
+    ((firstBody).nameMap).encode("extra");
+    ((firstBody).ruleInterner).encode("rule_extra");
+    const auto later = arena.appendLogicalBlock(laterBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(later.nameRecordOffset, first.nameRecordOffset);
     ASSERT_EQ(later.nameByteOffset, first.nameByteOffset);
     ASSERT_EQ(later.ruleStringRecordOffset, first.ruleStringRecordOffset);
@@ -1026,30 +1096,30 @@ TEST(phase2_projection, sharing_compares_the_projected_copy_not_the_live_block) 
 }
 
 TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["theta"] = gl::LogicalEntity(
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["theta"] = gl::LogicalEntity(
         "atomic", {}, "theta", 1);
 
     gl::Memory prefixBody;
-    const gl::NameId prefixMain = prefixBody.nameMap.encode("main");
-    const gl::NameId prefixName = prefixBody.nameMap.encode("prefix");
+    const gl::NameId prefixMain = ((prefixBody).nameMap).encode("main");
+    const gl::NameId prefixName = ((prefixBody).nameMap).encode("prefix");
     prefixBody.setExprKey("prefix_block");
-    prefixBody.intEncodedStatements.push_back(projectionStatement(
+    ((prefixBody).intEncodedStatements).push_back(projectionStatement(
         prefixName, prefixName, prefixMain, prefixName));
 
     gl::Memory richBody;
-    const gl::NameId mainId = richBody.nameMap.encode("main");
-    const gl::NameId nameId = richBody.nameMap.encode("theta");
+    const gl::NameId mainId = ((richBody).nameMap).encode("main");
+    const gl::NameId nameId = ((richBody).nameMap).encode("theta");
     richBody.setExprKey("rich_block");
     const gl::IntEncodedExpr statement = projectionStatement(
         nameId, nameId, mainId, nameId);
-    richBody.intEncodedStatements.push_back(statement);
-    richBody.intLocalEncodedStatements.push_back(statement);
-    richBody.intLocalEncodedStatementsDelta.push_back(statement);
-    richBody.intExternalStatements.push_back(statement);
+    ((richBody).intEncodedStatements).push_back(statement);
+    ((richBody).intLocalEncodedStatements).push_back(statement);
+    ((richBody).intLocalEncodedStatementsDelta).push_back(statement);
+    ((richBody).intExternalStatements).push_back(statement);
 
-    const int32_t ruleHeadId = richBody.ruleInterner.encode("(theta[1])");
-    const int32_t ruleSourceId = richBody.ruleInterner.encode(
+    const int32_t ruleHeadId = ((richBody).ruleInterner).encode("(theta[1])");
+    const int32_t ruleSourceId = ((richBody).ruleInterner).encode(
         "(>[theta,(theta[1])])");
     const gl::NormKey normKey{ 1, { nameId, mainId } };
     gl::OwnerSet owner;
@@ -1067,51 +1137,53 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     value.keyIds.push_back(ruleHeadId);
     value.remainingArgIds.push_back(ruleHeadId);
     const gl::Int16SetKey remainingKey{ { nameId } };
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        richBody.overallHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((richBody).overallHashMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    richBody.overallHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((richBody).overallHashMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    richBody.overallHashMemory.encodedMap.assignRun(
+    ((((richBody).overallHashMemory)).encodedMap).assignRun(
         normKey, std::vector<gl::LocalMemoryValue>{ value });
-    richBody.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(
+    ((((richBody).overallHashMemory)).remainingArgsNormalizedEncodedMap).assignRun(
         remainingKey, std::vector<gl::NormKey>{ normKey });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        richBody.localHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((richBody).localHashMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    richBody.localHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((richBody).localHashMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        richBody.localHashMemoryDelta.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((richBody).localHashMemoryDelta)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    richBody.localHashMemoryDelta.normalizedEncodedSubkeys.assignRun(
+    ((((richBody).localHashMemoryDelta)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        richBody.workingMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((richBody).workingMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    richBody.workingMemory.normalizedEncodedSubkeys.assignRun(
+    ((((richBody).workingMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    richBody.overallHashMemory.productsOfRecursionIds.mint(nameId);
+    ((((richBody).overallHashMemory)).productsOfRecursionIds).mint(nameId);
     const gl::StatementKey statementKey{ nameId, mainId };
     const int64_t packedStatementKey = gl::packStatementKey(nameId, mainId);
-    richBody.intKnownStatements.upsert(
+    ((richBody).intKnownStatements).upsert(
         statementKey, gl::StatementFlags{ true, true });
-    richBody.intLocalEncodedStatementsSet.mint(packedStatementKey);
+    ((richBody).intLocalEncodedStatementsSet).mint(packedStatementKey);
     const int levels[1] = { 4 };
-    richBody.intStatementLevelsMap.assignSet(statementKey, levels, 1);
-    richBody.intValidityNamesToFilter.mint(mainId);
-    richBody.frozenOrBranches.mint(nameId);
-    richBody.intToBeProved.assignSet(statementKey, levels, 1);
+    ((richBody).intStatementLevelsMap).assignSet(statementKey, levels, 1);
+    ((richBody).intValidityNamesToFilter).mint(mainId);
+    ((richBody).frozenOrBranches).mint(nameId);
+    ((richBody).intToBeProved).assignSet(statementKey, levels, 1);
+    gl::tests::admitEveryStatementShape(prefixBody);
+    gl::tests::admitEveryStatementShape(richBody);
 
     const gl::gpu::Phase2ProjectionCapacity capacity = projectionCapacity(
         2, 2, 16, 512);
     gl::gpu::Phase2ProjectionArena serial(capacity);
-    serial.appendLogicalBlock(prefixBody, analyzer);
-    serial.appendLogicalBlock(richBody, analyzer);
+    serial.appendLogicalBlock(prefixBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    serial.appendLogicalBlock(richBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
 
     // Two slice shards laid end to end in one backing arena write straight
     // into it; adoption closes the gap between them and rebases every column.
@@ -1121,16 +1193,18 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     gl::gpu::Phase2ProjectionArena prefixShard(
         capacity, backing, gl::gpu::Phase2ProjectionCapacity{});
     gl::gpu::Phase2ProjectionArena richShard(capacity, backing, capacity);
-    prefixShard.appendLogicalBlock(prefixBody, analyzer);
-    richShard.appendLogicalBlock(richBody, analyzer);
+    prefixShard.appendLogicalBlock(prefixBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    richShard.appendLogicalBlock(richBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_TRUE(!richShard.byteMapEntries.empty());
     ASSERT_TRUE(!richShard.blobRecords.empty());
     ASSERT_TRUE(!richShard.reverseMapEntries.empty());
     ASSERT_TRUE(!richShard.podMapEntries.empty());
     ASSERT_TRUE(!richShard.podRunValues.empty());
     // The shards own no column storage: their rows live in the backing arena.
-    ASSERT_EQ(prefixShard.hostBytes(), uint64_t(0));
-    ASSERT_EQ(richShard.hostBytes(), uint64_t(0));
+    ASSERT_EQ(prefixShard.logicalBlocks.ownedBytes(), uint64_t(0));
+    ASSERT_TRUE(prefixShard.hostBytes() > 0);
+    ASSERT_EQ(richShard.logicalBlocks.ownedBytes(), uint64_t(0));
+    ASSERT_TRUE(richShard.hostBytes() > 0);
     ASSERT_TRUE(backing.hostBytes() > 0);
     ASSERT_TRUE(richShard.statements.data()
         == backing.statements.data() + capacity.statements);
@@ -1163,8 +1237,8 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
     // and the third shard's rows close up behind the first.
     const gl::gpu::Phase2ProjectionCapacity three = projectionCapacity(3, 4, 32, 1024);
     gl::gpu::Phase2ProjectionArena serialThree(three);
-    serialThree.appendLogicalBlock(prefixBody, analyzer);
-    serialThree.appendLogicalBlock(richBody, analyzer);
+    serialThree.appendLogicalBlock(prefixBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    serialThree.appendLogicalBlock(richBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     const gl::gpu::Phase2ProjectionCapacity twoSlices =
         gl::gpu::addProjectionCapacity(capacity, capacity);
     gl::gpu::Phase2ProjectionArena backingThree(
@@ -1173,8 +1247,8 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
         capacity, backingThree, gl::gpu::Phase2ProjectionCapacity{});
     gl::gpu::Phase2ProjectionArena empty(capacity, backingThree, capacity);
     gl::gpu::Phase2ProjectionArena third(capacity, backingThree, twoSlices);
-    first.appendLogicalBlock(prefixBody, analyzer);
-    third.appendLogicalBlock(richBody, analyzer);
+    first.appendLogicalBlock(prefixBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    third.appendLogicalBlock(richBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::Phase2ProjectionArena* threeShards[] = { &first, &empty, &third };
     uint32_t threeFirst[3]{ 9, 9, 9 };
     backingThree.adoptShards(threeShards, 3, threeFirst,
@@ -1197,15 +1271,15 @@ TEST(phase2_projection, shard_merge_rebases_every_semantic_column_exactly) {
         std::memcpy(&streamBases, words, sizeof(words));
     }
     gl::gpu::Phase2ProjectionArena serialStreamed(capacity);
-    serialStreamed.appendLogicalBlock(prefixBody, analyzer);
-    serialStreamed.appendLogicalBlock(richBody, analyzer);
+    serialStreamed.appendLogicalBlock(prefixBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    serialStreamed.appendLogicalBlock(richBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     serialStreamed.rebaseForStream(streamBases);
     gl::gpu::Phase2ProjectionArena backingStreamed(capacity, storage);
     gl::gpu::Phase2ProjectionArena prefixStreamed(
         capacity, backingStreamed, gl::gpu::Phase2ProjectionCapacity{});
     gl::gpu::Phase2ProjectionArena richStreamed(capacity, backingStreamed, capacity);
-    prefixStreamed.appendLogicalBlock(prefixBody, analyzer);
-    richStreamed.appendLogicalBlock(richBody, analyzer);
+    prefixStreamed.appendLogicalBlock(prefixBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    richStreamed.appendLogicalBlock(richBody, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::Phase2ProjectionArena* streamedShards[] = { &prefixStreamed, &richStreamed };
     uint32_t streamedFirst[2]{ 7, 7 };
     backingStreamed.adoptShards(streamedShards, 2, streamedFirst, streamBases, adoptionWorkers);
@@ -1254,28 +1328,28 @@ TEST(phase2_projection, projection_workers_run_every_task_once_per_job) {
 }
 
 TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.incubator_mode = true;
     analyzer.parameters.ban_disintegration = false;
     analyzer.parameters.compressor_mode = true;
     analyzer.parameters.standardMaxSecondaryNumber = 13;
-    analyzer.compiledExpressions["theta"] = gl::LogicalEntity(
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["theta"] = gl::LogicalEntity(
         "atomic", {}, "theta", 1);
     gl::Memory body;
-    body.level = 7;
-    const gl::NameId mainId = body.nameMap.encode("main");
-    const gl::NameId nameId = body.nameMap.encode("theta");
+    ((body).level) = 7;
+    const gl::NameId mainId = ((body).nameMap).encode("main");
+    const gl::NameId nameId = ((body).nameMap).encode("theta");
     body.setExprKey("gpu_test");
     const gl::IntEncodedExpr statement =
         projectionStatement(nameId, nameId, mainId, nameId);
-    body.intEncodedStatements.push_back(statement);
-    body.intLocalEncodedStatements.push_back(statement);
-    body.intLocalEncodedStatementsDelta.push_back(statement);
-    body.intExternalStatements.push_back(statement);
+    ((body).intEncodedStatements).push_back(statement);
+    ((body).intLocalEncodedStatements).push_back(statement);
+    ((body).intLocalEncodedStatementsDelta).push_back(statement);
+    ((body).intExternalStatements).push_back(statement);
 
-    const int32_t ruleHeadId = body.ruleInterner.encode("(theta[1])");
+    const int32_t ruleHeadId = ((body).ruleInterner).encode("(theta[1])");
     const int32_t ruleSourceId =
-        body.ruleInterner.encode("(>[theta,(theta[1])])");
+        ((body).ruleInterner).encode("(>[theta,(theta[1])])");
     const gl::NormKey normKey{ 1, { nameId, mainId } };
     gl::OwnerSet owner;
     owner.hasLooseOwner = true;
@@ -1293,51 +1367,52 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     value.remainingArgIds.push_back(ruleHeadId);
     const gl::Int16SetKey remainingKey{ { nameId } };
 
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.overallHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).overallHashMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    body.overallHashMemory.encodedMap.assignRun(
+    ((((body).overallHashMemory)).encodedMap).assignRun(
         normKey, std::vector<gl::LocalMemoryValue>{ value });
-    body.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(
+    ((((body).overallHashMemory)).remainingArgsNormalizedEncodedMap).assignRun(
         remainingKey, std::vector<gl::NormKey>{ normKey });
-    body.overallHashMemory.productsOfRecursionIds.mint(nameId);
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.localHashMemory.normalizedEncodedKeys,
+    ((((body).overallHashMemory)).productsOfRecursionIds).mint(nameId);
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).localHashMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.localHashMemoryDelta.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).localHashMemoryDelta)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.workingMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).workingMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
 
     const gl::StatementKey statementKey{ nameId, mainId };
     const int64_t packedStatementKey = gl::packStatementKey(nameId, mainId);
-    body.intKnownStatements.upsert(
+    ((body).intKnownStatements).upsert(
         statementKey, gl::StatementFlags{ true, false });
-    body.intLocalEncodedStatementsSet.mint(packedStatementKey);
+    ((body).intLocalEncodedStatementsSet).mint(packedStatementKey);
     const int levels[2] = { 2, 5 };
-    body.intStatementLevelsMap.assignSet(statementKey, levels, 2);
-    body.intValidityNamesToFilter.mint(mainId);
-    body.frozenOrBranches.mint(nameId);
+    ((body).intStatementLevelsMap).assignSet(statementKey, levels, 2);
+    ((body).intValidityNamesToFilter).mint(mainId);
+    ((body).frozenOrBranches).mint(nameId);
     const int goalAux[1] = { 7 };
-    body.intToBeProved.assignSet(statementKey, goalAux, 1);
+    ((body).intToBeProved).assignSet(statementKey, goalAux, 1);
+    gl::tests::admitEveryStatementShape(body);
 
     const gl::gpu::Phase2ProjectionUsage usage =
-        gl::gpu::measurePhase2ProjectionUsage(body, analyzer);
+        gl::gpu::measurePhase2ProjectionUsage(body, analyzer.anchorInfo);
     ASSERT_EQ(usage.logicalBlocks, 1u);
     ASSERT_EQ(usage.statements, 1u);
     ASSERT_EQ(usage.nameSlots, 4u);
     ASSERT_EQ(usage.ruleStringRecords, 3u);
     ASSERT_EQ(usage.ruleStringBytes,
-        static_cast<uint64_t>(body.ruleInterner.decodeView(ruleHeadId).len
-            + body.ruleInterner.decodeView(ruleSourceId).len));
+        static_cast<uint64_t>(((body).ruleInterner).decodeView(ruleHeadId).len
+            + ((body).ruleInterner).decodeView(ruleSourceId).len));
     ASSERT_EQ(usage.byteMapViews, 10u);
     ASSERT_EQ(usage.byteMapEntries, 7u);
     ASSERT_EQ(usage.byteMapSlots, 14u);
@@ -1366,9 +1441,9 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
         8u + static_cast<uint64_t>(analyzer.anchorInfo.name.size()));
 
     gl::gpu::Phase2ProjectionArena arena(projectionCapacity(
-        1, 1, static_cast<uint32_t>(body.nameMap.nameCount() + 1), 256));
+        1, 1, static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 256));
     const gl::gpu::DeviceLogicalBlockProjection projected =
-        arena.appendLogicalBlock(body, analyzer);
+        arena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_EQ(projected.byteMapViewCount, 10u);
     ASSERT_EQ(projected.reverseMapViewCount, 1u);
     ASSERT_EQ(projected.podMapViewCount, 9u);
@@ -1385,7 +1460,7 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
     ASSERT_TRUE(std::memcmp(
         arena.metadataBytes.data() + projected.anchorNameOffset,
         analyzer.anchorInfo.name.data(), analyzer.anchorInfo.name.size()) == 0);
-    ASSERT_EQ(projected.level, 7);
+    ASSERT_EQ(((projected).level), 7);
     ASSERT_EQ(projected.standardMaxSecondaryNumber, 13);
     ASSERT_EQ(projected.evaluationFlags,
         static_cast<uint32_t>(
@@ -1420,16 +1495,16 @@ TEST(phase2_projection, complete_usage_counts_every_semantic_column) {
         gl::gpu::DeviceHashMemoryKind::local);
     const gl::gpu::Phase2ProjectionUsage selectedUsage =
         gl::gpu::measurePhase2ProjectionUsage(
-            body, analyzer, localOnly);
+            body, analyzer.anchorInfo, localOnly);
     ASSERT_EQ(selectedUsage.byteMapViews, 10u);
     ASSERT_LT(selectedUsage.byteMapEntries, usage.byteMapEntries);
     ASSERT_LT(selectedUsage.byteMapSlots, usage.byteMapSlots);
     ASSERT_EQ(selectedUsage.byteKeyBytes, usage.byteKeyBytes);
 
     gl::gpu::Phase2ProjectionArena selectedArena(projectionCapacity(
-        1, 1, static_cast<uint32_t>(body.nameMap.nameCount() + 1), 256));
+        1, 1, static_cast<uint32_t>(((body).nameMap).nameCount() + 1), 256));
     const gl::gpu::DeviceLogicalBlockProjection selected =
-        selectedArena.appendLogicalBlock(body, analyzer, localOnly);
+        selectedArena.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, localOnly);
     ASSERT_EQ(selected.byteMapViewCount, 10u);
     for (uint32_t ordinal = 0; ordinal < selected.byteMapViewCount;
          ++ordinal) {
@@ -1458,20 +1533,20 @@ TEST(phase2_projection, recorded_phase2_measurement_equals_the_direct_one) {
     const auto bit = [](gl::gpu::DeviceHashMemoryKind memory) {
         return 1u << static_cast<uint32_t>(memory);
     };
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
-    const gl::NameId main = body.nameMap.encode("main");
-    const gl::NameId name = body.nameMap.encode("recorded-shape");
+    const gl::NameId main = ((body).nameMap).encode("main");
+    const gl::NameId name = ((body).nameMap).encode("recorded-shape");
     const gl::IntEncodedExpr statement =
         projectionStatement(name, name, main, name);
-    body.intLocalEncodedStatements.push_back(statement);
-    body.intExternalStatements.push_back(statement);
+    ((body).intLocalEncodedStatements).push_back(statement);
+    ((body).intExternalStatements).push_back(statement);
     const gl::NormKey key{ 1, { name } };
     gl::LocalMemoryValue value;
-    value.valueId = body.ruleInterner.encode("recorded-rule");
-    body.workingMemory.encodedMap.assignRun(
+    value.valueId = ((body).ruleInterner).encode("recorded-rule");
+    ((((body).workingMemory)).encodedMap).assignRun(
         key, std::vector<gl::LocalMemoryValue>{ value });
-    body.localHashMemory.encodedMap.assignRun(
+    ((((body).localHashMemory)).encodedMap).assignRun(
         key, std::vector<gl::LocalMemoryValue>{ value });
 
     // Selection: working (map + local statements), overall (externals with
@@ -1508,43 +1583,43 @@ TEST(phase2_projection, recorded_phase2_measurement_equals_the_direct_one) {
     ASSERT_EQ(counterExample.stumps, 0u);
 
     // The record holds exactly the direct values and the burst stamp.
-    analyzer.phase2MeasurementEpoch = 7;
-    analyzer.recordPhase2Measurement(body);
-    ASSERT_EQ(body.phase2MeasurementEpoch, uint64_t(7));
-    ASSERT_EQ(body.phase2TaskUsage.tasks, stumpFree.tasks);
-    ASSERT_EQ(body.phase2TaskUsage.batches, stumpFree.batches);
-    ASSERT_EQ(body.phase2TaskUsage.terms, stumpFree.terms);
-    ASSERT_EQ(body.phase2TaskUsage.stumps, 0u);
-    ASSERT_EQ(body.phase2SelectedHashMemories, expected);
+    ((analyzer).phase2MeasurementEpoch) = 7;
+    analyzer.phase2Executor.recordPhase2Measurement(body);
+    ASSERT_EQ(((body).phase2MeasurementEpoch), uint64_t(7));
+    ASSERT_EQ(((body).phase2TaskUsage).tasks, stumpFree.tasks);
+    ASSERT_EQ(((body).phase2TaskUsage).batches, stumpFree.batches);
+    ASSERT_EQ(((body).phase2TaskUsage).terms, stumpFree.terms);
+    ASSERT_EQ(((body).phase2TaskUsage).stumps, 0u);
+    ASSERT_EQ(((body).phase2SelectedHashMemories), expected);
     const gl::gpu::Phase2ProjectionUsage projection =
-        gl::gpu::measurePhase2ProjectionUsage(body, analyzer, expected, true);
-    ASSERT_TRUE(std::memcmp(&body.phase2ProjectionUsage, &projection,
+        gl::gpu::measurePhase2ProjectionUsage(body, analyzer.anchorInfo, expected, true);
+    ASSERT_TRUE(std::memcmp(&((body).phase2ProjectionUsage), &projection,
                             sizeof(projection)) == 0);
-    ASSERT_EQ(body.phase2ProjectionUsage.logicalBlocks, uint64_t(1));
+    ASSERT_EQ(((body).phase2ProjectionUsage).logicalBlocks, uint64_t(1));
     gl::Memory quietBody;
-    analyzer.recordPhase2Measurement(quietBody);
-    ASSERT_EQ(quietBody.phase2MeasurementEpoch, uint64_t(7));
-    ASSERT_EQ(quietBody.phase2TaskUsage.tasks, 0u);
-    ASSERT_EQ(quietBody.phase2SelectedHashMemories, 0u);
-    ASSERT_EQ(quietBody.phase2ProjectionUsage.logicalBlocks, uint64_t(0));
+    analyzer.phase2Executor.recordPhase2Measurement(quietBody);
+    ASSERT_EQ(((quietBody).phase2MeasurementEpoch), uint64_t(7));
+    ASSERT_EQ(((quietBody).phase2TaskUsage).tasks, 0u);
+    ASSERT_EQ(((quietBody).phase2SelectedHashMemories), 0u);
+    ASSERT_EQ(((quietBody).phase2ProjectionUsage).logicalBlocks, uint64_t(0));
 }
 
 TEST(phase2_projection, task_inputs_are_pointer_free_ordered_and_reusable) {
     gl::Memory measuredBody;
-    const gl::NameId measuredMain = measuredBody.nameMap.encode("main");
-    const gl::NameId measuredName = measuredBody.nameMap.encode("task-shape");
+    const gl::NameId measuredMain = ((measuredBody).nameMap).encode("main");
+    const gl::NameId measuredName = ((measuredBody).nameMap).encode("task-shape");
     const gl::IntEncodedExpr measuredStatement = projectionStatement(
         measuredName, measuredName, measuredMain, measuredName);
-    measuredBody.intLocalEncodedStatements.push_back(measuredStatement);
-    measuredBody.intExternalStatements.push_back(measuredStatement);
+    ((measuredBody).intLocalEncodedStatements).push_back(measuredStatement);
+    ((measuredBody).intExternalStatements).push_back(measuredStatement);
     const gl::NormKey measuredKey{ 1, { measuredName } };
     gl::LocalMemoryValue measuredValue;
-    measuredValue.valueId = measuredBody.ruleInterner.encode("task-rule");
-    measuredBody.workingMemory.encodedMap.assignRun(
+    measuredValue.valueId = ((measuredBody).ruleInterner).encode("task-rule");
+    ((((measuredBody).workingMemory)).encodedMap).assignRun(
         measuredKey, std::vector<gl::LocalMemoryValue>{ measuredValue });
-    measuredBody.localHashMemory.encodedMap.assignRun(
+    ((((measuredBody).localHashMemory)).encodedMap).assignRun(
         measuredKey, std::vector<gl::LocalMemoryValue>{ measuredValue });
-    measuredBody.localHashMemoryDelta.encodedMap.assignRun(
+    ((((measuredBody).localHashMemoryDelta)).encodedMap).assignRun(
         measuredKey, std::vector<gl::LocalMemoryValue>{ measuredValue });
     const gl::gpu::Phase2TaskProjectionUsage measured =
         gl::gpu::measurePhase2TaskProjectionUsage(measuredBody, 2, false);
@@ -1826,15 +1901,15 @@ CUDA_TEST(phase2_projection, filter_examined_volume_exceeds_32_bits_without_repe
 }
 
 CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 3;
     gl::Memory body;
-    gl::NameMap& names = body.nameMap;
+    gl::NameMap& names = ((body).nameMap);
     const gl::NameId mainId = names.encode("main");
     const gl::NameId frozenBranch = names.encodePush(
         mainId, gl::StrSpan("ordis_(filter-test)", 19));
     const int32_t fixtureRuleId =
-        body.ruleInterner.encode("(fixture-rule[1])");
+        ((body).ruleInterner).encode("(fixture-rule[1])");
     const gl::RuleOwner fixtureOwner =
         gl::packRuleOwner(fixtureRuleId, mainId);
     gl::ScratchArena& ownerArena = gl::genScratchArenas().forSlot(
@@ -1849,17 +1924,20 @@ CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams
             gl::EncodedExpression(expressions[index], names.decode(validity)),
             names);
         if (index == 5) statement.maxIteration = 4;
-        body.intEncodedStatements.push_back(statement);
+        ((body).intEncodedStatements).push_back(statement);
     }
-    body.frozenOrBranches.mint(frozenBranch);
+    ((body).frozenOrBranches).mint(frozenBranch);
+    // The rejected prefix below repeats row 5, so these six rows' patterns
+    // cover every row of the rebuilt list.
+    gl::tests::admitEveryStatementShape(body);
 
     gl::HashMemory* memories[4] = {
-        &body.overallHashMemory, &body.localHashMemory,
-        &body.localHashMemoryDelta, &body.workingMemory
+        &((body).overallHashMemory), &((body).localHashMemory),
+        &((body).localHashMemoryDelta), &((body).workingMemory)
     };
     for (uint32_t statementIndex = 0; statementIndex < 6; ++statementIndex) {
         const gl::IntEncodedExpr& statement =
-            body.intEncodedStatements[statementIndex];
+            ((body).intEncodedStatements)[statementIndex];
         gl::NameId keyData[4] = {
             statement.nameId, statement.negation, 1, 0
         };
@@ -1868,13 +1946,13 @@ CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams
         };
         for (gl::HashMemory* memory : memories) {
             if (statementIndex == 3) {
-                gl::ExpressionAnalyzer::addWholeKeyOwner(
-                    memory->normalizedEncodedKeys, 1, keyData, 4,
+                gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+                    ((*(memory)).normalizedEncodedKeys), 1, keyData, 4,
                     fixtureOwner, ownerArena);
             }
             else {
-                gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-                    memory->normalizedEncodedSubkeys, 1, keyData, 4);
+                gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+                    ((*(memory)).normalizedEncodedSubkeys), 1, keyData, 4);
             }
         }
     }
@@ -1882,13 +1960,13 @@ CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams
     constexpr uint32_t rejectedPrefix = (1u << 18) + 1;
     gl::IntEncodedExpr acceptedStatements[6]{};
     for (uint32_t row = 0; row < 6; ++row)
-        acceptedStatements[row] = body.intEncodedStatements[row];
-    body.intEncodedStatements.clear();
+        acceptedStatements[row] = ((body).intEncodedStatements)[row];
+    ((body).intEncodedStatements).clear();
     gl::IntEncodedExpr rejected = acceptedStatements[5];
     for (uint32_t row = 0; row < rejectedPrefix; ++row)
-        body.intEncodedStatements.push_back(rejected);
+        ((body).intEncodedStatements).push_back(rejected);
     for (const auto& statement : acceptedStatements)
-        body.intEncodedStatements.push_back(statement);
+        ((body).intEncodedStatements).push_back(statement);
     std::clog << "[phase2-filter-twin] fixture ready\n" << std::flush;
 
     uint32_t nameBytes = 0;
@@ -1896,11 +1974,11 @@ CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams
         nameBytes += static_cast<uint32_t>(names.decodeView(id).len);
     const gl::gpu::Phase2ProjectionCapacity projectionLimits =
         projectionCapacity(
-            1, static_cast<uint32_t>(body.intEncodedStatements.size()),
+            1, static_cast<uint32_t>(((body).intEncodedStatements).size()),
             static_cast<uint32_t>(names.nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
     const gl::gpu::DeviceLogicalBlockProjection block =
-        hostProjection.appendLogicalBlock(body, analyzer);
+        hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     std::clog << "[phase2-filter-twin] projection packed\n" << std::flush;
     gl::gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionLimits);
     // A uniform rank translation preserves lexical order while crossing 18 bits.
@@ -1915,26 +1993,26 @@ CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams
         std::clog << "[phase2-filter-twin] processor " << label
                   << " start\n" << std::flush;
         gl::NameId output[8192]{};
-        const gl::NameId count = analyzer.filterIntEncodedStatements(
-            gl::IntStmtView(body.intEncodedStatements), memory, body,
+        const gl::NameId count = gl::tests::HashRequestGeneratorFixture::filterIntEncodedStatements(analyzer.requestGenerator,
+            gl::IntStmtView(((body).intEncodedStatements)), memory, body,
             alsoAcceptFullKeys, output, 8192);
         std::vector<gl::NameId> result(output, output + count);
         std::stable_sort(result.begin(), result.end(),
             [&](gl::NameId left, gl::NameId right) {
                 return gl::compareSpans(
-                    names.decodeView(body.intEncodedStatements[left].nameId),
-                    names.decodeView(body.intEncodedStatements[right].nameId)) < 0;
+                    names.decodeView(((body).intEncodedStatements)[left].nameId),
+                    names.decodeView(((body).intEncodedStatements)[right].nameId)) < 0;
             });
         std::clog << "[phase2-filter-twin] processor " << label
                   << " complete\n" << std::flush;
         return result;
     };
     const std::vector<gl::NameId> expected[5] = {
-        processorOrder("overall-subkey", body.overallHashMemory, false),
-        processorOrder("overall-union", body.overallHashMemory, true),
-        processorOrder("local", body.localHashMemory, true),
-        processorOrder("local-delta", body.localHashMemoryDelta, true),
-        processorOrder("working", body.workingMemory, true)
+        processorOrder("overall-subkey", ((body).overallHashMemory), false),
+        processorOrder("overall-union", ((body).overallHashMemory), true),
+        processorOrder("local", ((body).localHashMemory), true),
+        processorOrder("local-delta", ((body).localHashMemoryDelta), true),
+        processorOrder("working", ((body).workingMemory), true)
     };
     std::clog << "[phase2-filter-twin] processor oracle complete\n"
               << std::flush;
@@ -1986,36 +2064,191 @@ CUDA_TEST(phase2_projection, bulk_cuda_filter_and_sort_matches_processor_streams
     ASSERT_EQ(keyOffset, retained);
 }
 
+CUDA_TEST(phase2_projection, premise_pattern_rejections_keep_processor_and_device_lists_equal) {
+    // Every row's signed core is a premise core, so the shape keys alone would
+    // keep them all. The premise patterns reject three: `(p[j])` (no premise
+    // carries the literal j), `(r[a])` at the sibling scope T (its only premise
+    // lives at scope S) and `(s[a,a])` (the premise repeats no variable). The
+    // upload omits exactly those rows, and every one of the five filter calls
+    // keeps the same rows, in the same order, on the device as on the
+    // processor (I-300).
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::Memory body;
+    gl::NameMap& names = ((body).nameMap);
+    const gl::NameId mainId = names.encode("main");
+    const gl::NameId scopeS = names.encodePush(mainId, gl::StrSpan("hypo_(h[1])", 11));
+    const gl::NameId scopeT = names.encodePush(mainId, gl::StrSpan("hypo_(h[2])", 11));
+    const int32_t fixtureRuleId =
+        ((body).ruleInterner).encode("(fixture-rule[2])");
+    const gl::RuleOwner fixtureOwner =
+        gl::packRuleOwner(fixtureRuleId, mainId);
+    gl::ScratchArena& ownerArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    struct Row { const char* text; gl::NameId scope; };
+    const Row rows[8] = {
+        { "(p[k])", mainId }, { "(p[j])", mainId }, { "(q[a])", mainId },
+        { "(r[a])", scopeS }, { "(r[a])", scopeT }, { "(s[a,b])", mainId },
+        { "(s[a,a])", mainId }, { "(p[k])", scopeS }
+    };
+    for (const Row& row : rows) {
+        ((body).intEncodedStatements).push_back(gl::encodeExpression(
+            gl::EncodedExpression(row.text, names.decode(row.scope)), names));
+    }
+    gl::tests::registerPremisePattern(((body).overallHashMemory),
+        gl::tests::premiseRowAt(names, "(p[u_k])", mainId), mainId, 1);
+    gl::tests::registerPremisePattern(((body).localHashMemory),
+        gl::tests::premiseRowAt(names, "(q[x])", mainId), mainId, 2);
+    gl::tests::registerPremisePattern(((body).localHashMemoryDelta),
+        gl::tests::premiseRowAt(names, "(r[x])", scopeS), scopeS, 3);
+    gl::tests::registerPremisePattern(((body).workingMemory),
+        gl::tests::premiseRowAt(names, "(s[x,y])", mainId), mainId, 4);
+
+    gl::HashMemory* memories[4] = {
+        &((body).overallHashMemory), &((body).localHashMemory),
+        &((body).localHashMemoryDelta), &((body).workingMemory)
+    };
+    for (uint32_t index = 0; index < 8; ++index) {
+        // The row's one-element key as the filter builds it: signed core,
+        // then per argument its first-appearance number and a zero flag.
+        const gl::IntEncodedExpr& statement = ((body).intEncodedStatements)[index];
+        gl::NameId keyData[gl::ExecutionParameters::MAX_KEY_SLOTS];
+        gl::NameId len = 0;
+        keyData[len++] = statement.nameId;
+        keyData[len++] = statement.negation;
+        gl::NameId nextNumber = 1;
+        for (gl::NameId j = 0; j < statement.arity; ++j) {
+            gl::NameId number = 0;
+            for (gl::NameId earlier = 0; earlier < j && number == 0; ++earlier) {
+                if (statement.argId[earlier] == statement.argId[j])
+                    number = keyData[2 + 2 * earlier];
+            }
+            if (number == 0) number = nextNumber++;
+            keyData[len++] = number;
+            keyData[len++] = 0;
+        }
+        for (gl::HashMemory* memory : memories) {
+            if (statement.nameId == names.lookup(gl::StrSpan("q", 1))) {
+                gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+                    ((*(memory)).normalizedEncodedKeys), 1, keyData, len,
+                    fixtureOwner, ownerArena);
+            }
+            else {
+                gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+                    ((*(memory)).normalizedEncodedSubkeys), 1, keyData, len);
+            }
+        }
+    }
+
+    uint32_t nameBytes = 0;
+    for (gl::NameId id = 1; id <= names.nameCount(); ++id)
+        nameBytes += static_cast<uint32_t>(names.decodeView(id).len);
+    const gl::gpu::Phase2ProjectionCapacity projectionLimits =
+        projectionCapacity(1, 8, static_cast<uint32_t>(names.nameCount() + 1), nameBytes);
+    gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
+    const gl::gpu::DeviceLogicalBlockProjection block =
+        hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    ASSERT_EQ(block.statementCount, 5u);
+    gl::gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionLimits);
+    deviceProjection.upload(hostProjection);
+
+    const auto processorOrder = [&](gl::HashMemory& memory, bool alsoAcceptFullKeys) {
+        gl::NameId output[16]{};
+        const gl::NameId count = gl::tests::HashRequestGeneratorFixture::filterIntEncodedStatements(
+            analyzer.requestGenerator, gl::IntStmtView(((body).intEncodedStatements)), memory, body,
+            alsoAcceptFullKeys, output, 16);
+        std::vector<gl::NameId> result(output, output + count);
+        std::stable_sort(result.begin(), result.end(),
+            [&](gl::NameId left, gl::NameId right) {
+                return gl::compareSpans(
+                    names.decodeView(((body).intEncodedStatements)[left].nameId),
+                    names.decodeView(((body).intEncodedStatements)[right].nameId)) < 0;
+            });
+        return result;
+    };
+    const std::vector<gl::NameId> expected[5] = {
+        processorOrder(((body).overallHashMemory), false),
+        processorOrder(((body).overallHashMemory), true),
+        processorOrder(((body).localHashMemory), true),
+        processorOrder(((body).localHashMemoryDelta), true),
+        processorOrder(((body).workingMemory), true)
+    };
+    // The full-key call keeps the q row, the subkey-only call does not;
+    // neither keeps a pattern-rejected row.
+    ASSERT_EQ(expected[0].size(), 4u);
+    ASSERT_EQ(expected[1].size(), 5u);
+
+    gl::gpu::Phase2FilterScheduleCapacity filterLimits{};
+    filterLimits.calls = 8;
+    filterLimits.examinedRows = 64;
+    filterLimits.retainedRows = 64;
+    filterLimits.maximumExaminedRowsPerCall = 8;
+    gl::gpu::Phase2FilterScheduleArena schedule(filterLimits);
+    const gl::gpu::DeviceHashMemoryKind kinds[5] = {
+        gl::gpu::DeviceHashMemoryKind::overall,
+        gl::gpu::DeviceHashMemoryKind::overall,
+        gl::gpu::DeviceHashMemoryKind::local,
+        gl::gpu::DeviceHashMemoryKind::localDelta,
+        gl::gpu::DeviceHashMemoryKind::working
+    };
+    for (uint32_t call = 0; call < 5; ++call) {
+        schedule.appendCall(
+            0, kinds[call], analyzer.parameters.maxIterationNumberVariable,
+            call == 0 ? 0u : 1u, block.statementCount);
+    }
+    gl::gpu::CudaPhase2FilterSortBuffer deviceFilter(filterLimits);
+    const uint32_t retained = deviceFilter.filterAndSort(deviceProjection, schedule);
+    std::vector<uint32_t> counts(schedule.calls.size());
+    ASSERT_EQ(deviceFilter.downloadCallCounts(
+        counts.data(), static_cast<uint32_t>(counts.size())),
+        static_cast<uint32_t>(counts.size()));
+    std::vector<uint64_t> sortedKeys(retained);
+    ASSERT_EQ(deviceFilter.downloadSortedKeys(
+        sortedKeys.data(), static_cast<uint32_t>(sortedKeys.size())), retained);
+
+    uint32_t keyOffset = 0;
+    for (uint32_t call = 0; call < 5; ++call) {
+        ASSERT_EQ(counts[call], static_cast<uint32_t>(expected[call].size()));
+        for (uint32_t row = 0; row < counts[call]; ++row) {
+            const uint64_t key = sortedKeys[keyOffset++];
+            ASSERT_EQ(static_cast<int64_t>(key & gl::gpu::kDeviceFilterStatementIndexMask),
+                static_cast<int64_t>(hostProjection.projectedStatementIndex(0, expected[call][row])));
+        }
+    }
+    ASSERT_EQ(keyOffset, retained);
+}
+
 CUDA_TEST(phase2_projection, configurable_filter_keeps_rows_beyond_old_limit) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 1;
     gl::Memory body;
-    const gl::NameId main = body.nameMap.encode("main");
+    const gl::NameId main = ((body).nameMap).encode("main");
     gl::IntEncodedExpr first = gl::encodeExpression(
-        gl::EncodedExpression("(z[a])", "main"), body.nameMap);
+        gl::EncodedExpression("(z[a])", "main"), ((body).nameMap));
     const gl::IntEncodedExpr second = gl::encodeExpression(
-        gl::EncodedExpression("(a[b])", "main"), body.nameMap);
+        gl::EncodedExpression("(a[b])", "main"), ((body).nameMap));
     for (const auto& row : {first, second}) {
         const gl::NameId key[] = {row.nameId, row.negation, 1, 0};
-        gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-            body.overallHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+        gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+            ((((body).overallHashMemory)).normalizedEncodedSubkeys), 1, key, 4);
     }
     constexpr uint32_t rejected = 257;
     constexpr uint32_t eligible = 9040;
     first.maxIteration = 2;
     for (uint32_t i = 0; i < rejected; ++i)
-        body.intEncodedStatements.push_back(first);
+        ((body).intEncodedStatements).push_back(first);
     first.maxIteration = -1;
     for (uint32_t i = 0; i < eligible; ++i)
-        body.intEncodedStatements.push_back(i % 2 == 0 ? first : second);
+        ((body).intEncodedStatements).push_back(i % 2 == 0 ? first : second);
+    gl::tests::admitEveryStatementShape(body);
 
     uint32_t nameBytes = 0;
-    for (gl::NameId i = 1; i <= body.nameMap.nameCount(); ++i)
-        nameBytes += static_cast<uint32_t>(body.nameMap.decodeView(i).len);
+    for (gl::NameId i = 1; i <= ((body).nameMap).nameCount(); ++i)
+        nameBytes += static_cast<uint32_t>(((body).nameMap).decodeView(i).len);
     const auto limits = projectionCapacity(1, rejected + eligible,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), nameBytes);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena host(limits);
-    const auto block = host.appendLogicalBlock(body, analyzer);
+    const auto block = host.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::CudaPhase2ProjectionBuffer device(limits);
     device.upload(host);
     const gl::gpu::Phase2FilterScheduleCapacity filterLimits{
@@ -2026,16 +2259,16 @@ CUDA_TEST(phase2_projection, configurable_filter_keeps_rows_beyond_old_limit) {
     for (const uint32_t cap : caps) {
         analyzer.parameters.maxNumberFilteredStatements = static_cast<int>(cap);
         std::vector<gl::NameId> rows(cap);
-        const gl::NameId count = analyzer.filterIntEncodedStatements(
-            gl::IntStmtView(body.intEncodedStatements), body.overallHashMemory,
+        const gl::NameId count = gl::tests::HashRequestGeneratorFixture::filterIntEncodedStatements(analyzer.requestGenerator,
+            gl::IntStmtView(((body).intEncodedStatements)), ((body).overallHashMemory),
             body, true, rows.data(), analyzer.parameters.maxNumberFilteredStatements);
         rows.resize(count);
         ASSERT_EQ(static_cast<uint32_t>(count), std::min(cap, eligible));
         ASSERT_EQ(rows.front(), static_cast<gl::NameId>(rejected));
         ASSERT_EQ(rows.back(), static_cast<gl::NameId>(rejected + count - 1));
         std::stable_sort(rows.begin(), rows.end(), [&](gl::NameId l, gl::NameId r) {
-            return gl::compareSpans(body.nameMap.decodeView(body.intEncodedStatements[l].nameId),
-                body.nameMap.decodeView(body.intEncodedStatements[r].nameId)) < 0;
+            return gl::compareSpans(((body).nameMap).decodeView(((body).intEncodedStatements)[l].nameId),
+                ((body).nameMap).decodeView(((body).intEncodedStatements)[r].nameId)) < 0;
         });
         expected.push_back(rows);
         schedule.appendCall(0, gl::gpu::DeviceHashMemoryKind::overall,
@@ -2061,22 +2294,22 @@ CUDA_TEST(phase2_projection, configurable_filter_keeps_rows_beyond_old_limit) {
 }
 
 CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
-    gl::ExpressionAnalyzer analyzer("Peano");
-    analyzer.compiledExpressions["delta"] = gl::LogicalEntity(
+    gl::tests::ProverFixture analyzer("Peano");
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["delta"] = gl::LogicalEntity(
         "atomic", {}, "delta", 1);
     gl::Memory body;
-    const gl::NameId mainId = body.nameMap.encode("main");
-    const gl::NameId nameId = body.nameMap.encode("delta");
-    const gl::NameId originalId = body.nameMap.encode("(delta[delta])");
+    const gl::NameId mainId = ((body).nameMap).encode("main");
+    const gl::NameId nameId = ((body).nameMap).encode("delta");
+    const gl::NameId originalId = ((body).nameMap).encode("(delta[delta])");
     const gl::IntEncodedExpr statement =
         projectionStatement(nameId, originalId, mainId, nameId);
-    body.intEncodedStatements.push_back(statement);
-    body.intLocalEncodedStatements.push_back(statement);
-    body.intLocalEncodedStatementsDelta.push_back(statement);
-    body.intExternalStatements.push_back(statement);
+    ((body).intEncodedStatements).push_back(statement);
+    ((body).intLocalEncodedStatements).push_back(statement);
+    ((body).intLocalEncodedStatementsDelta).push_back(statement);
+    ((body).intExternalStatements).push_back(statement);
     body.setExprKey("cuda_projection");
 
-    const int32_t ruleId = body.ruleInterner.encode("(delta[1])");
+    const int32_t ruleId = ((body).ruleInterner).encode("(delta[1])");
     const gl::NormKey normKey{ 1, { nameId, mainId } };
     gl::OwnerSet owner;
     owner.hasLooseOwner = true;
@@ -2089,58 +2322,59 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     value.originalImplicationId = ruleId;
     value.validityId = mainId;
     const gl::Int16SetKey remainingKey{ { nameId } };
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.overallHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).overallHashMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    body.overallHashMemory.encodedMap.assignRun(
+    ((((body).overallHashMemory)).encodedMap).assignRun(
         normKey, std::vector<gl::LocalMemoryValue>{ value });
-    body.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(
+    ((((body).overallHashMemory)).remainingArgsNormalizedEncodedMap).assignRun(
         remainingKey, std::vector<gl::NormKey>{ normKey });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.localHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).localHashMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    body.localHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).localHashMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.localHashMemoryDelta.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).localHashMemoryDelta)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    body.localHashMemoryDelta.normalizedEncodedSubkeys.assignRun(
+    ((((body).localHashMemoryDelta)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.workingMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).workingMemory)).normalizedEncodedKeys),
         normKey.numberExpressions, normKey.data.data(),
         static_cast<int32_t>(normKey.data.size()), packedOwner, ownerArena);
-    body.workingMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).workingMemory)).normalizedEncodedSubkeys).assignRun(
         normKey, std::vector<gl::OwnerSet>{ owner });
-    body.overallHashMemory.productsOfRecursionIds.mint(nameId);
+    ((((body).overallHashMemory)).productsOfRecursionIds).mint(nameId);
     const gl::StatementKey statementKey{ originalId, mainId };
     const int64_t packedStatementKey =
         gl::packStatementKey(originalId, mainId);
-    body.intKnownStatements.upsert(
+    ((body).intKnownStatements).upsert(
         statementKey, gl::StatementFlags{ true, true });
-    body.intLocalEncodedStatementsSet.mint(packedStatementKey);
+    ((body).intLocalEncodedStatementsSet).mint(packedStatementKey);
     const int levels[1] = { 4 };
-    body.intStatementLevelsMap.assignSet(statementKey, levels, 1);
-    body.intValidityNamesToFilter.mint(mainId);
-    body.frozenOrBranches.mint(nameId);
-    body.intToBeProved.assignSet(statementKey, levels, 1);
+    ((body).intStatementLevelsMap).assignSet(statementKey, levels, 1);
+    ((body).intValidityNamesToFilter).mint(mainId);
+    ((body).frozenOrBranches).mint(nameId);
+    ((body).intToBeProved).assignSet(statementKey, levels, 1);
+    gl::tests::admitEveryStatementShape(body);
 
     uint32_t byteCount = 0;
-    for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id)
-        byteCount += static_cast<uint32_t>(body.nameMap.decodeView(id).len);
+    for (gl::NameId id = 1; id <= ((body).nameMap).nameCount(); ++id)
+        byteCount += static_cast<uint32_t>(((body).nameMap).decodeView(id).len);
     const gl::gpu::Phase2ProjectionCapacity capacity = projectionCapacity(
         1,
         1,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1),
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1),
         byteCount);
     gl::gpu::Phase2ProjectionArena host(capacity);
     const gl::gpu::DeviceLogicalBlockProjection projected =
-        host.appendLogicalBlock(body, analyzer);
+        host.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     ASSERT_TRUE(!host.byteMapEntries.empty());
     ASSERT_TRUE(!host.blobRecords.empty());
     ASSERT_TRUE(!host.reverseMapEntries.empty());
@@ -2162,19 +2396,25 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     gl::gpu::Phase2ProjectionArena expected(twice, twice);
     gl::gpu::Phase2ProjectionArena first(capacity, expected, {});
     gl::gpu::Phase2ProjectionArena second(capacity, expected, capacity);
-    first.appendLogicalBlock(body, analyzer);
-    second.appendLogicalBlock(body, analyzer);
+    first.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
+    second.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::Phase2ProjectionArena* oracleShards[] = {&first, &second};
     uint32_t firstBlocks[2]{};
     gl::gpu::Phase2ProjectionWorkers oracleWorkers(2);
     expected.adoptShards(oracleShards, 2, firstBlocks,
         gl::gpu::Phase2ProjectionArena::ShardBases{}, oracleWorkers);
-    ASSERT_EQ(gl::gpu::phase2ProjectionHostBytes(twice), expected.hostBytes());
+    const auto backingLayout = gl::gpu::Phase2ProjectionArena::hostLayout(
+        twice, twice, gl::gpu::Phase2ProjectionArena::Role::Backing);
+    ASSERT_EQ(backingLayout.roundedBytes(gl::gpuHostStorage().blockBytes()), expected.hostBytes());
 
     gl::gpu::Phase2ProjectionArena retained(twice,
         gl::gpu::Phase2ProjectionArena::SealingOnly{});
     const uint64_t retainedBytes = retained.hostBytes();
-    ASSERT_TRUE(retainedBytes < expected.hostBytes());
+    const auto retainedLayout = gl::gpu::Phase2ProjectionArena::hostLayout(
+        twice, twice, gl::gpu::Phase2ProjectionArena::Role::Sealing);
+    ASSERT_TRUE(retainedLayout.bytes < backingLayout.bytes);
+    ASSERT_EQ(retainedBytes, retainedLayout.roundedBytes(gl::gpuHostStorage().blockBytes()));
+    ASSERT_TRUE(retainedBytes <= expected.hostBytes());
     ASSERT_EQ(retained.statements.capacity(), std::size_t(0));
     ASSERT_EQ(retained.byteKeyBytes.capacity(), std::size_t(0));
     gl::gpu::CudaPhase2ProjectionBuffer streamed(twice);
@@ -2182,7 +2422,7 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
     streamed.beginStreamedUpload();
     for (int window = 0; window < 2; ++window) {
         gl::gpu::Phase2ProjectionArena source(capacity);
-        source.appendLogicalBlock(body, analyzer);
+        source.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
         source.timing.mergeNanoseconds = static_cast<uint64_t>(window + 1);
         const auto next = source.streamedEnd(ends);
         source.rebaseForStream(ends);
@@ -2217,58 +2457,48 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
             ASSERT_EQ(retained.projectedStatementIndex(block, sourceIndex), static_cast<gl::NameId>(row));
         }
     }
-    // The retained rule copy of every complete-image blob record: the LMV's
-    // implication and scope on the overall encoded-map runs, zero elsewhere
-    // (I-284).
-    std::vector<int64_t> wantedOwners(expected.blobRecords.size(), 0);
-    int32_t lmvRecords = 0;
-    for (const gl::gpu::DeviceByteMapView& view : expected.byteMapViews) {
-        if (view.kind != gl::gpu::DeviceByteMapKind::overallEncoded) continue;
-        for (uint32_t e = view.entryOffset; e < view.entryOffset + view.entryCount; ++e) {
-            const gl::gpu::DeviceByteMapEntry& entry = expected.byteMapEntries[e];
-            for (uint32_t r = entry.blobRecordOffset;
-                 r < entry.blobRecordOffset + entry.blobRecordCount; ++r) {
-                const gl::gpu::DeviceBlobRecord& blob = expected.blobRecords[r];
-                const gl::LmvBlobView lmv(expected.blobBytes.data() + blob.byteOffset,
-                    static_cast<int32_t>(blob.byteLength));
-                wantedOwners[r] = gl::packRuleOwner(lmv.originalImplicationId(), lmv.validityId());
-                ASSERT_EQ(wantedOwners[r], packedOwner);
-                ++lmvRecords;
-            }
-        }
-    }
-    ASSERT_TRUE(lmvRecords > 0);
-    ASSERT_TRUE(static_cast<std::size_t>(lmvRecords) < wantedOwners.size());
-    ASSERT_EQ(retained.blobRuleOwners.size(), wantedOwners.size());
-    for (std::size_t r = 0; r < wantedOwners.size(); ++r)
-        ASSERT_EQ(retained.blobRuleOwners[r], wantedOwners[r]);
-
     // The upload thread reproduces the synchronous sequence: windows adopted at
     // their stream bases are uploaded and retained in submission order while
-    // the next window is built (D-447).
-    {
+    // the next window is built (D-447), and each window's slot is emptied as
+    // soon as its synchronous copies finish
+    // (D-491).
+    for (std::size_t slotCount : {std::size_t(2), std::size_t(1)}) {
         gl::gpu::Phase2ProjectionWorkers workers(2);
         gl::gpu::CudaPhase2ProjectionBuffer overlapped(twice);
         gl::gpu::Phase2ProjectionArena overlappedRetained(twice,
             gl::gpu::Phase2ProjectionArena::SealingOnly{});
         overlapped.beginStreamedUpload();
         gl::gpu::Phase2WindowUploader uploader(overlapped, overlappedRetained);
+        uploader.quiesceForSnapshot();
+        ASSERT_EQ(uploader.observeForSnapshot(),uint64_t(0));
         gl::gpu::Phase2ProjectionArena::ShardBases windowEnds{};
+        gl::GpuHostObjectArray<std::optional<gl::gpu::Phase2ProjectionArena>> windows(slotCount);
         for (int windowIndex = 0; windowIndex < 2; ++windowIndex) {
-            auto window = std::make_unique<gl::gpu::Phase2ProjectionArena>(capacity, capacity);
+            if (slotCount == 1) uploader.waitUntilUploaded();
+            auto& slot = windows[windowIndex % slotCount];
+            ASSERT_FALSE(slot.has_value());
+            slot.emplace(capacity, capacity);
+            auto* window = &*slot;
             uint32_t windowFirst[1]{ 3 };
             {
                 gl::gpu::Phase2ProjectionArena shard(
                     capacity, *window, gl::gpu::Phase2ProjectionCapacity{});
-                shard.appendLogicalBlock(body, analyzer);
+                shard.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
                 gl::gpu::Phase2ProjectionArena* windowShards[] = { &shard };
                 window->adoptShards(windowShards, 1, windowFirst, windowEnds, workers);
             }
             ASSERT_EQ(windowFirst[0], 0u);
             const auto next = window->streamedEnd(windowEnds);
-            uploader.submit(std::move(window), windowEnds);
+            uploader.submit(slot, windowEnds);
             windowEnds = next;
         }
+        // An idle uploader has already released the last window.
+        uploader.quiesceForSnapshot();
+        ASSERT_EQ(uploader.observeForSnapshot(), uint64_t(0));
+        for (std::size_t slot = 0; slot < slotCount; ++slot)
+            ASSERT_FALSE(windows[slot].has_value());
+        uploader.waitUntilUploaded();
+        ASSERT_EQ(uploader.observeForSnapshot(), uint64_t(0));
         uploader.finish();
         overlapped.finishPhase2Upload();
         ASSERT_EQ(overlapped.launchChecksum(), projectionChecksum(expected));
@@ -2284,13 +2514,11 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
         ASSERT_EQ(std::memcmp(overlappedRetained.ruleStringRecords.data(),
             retained.ruleStringRecords.data(),
             retained.ruleStringRecords.size() * sizeof(gl::gpu::DeviceRuleStringRecord)), 0);
-        ASSERT_TRUE(overlappedRetained.blobRuleOwners == retained.blobRuleOwners);
         ASSERT_EQ(overlappedRetained.timing.logicalBlocks, uint64_t(2));
     }
     retained.clear();
     ASSERT_TRUE(retained.logicalBlocks.empty());
     ASSERT_TRUE(retained.nameBytes.empty());
-    ASSERT_TRUE(retained.blobRuleOwners.empty());
     ASSERT_EQ(retained.hostBytes(), retainedBytes);
 
 
@@ -2314,7 +2542,7 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
         device.launchLookupProbe(nameProbe);
     ASSERT_EQ(nameHit.recordIndex, nameId);
     ASSERT_EQ(nameHit.payloadCount, 5u);
-    ASSERT_EQ(nameHit.firstIntValue, body.nameMap.parentOf(nameId));
+    ASSERT_EQ(nameHit.firstIntValue, ((body).nameMap).parentOf(nameId));
     ASSERT_EQ(nameHit.scalar, host.nameRecords[
         projected.nameRecordOffset + static_cast<uint32_t>(nameId)].decodedLexRank);
     nameProbe = byteProbe(
@@ -2414,16 +2642,16 @@ CUDA_TEST(phase2_projection, fixed_cuda_buffer_upload_and_lookups_are_exact) {
 CUDA_TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor) {
     gl::Memory body;
     body.setExprKey("cuda_growth_candidate");
-    gl::ExpressionAnalyzer analyzer("Peano");
-    const gl::NameId mainId = body.nameMap.encode("main");
-    const gl::NameId alphaId = body.nameMap.encode("alpha");
-    const gl::NameId betaId = body.nameMap.encode("beta");
-    const gl::NameId gammaId = body.nameMap.encode("gamma");
-    const gl::NameId patternX = body.nameMap.encode("x");
-    const gl::NameId patternY = body.nameMap.encode("y");
-    const gl::NameId literalA = body.nameMap.encode("u_literal_a");
-    const gl::NameId literalB = body.nameMap.encode("u_literal_b");
-    const gl::NameId wrongLiteral = body.nameMap.encode("u_wrong");
+    gl::tests::ProverFixture analyzer("Peano");
+    const gl::NameId mainId = ((body).nameMap).encode("main");
+    const gl::NameId alphaId = ((body).nameMap).encode("alpha");
+    const gl::NameId betaId = ((body).nameMap).encode("beta");
+    const gl::NameId gammaId = ((body).nameMap).encode("gamma");
+    const gl::NameId patternX = ((body).nameMap).encode("x");
+    const gl::NameId patternY = ((body).nameMap).encode("y");
+    const gl::NameId literalA = ((body).nameMap).encode("u_literal_a");
+    const gl::NameId literalB = ((body).nameMap).encode("u_literal_b");
+    const gl::NameId wrongLiteral = ((body).nameMap).encode("u_wrong");
 
     gl::IntEncodedExpr first = projectionStatement(
         alphaId, alphaId, mainId, patternX);
@@ -2435,17 +2663,18 @@ CUDA_TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor)
     gl::IntEncodedExpr third = projectionStatement(
         gammaId, gammaId, mainId, patternY);
     third.argFullId[0] = literalB;
-    body.intEncodedStatements.push_back(first);
-    body.intEncodedStatements.push_back(second);
-    body.intEncodedStatements.push_back(third);
+    ((body).intEncodedStatements).push_back(first);
+    ((body).intEncodedStatements).push_back(second);
+    ((body).intEncodedStatements).push_back(third);
+    gl::tests::admitEveryStatementShape(body);
 
     const gl::IntEncodedExpr* expressions[3] = {
-        &body.intEncodedStatements[0],
-        &body.intEncodedStatements[1],
-        &body.intEncodedStatements[2]
+        &((body).intEncodedStatements)[0],
+        &((body).intEncodedStatements)[1],
+        &((body).intEncodedStatements)[2]
     };
     gl::NameId expectedData[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
-    const gl::NameId expectedLength = analyzer.makeIntNormalizedKeyFromEncoded(
+    const gl::NameId expectedLength = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
         expressions, 3, expectedData,
         gl::ExecutionParameters::MAX_KEY_SLOTS);
     const gl::NormKey key{
@@ -2457,9 +2686,9 @@ CUDA_TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor)
         { 0, literalA }, { 1, literalA }, { 2, literalB } });
     gl::OwnerSet rejectingOwner;
     rejectingOwner.uSignatures.insert({ { 0, wrongLiteral } });
-    const int32_t acceptingRuleId = body.ruleInterner.encode(
+    const int32_t acceptingRuleId = ((body).ruleInterner).encode(
         "(cuda-accepting-rule[1])");
-    const int32_t rejectingRuleId = body.ruleInterner.encode(
+    const int32_t rejectingRuleId = ((body).ruleInterner).encode(
         "(cuda-rejecting-rule[1])");
     const gl::RuleOwner acceptingRuleOwner = gl::packRuleOwner(
         acceptingRuleId, mainId);
@@ -2472,47 +2701,47 @@ CUDA_TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor)
     ASSERT_TRUE(gl::ownerSetUSatisfied(acceptingOwner, expressions, 3));
     ASSERT_TRUE(!gl::ownerSetUSatisfied(rejectingOwner, expressions, 3));
 
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.overallHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).overallHashMemory)).normalizedEncodedKeys),
         key.numberExpressions, key.data.data(),
         static_cast<int32_t>(key.data.size()), acceptingRuleOwner, ownerArena);
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(
         key, std::vector<gl::OwnerSet>{ acceptingOwner });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.localHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).localHashMemory)).normalizedEncodedKeys),
         key.numberExpressions, key.data.data(),
         static_cast<int32_t>(key.data.size()), rejectingRuleOwner, ownerArena);
-    body.localHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).localHashMemory)).normalizedEncodedSubkeys).assignRun(
         key, std::vector<gl::OwnerSet>{ rejectingOwner });
 
     gl::NameId shortData[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
-    const gl::NameId shortLength = analyzer.makeIntNormalizedKeyFromEncoded(
+    const gl::NameId shortLength = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
         expressions, 2, shortData,
         gl::ExecutionParameters::MAX_KEY_SLOTS);
     const gl::NormKey shortKey{
         2, std::vector<gl::NameId>(shortData, shortData + shortLength) };
-    body.localHashMemoryDelta.normalizedEncodedSubkeys.assignRun(
+    ((((body).localHashMemoryDelta)).normalizedEncodedSubkeys).assignRun(
         shortKey, std::vector<gl::OwnerSet>{ rejectingOwner });
 
     // A production install indexes each singleton premise as well as the
     // multi-premise key. Keep this direct key-probe fixture complete.
     for (const gl::IntEncodedExpr* expression : expressions) {
         gl::NameId singleton[gl::ExecutionParameters::MAX_KEY_SLOTS];
-        const gl::NameId length = analyzer.makeIntNormalizedKeyFromEncoded(
+        const gl::NameId length = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
             &expression, 1, singleton, gl::ExecutionParameters::MAX_KEY_SLOTS);
-        gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-            body.overallHashMemory.normalizedEncodedSubkeys, 1,
+        gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+            ((((body).overallHashMemory)).normalizedEncodedSubkeys), 1,
             singleton, length);
     }
 
     uint32_t nameBytes = 0;
-    for (gl::NameId id = 1; id <= body.nameMap.nameCount(); ++id)
-        nameBytes += static_cast<uint32_t>(body.nameMap.decodeView(id).len);
+    for (gl::NameId id = 1; id <= ((body).nameMap).nameCount(); ++id)
+        nameBytes += static_cast<uint32_t>(((body).nameMap).decodeView(id).len);
     const gl::gpu::Phase2ProjectionCapacity capacity = projectionCapacity(
-        1, static_cast<uint32_t>(body.intEncodedStatements.size()),
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), nameBytes);
+        1, static_cast<uint32_t>(((body).intEncodedStatements).size()),
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena host(capacity);
-    host.appendLogicalBlock(body, analyzer);
+    host.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::CudaPhase2ProjectionBuffer device(capacity);
     device.upload(host);
 
@@ -2563,7 +2792,9 @@ CUDA_TEST(phase2_projection, cuda_normalized_key_and_owner_gate_match_processor)
 }
 
 CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::RequestFrontierTestFiles requestFiles("request_frontier_cuda_tests");
+    const auto diskStorage = requestFiles.options(1);
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 3;
     analyzer.parameters.standardMaxSecondaryNumber = 9;
     analyzer.parameters.maxLenHypoKey = 3;
@@ -2572,17 +2803,17 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     analyzer.parameters.incubator_mode = true;
     analyzer.parameters.ban_disintegration = false;
     analyzer.parameters.compressor_mode = false;
-    analyzer.compiledExpressions["gpuHead"] = gl::LogicalEntity(
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["gpuHead"] = gl::LogicalEntity(
         "atomic", {}, "gpuHead", 2);
-    analyzer.compiledExpressions["gpuMarker"] = gl::LogicalEntity(
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["gpuMarker"] = gl::LogicalEntity(
         "expression", {}, "gpuMarker", 2);
-    analyzer.compiledExpressions["c"] = gl::LogicalEntity(
+    gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions)["c"] = gl::LogicalEntity(
         "expression", {}, "c", 1);
 
     gl::Memory body;
-    body.level = 1;
+    ((body).level) = 1;
     body.setExprKey("cuda_bulk_growth");
-    gl::NameMap& names = body.nameMap;
+    gl::NameMap& names = ((body).nameMap);
     const gl::NameId mainId = names.encode("main");
     const gl::NameId childId = names.encodePush(
         mainId, gl::StrSpan("scope_child", 11));
@@ -2625,28 +2856,29 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         if (index == 0) statement.isAnchor = 1;
         if (index == 2) statement.isAnchor = 1;
         if (index == 1) statement.isHypo = 1;
-        body.intEncodedStatements.push_back(statement);
+        ((body).intEncodedStatements).push_back(statement);
     }
-    body.overallHashMemory.productsOfRecursionIds.mint(variableProduct);
-    body.overallHashMemory.productsOfRecursionIds.mint(variableV);
-    const gl::IntEncodedExpr& mandatory = body.intEncodedStatements[2];
-    body.intLocalEncodedStatementsSet.mint(gl::packStatementKey(
+    gl::tests::admitEveryStatementShape(body);
+    ((((body).overallHashMemory)).productsOfRecursionIds).mint(variableProduct);
+    ((((body).overallHashMemory)).productsOfRecursionIds).mint(variableV);
+    const gl::IntEncodedExpr& mandatory = ((body).intEncodedStatements)[2];
+    ((body).intLocalEncodedStatementsSet).mint(gl::packStatementKey(
         mandatory.originalId, mandatory.validityId));
 
     const auto normalizedKey = [&](const std::vector<gl::NameId>& indices) {
         const gl::IntEncodedExpr* expressions[
             gl::ExecutionParameters::MAX_EXPRESSIONS]{};
         for (std::size_t index = 0; index < indices.size(); ++index)
-            expressions[index] = &body.intEncodedStatements[indices[index]];
+            expressions[index] = &((body).intEncodedStatements)[indices[index]];
         gl::NameId data[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
-        const gl::NameId length = analyzer.makeIntNormalizedKeyFromEncoded(
+        const gl::NameId length = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
             expressions, static_cast<gl::NameId>(indices.size()), data,
             gl::ExecutionParameters::MAX_KEY_SLOTS);
         return gl::NormKey{
             static_cast<gl::NameId>(indices.size()),
             std::vector<gl::NameId>(data, data + length) };
     };
-    const int32_t fixtureRuleId = body.ruleInterner.encode(
+    const int32_t fixtureRuleId = ((body).ruleInterner).encode(
         "(cuda-growth-rule[1])");
     const gl::RuleOwner fixtureOwner = gl::packRuleOwner(
         fixtureRuleId, mainId);
@@ -2654,21 +2886,21 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         gl::genScratchArenas().slotCount() - 1);
     const auto addLooseSubkey = [&](const std::vector<gl::NameId>& indices) {
         const gl::NormKey key = normalizedKey(indices);
-        ASSERT_TRUE(key.numberExpressions < gl::ExpressionAnalyzer::kSubkeyUCheckMinElements);
-        gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(
-            body.overallHashMemory.normalizedEncodedSubkeys,
+        ASSERT_TRUE(key.numberExpressions < gl::HashRuleIndex::kSubkeyUCheckMinElements);
+        gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(
+            ((((body).overallHashMemory)).normalizedEncodedSubkeys),
             key.numberExpressions, key.data.data(), static_cast<int32_t>(key.data.size()));
-        const int32_t id = body.overallHashMemory.normalizedEncodedSubkeys.lookup(key);
+        const int32_t id = ((((body).overallHashMemory)).normalizedEncodedSubkeys).lookup(key);
         ASSERT_TRUE(id != 0);
-        const auto value = body.overallHashMemory.normalizedEncodedSubkeys.recordAt(id, 0);
+        const auto value = ((((body).overallHashMemory)).normalizedEncodedSubkeys).recordAt(id, 0);
         ASSERT_FALSE(value.hasLooseOwner);
         ASSERT_TRUE(value.owners.empty() && value.uSignatures.empty());
         ASSERT_EQ(gl::Codec<gl::OwnerSet>::serialize(value).size(), 9u);
     };
     const auto addWhole = [&](const std::vector<gl::NameId>& indices) {
         const gl::NormKey key = normalizedKey(indices);
-        gl::ExpressionAnalyzer::addWholeKeyOwner(
-            body.overallHashMemory.normalizedEncodedKeys,
+        gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+            ((((body).overallHashMemory)).normalizedEncodedKeys),
             key.numberExpressions, key.data.data(),
             static_cast<int32_t>(key.data.size()), fixtureOwner, ownerArena);
     };
@@ -2681,7 +2913,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     gl::OwnerSet rejectingOwner;
     rejectingOwner.uSignatures.insert({ { 0, variableW } });
     rejectingOwner.owners.emplace_back(fixtureOwner, 0);
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(
         normalizedKey({ 0, 1, 2 }),
         std::vector<gl::OwnerSet>{ rejectingOwner });
     addWhole({ 2 });
@@ -2690,7 +2922,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     addWhole({ 0, 1, 2 });
     addWhole({ 2, 3 });
     addWhole({ 2, 4 });
-    body.overallHashMemory.maxKeyLength = 3;
+    ((((body).overallHashMemory)).maxKeyLength) = 3;
 
     const std::vector<std::vector<gl::NameId>> evaluationRequests = {
         { 2 }, { 1, 2 }, { 0, 2 }, { 0, 1, 2 }
@@ -2700,19 +2932,19 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     std::vector<gl::NormKey> rawEvaluationKeys;
     for (const auto& indices : evaluationRequests)
         rawEvaluationKeys.push_back(normalizedKey(indices));
-    body.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(
+    ((((body).overallHashMemory)).remainingArgsNormalizedEncodedMap).assignRun(
         remainingV, rawEvaluationKeys);
-    body.overallHashMemory.remainingArgsNormalizedEncodedMap.assignRun(
+    ((((body).overallHashMemory)).remainingArgsNormalizedEncodedMap).assignRun(
         remainingW, std::vector<gl::NormKey>{ rawEvaluationKeys[0] });
     const auto mappedEvaluationKey = [&](const std::vector<gl::NameId>& indices) {
         const gl::IntEncodedExpr* expressions[
             gl::ExecutionParameters::MAX_EXPRESSIONS]{};
         for (std::size_t index = 0; index < indices.size(); ++index)
-            expressions[index] = &body.intEncodedStatements[indices[index]];
+            expressions[index] = &((body).intEncodedStatements)[indices[index]];
         gl::NameId data[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
         gl::NameId reverse[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
         gl::NameId normalizedVariables = 0;
-        const gl::NameId length = analyzer.makeIntNormalizedKeyFromEncodedWithMap(
+        const gl::NameId length = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncodedWithMap(
             expressions, static_cast<gl::NameId>(indices.size()),
             std::set<gl::NameId>{ variableV }, data,
             gl::ExecutionParameters::MAX_KEY_SLOTS,
@@ -2721,20 +2953,23 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             static_cast<gl::NameId>(indices.size()),
             std::vector<gl::NameId>(data, data + length) };
     };
-    const int32_t gpuHeadId = body.ruleInterner.encode(
+    const int32_t gpuHeadId = ((body).ruleInterner).encode(
         "(gpuHead[1,u_u_static])");
-    const int32_t gpuMarkerId = body.ruleInterner.encode(
+    const int32_t gpuMarkerId = ((body).ruleInterner).encode(
         "(gpuMarker[marker,1])");
-    const int32_t gpuMarkerKeyAId = body.ruleInterner.encode(
+    const int32_t gpuMarkerKeyAId = ((body).ruleInterner).encode(
         "(gpuKeyA[1,u_u_tail])");
-    const int32_t gpuMarkerKeyBId = body.ruleInterner.encode(
+    const int32_t gpuMarkerKeyBId = ((body).ruleInterner).encode(
         "(gpuKeyB[u_u_static,1])");
-    const int32_t gpuRemainingZetaId = body.ruleInterner.encode("zeta");
-    const int32_t gpuRemainingAlphaId = body.ruleInterner.encode("alpha");
-    const int32_t gpuSourceId = body.ruleInterner.encode(
+    const int32_t gpuRemainingZetaId = ((body).ruleInterner).encode("zeta");
+    const int32_t gpuRemainingAlphaId = ((body).ruleInterner).encode("alpha");
+    const int32_t gpuSourceId = ((body).ruleInterner).encode(
         "(>[gpuPremise,(gpuHead[1,u_u_static])])");
-    body.recursionAuxyImplId = gpuSourceId;
-    for (std::size_t index = 0; index < evaluationRequests.size(); ++index) {
+    ((body).recursionAuxyImplId) = gpuSourceId;
+    // One request's rule run; the marker of request 2 carries
+    // @p markerJustification.
+    const auto assignEvaluationValues = [&](std::size_t index,
+                                            gl::RuleJustification markerJustification) {
         const uint32_t valueCount = index == 2 ? 2u : 1u;
         std::vector<gl::LocalMemoryValue> values(valueCount);
         for (gl::LocalMemoryValue& value : values) {
@@ -2750,21 +2985,24 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             values[1].validityId = markerOrBranchId;
             values[1].isMarker = true;
             values[1].ordisOnly = true;
+            values[1].justification = markerJustification;
             values[1].keyIds = { gpuMarkerKeyAId, gpuMarkerKeyBId };
             values[1].remainingArgIds = {
                 gpuRemainingZetaId, gpuRemainingAlphaId,
                 gpuRemainingAlphaId };
         }
-        body.overallHashMemory.encodedMap.assignRun(
+        ((((body).overallHashMemory)).encodedMap).assignRun(
             mappedEvaluationKey(evaluationRequests[index]),
             values);
-    }
-    const gl::IntEncodedExpr& initiallyKnown = body.intEncodedStatements[2];
-    body.intKnownStatements.upsert(
+    };
+    for (std::size_t index = 0; index < evaluationRequests.size(); ++index)
+        assignEvaluationValues(index, gl::RuleJustification::implication);
+    const gl::IntEncodedExpr& initiallyKnown = ((body).intEncodedStatements)[2];
+    ((body).intKnownStatements).upsert(
         gl::StatementKey{ initiallyKnown.originalId, initiallyKnown.validityId },
         gl::StatementFlags{ true, false });
     const int initiallyKnownLevels[2] = { -1, 5 };
-    body.intStatementLevelsMap.assignSet(
+    ((body).intStatementLevelsMap).assignSet(
         gl::StatementKey{ initiallyKnown.originalId, initiallyKnown.validityId },
         initiallyKnownLevels, 2);
     const gl::NameId markerMailId = names.encode("(c[marker])");
@@ -2775,13 +3013,13 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         "(gpuHead[secondary_v_shadow,static])");
     const gl::NameId negatedSecondaryHead = names.encode(
         "!(gpuHead[secondary_v_shadow,static])");
-    body.intKnownStatements.upsert(
+    ((body).intKnownStatements).upsert(
         gl::StatementKey{ knownNumericHead, mainId },
         gl::StatementFlags{ true, false });
-    body.intKnownStatements.upsert(
+    ((body).intKnownStatements).upsert(
         gl::StatementKey{ knownProductHead, mainId },
         gl::StatementFlags{ true, false });
-    body.intKnownStatements.upsert(
+    ((body).intKnownStatements).upsert(
         gl::StatementKey{ knownSecondaryHead, mainId },
         gl::StatementFlags{ true, false });
 
@@ -2790,11 +3028,11 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         nameBytes += static_cast<uint32_t>(names.decodeView(id).len);
     const gl::gpu::Phase2ProjectionCapacity projectionLimits =
         projectionCapacity(
-            1, static_cast<uint32_t>(body.intEncodedStatements.size()),
+            1, static_cast<uint32_t>(((body).intEncodedStatements).size()),
             static_cast<uint32_t>(names.nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
     const gl::gpu::DeviceLogicalBlockProjection block =
-        hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+        hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
     gl::gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionLimits);
     deviceProjection.upload(hostProjection);
 
@@ -2957,7 +3195,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         deviceTasks, hostTasks, deviceFilter, growthSchedule,
         {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
          analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
-        captureGrowth, &capturedGrowth, &streamedSubkeyCount, 1);
+        captureGrowth, &capturedGrowth, &streamedSubkeyCount, 1, nullptr, diskStorage);
     ASSERT_EQ(streamed.acceptedEventCount, 7ull);
     ASSERT_EQ(streamed.rawRequestCount, 4ull);
     ASSERT_EQ(streamedSubkeyCount, 5ull);
@@ -2967,6 +3205,9 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_TRUE(streamed.maximumCandidateWindow > streamLimits.rawRequests);
     ASSERT_TRUE(streamed.maximumHostBackingBytes > 0);
     ASSERT_TRUE(streamed.frontierSpills > 0);
+    ASSERT_TRUE(streamed.frontierStorage.writes > 0);
+    ASSERT_TRUE(streamed.frontierStorage.reads > 0);
+    ASSERT_TRUE(streamed.frontierStorage.peakResidentPayloadBytes <= 2 * sizeof(gl::gpu::DeviceGrowthNode));
     ASSERT_EQ(streamed.uploadedFrontierBytes, streamed.downloadedFrontierBytes);
     std::vector<std::string> streamedEvents, streamedRequests;
     for (const auto& event : capturedGrowth.events) streamedEvents.push_back(eventText(event));
@@ -3364,34 +3605,42 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_EQ(dependencyRejected.localValueCount, 1u);
 
     for (int32_t statementIndex = 0;
-         statementIndex < body.intEncodedStatements.size(); ++statementIndex) {
+         statementIndex < ((body).intEncodedStatements).size(); ++statementIndex) {
         const gl::IntEncodedExpr& expression =
-            body.intEncodedStatements[statementIndex];
-        body.intKnownStatements.upsert(
+            ((body).intEncodedStatements)[statementIndex];
+        ((body).intKnownStatements).upsert(
             gl::StatementKey{ expression.originalId, expression.validityId },
             gl::StatementFlags{ true, false });
         if (statementIndex != 2) {
             const int level = statementIndex == 0
                 ? 2 : (statementIndex == 1 ? 3 : 7);
-            body.intStatementLevelsMap.assignSet(
+            ((body).intStatementLevelsMap).assignSet(
                 gl::StatementKey{
                     expression.originalId, expression.validityId },
                 &level, 1);
         }
     }
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+    hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     // CPU and CUDA must reject an impure marker even when its owner is an
-    // OR branch. Classifying that same argument as a recursion product makes
-    // the marker legal without changing any ordinary head inference.
-    body.overallHashMemory.remainingArgsReverseIndex.rebuildReverseIndex(
-        body.overallHashMemory.remainingArgsNormalizedEncodedMap, ownerArena);
-    for (bool recursionProduct : {false, true}) {
+    // OR branch. A goal-driven marked-head implication (justification
+    // `goalDemand`) is exempt on both routes
+    // (D-574); classifying the argument as a
+    // recursion product makes the ordinary marker legal. Neither changes any
+    // ordinary head inference.
+    ((((body).overallHashMemory)).remainingArgsReverseIndex).rebuildReverseIndex(
+        ((((body).overallHashMemory)).remainingArgsNormalizedEncodedMap), ownerArena);
+    for (int purityPass = 0; purityPass < 3; ++purityPass) {
+        const bool goalDemand = purityPass == 1;
+        const bool recursionProduct = purityPass == 2;
+        const bool markerFires = goalDemand || recursionProduct;
+        assignEvaluationValues(2, goalDemand
+            ? gl::RuleJustification::goalDemand : gl::RuleJustification::implication);
         if (recursionProduct)
-            body.overallHashMemory.productsOfRecursionIds.mint(variableVSecondary);
+            ((((body).overallHashMemory)).productsOfRecursionIds).mint(variableVSecondary);
         hostProjection.clear();
-        hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+        hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
         deviceProjection.upload(hostProjection);
         ASSERT_EQ(evaluation.expandEvaluationWork(deviceProjection, deviceTasks,
             growth, ordering).localValueCount, 5u);
@@ -3401,10 +3650,10 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         uint64_t boundedRecords = 0;
         for (const auto& bound : purityBounds)
             boundedRecords += bound.columns[0];
-        ASSERT_EQ(boundedRecords, recursionProduct ? 5ull : 4ull);
+        ASSERT_EQ(boundedRecords, markerFires ? 5ull : 4ull);
         ASSERT_EQ(evaluation.materializeFiringExpressions(deviceProjection,
             deviceTasks, growth, ordering).firingRecordCount,
-            recursionProduct ? 5u : 4u);
+            markerFires ? 5u : 4u);
 
         gl::SealedPageSet processorPages;
         processorPages.bind(&gl::staticMemory());
@@ -3413,12 +3662,12 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             request.count = static_cast<int32_t>(evaluationRequests[index].size());
             request.maxIteration = -1;
             for (int32_t premise = 0; premise < request.count; ++premise)
-                request.intExprs[premise] = &body.intEncodedStatements[
+                request.intExprs[premise] = &((body).intEncodedStatements)[
                     evaluationRequests[index][premise]];
             const auto& key = rawEvaluationKeys[index];
             request.normalizedKey = gl::IntNormalizedKey(key.numberExpressions,
                 key.data.data(), static_cast<int32_t>(key.data.size()));
-            analyzer.checkLocalEncodedMemoryStatic(request, body,
+            analyzer.ruleEvaluator.checkLocalEncodedMemoryStatic(request, body,
                 gl::scratchArenas().slotCount() - 1, processorPages);
         }
         uint32_t processorHeads = 0;
@@ -3432,7 +3681,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             else ++processorHeads;
         });
         ASSERT_EQ(processorHeads, 4u);
-        ASSERT_EQ(processorMarkers, recursionProduct ? 1u : 0u);
+        ASSERT_EQ(processorMarkers, markerFires ? 1u : 0u);
         processorPages.freePages();
     }
     // Growth above exercised a real secondary argument. The evaluation fixture
@@ -3606,21 +3855,9 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_TRUE(sealedOutput.sealed());
     ASSERT_EQ(sealedOutput.recordCount(), 5);
     {
-        // The columns hold exactly this window's used counts, not the
-        // evaluator capacity.
-        const gl::gpu::Phase2FiringExpressionResult& w = firingExpressions;
-        const uint64_t expectedSealingBytes =
-            uint64_t(w.firingRecordCount) * sizeof(gl::gpu::DevicePhase2FiringRecord)
-            + uint64_t(w.generatedByteCount)
-            + uint64_t(w.levelValueCount) * sizeof(int32_t)
-            + uint64_t(w.originDependencyCount) * sizeof(gl::gpu::DeviceEvaluationDependency)
-            + uint64_t(w.markerKeyCount) * sizeof(gl::gpu::DeviceEvaluationByteSlice)
-            + uint64_t(w.markerRemainingArgCount) * sizeof(int32_t)
-            + uint64_t(w.markerArgCount) * sizeof(gl::gpu::DeviceEvaluationByteSlice)
-            + uint64_t(5) * sizeof(uint32_t)
-            + uint64_t(std::max({ w.markerKeyCount, w.markerRemainingArgCount,
-                  w.markerArgCount })) * sizeof(gl::SealedString)
-            + uint64_t(w.originDependencyCount) * sizeof(gl::SealedExpressionWithValidity);
+        // The first download owns one measured lease for all output ceilings.
+        const uint64_t expectedSealingBytes = gl::gpu::Phase2SealingArena::hostLayout(
+            evaluationLimits).roundedBytes(gl::gpuHostStorage().blockBytes());
         ASSERT_EQ(sealing.hostBytes(), expectedSealingBytes);
     }
     const auto sealedContent = [](const gl::FiringRecord& record) {
@@ -3631,6 +3868,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             for (const auto& text : run) values.push_back(text.toStdString());
         };
         number(record.isMarker); number(record.isOrdis2Demand);
+        number(record.isGoalNearMiss);
         values.push_back(record.rplExpr2.toStdString());
         values.push_back(record.validityName.toStdString());
         number(record.levels.size());
@@ -3663,11 +3901,12 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
                 firingRecords[firingOrder[sealedIndex]];
             ASSERT_EQ(sealed.rplExpr2.toStdString(), sliceText(source.expression));
             ASSERT_EQ(sealed.validityName.toStdString(),
-                body.nameMap.decode(source.validityId));
+                ((body).nameMap).decode(source.validityId));
             const bool sourceMarker = (source.flags
                 & gl::gpu::deviceFiringMarker) != 0;
             ASSERT_EQ(sealed.isMarker, sourceMarker);
             ASSERT_FALSE(sealed.isOrdis2Demand);
+            ASSERT_FALSE(sealed.isGoalNearMiss);
             ASSERT_EQ(sealed.recursionHead, !sourceMarker);
             if (!sourceMarker) {
                 ASSERT_EQ(sealed.originTag.toStdString(), "implication");
@@ -3684,15 +3923,15 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
                     const gl::gpu::DeviceEvaluationDependency& expected =
                         firingOrigins[source.originDependencyOffset + dependency];
                     const std::string expectedOriginal = dependency == 0
-                        ? body.ruleInterner.decode(
+                        ? ((body).ruleInterner).decode(
                             static_cast<int32_t>(expected.originalId))
-                        : body.nameMap.decode(expected.originalId);
+                        : ((body).nameMap).decode(expected.originalId);
                     ASSERT_EQ(sealed.originDeps[
                         static_cast<int32_t>(dependency)].original.toStdString(),
                         expectedOriginal);
                     ASSERT_EQ(sealed.originDeps[
                         static_cast<int32_t>(dependency)].validityName.toStdString(),
-                        body.nameMap.decode(expected.validityId));
+                        ((body).nameMap).decode(expected.validityId));
                 }
                 ASSERT_EQ(sealed.doNotDisintegrate,
                     (source.flags
@@ -3727,7 +3966,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
                      argument < source.markerRemainingArgCount; ++argument) {
                     ASSERT_EQ(sealed.admv.remainingArgsSorted[
                         static_cast<int32_t>(argument)].toStdString(),
-                        body.ruleInterner.decode(markerRemaining[
+                        ((body).ruleInterner).decode(markerRemaining[
                             source.markerRemainingArgOffset + argument]));
                 }
                 ASSERT_EQ(sealed.admv.standardMaxAdmissionDepth,
@@ -3828,7 +4067,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         for (uint32_t dependency = 0;
              dependency < expectedPremises.size(); ++dependency) {
             const gl::IntEncodedExpr& expectedPremise =
-                body.intEncodedStatements[
+                ((body).intEncodedStatements)[
                     expectedPremises[dependency]];
             const auto& actualDependency = firingOrigins[
                 record.originDependencyOffset + dependency + 1];
@@ -4033,7 +4272,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         *sealingTwin(hostProjection), hostTasks, growthSchedule,
         {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
          analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0}, controllerPlan,
-        controllerOutputs, 1, &controllerSubkeys, 1);
+        controllerOutputs, 1, &controllerSubkeys, 1, nullptr, diskStorage);
     ASSERT_EQ(controlled.evaluatedRequests, 4ull);
     ASSERT_EQ(controlled.firingRecords, 5ull);
     ASSERT_EQ(controllerSubkeys, 5ull);
@@ -4110,13 +4349,13 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         plain.justification = gl::RuleJustification::implication;
         plain.validityId = mainId;
         plain.levels = {4, 5};
-        body.overallHashMemory.encodedMap.assignRun(
+        ((((body).overallHashMemory)).encodedMap).assignRun(
             mappedEvaluationKey(evaluationRequests[0]),
             std::vector<gl::LocalMemoryValue>(plainValues, plain));
         const auto bulkInput = gl::gpu::makePhase2BufferPlanInput(
-            gl::gpu::measurePhase2ProjectionUsage(body, analyzer, 0x0fu, true), {}, 0, 0, 0);
+            gl::gpu::measurePhase2ProjectionUsage(body, analyzer.anchorInfo, 0x0fu, true), {}, 0, 0, 0);
         gl::gpu::Phase2ProjectionArena bulkProjection(bulkInput.projection);
-        bulkProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+        bulkProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
         gl::gpu::CudaPhase2ProjectionBuffer bulkDevice(bulkInput.projection);
         bulkDevice.upload(bulkProjection);
         auto bulkLimits = evaluationLimits;
@@ -4192,14 +4431,14 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         std::sort(bulkContent.begin(), bulkContent.end());
         ASSERT_EQ(bulkContent, referenceContent);
         cutPages.freePages();
-        body.overallHashMemory.encodedMap.assignRun(
+        ((((body).overallHashMemory)).encodedMap).assignRun(
             mappedEvaluationKey(evaluationRequests[0]), std::vector<gl::LocalMemoryValue>{plain});
     }
 
-    body.intToBeProved.assignSet(
+    ((body).intToBeProved).assignSet(
         gl::packStatementKey(knownSecondaryHead, mainId), nullptr, 0);
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+    hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     const uint32_t goalRetainedCount =
@@ -4273,7 +4512,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             *sealingTwin(hostProjection), hostTasks, growthSchedule,
             {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
              analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
-            controllerPlan, earlyOutputs, 1, &subkeys, 1, &cutoff);
+            controllerPlan, earlyOutputs, 1, &subkeys, 1, &cutoff, diskStorage);
         ASSERT_TRUE(controlledEarly.growth.drainCount > 1);
         ASSERT_TRUE(controlledEarly.growth.prunedFrontierNodes > 0);
         ASSERT_TRUE(controlledEarly.growth.rawRequestCount < controlled.growth.rawRequestCount);
@@ -4296,11 +4535,11 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_EQ(firingRecords[retainedGoalRecord].requestIndex, 0u);
     ASSERT_EQ(firingRecords[retainedGoalRecord].growthPosition, 3ull);
 
-    body.intToBeProved.resetToFresh();
-    body.intToBeProved.assignSet(
+    ((body).intToBeProved).resetToFresh();
+    ((body).intToBeProved).assignSet(
         gl::packStatementKey(knownProductHead, mainId), nullptr, 0);
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+    hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     ASSERT_EQ(evaluation.selectDoomPrefixes(deviceProjection), 4u);
@@ -4348,7 +4587,8 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
             hostTasks, growthSchedule,
             {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
              analyzer.parameters.maxNumberSecondaryVariablesOrint, 4, 0},
-            plan, outputs, 1, &subkeys, 1, &stop);
+            plan, outputs, 1, &subkeys, 1, &stop,
+            small ? diskStorage : gl::gpu::RequestFrontierStorageOptions{});
         ASSERT_EQ(stop, 0ll);
         ASSERT_EQ(result.firingRecords, 4ull);
         ASSERT_EQ(result.evaluatedRequests, 3ull);
@@ -4371,7 +4611,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
 
     analyzer.parameters.compressor_mode = true;
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+    hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     ASSERT_EQ(evaluation.selectDoomPrefixes(deviceProjection), 5u);
@@ -4384,13 +4624,13 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
     ASSERT_EQ(compressorDoomRequest, std::numeric_limits<uint32_t>::max());
 
     analyzer.parameters.compressor_mode = false;
-    body.intToBeProved.resetToFresh();
-    body.primedForContradiction = true;
-    body.intKnownStatements.upsert(
+    ((body).intToBeProved).resetToFresh();
+    ((body).primedForContradiction) = true;
+    ((body).intKnownStatements).upsert(
         gl::StatementKey{ negatedSecondaryHead, mainId },
         gl::StatementFlags{ true, false });
     hostProjection.clear();
-    hostProjection.appendLogicalBlock(body, analyzer, 0x0fu, true);
+    hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters, 0x0fu, true);
     deviceProjection.upload(hostProjection);
     ASSERT_EQ(evaluation.orderFiringRecords(deviceProjection), 5u);
     ASSERT_EQ(evaluation.selectDoomPrefixes(deviceProjection), 1u);
@@ -4445,7 +4685,7 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
         deviceTasks, hostTasks, deviceFilter, growthSchedule,
         {analyzer.parameters.maxLenHypoKey, analyzer.parameters.maxNumberSecondaryVariables,
          analyzer.parameters.maxNumberSecondaryVariablesOrint, 1, 0},
-        captureGrowth, &capturedGrowth, &streamedSubkeyCount, 1);
+        captureGrowth, &capturedGrowth, &streamedSubkeyCount, 1, nullptr, diskStorage);
     ASSERT_EQ(streamedStumps.acceptedEventCount, 3ull);
     ASSERT_EQ(streamedStumps.rawRequestCount, 2ull);
     ASSERT_EQ(streamedSubkeyCount, 2ull);
@@ -4520,43 +4760,44 @@ CUDA_TEST(phase2_projection, cuda_bulk_growth_matches_request_gate_content) {
 }
 
 CUDA_TEST(phase2_projection, cuda_ordering_keeps_equal_requests_within_and_across_drains) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.maxIterationNumberVariable = 3;
     gl::Memory body;
     body.setExprKey("cuda_ordering_repeats");
-    gl::NameMap& names = body.nameMap;
+    gl::NameMap& names = ((body).nameMap);
     const gl::NameId mainId = names.encode("main");
     const gl::NameId nameId = names.encode("duplicate_name");
     const gl::NameId originalId = names.encode("(duplicate_name[x])");
     const gl::NameId argumentId = names.encode("duplicate_argument");
     const gl::IntEncodedExpr statement = projectionStatement(
         nameId, originalId, mainId, argumentId);
-    body.intEncodedStatements.push_back(statement);
-    body.intEncodedStatements.push_back(statement);
+    ((body).intEncodedStatements).push_back(statement);
+    ((body).intEncodedStatements).push_back(statement);
+    gl::tests::admitEveryStatementShape(body);
     const gl::IntEncodedExpr* expressions[1] = {
-        &body.intEncodedStatements[0]
+        &((body).intEncodedStatements)[0]
     };
     gl::NameId keyData[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
-    const gl::NameId keyLength = analyzer.makeIntNormalizedKeyFromEncoded(
+    const gl::NameId keyLength = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
         expressions, 1, keyData, gl::ExecutionParameters::MAX_KEY_SLOTS);
     const gl::NormKey key{
         1, std::vector<gl::NameId>(keyData, keyData + keyLength) };
     gl::OwnerSet owner;
     owner.hasLooseOwner = true;
-    const int32_t fixtureRuleId = body.ruleInterner.encode(
+    const int32_t fixtureRuleId = ((body).ruleInterner).encode(
         "(cuda-ordering-rule[1])");
     const gl::RuleOwner fixtureOwner = gl::packRuleOwner(
         fixtureRuleId, mainId);
     owner.owners.emplace_back(fixtureOwner, -1);
     gl::ScratchArena& ownerArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(
         key, std::vector<gl::OwnerSet>{ owner });
-    gl::ExpressionAnalyzer::addWholeKeyOwner(
-        body.overallHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(
+        ((((body).overallHashMemory)).normalizedEncodedKeys),
         key.numberExpressions, key.data.data(),
         static_cast<int32_t>(key.data.size()), fixtureOwner, ownerArena);
-    body.overallHashMemory.maxKeyLength = 1;
+    ((((body).overallHashMemory)).maxKeyLength) = 1;
 
     uint32_t nameBytes = 0;
     for (gl::NameId id = 1; id <= names.nameCount(); ++id)
@@ -4566,7 +4807,7 @@ CUDA_TEST(phase2_projection, cuda_ordering_keeps_equal_requests_within_and_acros
             static_cast<uint32_t>(names.nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
     const gl::gpu::DeviceLogicalBlockProjection block =
-        hostProjection.appendLogicalBlock(body, analyzer);
+        hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::CudaPhase2ProjectionBuffer deviceProjection(projectionLimits);
     deviceProjection.upload(hostProjection);
 
@@ -4713,42 +4954,43 @@ CUDA_TEST(phase2_projection, cuda_ordering_keeps_equal_requests_within_and_acros
 }
 
 CUDA_TEST(phase2_projection, repeated_large_request_windows_need_no_host_history) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     gl::Memory body;
     body.setExprKey("history_pages");
-    const auto mainId = body.nameMap.encode("main");
-    const auto nameId = body.nameMap.encode("historyPredicate");
+    const auto mainId = ((body).nameMap).encode("main");
+    const auto nameId = ((body).nameMap).encode("historyPredicate");
     for (uint32_t i = 0; i < 129; ++i) {
         const auto variable = "v" + std::to_string(i);
         const auto original = "(historyPredicate[" + variable + "])";
-        body.intEncodedStatements.push_back(projectionStatement(nameId,
-            body.nameMap.encode(original), mainId, body.nameMap.encode(variable)));
+        ((body).intEncodedStatements).push_back(projectionStatement(nameId,
+            ((body).nameMap).encode(original), mainId, ((body).nameMap).encode(variable)));
     }
+    gl::tests::admitEveryStatementShape(body);
     const auto keyFor = [&](int count) {
         const gl::IntEncodedExpr* premises[] = {
-            &body.intEncodedStatements[0], &body.intEncodedStatements[1]};
+            &((body).intEncodedStatements)[0], &((body).intEncodedStatements)[1]};
         gl::NameId data[gl::ExecutionParameters::MAX_KEY_SLOTS]{};
-        const auto size = analyzer.makeIntNormalizedKeyFromEncoded(
+        const auto size = gl::HashKeyBuilder::makeIntNormalizedKeyFromEncoded(
             premises, count, data, gl::ExecutionParameters::MAX_KEY_SLOTS);
         return gl::NormKey{count, std::vector<gl::NameId>(data, data + size)};
     };
-    const auto rule = gl::packRuleOwner(body.ruleInterner.encode("(historyRule[1,2])"), mainId);
+    const auto rule = gl::packRuleOwner(((body).ruleInterner).encode("(historyRule[1,2])"), mainId);
     gl::OwnerSet owner;
     owner.hasLooseOwner = true;
     owner.owners.emplace_back(rule, -1);
-    body.overallHashMemory.normalizedEncodedSubkeys.assignRun(keyFor(1), std::vector<gl::OwnerSet>{owner});
+    ((((body).overallHashMemory)).normalizedEncodedSubkeys).assignRun(keyFor(1), std::vector<gl::OwnerSet>{owner});
     const auto pairKey = keyFor(2);
     auto& scratch = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
-    gl::ExpressionAnalyzer::addWholeKeyOwner(body.overallHashMemory.normalizedEncodedKeys,
+    gl::tests::HashRuleInstallerFixture::addWholeKeyOwner(((((body).overallHashMemory)).normalizedEncodedKeys),
         pairKey.numberExpressions, pairKey.data.data(), static_cast<int32_t>(pairKey.data.size()), rule, scratch);
-    body.overallHashMemory.maxKeyLength = 2;
+    ((((body).overallHashMemory)).maxKeyLength) = 2;
     uint32_t nameBytes = 0;
-    for (gl::NameId i = 1; i <= body.nameMap.nameCount(); ++i)
-        nameBytes += static_cast<uint32_t>(body.nameMap.decodeView(i).len);
+    for (gl::NameId i = 1; i <= ((body).nameMap).nameCount(); ++i)
+        nameBytes += static_cast<uint32_t>(((body).nameMap).decodeView(i).len);
     const auto projectionLimits = projectionCapacity(1, 129,
-        static_cast<uint32_t>(body.nameMap.nameCount() + 1), nameBytes);
+        static_cast<uint32_t>(((body).nameMap).nameCount() + 1), nameBytes);
     gl::gpu::Phase2ProjectionArena hostProjection(projectionLimits);
-    const auto block = hostProjection.appendLogicalBlock(body, analyzer);
+    const auto block = hostProjection.appendLogicalBlock(body, analyzer.definitions, analyzer.anchorInfo, analyzer.parameters);
     gl::gpu::CudaPhase2ProjectionBuffer projection(projectionLimits);
     projection.upload(hostProjection);
     const gl::gpu::Phase2TaskProjectionCapacity taskLimits{1, 1, 1, 1};
@@ -4806,7 +5048,7 @@ CUDA_TEST(phase2_projection, fixed_cuda_phase2_buffers_report_owned_bytes) {
     projectionCapacity.mandatoryStatementKeys = 262144;
     projectionCapacity.metadataBytes = 16384;
     gl::gpu::CudaPhase2ProjectionBuffer projection(projectionCapacity);
-    ASSERT_EQ(projection.fixedAllocationBytes(), 270593040ull);   // 262144 statement rows of 240 bytes
+    ASSERT_EQ(projection.fixedAllocationBytes(), 270595088ull);   // 262144 statement rows of 240 bytes
 
     gl::gpu::Phase2TaskProjectionCapacity taskCapacity{};
     taskCapacity.tasks = 512;
@@ -5151,7 +5393,36 @@ TEST(phase2_projection, streamed_projection_assertion_probe) {
         device.beginStreamedUpload();
         gl::gpu::Phase2WindowUploader uploader(device, retained);
         uploader.finish();
-        uploader.submit(std::make_unique<gl::gpu::Phase2ProjectionArena>(capacity), bases);
+        std::optional<gl::gpu::Phase2ProjectionArena> window;
+        window.emplace(capacity);
+        uploader.submit(window, bases);
+#else
+        ASSERT_TRUE(false);
+#endif
+    } else if (mode == "uploader_wait_after_finish") {
+#ifdef GL_CUDA
+        gl::gpu::CudaPhase2ProjectionBuffer device(capacity);
+        gl::gpu::Phase2ProjectionArena retained(capacity,
+            gl::gpu::Phase2ProjectionArena::SealingOnly{});
+        device.beginStreamedUpload();
+        gl::gpu::Phase2WindowUploader uploader(device, retained);
+        uploader.finish();
+        uploader.waitUntilUploaded();
+#else
+        ASSERT_TRUE(false);
+#endif
+    } else if (mode == "host_plan_overflow") {
+#ifdef GL_CUDA
+        gl::gpu::Phase2HostFootprint footprint;
+        footprint.fixedBytes = UINT64_MAX;
+        footprint.executionBytes = 1;
+        (void)gl::gpu::selectPhase2HostWindows(footprint, UINT64_MAX);
+#else
+        ASSERT_TRUE(false);
+#endif
+    } else if (mode == "host_page_size") {
+#ifdef GL_CUDA
+        (void)gl::gpu::phase2HostColumnPages(1, 2049);
 #else
         ASSERT_TRUE(false);
 #endif
@@ -5171,4 +5442,167 @@ TEST(phase2_projection, streamed_projection_assertion_probe) {
         ASSERT_TRUE(false);
     }
     ASSERT_TRUE(false);
+}
+
+TEST(phase2_projection, pooled_column_keeps_capacity_and_borrowed_slice_ownership) {
+    gl::GlobalMemoryManager manager;
+    manager.init({8 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    gl::GpuHostArena arena;
+    arena.reserve(128, manager);
+    gl::gpu::ProjectionColumn<uint32_t> column;
+    column.bindStorage(arena);
+    column.reserve(16);
+    column.assign(3, 7);
+    column.pop_back();
+    column.push_back(9);
+    ASSERT_EQ(column.size(), std::size_t(3));
+    ASSERT_EQ(column[0], 7u);
+    ASSERT_EQ(column.back(), 9u);
+    gl::gpu::ProjectionColumn<uint32_t> slice;
+    slice.attachSlice(column, 8, 4);
+    slice.push_back(42);
+    ASSERT_EQ(slice.ownedBytes(), uint64_t(0));
+    ASSERT_EQ(column.ownedBytes(), uint64_t(64));
+    column.appendMoved(slice);
+    ASSERT_EQ(column.back(), 42u);
+    ASSERT_TRUE(slice.empty());
+    ASSERT_EQ(column.capacity(), std::size_t(16));
+}
+
+TEST(phase2_projection, schedule_layouts_equal_their_physical_pool_leases) {
+    gl::gpu::Phase2TaskProjectionCapacity taskCapacity{2, 4, 8, 4};
+    gl::gpu::Phase2TaskProjectionArena tasks(taskCapacity);
+    ASSERT_EQ(tasks.hostBytes(), gl::gpu::Phase2TaskProjectionArena::hostLayout(
+        taskCapacity).roundedBytes(gl::gpuHostStorage().blockBytes()));
+    gl::gpu::Phase2FilterScheduleCapacity filterCapacity{4, 16, 8, 4};
+    gl::gpu::Phase2FilterScheduleArena filter(filterCapacity);
+    ASSERT_EQ(filter.hostBytes(), gl::gpu::Phase2FilterScheduleArena::hostLayout(
+        filterCapacity).roundedBytes(gl::gpuHostStorage().blockBytes()));
+    gl::gpu::Phase2GrowthScheduleArena growth(4);
+    ASSERT_EQ(growth.hostBytes(), gl::gpu::Phase2GrowthScheduleArena::hostLayout(
+        4).roundedBytes(gl::gpuHostStorage().blockBytes()));
+    ASSERT_EQ(filter.classSlots.size(), std::size_t(8));
+    for (std::size_t i = 0; i < filter.classSlots.size(); ++i) ASSERT_EQ(filter.classSlots[i], -1);
+}
+
+#ifdef GL_CUDA
+TEST(phase2_projection, host_window_selection_obeys_lifetime_peaks) {
+    gl::gpu::Phase2HostFootprint footprint;
+    footprint.fixedBytes = 10;
+    footprint.constructionOneBytes = 30;
+    footprint.constructionTwoBytes = 50;
+    footprint.executionBytes = 20;
+    ASSERT_EQ(gl::gpu::selectPhase2HostWindows(footprint, 60).windows, 2u);
+    ASSERT_EQ(gl::gpu::selectPhase2HostWindows(footprint, 59).windows, 1u);
+    ASSERT_EQ(gl::gpu::selectPhase2HostWindows(footprint, 40).windows, 1u);
+    ASSERT_EQ(gl::gpu::selectPhase2HostWindows(footprint, 39).windows, 0u);
+    footprint.executionBytes = 70;
+    ASSERT_EQ(gl::gpu::selectPhase2HostWindows(footprint, 79).windows, 0u);
+    const auto fit = gl::gpu::selectPhase2HostWindows(footprint, 80);
+    ASSERT_EQ(fit.windows, 2u);
+    ASSERT_EQ(fit.oneWindowPeakBytes, 80ull);
+    ASSERT_EQ(fit.twoWindowPeakBytes, 80ull);
+}
+
+TEST(phase2_projection, paged_host_bounds_cover_directory_promotions_and_hash_growth) {
+    using namespace gl;
+    ASSERT_EQ(gpu::phase2HostColumnPages(0, 4), 0ull);
+    ASSERT_TRUE(gpu::phase2HostColumnPages(513 * 512, 4) > 513);
+    ASSERT_EQ(gpu::phase2HostArenaBytes(0), 0ull);
+    ASSERT_TRUE(gpu::phase2HostArenaBytes(129, 5) >= 7 * 262144ull);
+    LbArena shared(&gpuHostStorage()), prefix(&gpuHostStorage());
+    DirtyState dirty = DirtyState::Clean;
+    ColdHashMap<BytesKeyStore, uint32_t> keys(&shared, &dirty);
+    ColdHashSet<BytesKeyStore> prefixes(&prefix, &dirty);
+    ColdHashMap<PodKeyStore<uint64_t>, int32_t> transitions(&prefix, &dirty);
+    PagedVector<int32_t> heads(&prefix, &dirty);
+    struct Transition { int32_t next, predicate, mask; int16_t bound[ExecutionParameters::MAX_ARITY]; };
+    PagedVector<Transition> rows(&prefix, &dirty);
+    constexpr uint32_t count = 10000;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t bytes[4]{i, i + 1, i + 2, i + 3};
+        const StrSpan key(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+        keys.insert(key, i);
+        prefixes.mint(key);
+        transitions.insert(i, i);
+        heads.push_back(i);
+        rows.push_back(Transition{});
+    }
+    gpu::Phase2ProjectionUsage usage;
+    usage.byteMapEntries = count;
+    usage.byteKeyBytes = count * 16;
+    const auto bound = gpu::phase2HostDictionaryBytes(usage);
+    ASSERT_TRUE(bound >= static_cast<uint64_t>(shared.blocksHeld() + prefix.blocksHeld()) * 262144);
+    ASSERT_TRUE(bound < 16 * 1024 * 1024ull);
+    gpu::Phase2GrowthCapacity growth{};
+    growth.calls = 3;
+    growth.frontierRecords = 65536;
+    ASSERT_TRUE(gpu::phase2HostGrowthBytes(growth, true) > gpu::phase2HostGrowthBytes(growth, false));
+}
+
+CUDA_TEST(phase2_projection, host_chunk_plan_reduces_overlap_then_complete_families) {
+    using namespace gl::gpu;
+    Phase2ProjectionUsage families[3]{};
+    Phase2ProjectionUsage total{};
+    for (auto& family : families) {
+        family.logicalBlocks = 1;
+        family.nameRecords = 1;
+        family.nameBytes = 80 * 1024 * 1024;
+        addPhase2HostUsage(total, family);
+    }
+    const auto input = makePhase2BufferPlanInput(total, {3, 3, 3, 3}, 3, 3, 1);
+    const auto device = planPhase2Buffers(input, 1024, initialPhase2WorkDemand(), {}, true);
+    ASSERT_EQ(device.state, Phase2BufferPlanState::fits);
+    const auto full = planPhase2HostStorage(input, device, {families, 3}, 3, 4ull << 30, true);
+    ASSERT_EQ(full.windows, 2u);
+    ASSERT_TRUE(full.twoWindowPeakBytes > full.oneWindowPeakBytes);
+    const auto serial = planPhase2HostStorage(input, device, {families, 3}, 3,
+        full.twoWindowPeakBytes - 1, true);
+    ASSERT_EQ(serial.windows, 1u);
+    const auto rejected = planPhase2HostStorage(input, device, {families, 3}, 3,
+        full.oneWindowPeakBytes - 1, true);
+    ASSERT_EQ(rejected.windows, 0u);
+    const auto singleInput = makePhase2BufferPlanInput(families[0], {1, 1, 1, 1}, 1, 1, 1);
+    const auto singleDevice = planPhase2Buffers(singleInput, 1024,
+        initialPhase2WorkDemand(), {}, true);
+    const auto smaller = planPhase2HostStorage(singleInput, singleDevice, {families, 1}, 3,
+        full.oneWindowPeakBytes - 1, true);
+    ASSERT_TRUE(smaller.windows != 0);
+    ASSERT_EQ(planPhase2HostStorage(singleInput, singleDevice, {families, 1}, 3, 1, true).windows, 0u);
+    const auto directory = phase2HostDirectoryLayout(3, 3, 3);
+    ASSERT_TRUE(directory.bytes > 3 * sizeof(DeviceLogicalBlockProjection));
+    ASSERT_TRUE(directory.roundedBytes(262144) <= full.fixedBytes);
+
+    families[1].nameBytes = 96 * 1024 * 1024;
+    families[2].nameBytes = 112 * 1024 * 1024;
+    total = {};
+    for (const auto& family : families) addPhase2HostUsage(total, family);
+    const auto unevenInput = makePhase2BufferPlanInput(total, {3, 3, 3, 3}, 3, 3, 1);
+    const auto unevenDevice = planPhase2Buffers(unevenInput, 1024,
+        initialPhase2WorkDemand(), {}, true);
+    const auto uneven = planPhase2HostStorage(unevenInput, unevenDevice, {families, 3},
+        3, 4ull << 30, true);
+    // The third range cannot reuse the first 80 MiB hole while the 96 MiB
+    // upload remains live. Its first-fit address span includes that gap.
+    ASSERT_TRUE(uneven.constructionTwoBytes > 288 * 1024 * 1024ull);
+    ASSERT_TRUE(uneven.constructionOneBytes < 128 * 1024 * 1024ull);
+    ASSERT_EQ(planPhase2HostStorage(unevenInput, unevenDevice, {families, 3}, 3,
+        uneven.fixedBytes + 250 * 1024 * 1024ull, true).windows, 1u);
+}
+#endif
+
+// The device twin of `Memory::isInductionHypothesisRule`: a projected block's
+// first induction implication and its multiplication catcher both mark a
+// firing as the hypothesis head; no id names a rule in other blocks
+// (D-566).
+TEST(phase2_projection, both_strong_hypotheses_mark_device_heads) {
+    gl::gpu::DeviceLogicalBlockProjection block{};
+    ASSERT_FALSE(gl::gpu::isInductionHypothesisSource(block, 0));
+    ASSERT_FALSE(gl::gpu::isInductionHypothesisSource(block, 7));
+    block.recursionAuxyImplId = 7;
+    block.recursionProductImplId = 9;
+    ASSERT_TRUE(gl::gpu::isInductionHypothesisSource(block, 7));
+    ASSERT_TRUE(gl::gpu::isInductionHypothesisSource(block, 9));
+    ASSERT_FALSE(gl::gpu::isInductionHypothesisSource(block, 8));
+    ASSERT_FALSE(gl::gpu::isInductionHypothesisSource(block, 0));
 }

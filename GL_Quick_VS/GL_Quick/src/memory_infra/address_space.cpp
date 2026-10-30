@@ -105,6 +105,44 @@ namespace gl {
 #endif
     }
 
+    /// @brief Decommit complete operating-system pages while retaining their addresses.
+    ///
+    /// @details
+    /// Only unowned, unregistered pages inside a live reservation may be passed.
+    /// The exact range becomes inaccessible and loses its contents; a subsequent
+    /// commit makes zero-filled pages accessible at the same virtual addresses.
+    /// Windows uses MEM_DECOMMIT; POSIX replaces this reserved subrange with an
+    /// anonymous PROT_NONE mapping. No address outside the range is changed.
+    ///
+    /// @param address Page-aligned first byte inside the caller's reservation.
+    /// @param bytes Positive whole-page length entirely owned by the caller.
+    /// @return Nothing.
+    /// @invariant Partial pages and operating-system failures assert.
+    /// @see reserveAddressSpace, commitAddressSpace
+    void decommitAddressSpace(char* address, int64_t bytes) {
+        assert(address != nullptr && bytes > 0);
+#ifdef _WIN32
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        const uintptr_t page = static_cast<uintptr_t>(info.dwPageSize);
+#else
+        const long systemPage = sysconf(_SC_PAGESIZE);
+        assert(systemPage > 0);
+        const uintptr_t page = static_cast<uintptr_t>(systemPage);
+#endif
+        assert(page > 0 && reinterpret_cast<uintptr_t>(address) % page == 0
+            && static_cast<uint64_t>(bytes) % page == 0
+            && "decommit requires exclusively owned whole operating-system pages");
+#ifdef _WIN32
+        const BOOL ok = VirtualFree(address, static_cast<SIZE_T>(bytes), MEM_DECOMMIT);
+        assert(ok && "decommitting returned pool memory failed");
+#else
+        void* const reserved = mmap(address, static_cast<std::size_t>(bytes), PROT_NONE,
+            MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        assert(reserved == address && "decommitting returned pool memory failed");
+#endif
+    }
+
     /// @brief Return a whole reservation, committed parts included, to the
     ///        operating system.
     ///

@@ -1,0 +1,8 @@
+!(strictOrder[N,+,v1,v2])	main	contradiction	!(=[v1,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	(=[v1,v2])	main
+!(=[v1,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	equality1	!(=[v2,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	(=[v2,v1])	main
+!(=[v2,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	disintegration	(&(preorder[N,+,v2,v2])!(=[v2,v2]))	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])
+(&(preorder[N,+,v2,v2])!(=[v2,v2]))	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	expansion	(strictOrder[N,+,v2,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])
+(strictOrder[N,+,v2,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	equality1	(strictOrder[N,+,v1,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	(=[v1,v2])	main
+(strictOrder[N,+,v1,v2])	main_boundary_contradiction_!(strictOrder[N,+,v1,v2])	task formulation
+(=[v2,v1])	main	symmetry of equality	(=[v1,v2])	main
+(=[v1,v2])	main	task formulation

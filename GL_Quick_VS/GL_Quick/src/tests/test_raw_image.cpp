@@ -42,7 +42,11 @@
 /// Memory-level lifecycle tests also exercise the owning block's release paths
 /// and reconstruction of canonical lookup state.
 
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "or_implication_processor_fixture.hpp"
+
 
 #include "../memory.hpp"
 #include "../prover.hpp"
@@ -162,40 +166,39 @@ TEST(raw_image, or_source_state_survives_raw_eviction) {
     const gl::OrImplicationLeaf leaves[] = {{15, 16}, {7, 8}};
     const int levels[] = {4};
     const int64_t key = gl::packInt32Pair(101, 3);
-    ASSERT_TRUE(memory.orImplications.insert(key, 102, leaves, 2, levels, 1, true));
-    memory.orImplications.pendingFacts.push_back(gl::packInt32Pair(16, 1));
+    ASSERT_TRUE(((memory).orImplications).insert(key, 102, leaves, 2, levels, 1, true));
+    ((memory).orImplications).pendingFacts.push_back(gl::packInt32Pair(16, 1));
     const int64_t cacheKey = gl::packInt32Pair(16, 3);
-    gl::ScratchArena cacheScratch(&manager);
-    memory.orImplicationMatches.publishCache(cacheKey, gl::OrCanonicalCache{16, 52, 0}, [](auto&&) {}, cacheScratch);
-    const int32_t viewId = memory.orImplicationMatches.bindView(gl::OrViewIdentity::sourceLeaf(key, 3, 0), cacheKey);
-    memory.orImplicationMatches.built = true;
-    memory.orImplicationMatches.classScopesBuilt = true;
+    ((memory).orImplicationMatches).publishCache(cacheKey, gl::OrCanonicalCache{16, 52, 0}, [](auto&&) {});
+    const int32_t viewId = ((memory).orImplicationMatches).bindView(gl::OrViewIdentity::sourceLeaf(key, 3, 0), cacheKey, 101);
+    ((memory).orImplicationMatches).built = true;
+    ((memory).orImplicationMatches).classScopesBuilt = true;
     memory.existenceLookups.algebraSources.postings.insert(cacheKey, key);
     memory.existenceLookups.algebraSources.built = true;
-    memory.existenceReplays.insert(cacheKey, 1);
-    memory.existenceLookups.receipts.ensureCurrent(memory.existenceReplays,
+    ((memory).existenceReplays).insert(cacheKey, 1);
+    memory.existenceLookups.receipts.ensureCurrent(((memory).existenceReplays),
         [](int64_t packed) { return int64_t(gl::Codec<gl::StatementKey>::decode(packed).validity); });
     const int64_t liveBefore = memory.liveBytes();
     const std::string chain = "or-source-raw-storage";
     const int64_t ordinal = 900101;
     gl::lbdeload::dumpLbMemoryRaw(memory, chain, ordinal, dir);
-    memory.manager.releaseAll();
+    memory.manager.releaseAllForRawImage();
     memory.manager.markDeloaded();
     memory.manager.markResident();
     gl::lbdeload::loadLbMemoryRaw(memory, chain, ordinal,
         gl::lbdeload::rawFileName(ordinal), dir);
-    const gl::OrImplicationSource source = *memory.orImplications.find(key);
+    const gl::OrImplicationSource source = *((memory).orImplications).find(key);
     ASSERT_EQ(source.canonicalId, 102);
-    ASSERT_EQ(memory.orImplications.leaves[source.leafStart].literalId, 15);
-    ASSERT_EQ(memory.orImplications.leaves[source.leafStart + 1].complementId, 8);
-    ASSERT_EQ(memory.orImplications.levels[source.levelStart], 4);
-    ASSERT_EQ(memory.orImplications.pendingSources[0], key);
-    ASSERT_EQ(memory.orImplications.pendingFacts[0], gl::packInt32Pair(16, 1));
+    ASSERT_EQ(((memory).orImplications).leaves[source.leafStart].literalId, 15);
+    ASSERT_EQ(((memory).orImplications).leaves[source.leafStart + 1].complementId, 8);
+    ASSERT_EQ(((memory).orImplications).levels[source.levelStart], 4);
+    ASSERT_EQ(((memory).orImplications).pendingSources[0], key);
+    ASSERT_EQ(((memory).orImplications).pendingFacts[0], gl::packInt32Pair(16, 1));
     ASSERT_EQ(memory.liveBytes(), liveBefore);
-    ASSERT_EQ(memory.orImplicationMatches.liveViews, 1);
-    ASSERT_EQ(memory.orImplicationMatches.views[viewId].cacheKey, cacheKey);
-    ASSERT_TRUE(memory.orImplicationMatches.built);
-    ASSERT_TRUE(memory.orImplicationMatches.classScopesBuilt);
+    ASSERT_EQ(((memory).orImplicationMatches).liveViews, 1);
+    ASSERT_EQ(((memory).orImplicationMatches).views[viewId].cacheKey, cacheKey);
+    ASSERT_TRUE(((memory).orImplicationMatches).built);
+    ASSERT_TRUE(((memory).orImplicationMatches).classScopesBuilt);
     ASSERT_TRUE(memory.existenceLookups.algebraSources.built);
     int sourceHits = 0;
     memory.existenceLookups.algebraSources.postings.forEach(cacheKey, [&](int64_t found) {
@@ -207,7 +210,7 @@ TEST(raw_image, or_source_state_survives_raw_eviction) {
         ASSERT_EQ(found, cacheKey); ++receiptHits;
     });
     ASSERT_EQ(receiptHits, 1);
-    ASSERT_TRUE(memory.orImplicationMatches.postings().containsKey(gl::orPostingKey(
+    ASSERT_TRUE(((memory).orImplicationMatches).postings().containsKey(gl::orPostingKey(
         gl::OrPostingKind::WatchKey, gl::packInt32Pair(52, 3))));
 }
 
@@ -411,7 +414,7 @@ TEST(raw_image, dynamic_header_bitmap_beyond_old_fixed_cap) {
               static_cast<int64_t>(8192) + payload);
 
     // Round trip: release the blocks, reload from the image.
-    lb.manager.releaseAll();
+    lb.manager.releaseAllForRawImage();
     lb.manager.markDeloaded();
     lb.manager.markResident();
     gl::lbdeload::loadLbMemoryRaw(lb, chain, ordinal,
@@ -463,7 +466,7 @@ TEST(raw_image, dynamic_header_long_chain_round_trip) {
     ASSERT_EQ(static_cast<int64_t>(fileSize),
               static_cast<int64_t>(8192) + payload);
 
-    lb.manager.releaseAll();
+    lb.manager.releaseAllForRawImage();
     lb.manager.markDeloaded();
     lb.manager.markResident();
     gl::lbdeload::loadLbMemoryRaw(lb, chain, ordinal,
@@ -599,20 +602,20 @@ TEST(raw_image, memory_raw_roundtrip_preserves_all_containers_no_rebuild) {
     m.setExprKey("(raw_image_mem_roundtrip_lb)");
     const int16_t kStmts = 40;
     for (int16_t i = 0; i < kStmts; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
     // Populate a real cold-map (ColdHashSet with a PagedHashIndex bucket array)
     // so "no rebuild" is a meaningful claim (the buckets must round-trip).
     const int32_t kKeys = 50;
     for (int32_t i = 0; i < kKeys; ++i)
-        m.intLocalEncodedStatementsSet.mint(7 * i + 3);
-    ASSERT_TRUE(m.intLocalEncodedStatementsSet.contains(7 * 10 + 3));
+        ((m).intLocalEncodedStatementsSet).mint(7 * i + 3);
+    ASSERT_TRUE(((m).intLocalEncodedStatementsSet).contains(7 * 10 + 3));
 
-    const gl::NameId releaseScope = m.nameMap.encode("main");
-    const gl::NameId releaseOriginal = m.nameMap.encode("(or90[a,b])");
+    const gl::NameId releaseScope = ((m).nameMap).encode("main");
+    const gl::NameId releaseOriginal = ((m).nameMap).encode("(or90[a,b])");
     const int64_t releasePair = gl::packInt32Pair(releaseOriginal, releaseOriginal);
 
 
-    auto& canonical=m.lbMemory.canonicalUses;
+    auto& canonical=((m).lbMemory).canonicalUses;
     canonical.statements.add(releasePair,releaseScope,gl::StrSpan("a"));
     canonical.pendingCarriers.insert(releasePair,91);
     canonical.pendingIdentity.upsert(91,releasePair);
@@ -620,17 +623,17 @@ TEST(raw_image, memory_raw_roundtrip_preserves_all_containers_no_rebuild) {
     canonical.statementMatches.forms.upsert(releasePair,17);
     canonical.statementMatches.rebuildCount=9;
     gl::EquivalenceClass complete; complete.memberIds={2,3};
-    m.canonicalEquivalenceClassesMap.assignRun(releaseScope,{complete});
+    ((m).canonicalEquivalenceClassesMap).assignRun(releaseScope,{complete});
 
     m.deloadStaticContainersRaw(dir);           // v4 dump + release
-    ASSERT_FALSE(m.lbMemory.manager.resident());
-    ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Raw);
-    ASSERT_EQ(static_cast<int>(m.deloadFiles.size()), 1);
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
+    ASSERT_EQ(((m).deloadKind), gl::Memory::DeloadKind::Raw);
+    ASSERT_EQ(static_cast<int>(((m).deloadFiles).size()), 1);
 
     const int64_t rebuildsBefore =
         gl::deloadStats().indexRebuildCount.load();
     m.ensureLoaded(dir);                         // dispatch -> raw loader
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     // The raw reload rebuilt NO throw-away index — the whole point.
     ASSERT_EQ(gl::deloadStats().indexRebuildCount.load(), rebuildsBefore);
     ASSERT_TRUE(gl::deloadStats().rawLoadCount.load() > 0);
@@ -643,17 +646,17 @@ TEST(raw_image, memory_raw_roundtrip_preserves_all_containers_no_rebuild) {
     ASSERT_TRUE(canonical.pendingBuilt);
     ASSERT_EQ(*canonical.statementMatches.forms.find(releasePair),17);
     ASSERT_EQ(canonical.statementMatches.rebuildCount,9);
-    ASSERT_EQ(m.canonicalEquivalenceClassesMap.recordAt(m.canonicalEquivalenceClassesMap.lookup(releaseScope),0).memberIds.size(),size_t(2));
-    ASSERT_EQ(m.intEncodedStatements.size(), kStmts);
+    ASSERT_EQ(((m).canonicalEquivalenceClassesMap).recordAt(((m).canonicalEquivalenceClassesMap).lookup(releaseScope),0).memberIds.size(),size_t(2));
+    ASSERT_EQ(((m).intEncodedStatements).size(), kStmts);
     for (int16_t i = 0; i < kStmts; ++i) {
-        ASSERT_EQ(m.intEncodedStatements[i].nameId, rawExpr(i).nameId);
-        ASSERT_EQ(m.intEncodedStatements[i].originalId,
+        ASSERT_EQ(((m).intEncodedStatements)[i].nameId, rawExpr(i).nameId);
+        ASSERT_EQ(((m).intEncodedStatements)[i].originalId,
                   rawExpr(i).originalId);
     }
     // Cold-map lookups still hit — buckets_ survived byte-identical.
     for (int32_t i = 0; i < kKeys; ++i)
-        ASSERT_TRUE(m.intLocalEncodedStatementsSet.contains(7 * i + 3));
-    ASSERT_FALSE(m.intLocalEncodedStatementsSet.contains(999999));
+        ASSERT_TRUE(((m).intLocalEncodedStatementsSet).contains(7 * i + 3));
+    ASSERT_FALSE(((m).intLocalEncodedStatementsSet).contains(999999));
 }
 
 TEST(raw_image, memory_raw_dump_writes_single_named_file) {
@@ -662,14 +665,14 @@ TEST(raw_image, memory_raw_dump_writes_single_named_file) {
     gl::Memory m;
     m.setExprKey("(raw_image_single_file_lb)");
     for (int16_t i = 0; i < 12; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.dumpStaticContainersRaw(dir);             // dump only (stays resident)
-    ASSERT_TRUE(m.lbMemory.manager.resident());
-    ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Raw);
-    ASSERT_EQ(static_cast<int>(m.deloadFiles.size()), 1);
-    const std::string expected = gl::lbdeload::rawFileName(m.deloadOrdinal);
-    ASSERT_EQ(m.deloadFiles.front(), expected);
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
+    ASSERT_EQ(((m).deloadKind), gl::Memory::DeloadKind::Raw);
+    ASSERT_EQ(static_cast<int>(((m).deloadFiles).size()), 1);
+    const std::string expected = gl::lbdeload::rawFileName(((m).deloadOrdinal));
+    ASSERT_EQ(((m).deloadFiles).front(), expected);
     ASSERT_TRUE(std::filesystem::exists(
         std::filesystem::path(dir) / expected));
     ASSERT_EQ(gl::deloadStats().rawDumpCount.load(),
@@ -683,7 +686,7 @@ TEST(raw_image, memory_raw_skip_clean_on_resident_redump) {
     gl::Memory m;
     m.setExprKey("(raw_image_skip_clean_lb)");
     for (int16_t i = 0; i < 8; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.dumpStaticContainersRaw(dir);
     ASSERT_EQ(gl::deloadStats().rawDumpCount.load(),
@@ -704,10 +707,10 @@ TEST(raw_image, memory_raw_cold_metadata_readable_while_deloaded) {
     m.setExprKey("(raw_image_cold_meta_lb)");
     const int32_t kStmts = 25;
     for (int16_t i = 0; i < static_cast<int16_t>(kStmts); ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.deloadStaticContainersRaw(dir);           // dump + release
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
     // The count reads deloadedCounts while cold — no reload triggered.
     ASSERT_EQ(m.intEncodedStatementsCount(), kStmts);
 }
@@ -717,7 +720,7 @@ TEST(raw_image, canonical_cache_only_mutation_requires_a_fresh_raw_snapshot) {
     const auto directory=freshRawDir("canonical_cache_mutation");
     gl::Memory memory;
     memory.setExprKey("(canonical_cache_mutation)");
-    auto& uses=memory.lbMemory.canonicalUses;
+    auto& uses=((memory).lbMemory).canonicalUses;
     const auto root=gl::NameMap::MAIN_ID;
     uses.statements.add(11,root,gl::StrSpan("a"));
     ASSERT_TRUE(uses.statements.hasRawChanges());
@@ -733,7 +736,7 @@ TEST(raw_image, canonical_cache_only_mutation_requires_a_fresh_raw_snapshot) {
     const auto dumps=gl::deloadStats().fullDumpCount.load();
     uses.statements.add(12,root,gl::StrSpan("b"));
     uses.statementMatches.forms.upsert(21,32);
-    ASSERT_EQ(memory.lbMemory.dirty,gl::DirtyState::Clean);
+    ASSERT_EQ(((memory).lbMemory).dirty,gl::DirtyState::Clean);
     ASSERT_TRUE(uses.hasRawChanges());
     memory.deloadStaticContainersRaw(directory);
     ASSERT_EQ(gl::deloadStats().fullDumpCount.load(),dumps+1);
@@ -753,20 +756,20 @@ TEST(raw_image, v3_image_still_loads_through_dispatch_and_rebuilds) {
     gl::Memory m;
     m.setExprKey("(raw_image_v3_dispatch_lb)");
     for (int16_t i = 0; i < 20; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.deloadStaticContainers(dir);              // v3 canonical dump + release
-    ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Canonical);
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_EQ(((m).deloadKind), gl::Memory::DeloadKind::Canonical);
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
 
     const int64_t rebuildsBefore =
         gl::deloadStats().indexRebuildCount.load();
     m.ensureLoaded(dir);                         // dispatch -> v3 loader
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     // The v3 path DOES rebuild the throw-away indexes (the contrast with raw).
     ASSERT_TRUE(gl::deloadStats().indexRebuildCount.load() > rebuildsBefore);
     ASSERT_TRUE(gl::deloadStats().v3LoadCount.load() > 0);
-    ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(20));
+    ASSERT_EQ(((m).intEncodedStatements).size(), static_cast<int32_t>(20));
 }
 
 TEST(raw_image, teardown_of_raw_deloaded_memory_does_not_assert) {
@@ -775,11 +778,11 @@ TEST(raw_image, teardown_of_raw_deloaded_memory_does_not_assert) {
         gl::Memory m;
         m.setExprKey("(raw_image_teardown_lb)");
         for (int16_t i = 0; i < 30; ++i)
-            m.intEncodedStatements.push_back(rawExpr(i));
+            ((m).intEncodedStatements).push_back(rawExpr(i));
         for (int32_t i = 0; i < 40; ++i)
-            m.intLocalEncodedStatementsSet.mint(11 * i + 5);
+            ((m).intLocalEncodedStatementsSet).mint(11 * i + 5);
         m.deloadStaticContainersRaw(dir);
-        ASSERT_FALSE(m.lbMemory.manager.resident());
+        ASSERT_FALSE(((m).lbMemory).manager.resident());
         // m destructs HERE on a deloaded arena: ~PagedVector / ~PagedHashIndex
         // must take their teardown residency branch and free nothing (the
         // blocks are already back in the pool) instead of asserting in
@@ -798,13 +801,13 @@ TEST(raw_image, steward_eviction_writes_raw_image_and_reloads) {
     const std::string dir = freshRawDir("steward_evict");
     gl::Memory victim;
     victim.setExprKey("(raw_image_steward_evict_victim)");
-    victim.isActive = true;                     // no default initializer
+    ((victim).isActive) = true;                     // no default initializer
     for (int16_t i = 0; i < 30; ++i)
-        victim.intEncodedStatements.push_back(rawExpr(i));
+        ((victim).intEncodedStatements).push_back(rawExpr(i));
     gl::Memory keep;
     keep.setExprKey("(raw_image_steward_evict_keep)");
-    keep.isActive = true;
-    keep.intEncodedStatements.push_back(rawExpr(0));
+    ((keep).isActive) = true;
+    ((keep).intEncodedStatements).push_back(rawExpr(0));
 
     // order = {victim, keep}; cursor 2, workers 1 -> kept window [1, 5), so
     // the victim at index 0 is OUTSIDE the kept range and the two-tier
@@ -819,26 +822,26 @@ TEST(raw_image, steward_eviction_writes_raw_image_and_reloads) {
     s.endPhaseWindow();
 
     ASSERT_TRUE(evicted);
-    ASSERT_FALSE(victim.lbMemory.manager.resident());
-    ASSERT_EQ(victim.deloadKind, gl::Memory::DeloadKind::Raw);
-    ASSERT_EQ(static_cast<int>(victim.deloadFiles.size()), 1);
-    ASSERT_EQ(victim.deloadFiles.front(),
-              gl::lbdeload::rawFileName(victim.deloadOrdinal));
+    ASSERT_FALSE(((victim).lbMemory).manager.resident());
+    ASSERT_EQ(((victim).deloadKind), gl::Memory::DeloadKind::Raw);
+    ASSERT_EQ(static_cast<int>(((victim).deloadFiles).size()), 1);
+    ASSERT_EQ(((victim).deloadFiles).front(),
+              gl::lbdeload::rawFileName(((victim).deloadOrdinal)));
     ASSERT_TRUE(std::filesystem::exists(
         std::filesystem::path(dir)
-        / gl::lbdeload::rawFileName(victim.deloadOrdinal)));
+        / gl::lbdeload::rawFileName(((victim).deloadOrdinal))));
     ASSERT_TRUE(gl::deloadStats().rawDumpCount.load() > 0);
-    ASSERT_EQ(victim.stewardClaim.load(),
+    ASSERT_EQ(((victim).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_TRUE(keep.lbMemory.manager.resident());   // inside the window
+    ASSERT_TRUE(((keep).lbMemory).manager.resident());   // inside the window
 
     // Reload the raw-evicted victim: content intact, zero index rebuild.
     const int64_t rb = gl::deloadStats().indexRebuildCount.load();
     victim.ensureLoaded(dir);
-    ASSERT_TRUE(victim.lbMemory.manager.resident());
+    ASSERT_TRUE(((victim).lbMemory).manager.resident());
     ASSERT_EQ(gl::deloadStats().indexRebuildCount.load(), rb);
-    ASSERT_EQ(victim.intEncodedStatements.size(), static_cast<int32_t>(30));
-    ASSERT_EQ(victim.intEncodedStatements[29].nameId,
+    ASSERT_EQ(((victim).intEncodedStatements).size(), static_cast<int32_t>(30));
+    ASSERT_EQ(((victim).intEncodedStatements)[29].nameId,
               static_cast<int16_t>(29));
 }
 
@@ -847,29 +850,29 @@ TEST(raw_image, worker_claim_and_load_round_trip_on_raw_image) {
     const std::string dir = freshRawDir("worker_reload");
     gl::Memory lb;
     lb.setExprKey("(raw_image_worker_reload_lb)");
-    lb.isActive = true;
+    ((lb).isActive) = true;
     for (int16_t i = 0; i < 22; ++i)
-        lb.intEncodedStatements.push_back(rawExpr(i));
+        ((lb).intEncodedStatements).push_back(rawExpr(i));
 
     // Raw-deload and mark Dumped (the state a steward eviction leaves).
     lb.deloadStaticContainersRaw(dir);
-    lb.stewardClaim.store(
+    ((lb).stewardClaim).store(
         static_cast<uint8_t>(gl::Memory::StewardClaim::Dumped));
-    ASSERT_FALSE(lb.lbMemory.manager.resident());
+    ASSERT_FALSE(((lb).lbMemory).manager.resident());
 
     // The worker handshake self-loads the cold raw image and publishes
     // WorkerOwned. No window open -> no inline evict; a plain self-load.
     gl::MemorySteward s;
     const int64_t rb = gl::deloadStats().indexRebuildCount.load();
     s.claimAndLoadForWork(lb, /*phase=*/2, dir);
-    ASSERT_TRUE(lb.lbMemory.manager.resident());
-    ASSERT_EQ(lb.stewardClaim.load(),
+    ASSERT_TRUE(((lb).lbMemory).manager.resident());
+    ASSERT_EQ(((lb).stewardClaim).load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     ASSERT_EQ(gl::deloadStats().indexRebuildCount.load(), rb);   // raw: no rebuild
     ASSERT_TRUE(gl::deloadStats().rawLoadCount.load() > 0);
-    ASSERT_EQ(lb.intEncodedStatements.size(), static_cast<int32_t>(22));
+    ASSERT_EQ(((lb).intEncodedStatements).size(), static_cast<int32_t>(22));
     for (int16_t i = 0; i < 22; ++i)
-        ASSERT_EQ(lb.intEncodedStatements[i].nameId, i);
+        ASSERT_EQ(((lb).intEncodedStatements)[i].nameId, i);
 }
 
 TEST(raw_image, discharge_drain_still_writes_canonical_v3) {
@@ -877,7 +880,7 @@ TEST(raw_image, discharge_drain_still_writes_canonical_v3) {
     gl::Memory lb;
     lb.setExprKey("(raw_image_discharge_v3_lb)");
     for (int16_t i = 0; i < 18; ++i)
-        lb.intEncodedStatements.push_back(rawExpr(i));
+        ((lb).intEncodedStatements).push_back(rawExpr(i));
 
     // The discharge drain path: installDischargeWork -> deloadStaticContainers.
     gl::MemorySteward s;
@@ -887,15 +890,15 @@ TEST(raw_image, discharge_drain_still_writes_canonical_v3) {
     s.quiesce();
     s.stop();
 
-    ASSERT_FALSE(lb.lbMemory.manager.resident());
+    ASSERT_FALSE(((lb).lbMemory).manager.resident());
     // Discharge writes the CANONICAL v3 format, NOT the raw image.
-    ASSERT_EQ(lb.deloadKind, gl::Memory::DeloadKind::Canonical);
-    ASSERT_FALSE(lb.deloadFiles.empty());
-    ASSERT_TRUE(lb.deloadFiles.front().find("_of_") != std::string::npos);
-    ASSERT_TRUE(lb.deloadFiles.front().find("_raw") == std::string::npos);
+    ASSERT_EQ(((lb).deloadKind), gl::Memory::DeloadKind::Canonical);
+    ASSERT_FALSE(((lb).deloadFiles).empty());
+    ASSERT_TRUE(((lb).deloadFiles).front().find("_of_") != std::string::npos);
+    ASSERT_TRUE(((lb).deloadFiles).front().find("_raw") == std::string::npos);
     // And it reloads through the v3 dispatch.
     lb.ensureLoaded(dir);
-    ASSERT_EQ(lb.intEncodedStatements.size(), static_cast<int32_t>(18));
+    ASSERT_EQ(((lb).intEncodedStatements).size(), static_cast<int32_t>(18));
 }
 
 TEST(raw_image, mixed_raw_evict_then_discharge_canonical) {
@@ -908,27 +911,27 @@ TEST(raw_image, mixed_raw_evict_then_discharge_canonical) {
 
     gl::Memory lb;
     lb.setExprKey("(raw_image_mixed_lb)");
-    lb.isActive = true;
+    ((lb).isActive) = true;
     for (int16_t i = 0; i < 35; ++i)
-        lb.intEncodedStatements.push_back(rawExpr(i));
+        ((lb).intEncodedStatements).push_back(rawExpr(i));
 
     // 1) Raw-evict, then raw-reload.
     lb.deloadStaticContainersRaw(dir);
-    ASSERT_EQ(lb.deloadKind, gl::Memory::DeloadKind::Raw);
+    ASSERT_EQ(((lb).deloadKind), gl::Memory::DeloadKind::Raw);
     lb.ensureLoaded(dir);
-    ASSERT_TRUE(lb.lbMemory.manager.resident());
-    ASSERT_EQ(lb.intEncodedStatements.size(), static_cast<int32_t>(35));
+    ASSERT_TRUE(((lb).lbMemory).manager.resident());
+    ASSERT_EQ(((lb).intEncodedStatements).size(), static_cast<int32_t>(35));
 
     // 2) The LB becomes inactive and is discharged -> canonical v3 next dump.
     lb.dischargeStatementContent(scratch);
     lb.deloadStaticContainers(dir);
-    ASSERT_EQ(lb.deloadKind, gl::Memory::DeloadKind::Canonical);
-    ASSERT_TRUE(lb.deloadFiles.front().find("_raw") == std::string::npos);
-    ASSERT_FALSE(lb.lbMemory.manager.resident());
+    ASSERT_EQ(((lb).deloadKind), gl::Memory::DeloadKind::Canonical);
+    ASSERT_TRUE(((lb).deloadFiles).front().find("_raw") == std::string::npos);
+    ASSERT_FALSE(((lb).lbMemory).manager.resident());
 
     // 3) The chapter export reads the discharged v3 image (dispatch -> v3).
     lb.ensureLoadedForRead(dir);
-    ASSERT_TRUE(lb.lbMemory.manager.resident());
+    ASSERT_TRUE(((lb).lbMemory).manager.resident());
 }
 
 // ---- C5: read-path tuning + policy interface surface --------------------
@@ -942,19 +945,19 @@ TEST(raw_image, multi_block_raw_reload_correctness) {
     // the reload's fillRawImage emits several block-region reads (the tuning).
     const int32_t kN = 10000;
     for (int32_t i = 0; i < kN; ++i)
-        m.intEncodedStatements.push_back(rawExpr(static_cast<int16_t>(i)));
-    ASSERT_TRUE(m.lbMemory.manager.blocksHeld() > 1);   // genuinely multi-block
+        ((m).intEncodedStatements).push_back(rawExpr(static_cast<int16_t>(i)));
+    ASSERT_TRUE(((m).lbMemory).manager.blocksHeld() > 1);   // genuinely multi-block
 
     m.deloadStaticContainersRaw(dir);
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
     const int64_t rb = gl::deloadStats().indexRebuildCount.load();
     m.ensureLoaded(dir);
-    ASSERT_TRUE(m.lbMemory.manager.resident());
+    ASSERT_TRUE(((m).lbMemory).manager.resident());
     ASSERT_EQ(gl::deloadStats().indexRebuildCount.load(), rb);   // no rebuild
-    ASSERT_EQ(m.intEncodedStatements.size(), kN);
+    ASSERT_EQ(((m).intEncodedStatements).size(), kN);
     // Byte-exact across the whole multi-block span.
     for (int32_t i = 0; i < kN; ++i)
-        ASSERT_EQ(m.intEncodedStatements[i].nameId, static_cast<int16_t>(i));
+        ASSERT_EQ(((m).intEncodedStatements)[i].nameId, static_cast<int16_t>(i));
 }
 
 TEST(raw_image, last_raw_image_bytes_accessor_reflects_dump) {
@@ -963,13 +966,13 @@ TEST(raw_image, last_raw_image_bytes_accessor_reflects_dump) {
     m.setExprKey("(raw_image_last_bytes_lb)");
     ASSERT_EQ(m.lastRawImageBytes(), static_cast<int64_t>(0));   // pre-dump
     for (int16_t i = 0; i < 100; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.dumpStaticContainersRaw(dir);                 // dump only (stays resident)
     const int64_t bytes = m.lastRawImageBytes();
     ASSERT_TRUE(bytes > 0);
     // Equals livePages * pageBytes + the byte-bump span (0 in production).
-    const gl::LbArena::RawShape shape = m.lbMemory.manager.rawShape();
+    const gl::LbArena::RawShape shape = ((m).lbMemory).manager.rawShape();
     ASSERT_EQ(bytes,
               static_cast<int64_t>(shape.livePages)
                   * static_cast<int64_t>(shape.pageBytes)
@@ -977,7 +980,7 @@ TEST(raw_image, last_raw_image_bytes_accessor_reflects_dump) {
 
     // Readable while deloaded (a plain shell scalar — no residency assert).
     m.releaseStaticBlocksRaw();
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
     ASSERT_EQ(m.lastRawImageBytes(), bytes);
 }
 
@@ -1049,7 +1052,7 @@ TEST(raw_image, extent_round_trip_positioned_io_at_nonzero_offset) {
     ASSERT_EQ(payload, static_cast<int64_t>(20) * pb);
 
     // Release WITHOUT the container walk (raw-eviction contract), reload.
-    lb.manager.releaseAll();
+    lb.manager.releaseAllForRawImage();
     lb.manager.markDeloaded();
     lb.manager.markResident();
     gl::lbdeload::loadLbMemoryRawAt(lb, chain, ordinal, file, slab.offset);
@@ -1113,7 +1116,7 @@ TEST(raw_image, extent_in_place_redump_then_class_promotion) {
                                     slab.classBytes);
 
     // Reload from the promoted slab: all 40 pages intact.
-    lb.manager.releaseAll();
+    lb.manager.releaseAllForRawImage();
     lb.manager.markDeloaded();
     lb.manager.markResident();
     gl::lbdeload::loadLbMemoryRawAt(lb, chain, ordinal, file, slab.offset);
@@ -1149,7 +1152,7 @@ TEST(raw_image, extent_purge_reset_recycles_offsets) {
     file.preallocate(alloc.highWaterBytes());
     gl::lbdeload::dumpLbMemoryRawAt(lb, chain, ordinal, file, slab.offset,
                                     slab.classBytes);
-    lb.manager.releaseAll();
+    lb.manager.releaseAllForRawImage();
     lb.manager.markDeloaded();
     lb.manager.markResident();
     gl::lbdeload::loadLbMemoryRawAt(lb, chain, ordinal, file, slab.offset);
@@ -1173,31 +1176,31 @@ TEST(raw_image, extent_export_release_cycle_dispatches_by_kind) {
     {
         gl::Memory m;
         m.setExprKey("(extent_export_cycle_lb)");
-        m.isActive = true;
+        ((m).isActive) = true;
         for (int16_t i = 0; i < 25; ++i)
-            m.intEncodedStatements.push_back(rawExpr(i));
+            ((m).intEncodedStatements).push_back(rawExpr(i));
         for (int32_t i = 0; i < 30; ++i)
-            m.intLocalEncodedStatementsSet.mint(13 * i + 1);
+            ((m).intLocalEncodedStatementsSet).mint(13 * i + 1);
 
         m.deloadStaticContainersRaw(dir);           // extent eviction
-        ASSERT_TRUE(m.deloadFiles.empty());          // no named file by design
+        ASSERT_TRUE(((m).deloadFiles).empty());          // no named file by design
 
         m.ensureLoadedForRead(dir);                  // export reload
-        ASSERT_TRUE(m.lbMemory.manager.resident());
+        ASSERT_TRUE(((m).lbMemory).manager.resident());
 
         m.releaseStaticBlocksDispatch();             // the FIXED G-53 release
-        ASSERT_FALSE(m.lbMemory.manager.resident());
-        ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Raw);
+        ASSERT_FALSE(((m).lbMemory).manager.resident());
+        ASSERT_EQ(((m).deloadKind), gl::Memory::DeloadKind::Raw);
 
         // A later theorem revisits the LB: the raw rebind still works — the
         // dispatch skipped the v3 container-release walk, so the bookkeeping
         // survived, and the slab image is still on disk.
         m.ensureLoadedForRead(dir);
-        ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(25));
+        ASSERT_EQ(((m).intEncodedStatements).size(), static_cast<int32_t>(25));
         for (int16_t i = 0; i < 25; ++i)
-            ASSERT_EQ(m.intEncodedStatements[i].nameId, i);
+            ASSERT_EQ(((m).intEncodedStatements)[i].nameId, i);
         for (int32_t i = 0; i < 30; ++i)
-            ASSERT_TRUE(m.intLocalEncodedStatementsSet.contains(13 * i + 1));
+            ASSERT_TRUE(((m).intLocalEncodedStatementsSet).contains(13 * i + 1));
     }
     gl::staticMemory().closeExtentFile();
 }
@@ -1212,21 +1215,21 @@ TEST(raw_image, named_raw_export_release_cycle_dispatches_by_kind) {
     const std::string dir = freshRawDir("named_export_cycle");
     gl::Memory m;
     m.setExprKey("(named_export_cycle_lb)");
-    m.isActive = true;
+    ((m).isActive) = true;
     for (int16_t i = 0; i < 25; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.deloadStaticContainersRaw(dir);               // named raw eviction
-    ASSERT_EQ(static_cast<int>(m.deloadFiles.size()), 1);
+    ASSERT_EQ(static_cast<int>(((m).deloadFiles).size()), 1);
 
     m.ensureLoadedForRead(dir);                      // export reload
     m.releaseStaticBlocksDispatch();                 // routes -> raw release
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
 
     m.ensureLoadedForRead(dir);                      // revisit: rebind works
-    ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(25));
+    ASSERT_EQ(((m).intEncodedStatements).size(), static_cast<int32_t>(25));
     for (int16_t i = 0; i < 25; ++i)
-        ASSERT_EQ(m.intEncodedStatements[i].nameId, i);
+        ASSERT_EQ(((m).intEncodedStatements)[i].nameId, i);
 }
 
 TEST(raw_image, canonical_export_release_cycle_dispatches_to_v3) {
@@ -1238,46 +1241,46 @@ TEST(raw_image, canonical_export_release_cycle_dispatches_to_v3) {
     gl::Memory m;
     m.setExprKey("(canon_export_cycle_lb)");
     for (int16_t i = 0; i < 20; ++i)
-        m.intEncodedStatements.push_back(rawExpr(i));
+        ((m).intEncodedStatements).push_back(rawExpr(i));
 
     m.deloadStaticContainers(dir);                   // v3 canonical
-    ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Canonical);
+    ASSERT_EQ(((m).deloadKind), gl::Memory::DeloadKind::Canonical);
     m.ensureLoadedForRead(dir);                      // export reload (v3)
     m.releaseStaticBlocksDispatch();                 // routes -> v3 release
-    ASSERT_FALSE(m.lbMemory.manager.resident());
+    ASSERT_FALSE(((m).lbMemory).manager.resident());
     const int64_t rebuilds = gl::deloadStats().indexRebuildCount.load();
     m.ensureLoadedForRead(dir);                      // v3 rebuild path
     ASSERT_TRUE(gl::deloadStats().indexRebuildCount.load() >= rebuilds);
-    ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(20));
+    ASSERT_EQ(((m).intEncodedStatements).size(), static_cast<int32_t>(20));
 }
 
 TEST(raw_image, or_matching_canonical_release_discards_derived_views_only) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = false;
     const std::string dir = freshRawDir("or_matching_canonical_release");
     gl::Memory memory;
     memory.setExprKey("(or_matching_canonical_release)");
     const auto main = gl::NameMap::MAIN_ID;
-    const auto original = memory.nameMap.encode("(p[a])");
-    const auto complement = memory.nameMap.encode("!(p[a])");
+    const auto original = ((memory).nameMap).encode("(p[a])");
+    const auto complement = ((memory).nameMap).encode("!(p[a])");
     const int64_t key = gl::packInt32Pair(original, main);
     const gl::OrImplicationLeaf leaves[] = {{original, complement}, {complement, original}};
     const int levels[] = {0};
-    memory.orImplications.insert(key, original, leaves, 2, levels, 1, true);
-    analyzer.bindOrCanonicalView(memory, memory.orImplicationMatches,
+    ((memory).orImplications).insert(key, original, leaves, 2, levels, 1, true);
+    gl::tests::OrImplicationProcessorFixture::bindOrCanonicalView(analyzer.orImplicationProcessor, memory, ((memory).orImplicationMatches),
         {key, main, 0}, complement);
-    memory.orImplicationMatches.built = true;
+    ((memory).orImplicationMatches).built = true;
     memory.deloadStaticContainers(dir);
-    ASSERT_FALSE(memory.lbMemory.manager.resident());
+    ASSERT_FALSE(((memory).lbMemory).manager.resident());
     memory.ensureLoadedForRead(dir);
-    ASSERT_TRUE(memory.orImplications.find(key) != nullptr);
-    ASSERT_EQ(memory.orImplicationMatches.liveBytes(), int64_t{0});
-    ASSERT_FALSE(memory.orImplicationMatches.built);
-    const int32_t view = analyzer.bindOrCanonicalView(memory,
-        memory.orImplicationMatches, {key, main, 0}, complement);
-    ASSERT_EQ(memory.orImplicationMatches.liveViews, 1);
-    const auto* cache = memory.orImplicationMatches.caches().find(
-        memory.orImplicationMatches.views[view].cacheKey);
+    ASSERT_TRUE(((memory).orImplications).find(key) != nullptr);
+    ASSERT_EQ(((memory).orImplicationMatches).liveBytes(), int64_t{0});
+    ASSERT_FALSE(((memory).orImplicationMatches).built);
+    const int32_t view = gl::tests::OrImplicationProcessorFixture::bindOrCanonicalView(analyzer.orImplicationProcessor, memory,
+        ((memory).orImplicationMatches), {key, main, 0}, complement);
+    ASSERT_EQ(((memory).orImplicationMatches).liveViews, 1);
+    const auto* cache = ((memory).orImplicationMatches).caches().find(
+        ((memory).orImplicationMatches).views[view].cacheKey);
     ASSERT_TRUE(cache != nullptr);
     ASSERT_EQ(cache->canonicalId, complement);
 }
@@ -1337,41 +1340,41 @@ TEST(raw_image, extent_integration_dump_reload_discharge_via_global_gate) {
     {
         gl::Memory m;
         m.setExprKey("(extent_integration_lb)");
-        m.isActive = true;
+        ((m).isActive) = true;
         for (int16_t i = 0; i < 40; ++i)
-            m.intEncodedStatements.push_back(rawExpr(i));
+            ((m).intEncodedStatements).push_back(rawExpr(i));
         for (int32_t i = 0; i < 50; ++i)
-            m.intLocalEncodedStatementsSet.mint(7 * i + 3);
+            ((m).intLocalEncodedStatementsSet).mint(7 * i + 3);
 
         m.deloadStaticContainersRaw(dir);          // EXTENT branch
-        ASSERT_FALSE(m.lbMemory.manager.resident());
-        ASSERT_EQ(m.deloadKind, gl::Memory::DeloadKind::Raw);
-        ASSERT_TRUE(m.deloadFiles.empty());        // extent path: no named file
-        ASSERT_TRUE(m.rawExtentOffset_ >= 0);
-        ASSERT_TRUE(m.rawExtentClassBytes_ > 0);
+        ASSERT_FALSE(((m).lbMemory).manager.resident());
+        ASSERT_EQ(((m).deloadKind), gl::Memory::DeloadKind::Raw);
+        ASSERT_TRUE(((m).deloadFiles).empty());        // extent path: no named file
+        ASSERT_TRUE(((m).rawExtentOffset_) >= 0);
+        ASSERT_TRUE(((m).rawExtentClassBytes_) > 0);
 
         m.ensureLoaded(dir);                        // EXTENT dispatch reload
-        ASSERT_TRUE(m.lbMemory.manager.resident());
-        ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(40));
+        ASSERT_TRUE(((m).lbMemory).manager.resident());
+        ASSERT_EQ(((m).intEncodedStatements).size(), static_cast<int32_t>(40));
         for (int16_t i = 0; i < 40; ++i)
-            ASSERT_EQ(m.intEncodedStatements[i].nameId, i);
+            ASSERT_EQ(((m).intEncodedStatements)[i].nameId, i);
         for (int32_t i = 0; i < 50; ++i)
-            ASSERT_TRUE(m.intLocalEncodedStatementsSet.contains(7 * i + 3));
+            ASSERT_TRUE(((m).intLocalEncodedStatementsSet).contains(7 * i + 3));
 
         // Same-size re-dump: IN PLACE (offset unchanged, no reallocation).
-        const int64_t off = m.rawExtentOffset_;
+        const int64_t off = ((m).rawExtentOffset_);
         m.deloadStaticContainersRaw(dir);
-        ASSERT_EQ(m.rawExtentOffset_, off);
+        ASSERT_EQ(((m).rawExtentOffset_), off);
         m.ensureLoaded(dir);
-        ASSERT_EQ(m.intEncodedStatements.size(), static_cast<int32_t>(40));
+        ASSERT_EQ(((m).intEncodedStatements).size(), static_cast<int32_t>(40));
 
         // Discharge frees the slab (Raw->Canonical, never raw-reloads again).
         gl::GlobalMemoryManager scrPool;
         scrPool.init(kRawCfg16);
         gl::LbArena scratch(&scrPool);
         m.dischargeStatementContent(scratch);
-        ASSERT_EQ(m.rawExtentOffset_, static_cast<int64_t>(-1));
-        ASSERT_EQ(m.rawExtentClassBytes_, 0);
+        ASSERT_EQ(((m).rawExtentOffset_), static_cast<int64_t>(-1));
+        ASSERT_EQ(((m).rawExtentClassBytes_), 0);
     }
     gl::staticMemory().closeExtentFile();
     ASSERT_FALSE(gl::staticMemory().useExtent());
@@ -1404,7 +1407,7 @@ TEST(raw_image, extent_ordinal_tripwire_tracks_slab_occupant) {
     file.preallocate(alloc.highWaterBytes());
     gl::lbdeload::dumpLbMemoryRawAt(a, chainA, 700001, file, slab.offset,
                                     slab.classBytes);
-    a.manager.releaseAll();
+    a.manager.releaseAllForRawImage();
     a.manager.markDeloaded();
     a.manager.markResident();
     gl::lbdeload::loadLbMemoryRawAt(a, chainA, 700001, file, slab.offset);
@@ -1417,7 +1420,7 @@ TEST(raw_image, extent_ordinal_tripwire_tracks_slab_occupant) {
     const std::string chainB = "(extent_ord_b)__";
     gl::lbdeload::dumpLbMemoryRawAt(b, chainB, 700002, file, slab.offset,
                                     slab.classBytes);
-    b.manager.releaseAll();
+    b.manager.releaseAllForRawImage();
     b.manager.markDeloaded();
     b.manager.markResident();
     gl::lbdeload::loadLbMemoryRawAt(b, chainB, 700002, file, slab.offset);
@@ -1438,19 +1441,19 @@ TEST(raw_image, parked_source_and_pending_receipt_survive_eviction) {
     record.levels = {0,5};
     const int64_t key = gl::packInt32Pair(7,3);
     const int64_t receipt = gl::packInt32Pair(41,3);
-    memory.overallHashMemory.rejectedMap.assignRun(key,{record});
-    memory.existenceReplays.upsert(receipt,25);
+    ((((memory).overallHashMemory)).rejectedMap).assignRun(key,{record});
+    ((memory).existenceReplays).upsert(receipt,25);
     const int64_t bytes = memory.liveBytes();
     const std::string chain = "parked-existence-raw-storage";
     const int64_t ordinal = 900102;
     gl::lbdeload::dumpLbMemoryRaw(memory,chain,ordinal,dir);
-    memory.manager.releaseAll();
+    memory.manager.releaseAllForRawImage();
     memory.manager.markDeloaded();
     memory.manager.markResident();
     gl::lbdeload::loadLbMemoryRaw(memory,chain,ordinal,gl::lbdeload::rawFileName(ordinal),dir);
-    ASSERT_EQ(*memory.existenceReplays.find(receipt),25);
-    const auto after = memory.overallHashMemory.rejectedMap.recordAt(
-        memory.overallHashMemory.rejectedMap.lookup(key),0);
+    ASSERT_EQ(*((memory).existenceReplays).find(receipt),25);
+    const auto after = ((((memory).overallHashMemory)).rejectedMap).recordAt(
+        ((((memory).overallHashMemory)).rejectedMap).lookup(key),0);
     ASSERT_TRUE(gl::Codec<gl::RejectedMapValue>::serialize(after) == gl::Codec<gl::RejectedMapValue>::serialize(record));
     ASSERT_EQ(memory.liveBytes(),bytes);
 }
@@ -1469,25 +1472,25 @@ TEST(raw_image, shared_rule_values_keep_private_large_payload_through_both_forma
         large.owners.push_back({static_cast<gl::RuleOwner>(owner), -1});
     const auto expected = gl::Codec<gl::OwnerSet>::serialize(large);
     ASSERT_TRUE(expected.size() > 2048);
-    source.overallHashMemory.normalizedEncodedSubkeys.assignRun(key, {large});
-    source.workingMemory.normalizedEncodedSubkeys.assignRun(key, {small});
+    ((((source).overallHashMemory)).normalizedEncodedSubkeys).assignRun(key, {large});
+    ((((source).workingMemory)).normalizedEncodedSubkeys).assignRun(key, {small});
     source.sharedNativeKeys.collect(scratch);
     const std::string chain = "shared-rule-values";
     const int64_t ordinal = 900111;
     gl::lbdeload::dumpLbMemoryRaw(source, chain, ordinal, directory);
-    source.manager.releaseAll(); source.manager.markDeloaded(); source.manager.markResident();
+    source.manager.releaseAllForRawImage(); source.manager.markDeloaded(); source.manager.markResident();
     gl::lbdeload::loadLbMemoryRaw(source, chain, ordinal,
         gl::lbdeload::rawFileName(ordinal), directory);
-    auto& map = source.overallHashMemory.normalizedEncodedSubkeys;
+    auto& map = ((((source).overallHashMemory)).normalizedEncodedSubkeys);
     ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(map.recordAt(map.lookup(key), 0)) == expected);
-    source.workingMemory.resetToFresh();
+    ((source).workingMemory).resetToFresh();
     source.sharedNativeKeys.collect(scratch);
     ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(map.recordAt(map.lookup(key), 0)) == expected);
     const auto files = gl::lbdeload::dumpLbMemory(source, chain, ordinal + 1, directory, 1 << 18);
     gl::lbdeload::loadLbMemory(restored, chain, files, directory);
-    auto& result = restored.overallHashMemory.normalizedEncodedSubkeys;
+    auto& result = ((((restored).overallHashMemory)).normalizedEncodedSubkeys);
     ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(result.recordAt(result.lookup(key), 0)) == expected);
-    ASSERT_TRUE(restored.workingMemory.normalizedEncodedSubkeys.empty());
+    ASSERT_TRUE(((((restored).workingMemory)).normalizedEncodedSubkeys).empty());
 }
 
 
@@ -1495,21 +1498,82 @@ TEST(raw_image, shared_expression_handles_and_lifetime_survive_raw_reload) {
     gl::GlobalMemoryManager manager; manager.init(kRawCfg16);
     gl::LbMemory memory(&manager);
     for (int i = 0; i < 300; ++i) {
-        memory.intEncodedStatements.push_back(rawExpr(i));
-        memory.intExternalStatements.push_back(rawExpr(i));
+        ((memory).intEncodedStatements).push_back(rawExpr(i));
+        ((memory).intExternalStatements).push_back(rawExpr(i));
     }
     const auto shape = memory.manager.rawShape();
     std::vector<uint8_t> bitmap(static_cast<size_t>((shape.vidCount + 7) / 8));
     memory.manager.fillLiveBitmap(bitmap.data(), static_cast<int64_t>(bitmap.size()));
     const auto bytes = emitToBuffer(memory.manager);
-    memory.manager.releaseAll(); memory.manager.markDeloaded();
+    memory.manager.releaseAllForRawImage(); memory.manager.markDeloaded();
     memory.manager.markResident();
     memory.manager.restoreForRawLoad(shape.vidCount, bitmap.data(), shape.livePages, shape.byteBumpCursor);
     fillFromBuffer(memory.manager, bytes);
     ASSERT_EQ(memory.sharedExpressions.count(), 300);
-    ASSERT_TRUE(&memory.intEncodedStatements[83] == &memory.intExternalStatements[83]);
-    memory.intEncodedStatements.clear(); ASSERT_EQ(memory.sharedExpressions.count(), 300);
-    memory.intExternalStatements.erase(83); ASSERT_EQ(memory.sharedExpressions.count(), 299);
-    memory.intExternalStatements.push_back(rawExpr(83)); ASSERT_EQ(memory.sharedExpressions.count(), 300);
-    memory.intExternalStatements.clear(); ASSERT_EQ(memory.sharedExpressions.liveBytes(), 0);
+    ASSERT_TRUE(&((memory).intEncodedStatements)[83] == &((memory).intExternalStatements)[83]);
+    ((memory).intEncodedStatements).clear(); ASSERT_EQ(memory.sharedExpressions.count(), 300);
+    ((memory).intExternalStatements).erase(83); ASSERT_EQ(memory.sharedExpressions.count(), 299);
+    ((memory).intExternalStatements).push_back(rawExpr(83)); ASSERT_EQ(memory.sharedExpressions.count(), 300);
+    ((memory).intExternalStatements).clear(); ASSERT_EQ(memory.sharedExpressions.liveBytes(), 0);
+}
+
+// ---- Sub-page tier (D-464) ---------------------------
+
+TEST(raw_image, sub_page_lists_survive_a_raw_round_trip) {
+    gl::GlobalMemoryManager m;
+    m.init(kRawCfg16);                         // 8 KiB pages: 32 slots of 256 bytes
+    gl::LbArena a(&m);
+    a.enableSubPages();
+    std::vector<gl::LbArena::SubPage> slots;
+    for (int32_t k = 0; k < 40; ++k) {
+        slots.push_back(a.allocSubPage(2));
+        std::memset(a.pageAt(slots.back().vid) + slots.back().offset, 1 + k, 256);
+    }
+    const int32_t page = a.allocPage();
+    std::memset(a.pageAt(page), 0x5A, static_cast<std::size_t>(a.pageBytes()));
+    a.freeSubPage(slots[7], 2);
+    a.freeSubPage(slots[30], 2);
+    const auto shape = a.rawShape();
+    std::vector<unsigned char> bitmap(static_cast<std::size_t>((shape.vidCount + 7) / 8));
+    a.fillLiveBitmap(bitmap.data(), static_cast<int32_t>(bitmap.size()));
+    const auto bytes = emitToBuffer(a);
+    a.releaseAllForRawImage();
+    a.markDeloaded();
+    a.markResident();
+    a.restoreForRawLoad(shape.vidCount, bitmap.data(), shape.livePages,
+                        shape.byteBumpCursor);
+    // Bound but unfilled pages: only the content-free audit applies.
+    a.assertPageTierInvariants();
+    fillFromBuffer(a, bytes);
+    a.assertSubPageInvariants();
+    a.assertInvariants();
+    ASSERT_EQ(a.liveSubPages(2), 38);
+    ASSERT_EQ(a.subPageSlabs(2), 2);
+    for (int32_t k = 0; k < 40; ++k) {
+        if (k == 7 || k == 30) continue;
+        ASSERT_EQ(static_cast<int32_t>(a.pageAt(slots[k].vid)[slots[k].offset]), 1 + k);
+    }
+    ASSERT_EQ(static_cast<unsigned char>(a.pageAt(page)[100]), 0x5A);
+    // The restored lists hand back exactly the slots that were free.
+    const gl::LbArena::SubPage first = a.allocSubPage(2);
+    const gl::LbArena::SubPage second = a.allocSubPage(2);
+    ASSERT_EQ(first.vid, slots[30].vid);
+    ASSERT_EQ(first.offset, slots[30].offset);
+    ASSERT_EQ(second.vid, slots[7].vid);
+    ASSERT_EQ(second.offset, slots[7].offset);
+    a.freeSubPage(first, 2);
+    a.freeSubPage(second, 2);
+    a.assertInvariants();
+}
+
+TEST(raw_image, lb_memory_arena_offers_sub_pages) {
+    gl::GlobalMemoryManager m;
+    m.init(kRawCfg16);
+    gl::LbMemory memory(&m);
+    ASSERT_TRUE(memory.manager.subPagesEnabled());
+    ((memory).intEncodedStatements).push_back(rawExpr(1));
+    int32_t slabs = 0;
+    for (int32_t cls = 0; cls < gl::LbArena::kSubPageMaxClasses; ++cls)
+        slabs += memory.manager.subPageSlabs(cls);
+    ASSERT_TRUE(slabs >= 1);
 }

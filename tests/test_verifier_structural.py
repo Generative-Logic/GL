@@ -42,8 +42,107 @@ from tests.test_harness import (  # noqa: E402
 from verifier import (  # noqa: E402
     check_disintegration, check_expansion, check_recursion,
     check_anchor_handling, check_compilation,
-    _counterexample_children, _negated_or_children,
+    _counterexample_children, _negated_or_children, _find_digit_args,
+    load_configured_cores, _twin_induction_partner,
+    disintegrate_implication_full,
 )
+
+
+@register
+def test_find_digit_args_matches_the_prover_selection():
+    """The prover's induction-variable selection: an input counts only when
+    typed (1) (an `=` argument by the chain's typing), and only when it is
+    always an input: one occurrence at a non-input position of a configured
+    expression (an output, or a position that is neither input nor output)
+    or in the anchor discards it; a property's non-input args are never
+    candidates."""
+    fixed = ['P(1)', 'P(x(1)(1))', 'P(x(1)(x(1)(1)))', 'P(x(1)(x(1)(1)))',
+             '(1)', '(1)', '(1)']
+    input_indices = {'=': [0, 1], 'in': [0], 'in2': [0],
+                     'appendToSequence': [0], 'preorder': [2, 3],
+                     'fold': [6], 'primeFactorSeq': [7, 8],
+                     'hasPrimeFactorization': [7]}
+    configured_cores = {'AnchorFTA', '=', 'in', 'in2', 'appendToSequence',
+                        'preorder', 'ordered', 'interval', 'fold',
+                        'primeFactorSeq', 'hasPrimeFactorization'}
+    resolved_defsets = {
+        '=': {'1': '(1)', '2': '(1)'},
+        'AnchorFTA': {'1': 'P(1)', '2': '(1)', '3': 'P(x(1)(1))',
+                      '4': 'P(x(1)(x(1)(1)))', '5': 'P(x(1)(x(1)(1)))',
+                      '6': '(1)', '7': '(1)', '8': 'P(x(1)(1))'},
+        'in': {'1': '(1)', '2': 'P(1)'},
+        'in2': {'1': '(1)', '2': '(1)', '3': 'P(x(1)(1))'},
+        'appendToSequence': {'1': '(1)', '2': '(1)', '3': 'P(x(1)(1))',
+                             '4': 'P(x(1)(1))'},
+        'preorder': {'1': 'P(1)', '2': 'P(x(1)(x(1)(1)))', '3': '(1)',
+                     '4': '(1)'},
+        'ordered': {'1': 'P(1)', '2': 'P(x(1)(x(1)(1)))', '3': 'P(x(1)(1))'},
+        'interval': {'1': 'P(1)', '2': 'P(x(1)(x(1)(1)))', '3': '(1)',
+                     '4': '(1)', '5': 'P(1)'},
+        'fold': {'1': 'P(1)', '2': 'P(x(1)(1))', '3': 'P(x(1)(x(1)(1)))',
+                 '4': 'P(x(1)(x(1)(1)))', '5': 'P(x(1)(1))', '6': '(1)',
+                 '7': '(1)', '8': '(1)'},
+        'primeFactorSeq': {**{str(i + 1): fixed[i] for i in range(7)},
+                           '8': '(1)', '9': 'P(x(1)(1))', '10': '(1)'},
+        'hasPrimeFactorization': {**{str(i + 1): fixed[i] for i in range(7)},
+                                  '8': '(1)'},
+    }
+    anchor = '(AnchorFTA[1,2,3,4,5,6,7,8])'
+    cases = [
+        # primeFactorSeq with inputs k and P and output n: k (9) only; P and
+        # the `=` between the sequences P and Q are not numbers.
+        ([anchor, '(primeFactorSeq[1,3,4,5,2,6,7,9,10,11])',
+          '(primeFactorSeq[1,3,4,5,2,6,7,9,12,11])', '(=[10,12])'],
+         {'9'}),
+        # A digit equality counts its (1)-typed sides; in2's output 10 goes.
+        ([anchor, '(in2[9,10,3])', '(=[9,10])'], {'9'}),
+        # interval's end points are neither input nor output; an equality
+        # of two sets has no induction variable.
+        ([anchor, '(interval[1,4,2,9,10])', '(interval[1,4,2,9,11])',
+          '(=[10,11])'], set()),
+        # I4's row 15: the numeric parameters 2, 6, 7 are anchor args.
+        ([anchor, '(preorder[1,4,7,9])',
+          '(hasPrimeFactorization[1,3,4,5,2,6,7,9])'], {'9'}),
+        # appendToSequence as ConfigVisu.json configures it (FTA's property,
+        # input n): the appended value 10 is no candidate.
+        ([anchor, '(appendToSequence[9,10,11,12])', '(ordered[1,4,12])',
+          '(ordered[1,4,11])'], {'9'}),
+        # in2's output 10 goes; the index 11 is appendToSequence's input.
+        ([anchor, '(in2[9,10,3])', '(appendToSequence[11,10,12,13])',
+          '(ordered[1,4,13])'], {'9', '11'}),
+        # fold's end point 9 is its input; its start is the anchor's zero.
+        ([anchor, '(fold[1,3,4,5,10,2,9,11])'], {'9'}),
+        # interval's end point slot is neither input nor output: preorder's
+        # input 9 is discarded.
+        ([anchor, '(preorder[1,4,7,9])', '(interval[1,4,2,9,10])'],
+         set()),
+        # in's element slot is its input; in2's output 10 goes.
+        ([anchor, '(in[9,1])', '(in2[9,10,3])'], {'9'}),
+    ]
+    for exprs, expected in cases:
+        got = _find_digit_args(exprs, anchor, input_indices,
+                               configured_cores, resolved_defsets)
+        assert got == expected, f"{exprs}: {got} != {expected}"
+
+
+@register
+def test_load_configured_cores_reads_every_signed_entry():
+    """Every ConfigVisu.json entry with a signature is configured; entries
+    without one and non-object entries are not."""
+    import json
+    import tempfile
+    config = {
+        "in2": {"short_mpl": "(in2[1,2,3])", "input_args": ["1"]},
+        "ordered": {"short_mpl": "(ordered[N,+,P])", "input_args": []},
+        "unsigned": {"input_args": ["1"]},
+        "external_anchors": ["AnchorPeano"],
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        with open(os.path.join(directory, "ConfigVisu.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump(config, handle)
+        assert load_configured_cores(directory) == {"in2", "ordered"}
+        assert load_configured_cores(os.path.join(directory, "absent")) == set()
 
 
 @register
@@ -1008,6 +1107,135 @@ def test_compilation_does_not_reconstruct_original():
 # ===========================================================================
 #  tag: recursion
 # ===========================================================================
+
+_G3_PROCESSED = (
+    "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    "(>[v1](in[v1,N])(>[v2](in[v2,N])"
+    "(>[](coprime[N,i0,s,*,v1,v2])(bez1[N,+,*,i1,v1,v2])))))")
+_G3_SEED = "(in2[rec,v2,s])"
+
+
+def _strong_step_failure(thm_type, hypothesis):
+    state = make_state_with_binaries(("Peano",))
+    set_chapter_context(state, thm=(_G3_PROCESSED, thm_type, "v2"),
+                        chapter_type="check_induction_condition")
+    seed = make_proof_line(_G3_SEED, "main", "recursion")
+    line = make_proof_line(hypothesis, "main", "recursion")
+    assert_failure(check_recursion, line, [seed, line], state)
+
+
+@register
+def test_recursion_strong_rejects_weak_hypothesis():
+    """A weak hypothesis (the theorem at the predecessor rec, a fixed) under
+    the strong label fails."""
+    _strong_step_failure(
+        "strong induction",
+        "(>[](in[v1,N])(>[](in[rec,N])(>[](coprime[N,i0,s,*,v1,rec])"
+        "(bez1[N,+,*,i1,v1,rec]))))")
+
+
+@register
+def test_recursion_strong_rejects_wrong_bound():
+    """The bound must name the induction variable itself: m+y=a, m!=a (a = v1)
+    in place of b fails, as do a missing inequality and a non-strict bound."""
+    _strong_step_failure(
+        "strong induction",
+        "(>[w1,w2](in3[w1,w2,v1,+])(>[]!(=[w1,v1])(>[w3](in[w3,N])"
+        "(>[](in[w1,N])(>[](coprime[N,i0,s,*,w3,w1])(bez1[N,+,*,i1,w3,w1]))))))")
+    _strong_step_failure(
+        "strong induction",
+        "(>[w1,w2](in3[w1,w2,v2,+])(>[w3](in[w3,N])"
+        "(>[](in[w1,N])(>[](coprime[N,i0,s,*,w3,w1])(bez1[N,+,*,i1,w3,w1])))))")
+
+
+@register
+def test_recursion_strong_rejects_fixed_other_argument():
+    """Only the induction variable and the anchor arguments are fixed: a
+    hypothesis that keeps a (v1) fixed fails."""
+    _strong_step_failure(
+        "strong induction",
+        "(>[w1,w2](in3[w1,w2,v2,+])(>[]!(=[w1,v2])(>[](in[v1,N])"
+        "(>[](in[w1,N])(>[](coprime[N,i0,s,*,v1,w1])(bez1[N,+,*,i1,v1,w1]))))))")
+
+
+@register
+def test_recursion_weak_rejects_strong_hypothesis():
+    """A strong hypothesis under the weak label fails."""
+    _strong_step_failure(
+        "induction",
+        "(>[w1,w2](in3[w1,w2,v2,+])(>[]!(=[w1,v2])(>[w3](in[w3,N])"
+        "(>[](in[w1,N])(>[](coprime[N,i0,s,*,w3,w1])(bez1[N,+,*,i1,w3,w1]))))))")
+
+# Twin premises (D-587): prime factor sequences
+# with lengths v1 and v4, processed form.
+_TWIN_PREFIX = (
+    "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+    "(>[v1,v2,v3](primeFactorSeq[N,s,+,*,i0,i1,i2,v1,v2,v3])")
+
+
+def _twin_partner(theorem, ind_var, digits):
+    premises, head = disintegrate_implication_full(theorem)
+    return _twin_induction_partner(list(premises), head, ind_var, digits)
+
+
+@register
+def test_twin_partner_needs_symmetry():
+    """An asymmetric head (v1 <= v4) changes under the premise exchange: no
+    partner."""
+    theorem = (_TWIN_PREFIX + "(>[v4,v5](primeFactorSeq[N,s,+,*,i0,i1,i2,v4,v5,v3])"
+               "(preorder[N,+,v1,v4]))))")
+    assert _twin_partner(theorem, "v1", {"v1", "v4"}) is None
+
+
+@register
+def test_twin_partner_needs_distinct_digit_in_second_twin():
+    """The equal-length form holds v1 in both twins: no partner."""
+    theorem = (_TWIN_PREFIX + "(>[v4](primeFactorSeq[N,s,+,*,i0,i1,i2,v1,v4,v3])"
+               "(=[v2,v4]))))")
+    assert _twin_partner(theorem, "v1", {"v1"}) is None
+
+
+@register
+def test_twin_partner_only_for_the_first_twin():
+    """The second twin's variable has no partner: the induction runs on the
+    first twin's variable."""
+    theorem = (_TWIN_PREFIX + "(>[v4,v5](primeFactorSeq[N,s,+,*,i0,i1,i2,v4,v5,v3])"
+               "(=[v2,v5]))))")
+    assert _twin_partner(theorem, "v4", {"v1", "v4"}) is None
+
+
+@register
+def test_recursion_twin_rejects_fixed_partner():
+    """Under the twin rule the weak hypothesis leaves the partner v3
+    universal: today's fixed-partner form fails."""
+    state = make_state_with_binaries(("FTA",))
+    theorem = ("(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+               "(>[v1,v2](in2[v1,v2,s])(>[v3](in2[v3,v2,s])(=[v1,v3]))))")
+    set_chapter_context(state, thm=(theorem, "induction", "v1"),
+                        chapter_type="check_induction_condition")
+    seed = make_proof_line("(in2[rec,v1,s])", "main", "recursion")
+    line = make_proof_line(
+        "(>[w1](in2[rec,w1,s])(>[](in2[v3,w1,s])(=[rec,v3])))",
+        "main", "recursion")
+    assert_failure(check_recursion, line, [seed, line], state)
+
+
+@register
+def test_recursion_twin_rejects_unbound_partner_in_one_premise():
+    """The twin partner v4 occurs in its own premise only; a weak hypothesis
+    that leaves it free fails: the hypothesis is universal in the partner
+    (D-587)."""
+    state = make_state_with_binaries(("FTA",))
+    theorem = ("(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+               "(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v4,v5,v3,+])(=[v2,v5]))))")
+    set_chapter_context(state, thm=(theorem, "induction", "v1"),
+                        chapter_type="check_induction_condition")
+    seed = make_proof_line("(in2[rec,v1,s])", "main", "recursion")
+    line = make_proof_line(
+        "(>[w1](in3[rec,v2,w1,+])(>[](in3[v4,v5,w1,+])(=[v2,v5])))",
+        "main", "recursion")
+    assert_failure(check_recursion, line, [seed, line], state)
+
 
 @register
 def test_recursion_namespace_not_main():

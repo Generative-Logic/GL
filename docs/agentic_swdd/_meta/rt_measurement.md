@@ -22,7 +22,7 @@ and a commercial license — see https://generative-logic.com/license.
 ## Purpose
 
 Some LBs spend effectively forever inside a single hash burst — one call of
-`prover.cpp` / `ExpressionAnalyzer::performElemPhase3` (or a call in either earlier phase). We cannot
+`prover.cpp` / `Prover::performElemPhase3` (or a call in either earlier phase). We cannot
 wait for the call to return to find out which LB is the offender and where
 inside it the time goes. The infrastructure here lets a human, while the
 run is still in progress, `ls .rt/` and immediately see (a) the list of
@@ -65,19 +65,23 @@ Follow the [runtime investigation playbook](rt_investigation_playbook.md) for re
 The switch and `RTMeasurementParameters` entries live in
 [`parameters.hpp`](../../../GL_Quick_VS/GL_Quick/src/parameters.hpp) so they are
 selected at compile time. Releases ship the layer off; a runtime investigation
-switches it on (`1`) with the five-second trigger below.
+switches it on (`1`). The checked-in trigger is `360000` seconds, so no
+per-call `.rt/<chain>.log` snapshot is written: the aggregate,
+`.rt/burst_phases.log` and the chain-selected `GL_RT_AUDIT_CHAIN` audit carry
+the measurements. Lower the trigger only to watch one long call live (see
+*Probing with a low trigger* below).
 
 ```cpp
 #define RT_MEASUREMENT 0                                  // master gate
-static constexpr int RT_TIME_TRIGGER_SECONDS = 5;       // dump threshold
+static constexpr int RT_TIME_TRIGGER_SECONDS = 360000;  // dump threshold (per-call snapshots effectively off)
 static constexpr int RT_MIN_PERCENTAGE       = 0;         // table filter (0 = every row)
 static constexpr int RT_MAX_SECTIONS         = 4096;      // per-call row storage (heap block per tracker)
 ```
 
 | Symbol | Type | Current setting | What it controls |
 |---|---|---|---|
-| `RT_MEASUREMENT` | preprocessor macro | `1` | Master gate. `0` removes every `RT_SCOPE` call site at compile time; `1` activates them. Matches the `GL_DISINT_PROFILE` convention in [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp). |
-| `RT_TIME_TRIGGER_SECONDS` | `static constexpr int` | `5` | A `.rt/<chain>.log` file is written only after the current phase-helper call has been running this many wall-clock seconds without returning. Calls that complete under the threshold leave no artefact. |
+| `RT_MEASUREMENT` | preprocessor macro | `0` (releases; a runtime investigation sets `1`) | Master gate. `0` removes every `RT_SCOPE` call site at compile time; `1` activates them. Matches the `GL_DISINT_PROFILE` convention in [`compiler.hpp`](../../../GL_Quick_VS/GL_Quick/src/compiler.hpp). |
+| `RT_TIME_TRIGGER_SECONDS` | `static constexpr int` | `360000` | A `.rt/<chain>.log` file is written only after the current phase-helper call has been running this many wall-clock seconds without returning. Calls that complete under the threshold leave no artefact. |
 | `RT_MIN_PERCENTAGE` | `static constexpr int` | `0` | Sections whose self-time share is below this percentage of total elapsed are folded into a single trailing "(other sections each < N % of total)" line instead of appearing as their own row. `0` shows every row. |
 | `RT_MAX_SECTIONS` | `static constexpr int` | `4096` | Capacity of the tracker's per-call `Section[]` row storage (one heap block per tracker, allocated in the constructor — a cold per-burst allocation, never on the per-scope path). |
 
@@ -159,6 +163,15 @@ the sacred matcher to select blocks and writes its section records to
 require explicit user consent. Runtime observation does not authorize changes
 to proof behavior.
 
+Every EXIT frame ends with the `phase2.statementUpload` section (added on the
+maintainer's request, 2026-10-05): for each GPU projection of the target block
+since the previous EXIT, the rows sent to the device (`sent [index] text |
+v=scope`) and the premise-core rows the premise patterns held back
+(`withheld...`), with per-upload counts. `Phase2ProjectionArena::appendLogicalBlock`
+reports them through `hashburst_dump::recordPhase2Upload` once the upload slice
+is final; `hashburst_dump::writePhase2Uploads` writes and empties the buffer. A
+processor-route burst writes the zero-count header.
+
 `GL_RT_AUDIT_CHAIN` selects one block for the same per-call section audit
 without the dump, a rebuild or a temporary matcher: its value is the block's
 complete chain, either as `[RT-LB]` rows print it (leaf to root, ` <- `
@@ -186,7 +199,7 @@ Two cooperating types in `namespace gl::rt_tracker`:
  display-threshold defaults, and a test-only one that takes both
  values explicitly so unit tests in `src/tests/test_rt_tracker.cpp`
  can exercise the trigger logic in milliseconds rather than waiting
- the production five-second threshold.
+ the configured production threshold.
 - **`RTScope`** — RAII helper. Constructor calls
  `RTTracker::openSection_(label)`, destructor calls
  `RTTracker::closeSection_(index)`. Non-copyable. Holds only a
@@ -339,7 +352,7 @@ loop with `RT_NOTE_ITERATIONS_HERE`), which resolve the active tracker from the
 thread-local `g_currentThreadTracker`.
 
 Canonical comparison coverage includes two whole-function scopes in
-`prover.hpp`: `CANONICAL_MATCH_QUERY` surrounds `matchingCanonicalTemplates`
+`logical_block/canonical_template_matcher.hpp`: `CANONICAL_MATCH_QUERY` surrounds `matchingCanonicalTemplates`
 from entry through every return, and `CANONICAL_MATCH_INDEX_SYNC` surrounds
 `ensureCanonicalTemplateIndex`. `CANONICAL_MATCH_REBUILD` measures only each
 projection-rebuild iteration inside the query; it does not cover its enclosing
@@ -419,7 +432,8 @@ scopes, grouped by owner:
  `SP_ENRICH_RECURSION_PRODUCTS`, `SP_CLEANUP_EXPRESSIONS`,
  `SP_DISCHARGE_CONTRADICTION`, `SP_DISCHARGE_TOBEPROVED`,
  `SP_DISCHARGE_CONTRA_SCOPES`, `SP_FILL_MAILOUT`,
- `SP_CLEAR_CHANGED_CLASSES`.
+ `SP_CLEAR_CHANGED_CLASSES`, `SP_USEFULNESS_TEST` (a weak step block's
+ induction usefulness test, D-521).
 - **Deposit door (`addExprToMemoryBlock`):** `DOOR_ADD_EXPR` (self-time =
  gates + glue) with children `DOOR_CANONICALIZE` (pre-existing),
  `DOOR_GOAL_CHECK_NECESSITY`, `DOOR_PREPARE_INTEGRATION`,
@@ -439,8 +453,10 @@ scopes, grouped by owner:
  `HOOK_CANONICALIZE`, `HOOK_REMOVE_EXPANSION`, `HOOK_EXPAND_CANONICAL`,
  `HOOK_EXPAND_UNCHANGED`, with `RCE_REMOVE_RULES` / `RCE_EXPANDED_ERASE`
  under the removal and `FINISH_EXPANDED_ERASE` at the apply's end; inside
- the rejected-ordis hook's un-know `RESET_LEVELS_ERASE`,
- `RESET_KNOWN_ERASE`, `RESET_VECTOR_SCANS`; the statement batch
+ the rejected-ordis hook's un-know `RESET_RESENT_REGISTRIES` (one per
+ reset, with `RESET_LEVELS_ERASE` and `RESET_KNOWN_ERASE`) and
+ `RESET_VECTOR_SCANS` (one statement-list sweep per hook call,
+ `eraseResentRows`); the statement batch
  `AEC_BATCH_TABLE` (once per apply), `AEC_BATCH_SCAN`,
  `AEC_BATCH_CLOSURE`, `AEC_BATCH_DRAIN` (with `AEC_BATCH_ORDIS` nested
  under it), and the per-row `AEC_NEGEQ_EXPANSION`.
@@ -634,7 +650,7 @@ scopes observe the existing phase paths without changing proof decisions.
 to capture shorter LBs (e.g. 5 seconds):
 
 ```cpp
-static constexpr int RT_TIME_TRIGGER_SECONDS = 5;         // was 120
+static constexpr int RT_TIME_TRIGGER_SECONDS = 5;         // checked in: 360000
 ```
 
 Then rebuild and re-run. Every LB whose `performElem2` call (its hashburst)
@@ -669,7 +685,7 @@ wipes the folder; sibling `gl_quick.exe` invocations within the same
 
 `GL_PHASE2_RT=1` enables the separate, permanent NVTX observation layer in `infra/phase2_trace.hpp` / `Phase2TraceScope`. Absent or `0` disables it; other values assert. The process setting is immutable after first use. Stack-owned scopes maintain thread-local nesting, close at existing boundaries, and add no CUDA synchronization, proof-state mutation, interner mint or capacity change. The existing `RTTracker`, aggregate and sacred dump are untouched.
 
-The batch range uses the actual executable batch argument; unit tests return before that range. `ExpressionAnalyzer::proveKernel` assigns one observation-only call number, brackets the complete Phase 2 window, and nests pass/chunk ranges. Worker/task and `performElemPhase2` finalization ranges preserve separate thread timelines. CUDA ranges cover projection upload, filter/sort, generation, ordering, owner/value evaluation, firing bounds/materialization and output columns. Growth has nested registered-host-page, counter-read/reset, request-flush, completed-level, retained-frontier, prefix preparation/selection, frontier-page, prefix-window, candidate-window and survivor-window ranges. `Phase2SealingArena` brackets the full stream, request drains and download/sealing. CUDA builds retain line information for profiler source correlation while preserving optimization.
+The batch range uses the actual executable batch argument; unit tests return before that range. `Prover::proveKernel` assigns one observation-only call number, brackets the complete Phase 2 window, and nests pass/chunk ranges. Worker/task and `performElemPhase2` finalization ranges preserve separate thread timelines. CUDA ranges cover projection upload, filter/sort, generation, ordering, owner/value evaluation, firing bounds/materialization and output columns. Growth has nested registered-host-page, counter-read/reset, request-flush, completed-level, retained-frontier, prefix preparation/selection, frontier-page, prefix-window, candidate-window and survivor-window ranges. `Phase2SealingArena` brackets the full stream, request drains and download/sealing. CUDA builds retain line information for profiler source correlation while preserving optimization.
 
 The permanent diagnostics stream contains `[PHASE2-IDENTITY]`, `[PHASE2-LB]`, `[PHASE2-TASK]`, `[PHASE2-GPU-TASK]`, `[PHASE2-GPU-REQUEST-KIND]` and `[PHASE2-TASK-WORK]` only when enabled. Identity is process + call + pass + chunk + task; the call's LB ordinal resolves to its full chain through the root. GPU task records include native LB identity, stump ordinal/total, stump count and request-batch span. Request-kind numbers are the `DeviceRequestBatchKind` enum; memory numbers are `DeviceHashMemoryKind`. Final task and LB work use the existing deterministic subkey count, with unthresholded `[PHASE2-LB-WORK]` totals for every active block. Prefix execution windows are annotated `GL.Phase2.LBWindow` only after every resident host frontier node maps to the same GPU LB; other windows use `GL.Phase2.MixedLBWindow`. GPU growth time can then be attributed for homogeneous windows. Nested request drains and flushes are excluded because they can process requests accumulated from earlier LBs; mixed windows and global operations also remain shared cost. The analysis publishes the measured attribution fraction. Finalization ranges retain their native LB ordinal. These records do not read proof history or select execution.
 

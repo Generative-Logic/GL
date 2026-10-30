@@ -33,6 +33,7 @@
 #include <numeric>
 #include <cassert>
 #include <chrono>
+#include <deque>
 #include <regex>
 #include <sstream>
 #include <iterator>
@@ -1069,6 +1070,7 @@ void Conjecturer::buildNameMap() {
 void Conjecturer::buildIntExprConfigs() {
     // Size to cover all nameIds
     intExprConfigs_.resize(nameMap_.nextId);
+    const std::string& anchorHandle = config_.data.at(config_.getAnchorName()).handle;
     for (auto& [name, desc] : config_.data) {
         int16_t nid = nameMap_.lookup(name);
         if (nid == 0 || nid >= (int16_t)intExprConfigs_.size()) continue;
@@ -1086,6 +1088,26 @@ void Conjecturer::buildIntExprConfigs() {
         ic.numOutputArgs = (int16_t)desc.indices_output_args.size();
         for (int i = 0; i < ic.numOutputArgs && i < 4; ++i)
             ic.indicesOutputArgs[i] = (int16_t)desc.indices_output_args[i];
+
+        // Per-position definition sets and the anchor-pin condition, as
+        // reshuffleInt reads them (findArgMap looks positions up by the
+        // key "i + 1"; reshuffle pins the leaf whose text has the handle).
+        for (int i = 0; i < 16; ++i) {
+            const auto dsIt = desc.definition_sets.find(std::to_string(i + 1));
+            if (dsIt == desc.definition_sets.end()) continue;
+            const int16_t dsId = nameMap_.lookup(std::get<0>(dsIt->second));
+            assert(dsId > 0 && dsId < 256
+                   && "definition-set texts are registered and fit the int-path count tables");
+            ic.positionPresent = (uint16_t)(ic.positionPresent | (1u << i));
+            ic.positionDefSetId[i] = dsId;
+            ic.positionCombinable[i] = std::get<1>(dsIt->second) ? 1 : 0;
+            ic.positionConnectable[i] = std::get<2>(dsIt->second) ? 1 : 0;
+        }
+        for (auto& [key, tpl] : desc.definition_sets) {
+            const bool isPosition = !key.empty() && std::all_of(key.begin(), key.end(), ::isdigit);
+            if (!isPosition) ic.positionKeysOnly = false;
+        }
+        ic.leafHasAnchorHandle = ("(" + name + "[").find(anchorHandle) != std::string::npos;
     }
 
     // Build defSetId-indexed config param limit arrays
@@ -5091,6 +5113,310 @@ Conjecturer::reshuffle(const std::string& expr, bool deep) const {
     return {minReshuffled, minArgMap, minReplacementMap};
 }
 
+/// @brief Integer-path twin of `reshuffle(decodeExpr(expr), true)` for
+///        the plain connected chains a worker builds.
+///
+/// @details
+/// Reproduces the string reshuffle without building a string per step:
+/// the permutation table `allPermutations_[chainLen]` in its order; the
+/// anchor pin (only permutations whose first entry is the first premise
+/// whose `(name[` contains the anchor handle); each bound variable at the
+/// first permuted level whose leaf uses it, in that leaf's
+/// first-occurrence order (`ce::orderByPattern`); first-occurrence
+/// renaming over the permuted leaves and then the head; each candidate
+/// rendered to bytes and the lexicographically smallest kept, the first
+/// winning ties. The definition-set map follows `findArgMap` on the
+/// input chain — a deeper part overrides an outer leaf, a later position
+/// overrides an earlier one, each level removes its bound variables —
+/// re-keyed by the winner's renaming and ordered by the decimal text of
+/// the keys, as `encodeDefSetMap` iterates the string map. The input has
+/// no negation and no existence head (`connectExpressionsInt` output), so
+/// the existence pinning of the string reshuffle never applies. See
+/// D-526.
+///
+/// @param expr Connected chain in block encoding.
+/// @param out  Receives the canonical text, its block encoding, its
+///             definition-set map and its `(>[` count.
+/// @return None.
+/// @invariant `out.text` equals the string reshuffle's canonical form,
+///            `out.buf == encodeExpr(out.text)`, and `out.defSets` equals
+///            `encodeDefSetMap` of its definition-set map.
+/// @see reshuffle
+void Conjecturer::reshuffleInt(const IntConjBuf& expr, IntReshuffle& out) const {
+    // Blocks of the chain: [boundCount, bv..., nameId, arity, arg...];
+    // the last block is the head.
+    struct Block {
+        int16_t boundCount;
+        const int16_t* bvs;
+        int16_t nameId;
+        int16_t arity;
+        const int16_t* args;
+    };
+    Block blocks[MAX_CONJ_ARGS];
+    int numBlocks = 0;
+    int pos = 0;
+    while (pos < expr.len) {
+        assert(numBlocks < MAX_CONJ_ARGS && "reshuffleInt: chain longer than MAX_CONJ_ARGS blocks");
+        Block& b = blocks[numBlocks++];
+        b.boundCount = expr.data[pos++];
+        b.bvs = expr.data + pos;
+        pos += b.boundCount;
+        b.nameId = expr.data[pos++];
+        b.arity = expr.data[pos++];
+        b.args = expr.data + pos;
+        pos += b.arity;
+    }
+    assert(pos == expr.len && "reshuffleInt: malformed block encoding");
+    const int chainLen = numBlocks - 1;
+    assert(chainLen >= 1 && "reshuffleInt: a connected chain has a premise and a head");
+    const Block& head = blocks[chainLen];
+    assert(head.boundCount == 0 && "reshuffleInt: the head block binds nothing");
+
+    // Argument values index the tables below.
+    constexpr int kMaxValue = 256;
+    bool isBound[kMaxValue] = {};
+    bool seenValue[kMaxValue] = {};
+    int16_t values[kMaxValue];
+    int numValues = 0;
+    for (int i = 0; i < numBlocks; ++i) {
+        const Block& b = blocks[i];
+        assert(b.nameId > 0 && b.nameId < (int16_t)intExprConfigs_.size());
+        const IntExprConfig& cfg = intExprConfigs_[b.nameId];
+        assert(cfg.nameId == b.nameId && "reshuffleInt: leaf name is not a configured expression");
+        assert(cfg.positionKeysOnly && "reshuffleInt: a definition_sets key that is not a position");
+        assert(b.arity >= 0 && b.arity <= 16);
+        for (int a = 0; a < b.arity; ++a) {
+            assert(((cfg.positionPresent >> a) & 1u) && "reshuffleInt: argument position without a definition set");
+        }
+        for (int k = 0; k < b.boundCount; ++k) {
+            const int16_t v = b.bvs[k];
+            assert(v >= 0 && v < kMaxValue);
+            isBound[v] = true;
+        }
+        for (int a = 0; a < b.arity; ++a) {
+            const int16_t v = b.args[a];
+            assert(v >= 0 && v < kMaxValue);
+            if (!seenValue[v]) {
+                seenValue[v] = true;
+                values[numValues++] = v;
+            }
+        }
+    }
+
+    // Definition-set map of the input chain (findArgMap): built from the
+    // head outwards, so a value already present was defined deeper in the
+    // chain or at a later position of the same leaf and keeps that record.
+    bool inMap[kMaxValue] = {};
+    int16_t mapDefSet[kMaxValue];
+    int16_t mapCombinable[kMaxValue];
+    int16_t mapConnectable[kMaxValue];
+    auto addLeaf = [&](const Block& leaf) {
+        const IntExprConfig& cfg = intExprConfigs_[leaf.nameId];
+        for (int a = leaf.arity - 1; a >= 0; --a) {
+            const int16_t v = leaf.args[a];
+            if (!inMap[v]) {
+                inMap[v] = true;
+                mapDefSet[v] = cfg.positionDefSetId[a];
+                mapCombinable[v] = cfg.positionCombinable[a];
+                mapConnectable[v] = cfg.positionConnectable[a];
+            }
+        }
+    };
+    addLeaf(head);
+    for (int k = chainLen - 1; k >= 0; --k) {
+        addLeaf(blocks[k]);
+        for (int j = 0; j < blocks[k].boundCount; ++j) inMap[blocks[k].bvs[j]] = false;
+    }
+
+    const auto permIt = allPermutations_.find(chainLen);
+    assert(permIt != allPermutations_.end() && "reshuffleInt: no permutation table for this chain length");
+
+    int anchorChainIdx = -1;
+    for (int i = 0; i < chainLen; ++i) {
+        if (intExprConfigs_[blocks[i].nameId].leafHasAnchorHandle) {
+            anchorChainIdx = i;
+            break;
+        }
+    }
+
+    // Layout of one permutation: the bound variables of each level and the
+    // renaming. Stamps mark the entries written for the current layout.
+    int16_t levelBv[MAX_CONJ_ARGS][MAX_CONJ_ARGS];
+    int16_t levelBvCount[MAX_CONJ_ARGS];
+    int16_t renameOf[kMaxValue];
+    int32_t placedStamp[kMaxValue] = {};
+    int32_t renameStamp[kMaxValue] = {};
+    int32_t stamp = 0;
+    auto layout = [&](const std::vector<int>& permutation) {
+        ++stamp;
+        for (int ind = 0; ind < chainLen; ++ind) {
+            const Block& leaf = blocks[permutation[ind]];
+            levelBvCount[ind] = 0;
+            for (int a = 0; a < leaf.arity; ++a) {
+                const int16_t v = leaf.args[a];
+                if (isBound[v] && placedStamp[v] != stamp) {
+                    placedStamp[v] = stamp;
+                    levelBv[ind][levelBvCount[ind]++] = v;
+                }
+            }
+        }
+        int16_t nextId = 1;
+        auto renameLeaf = [&](const Block& leaf) {
+            for (int a = 0; a < leaf.arity; ++a) {
+                const int16_t v = leaf.args[a];
+                if (renameStamp[v] != stamp) {
+                    renameStamp[v] = stamp;
+                    renameOf[v] = nextId++;
+                }
+            }
+        };
+        for (int ind = 0; ind < chainLen; ++ind) renameLeaf(blocks[permutation[ind]]);
+        renameLeaf(head);
+    };
+    // A value without a renaming keeps its own number (the string path
+    // emits such a token verbatim).
+    auto renamed = [&](int16_t v) -> int16_t {
+        return renameStamp[v] == stamp ? renameOf[v] : v;
+    };
+    auto writeDecimal = [](int v, char* digits) -> int {
+        assert(v >= 0);
+        char reversed[8];
+        int n = 0;
+        do {
+            reversed[n++] = char('0' + v % 10);
+            v /= 10;
+        } while (v > 0);
+        for (int i = 0; i < n; ++i) digits[i] = reversed[n - 1 - i];
+        return n;
+    };
+    auto render = [&](const std::vector<int>& permutation, char* text) -> int {
+        int len = 0;
+        auto put = [&](char c) {
+            assert(len < MAX_CONJ_TEXT && "reshuffleInt: rendered conjecture exceeds MAX_CONJ_TEXT");
+            text[len++] = c;
+        };
+        auto putValue = [&](int16_t v) {
+            char digits[8];
+            const int n = writeDecimal(v, digits);
+            for (int i = 0; i < n; ++i) put(digits[i]);
+        };
+        auto putLeaf = [&](const Block& leaf) {
+            put('(');
+            for (char c : nameMap_.decode(leaf.nameId)) put(c);
+            put('[');
+            for (int a = 0; a < leaf.arity; ++a) {
+                if (a > 0) put(',');
+                putValue(renamed(leaf.args[a]));
+            }
+            put(']');
+            put(')');
+        };
+        for (int ind = 0; ind < chainLen; ++ind) {
+            put('(');
+            put('>');
+            put('[');
+            for (int k = 0; k < levelBvCount[ind]; ++k) {
+                if (k > 0) put(',');
+                putValue(renamed(levelBv[ind][k]));
+            }
+            put(']');
+            putLeaf(blocks[permutation[ind]]);
+        }
+        putLeaf(head);
+        for (int i = 0; i < chainLen; ++i) put(')');
+        return len;
+    };
+
+    // Keep the lexicographically smallest rendering; the first wins ties.
+    char candidate[MAX_CONJ_TEXT];
+    const std::vector<int>* winner = nullptr;
+    int winnerLen = 0;
+    for (const auto& permutation : permIt->second) {
+        if (anchorChainIdx >= 0 && permutation[0] != anchorChainIdx) continue;
+        layout(permutation);
+        const int len = render(permutation, candidate);
+        bool isNewMin = (winner == nullptr);
+        if (!isNewMin) {
+            const int common = len < winnerLen ? len : winnerLen;
+            const int cmp = common ? std::memcmp(candidate, out.text, (size_t)common) : 0;
+            isNewMin = cmp < 0 || (cmp == 0 && len < winnerLen);
+        }
+        if (isNewMin) {
+            std::memcpy(out.text, candidate, (size_t)len);
+            winnerLen = len;
+            winner = &permutation;
+        }
+    }
+    assert(winner != nullptr && "reshuffleInt: no permutation survived the anchor pin");
+    out.textLen = (int16_t)winnerLen;
+
+    int operatorCount = 0;
+    for (int i = 0; i + 2 < winnerLen; ++i) {
+        if (out.text[i] == '(' && out.text[i + 1] == '>' && out.text[i + 2] == '[') {
+            ++operatorCount;
+            i += 2;
+        }
+    }
+    out.operatorCount = (int16_t)operatorCount;
+
+    // Block encoding of the winner (encodeExpr of its text).
+    layout(*winner);
+    IntConjBuf& buf = out.buf;
+    buf.len = 0;
+    auto push = [&](int16_t word) {
+        assert(buf.len < MAX_CONJ_BUF && "reshuffleInt: canonical form exceeds MAX_CONJ_BUF");
+        buf.data[buf.len++] = word;
+    };
+    for (int ind = 0; ind < chainLen; ++ind) {
+        const Block& leaf = blocks[(*winner)[ind]];
+        push(levelBvCount[ind]);
+        for (int k = 0; k < levelBvCount[ind]; ++k) push(renamed(levelBv[ind][k]));
+        push(leaf.nameId);
+        push(leaf.arity);
+        for (int a = 0; a < leaf.arity; ++a) push(renamed(leaf.args[a]));
+    }
+    push(0);
+    push(head.nameId);
+    push(head.arity);
+    for (int a = 0; a < head.arity; ++a) push(renamed(head.args[a]));
+
+    // Definition-set map re-keyed by the winner's renaming, in the
+    // decimal-text order of the keys (the string map's iteration order).
+    struct Entry {
+        int16_t key;
+        int16_t defSetId;
+        int16_t combinable;
+        int16_t connectable;
+    };
+    Entry entries[MAX_CONJ_ARGS];
+    int numEntries = 0;
+    bool keyUsed[kMaxValue] = {};
+    for (int i = 0; i < numValues; ++i) {
+        const int16_t v = values[i];
+        if (!inMap[v]) continue;  // bound in the chain: not part of the map
+        const int16_t key = renamed(v);
+        assert(key >= 0 && key < kMaxValue && !keyUsed[key] && "reshuffleInt: renaming is not injective");
+        keyUsed[key] = true;
+        assert(numEntries < MAX_CONJ_ARGS);
+        entries[numEntries++] = {key, mapDefSet[v], mapCombinable[v], mapConnectable[v]};
+    }
+    std::sort(entries, entries + numEntries, [&](const Entry& x, const Entry& y) {
+        char dx[8], dy[8];
+        const int nx = writeDecimal(x.key, dx);
+        const int ny = writeDecimal(y.key, dy);
+        const int common = nx < ny ? nx : ny;
+        const int cmp = std::memcmp(dx, dy, (size_t)common);
+        return cmp < 0 || (cmp == 0 && nx < ny);
+    });
+    out.defSets.count = (int16_t)numEntries;
+    for (int i = 0; i < numEntries; ++i) {
+        out.defSets.argId[i] = entries[i].key;
+        out.defSets.defSetId[i] = entries[i].defSetId;
+        out.defSets.combinable[i] = entries[i].combinable;
+        out.defSets.connectable[i] = entries[i].connectable;
+    }
+}
+
 /// @brief Build the mirror variant of a reshuffled conjecture.
 ///
 /// @details
@@ -5263,6 +5589,26 @@ std::vector<std::string> Conjecturer::buildMirrorPairRows(
 // Int-path worker functions (Phase 5)
 // ============================================================================
 
+/// @brief Whether a connected (not yet anchored) expression becomes a
+///        growing theorem for the next round.
+///
+/// @details
+/// True when the expression combines fewer simple expressions than
+/// `max_number_simple_expressions` and its definition-set map has a
+/// numeric argument (`encodeDefSetMap` keeps exactly the numeric keys, so
+/// a non-empty encoded map is that condition). Both are properties of the
+/// expression alone: every arrival of an expression gets the same answer,
+/// so the workers drop the other connections and the main loop keeps the
+/// first arrival of each qualifying expression
+/// (D-525).
+///
+/// @param nse     Simple expressions combined in the expression.
+/// @param defSets Encoded definition-set map of the expression.
+/// @return `true` when the expression grows further.
+bool Conjecturer::qualifiesAsGrowingTheorem(int nse, const IntDefSetMap& defSets) const {
+    return nse < config_.parameters.max_number_simple_expressions && defSets.count > 0;
+}
+
 /// @brief Int-path worker driver — combine `intStatement` with
 ///        `intGrowingTheorem` and emit the per-candidate result
 ///        bundle.
@@ -5329,19 +5675,27 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
             if (!onlyInHeadGoodInt(outExpr)) continue;
             if (!prohibitedHeadsGoodInt(outExpr)) continue;
 
-            std::string connectedExpr = decodeExpr(outExpr);
-            auto [reshuffledExpr, reshuffledMap, repMap] = reshuffle(connectedExpr, true);
-            result.connected_list.push_back({reshuffledExpr, reshuffledMap});
+            // The first reshuffle runs on the integer form
+            // (D-526); only connections
+            // that grow further go back to the main loop
+            // (D-525).
+            IntReshuffle reshuffled;
+            reshuffleInt(outExpr, reshuffled);
+            if (qualifiesAsGrowingTheorem(nse, reshuffled.defSets)) {
+                result.growing_list.push_back({std::string(reshuffled.text, reshuffled.textLen),
+                                               reshuffled.buf, reshuffled.defSets});
+            }
 
-            int complexityLevel = countOperatorOccurrences(reshuffledExpr) + 1;
+            int complexityLevel = reshuffled.operatorCount + 1;
             int numCombinableArgs = 0;
-            for (auto& [arg, tpl] : reshuffledMap) if (std::get<1>(tpl)) numCombinableArgs++;
+            for (int i = 0; i < reshuffled.defSets.count; ++i)
+                if (reshuffled.defSets.combinable[i]) numCombinableArgs++;
 
-            if (checkDefSets(reshuffledMap) && numCombinableArgs <= config_.parameters.max_number_args_expr
-                && checkComplexityLevelForDefSets(reshuffledMap, complexityLevel)) {
+            if (checkDefSetsInt(reshuffled.defSets) && numCombinableArgs <= config_.parameters.max_number_args_expr
+                && checkComplexityLevelInt(reshuffled.defSets, complexityLevel)) {
 
-                IntConjBuf reshuffledInt = encodeExpr(reshuffledExpr);
-                IntDefSetMap reshuffledIntMap = encodeDefSetMap(reshuffledMap);
+                const IntConjBuf& reshuffledInt = reshuffled.buf;
+                const IntDefSetMap& reshuffledIntMap = reshuffled.defSets;
 
                 std::vector<IntConnMap> connMaps2;
                 makeAllConnectionMapsInt(reshuffledIntMap, anchorDefSetsInt_, true, mappingsMapAnchor_, connMaps2);
@@ -5590,7 +5944,10 @@ WorkerResult Conjecturer::singleThreadCalculation(
             if (!prohibitedHeadsGood(connectedExpr)) continue;
 
             auto [reshuffledExpr, reshuffledMap, repMap] = reshuffle(connectedExpr, true);
-            result.connected_list.push_back({reshuffledExpr, reshuffledMap});
+            const IntDefSetMap reshuffledDefSets = encodeDefSetMap(reshuffledMap);
+            if (qualifiesAsGrowingTheorem(nse, reshuffledDefSets)) {
+                result.growing_list.push_back({reshuffledExpr, encodeExpr(reshuffledExpr), reshuffledDefSets});
+            }
 
             int complexityLevel = countOperatorOccurrences(reshuffledExpr) + 1;
             int numCombinableArgs = 0;
@@ -6601,21 +6958,19 @@ void Conjecturer::run() {
         auto& desc = config_.data.at(ky);
         if (desc.max_count_per_conjecture > 0) exprList.push_back(desc.short_mpl_normalized);
     }
+    // One entry per growing theorem in growing-theorem order: the seed
+    // expressions, then every grown theorem as the main loop admits it.
+    // The deque keeps entries in place while the main loop appends.
     struct ExprLeafEntry {
-        DefSetMap defSets;
         int nse;
         IntConjBuf intBuf;
         IntDefSetMap intDefSets;
     };
-    std::map<std::string, ExprLeafEntry> exprLeafsArgsMap;
+    std::deque<ExprLeafEntry> growingEntries;
     for (auto& expr : exprList) {
-        std::string coreExpr = ce::extractExpression(expr);
-        ExprLeafEntry entry;
-        entry.defSets = config_.data.at(coreExpr).definition_sets;
-        entry.nse = 1;
-        entry.intBuf = encodeExpr(expr);
-        entry.intDefSets = encodeDefSetMap(entry.defSets);
-        exprLeafsArgsMap[expr] = std::move(entry);
+        const std::string coreExpr = ce::extractExpression(expr);
+        growingEntries.push_back({1, encodeExpr(expr),
+                                  encodeDefSetMap(config_.data.at(coreExpr).definition_sets)});
     }
 
     prof::g_phase_precomp.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -6629,8 +6984,8 @@ void Conjecturer::run() {
     // --- Preliminary pass: nse=1 ---
     auto _prel_t0 = std::chrono::steady_clock::now();
     if (config_.parameters.min_number_simple_expressions <= 1) {
-        for (auto& expr : exprList) {
-            auto& entry = exprLeafsArgsMap[expr];
+        for (int exprIndex = 0; exprIndex < (int)exprList.size(); ++exprIndex) {
+            const ExprLeafEntry& entry = growingEntries[exprIndex];
             auto workerResult = singleExprAnchorConnectionInt(entry.intBuf, entry.intDefSets);
 
             for (int i = 0; i < (int)workerResult.connected_list2.size(); ++i) {
@@ -6658,8 +7013,7 @@ void Conjecturer::run() {
 
     // --- Main combination loop ---
     auto _main_t0 = std::chrono::steady_clock::now();
-    std::vector<std::string> growingTheorems = exprList;
-    std::set<std::string> growingTheoremsSet(growingTheorems.begin(), growingTheorems.end());
+    std::unordered_set<std::string> growingTheoremsSet(exprList.begin(), exprList.end());
     std::vector<int> lastVisitedMap(exprList.size(), -1);
 
     int created = (config_.parameters.max_number_simple_expressions >= 2) ? 1 : 0;
@@ -6667,11 +7021,10 @@ void Conjecturer::run() {
     while (created) {
         created = 0;
         for (int exprIndex = 0; exprIndex < (int)exprList.size(); ++exprIndex) {
-            auto& statement = exprList[exprIndex];
-            auto& stmtEntry = exprLeafsArgsMap[statement];
+            const ExprLeafEntry& stmtEntry = growingEntries[exprIndex];
 
             int start = lastVisitedMap[exprIndex] + 1;
-            int end = (int)growingTheorems.size();
+            int end = (int)growingEntries.size();
             if (start >= end) continue;
 
             struct WorkInput {
@@ -6685,8 +7038,7 @@ void Conjecturer::run() {
 
             std::vector<WorkInput> inputs;
             for (int gti = start; gti < end; ++gti) {
-                auto& gt = growingTheorems[gti];
-                auto& gtEntry = exprLeafsArgsMap[gt];
+                const ExprLeafEntry& gtEntry = growingEntries[gti];
                 inputs.push_back({stmtEntry.nse, gtEntry.nse,
                                   &stmtEntry.intBuf, &gtEntry.intBuf,
                                   &stmtEntry.intDefSets, &gtEntry.intDefSets});
@@ -6721,27 +7073,12 @@ void Conjecturer::run() {
                 auto& res = results[ind];
                 int nse = inputs[ind].nseStatement + inputs[ind].nseGrowingTheorem;
 
-                for (auto& [connExpr, connMap] : res.connected_list) {
-                    if (exprLeafsArgsMap.find(connExpr) == exprLeafsArgsMap.end()) {
-                        ExprLeafEntry entry;
-                        entry.defSets = connMap;
-                        entry.nse = nse;
-                        entry.intBuf = encodeExpr(connExpr);
-                        entry.intDefSets = encodeDefSetMap(connMap);
-                        exprLeafsArgsMap[connExpr] = std::move(entry);
-                    }
-
-                    // Check if should be added to growing theorems
-                    std::set<std::string> nonDigits;
-                    for (auto& [arg, _] : connMap) {
-                        bool isDigit = !arg.empty() && std::all_of(arg.begin(), arg.end(), ::isdigit);
-                        if (isDigit) nonDigits.insert(arg);
-                    }
-                    if (growingTheoremsSet.find(connExpr) == growingTheoremsSet.end()
-                        && !nonDigits.empty()
-                        && nse < config_.parameters.max_number_simple_expressions) {
-                        growingTheorems.push_back(connExpr);
-                        growingTheoremsSet.insert(connExpr);
+                // The workers emit only connections that grow further
+                // (qualifiesAsGrowingTheorem, a property of the expression);
+                // the first arrival of each becomes a growing theorem.
+                for (auto& candidate : res.growing_list) {
+                    if (growingTheoremsSet.insert(std::move(candidate.expr)).second) {
+                        growingEntries.push_back({nse, candidate.intBuf, candidate.intDefSets});
                         created = 1;
                     }
                 }
@@ -6976,7 +7313,8 @@ void Conjecturer::run() {
 /// treats them via the `or disintegration` /
 /// `or convergence` tags. See SwDD chapter
 /// [`07_or_branching.md`](../../docs/agentic_swdd/20_core_concepts/07_or_branching.md)
-/// for downstream prover behaviour.
+/// for downstream prover behaviour. Both halves bind every anchor slot at
+/// the anchor premise (I-4).
 ///
 /// @return Pairs of `(existence_conjecture, companion_conjecture)`.
 std::vector<std::pair<std::string,std::string>> Conjecturer::generateOrConjectures() const {
@@ -7146,17 +7484,17 @@ std::vector<std::pair<std::string,std::string>> Conjecturer::generateOrConjectur
                 countArgs(existExprStr);                 // [m, n, 3] etc.
                 countArgs("(in[" + M + "," + S + "])");  // [m, S]
 
-                // Anchor args that also appear in body → outer binding
+                // Every anchor slot binds at the anchor premise, used in the
+                // body or not (I-4: a theorem leaves no variable unbound).
                 std::set<std::string> anchorArgSet;
                 for (int i = 1; i <= anchorArity; ++i) anchorArgSet.insert(std::to_string(i));
 
                 std::vector<std::string> outerBound;
                 std::vector<std::string> level1Bound;  // non-anchor, non-M vars (bind at in[n,S] level)
                 for (auto& [v, c] : varCount) {
-                    if (c <= 1) continue;
                     if (anchorArgSet.count(v)) {
                         outerBound.push_back(v);
-                    } else if (v != M) {
+                    } else if (c > 1 && v != M) {
                         // M is already bound inside innerQuant's >[M]
                         level1Bound.push_back(v);
                     }

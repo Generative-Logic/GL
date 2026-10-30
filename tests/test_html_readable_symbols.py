@@ -5,8 +5,8 @@
 # Contributions require CLA — see CONTRIBUTING.md.
 
 """Tests for the order-relation symbols of the HTML export's readable
-captions (``generate_full_proof_graph._apply_order_symbols`` and its use in
-``_htmlify_readable``)."""
+captions (``visu_helpers.ReadableForm``), and for the internal witness-name
+detector of ``generate_full_proof_graph``."""
 
 import os
 import sys
@@ -15,49 +15,49 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import generate_full_proof_graph as gen  # noqa: E402
+import visu_helpers  # noqa: E402
+
+
+def caption(expression: str, as_html: bool = False) -> str:
+    """Theorem caption of a one-premise chain or an atom."""
+    return visu_helpers.ReadableForm({}, {}).theorem(expression, as_html=as_html)
 
 
 class OrderSymbolTests(unittest.TestCase):
     """Every order shape of the shortcut corpus, positive and negated."""
 
     def test_natural_order_and_its_negation(self) -> None:
-        self.assertEqual(gen._apply_order_symbols("(preorder[N,+,1,v3])"), "1 ≤ v3")
-        self.assertEqual(gen._apply_order_symbols("!(preorder[N,+,v1,v2])"), "v1 ≰ v2")
+        self.assertEqual(caption("(preorder[N,+,i1,v3])"), "1 ≤ v₃")
+        self.assertEqual(caption("!(preorder[N,+,v1,v2])"), "v₁ ≰ v₂")
 
     def test_divisibility_and_its_negation(self) -> None:
-        self.assertEqual(gen._apply_order_symbols("(preorder[N,*,v1,v2])"), "v1 ∣ v2")
-        self.assertEqual(gen._apply_order_symbols("!(preorder[N,*,2,v2])"), "2 ∤ v2")
+        self.assertEqual(caption("(preorder[N,*,v1,v2])"), "v₁ ∣ v₂")
+        self.assertEqual(caption("!(preorder[N,*,i2,v2])"), "2 ∤ v₂")
 
     def test_strict_order_and_its_negation(self) -> None:
-        self.assertEqual(gen._apply_order_symbols("(strictOrder[N,+,v1,v2])"), "v1 < v2")
-        self.assertEqual(gen._apply_order_symbols("!(strictOrder[N,+,v1,v2])"), "v1 ≮ v2")
+        self.assertEqual(caption("(strictOrder[N,+,v1,v2])"), "v₁ < v₂")
+        self.assertEqual(caption("!(strictOrder[N,+,v1,v2])"), "v₁ ≮ v₂")
 
     def test_proper_divisor_has_no_single_glyph(self) -> None:
-        self.assertEqual(
-            gen._apply_order_symbols("(strictOrder[N,*,v1,v2])"),
-            "v1 ∣ v2, v1 ≠ v2")
-        self.assertEqual(
-            gen._apply_order_symbols("!(strictOrder[N,*,v1,v2])"),
-            "¬(v1 ∣ v2, v1 ≠ v2)")
+        self.assertEqual(caption("(strictOrder[N,*,v1,v2])"), "v₁ ∣ v₂ ∧ v₁ ≠ v₂")
+        self.assertEqual(caption("!(strictOrder[N,*,v1,v2])"), "¬(v₁ ∣ v₂ ∧ v₁ ≠ v₂)")
 
     def test_several_atoms_in_one_caption(self) -> None:
-        caption = "from (preorder[N,*,v1,v2]), !(strictOrder[N,+,v2,v3]) follows (preorder[N,+,v1,v3])"
         self.assertEqual(
-            gen._apply_order_symbols(caption),
-            "from v1 ∣ v2, v2 ≮ v3 follows v1 ≤ v3")
+            caption("(>[](preorder[N,*,v1,v2])(>[]!(strictOrder[N,+,v2,v3])(preorder[N,+,v1,v3])))"),
+            "from v₁ ∣ v₂, v₂ ≮ v₃ follows v₁ ≤ v₃")
 
     def test_unknown_operation_slot_asserts(self) -> None:
         with self.assertRaises(AssertionError):
-            gen._apply_order_symbols("(preorder[N,s,v1,v2])")
+            caption("(preorder[N,s,v1,v2])")
 
-    def test_htmlify_escapes_the_strict_order_sign(self) -> None:
-        html_text = gen._htmlify_readable("(strictOrder[N,+,v1,v2])")
-        self.assertIn("&lt;", html_text)
+    def test_html_escapes_the_strict_order_sign(self) -> None:
+        html_text = caption("(strictOrder[N,+,v1,v2])", as_html=True)
         self.assertNotIn("<sub>1</sub> < ", html_text)
         self.assertIn("v<sub>1</sub> &lt; v<sub>2</sub>", html_text)
 
-    def test_htmlify_keeps_divisibility_and_carrier_free(self) -> None:
-        html_text = gen._htmlify_readable("(preorder[N,*,v1,v2])")
+    def test_html_keeps_divisibility_and_carrier_free(self) -> None:
+        html_text = caption("(preorder[N,*,v1,v2])", as_html=True)
         self.assertIn("v<sub>1</sub> ∣ v<sub>2</sub>", html_text)
         self.assertNotIn("ℕ", html_text)
 

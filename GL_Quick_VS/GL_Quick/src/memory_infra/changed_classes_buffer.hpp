@@ -201,8 +201,8 @@ namespace gl {
         /// @brief Approximate live byte footprint across the three columns.
         /// @return Live bytes the buffer occupies on the arena.
         int64_t liveBytes() const {
-            return validityIds_.liveBytes() + blobStarts_.liveBytes()
-                + blobPool_.liveBytes();
+            return peak_snapshot::measure("validityIds_", validityIds_, [&] { return validityIds_.liveBytes(); }) + peak_snapshot::measure("blobStarts_", blobStarts_, [&] { return blobStarts_.liveBytes(); })
+                + peak_snapshot::measure("blobPool_", blobPool_, [&] { return blobPool_.liveBytes(); });
         }
 
         /// @brief Enumerate the deload facets at `base + 0..2` — the seam

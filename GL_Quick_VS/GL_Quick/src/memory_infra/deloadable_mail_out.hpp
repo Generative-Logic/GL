@@ -60,7 +60,8 @@ namespace gl {
     /// and blob bytes; statement-flag keys and values. The mailbox has no
     /// disintegration-signal column (internal-channel-only); the statement-flag
     /// side column carries the cross-LB per-statement flag (flag 5 = "external,
-    /// may be disintegrated", packed with the witness-generation stamp) keyed by
+    /// may be disintegrated", flag 6 = "unconditional ordis", packed with the
+    /// witness-generation stamp) keyed by
     /// the packed `(expression id, validity id)` pair — a side column, never
     /// part of the statement set key, so set identity and deposit ordering are
     /// untouched.
@@ -161,26 +162,25 @@ namespace gl {
         ///        write door (private-interner ids).
         ///
         /// @details On a hit the stored value is folded through
-        /// `mergeMailStatementFlag` (flag 5 wins, iterations min-merge over
+        /// `mergeMailStatementFlag` (a real flag wins, iterations min-merge over
         /// real generations) so repeated markings are order-free and
         /// deterministic; on a miss the packed value inserts directly. The
         /// caller interns `(original, validityName)` into `strings_` and packs
         /// the pair via `packOriginKey` (the `Memory::setMailOutStatementFlag`
         /// wrapper), matching the `ColdMail::setDisintegrationSignal`
         /// caller-packs convention. Absent key ⇒ flag none at the receiver.
+        /// The from-premise bit is sticky (D-522).
         ///
-        /// @param key       The packed `(expression id, validity id)` pair
-        ///                  (ids in `strings_`).
-        /// @param flagCode  The flag code (`kMailStatementFlag*`).
-        /// @param iteration The sender disintegration's witness-generation
-        ///                  stamp; -1 = none.
-        /// @param integrated The sender registered the statement as the head
-        ///                  of one of its integration rules' firings (default
-        ///                  false; D-444).
+        /// @param key         The packed `(expression id, validity id)` pair
+        ///                    (ids in `strings_`).
+        /// @param flagCode    The flag code (`kMailStatementFlag*`).
+        /// @param iteration   The sender disintegration's witness-generation
+        ///                    stamp; -1 = none.
+        /// @param fromPremise Whether the statement is a product of the
+        ///                    sender's forced disintegration.
         void setStatementFlag(int64_t key, int32_t flagCode,
-            int32_t iteration, bool integrated = false) {
-            const int32_t packed = packMailStatementFlag(flagCode, iteration,
-                integrated);
+            int32_t iteration, bool fromPremise = false) {
+            const int32_t packed = packMailStatementFlag(flagCode, iteration, fromPremise);
             const int32_t id = statementFlags_.lookup(key);
             if (id != 0) {
                 statementFlags_.upsert(key,
@@ -244,8 +244,8 @@ namespace gl {
         /// @brief Approximate live bytes in the private interner and columns.
         /// @return Sum of live bytes reported by all four cold stores.
         int64_t liveBytes() const {
-            return strings_.liveBytes() + statements_.liveBytes()
-                + origins_.liveBytes() + statementFlags_.liveBytes();
+            return peak_snapshot::measure("strings_", strings_, [&] { return strings_.liveBytes(); }) + peak_snapshot::measure("statements_", statements_, [&] { return statements_.liveBytes(); })
+                + peak_snapshot::measure("origins_", origins_, [&] { return origins_.liveBytes(); }) + peak_snapshot::measure("statementFlags_", statementFlags_, [&] { return statementFlags_.liveBytes(); });
         }
 
         /// @brief Enumerate the ten deload facets from a reserved base tag.

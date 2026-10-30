@@ -1,0 +1,10 @@
+(inSequence[N,v2,V1])	main	implication	(>[v3](in[v3,N])(>[](in2[v3,v2,V1])(inSequence[N,v2,V1])))	main	(in2[v1,v2,V1])	main	(in[v1,N])	main
+(>[v3](in[v3,N])(>[](in2[v3,v2,V1])(inSequence[N,v2,V1])))	main	expansion	(implication2667[N,v2,V1])	main
+(implication2667[N,v2,V1])	main	reformulation for integration >[bound]	!(>[v4](in[v4,N])!(in2[v4,v2,V1]))_integration_goal	main
+!(>[v4](in[v4,N])!(in2[v4,v2,V1]))_integration_goal	main	expansion for integration	(inSequence[N,v2,V1])_integration_goal	main
+(in[v1,N])	main	disintegration	(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V2])	main
+(interval[N,+,i0,v1,V2])	main	disintegration	!(>[V2](interval[N,+,i0,v1,V2])!(fXY[V1,V2,N]))	main
+!(>[V2](interval[N,+,i0,v1,V2])!(fXY[V1,V2,N]))	main	expansion	(sequence[N,+,i0,v1,V1])	main
+(in2[v1,v2,V1])	main	task formulation
+(sequence[N,+,i0,v1,V1])	main	task formulation

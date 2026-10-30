@@ -13,6 +13,7 @@ import re
 from itertools import permutations
 from pathlib import Path
 
+from .citation_policy import resolve_citation_source
 from .graph import (
     ORDINARY_SCOPE,
     INTEGRATION_GOAL_SCOPE,
@@ -26,6 +27,7 @@ from .graph import (
 )
 from .flat_integration import build_flat_integration_plan
 from .implication_composition import build_implication_composition_plan, validate_composition_scopes
+from .integration_compact import compact_rule_rows, is_introduction_compact_row
 from .mpl import (
     Atom,
     Conjunction,
@@ -45,6 +47,11 @@ from .types import EQUALITY, infer_expression_variables, load_type_environment
 # Element positions before the set position of the membership operators that
 # subset implications use (I-267).
 SUBSET_MEMBERSHIP_WIDTH = {"in": 1, "in2": 2, "in3": 3}
+
+# The alias a twin weak step block gives its twin partner's predecessor with
+# the variable copy `(=[q,rec2])`; like `<source>_copy` it is a second name of
+# one source (D-581).
+TWIN_PREDECESSOR_ALIAS = "rec2"
 
 
 def is_subset_implication(entry: dict[str, object]) -> bool:
@@ -92,6 +99,7 @@ ACTION_BY_TAG = {
     "compilation": "definition_compact",
     "contradiction": "ex_falso",
     "disintegration": "compound_project",
+    "definition projection": "definition_project",
     "equality1": "equality_substitute",
     "equality2": "equality_transitive",
     "expansion": "definition_expand",
@@ -193,70 +201,93 @@ def _scoped_expression_json(scoped_expression: ScopedExpression) -> dict[str, ob
     return encoded
 
 
-def _constructed_or_definition(theorem: TheoremRecord) -> dict[str, object]:
+def _or_construction_disjuncts(
+    theorem_expression: Expression, row: ProofRow
+) -> tuple[Atom, list[Expression], list[list[object]]]:
     """
-    @brief Reconstruct one post-prove OR operator from its two cited parents.
+    @brief Read a constructed OR theorem's disjuncts from its two cited parents.
     @details
-    The first parent has the form ``not D1 implies ... implies Dn`` after the
-    shared theorem premises, so the constructed head denotes the recorded
-    disjunction. The second parent must contain the same disjunct multiset in
-    a different checked order. This makes the generated definition a neutral
-    certificate fact derived from the processed row, never a backend guess or
-    a stale same-named GL-binary entry.
+    The first parent states ``not D1 implies ... implies Dn`` over the shared
+    theorem premises, so the constructed head denotes the recorded
+    disjunction in that construction order. A folded premise ``not Di`` may
+    stand before shared premises that bind variables it does not use; the
+    constructed theorem states every shared premise first. Each parent
+    premise is therefore either the theorem's next premise layer (binders
+    alpha-renamed, premise asserted identical) or a binder-free folded
+    premise. The second parent must contain the same disjunct multiset in a
+    different checked order.
 
     Disjuncts carry their true polarity and a NEGATED disjunct keeps its
-    negation in the elements. The parent premise for a disjunct ``D`` is
-    ``not D`` with double negation cancelled: a positive ``D`` appears as the
-    negation premise ``not D``, while a negated ``D = not X`` appears as the
-    PLAIN premise ``X``. Both parent walks therefore invert each premise with
-    the same cancellation instead of demanding a literal negation node — a
-    blind negation prefix would flip a negated disjunct's sign.
-    @param theorem Parsed theorem record whose method is ``or theorem``.
-    @return The exact constructed operator name, arguments, and canonical elements.
-    @invariant Every OR row has at least two distinct disjuncts and two equivalent parents.
+    negation. The parent premise for a disjunct ``D`` is ``not D`` with double
+    negation cancelled: a positive ``D`` appears as the negation premise
+    ``not D``, while a negated ``D = not X`` appears as the PLAIN premise
+    ``X``. Both parent walks therefore invert each premise with the same
+    cancellation instead of demanding a literal negation node — a blind
+    negation prefix would flip a negated disjunct's sign.
+    @param theorem_expression The constructed OR theorem.
+    @param row Its single ``or theorem`` row, citing the source parent first
+        and the companion second.
+    @return The theorem's OR atom; its disjuncts in construction order, in
+        the theorem's variable names; and the first parent's premise order
+        over the theorem body (after the anchor): ``["premise", k]`` for the
+        body's k-th premise layer, ``["case", k]`` for the negation of the
+        k-th construction disjunct.
+    @invariant Every OR row has at least two distinct disjuncts and two
+        equivalent parents.
     """
 
-    assert theorem.method == "or theorem"
-    assert len(theorem.chapters) == 1
-    chapter = theorem.chapters[0]
-    assert len(chapter.rows) == 1
-    row = chapter.rows[0]
     assert row.tag == "or theorem" and len(row.dependencies) == 2
 
     def align_parent(parent):
         """
-        @brief Align one OR parent theorem with the constructed theorem prefix.
-        @details Shared implication binders are alpha-renamed while all shared
-        premises are asserted identical.
+        @brief Align one OR parent theorem with the constructed theorem's premises.
+        @details A parent premise that matches the theorem's next premise
+        layer is shared: its binders are alpha-renamed and the premise is
+        asserted identical. Any other parent premise is a binder-free folded
+        premise of a disjunct, kept in chain order. Every theorem layer must
+        be matched.
         @param parent Parsed parent theorem expression.
-        @return Constructed OR atom, aligned parent tail, and binder renaming.
+        @return Constructed OR atom, the folded premises, the parent's final
+            head, the binder renaming, and the parent's premise order.
         """
 
-        target_cursor = theorem.expression
+        target_cursor = theorem_expression
         parent_cursor = parent
         renaming: dict[str, str] = {}
-        while isinstance(target_cursor, Implication):
-            assert isinstance(parent_cursor, Implication)
-            assert len(target_cursor.bound_variables) == len(
-                parent_cursor.bound_variables
-            )
-            for parent_name, target_name in zip(
-                parent_cursor.bound_variables,
-                target_cursor.bound_variables,
-                strict=True,
-            ):
-                existing = renaming.get(parent_name)
-                assert existing is None or existing == target_name
-                renaming[parent_name] = target_name
-            mapped_premise = map_arguments(
-                parent_cursor.premise,
-                lambda name: renaming.get(name, name),
-            )
-            assert mapped_premise == target_cursor.premise
-            target_cursor = target_cursor.conclusion
+        folded: list[Expression] = []
+        order: list[list[object]] = []
+        layer = 0
+        while isinstance(parent_cursor, Implication):
+            shared = False
+            if isinstance(target_cursor, Implication) and len(
+                target_cursor.bound_variables
+            ) == len(parent_cursor.bound_variables):
+                candidate = dict(renaming)
+                for parent_name, target_name in zip(
+                    parent_cursor.bound_variables,
+                    target_cursor.bound_variables,
+                    strict=True,
+                ):
+                    existing = candidate.get(parent_name)
+                    assert existing is None or existing == target_name
+                    candidate[parent_name] = target_name
+                mapped_premise = map_arguments(
+                    parent_cursor.premise,
+                    lambda name: candidate.get(name, name),
+                )
+                shared = mapped_premise == target_cursor.premise
+            if shared:
+                renaming = candidate
+                order.append(["premise", layer])
+                layer += 1
+                target_cursor = target_cursor.conclusion
+            else:
+                assert not parent_cursor.bound_variables
+                folded.append(parent_cursor.premise)
+                order.append(["case", len(folded)])
             parent_cursor = parent_cursor.conclusion
         assert isinstance(target_cursor, Atom) and target_cursor.head.startswith("or")
-        return target_cursor, parent_cursor, renaming
+        return target_cursor, folded, parent_cursor, renaming, order
 
     def negated_premise_to_disjunct(premise: Expression) -> Expression:
         """
@@ -272,33 +303,25 @@ def _constructed_or_definition(theorem: TheoremRecord) -> dict[str, object]:
             return premise.inner
         return Negation(premise)
 
-    or_atom, source_tail, source_renaming = align_parent(
+    or_atom, source_folded, source_head, source_renaming, source_order = align_parent(
         row.dependencies[0].expression
     )
-    disjuncts = []
-    while isinstance(source_tail, Implication):
-        assert not source_tail.bound_variables
-        disjuncts.append(negated_premise_to_disjunct(source_tail.premise))
-        source_tail = source_tail.conclusion
-    disjuncts.append(source_tail)
+    disjuncts = [negated_premise_to_disjunct(premise) for premise in source_folded]
+    disjuncts.append(source_head)
     assert len(disjuncts) >= 2, "constructed OR needs at least two disjuncts"
     mapped_disjuncts = [
         map_arguments(item, lambda name: source_renaming.get(name, name))
         for item in disjuncts
     ]
 
-    companion_atom, companion_tail, companion_renaming = align_parent(
+    companion_atom, companion_folded, companion_head, companion_renaming, _ = align_parent(
         row.dependencies[1].expression
     )
     assert companion_atom == or_atom
-    companion_disjuncts: list[Expression] = []
-    while isinstance(companion_tail, Implication):
-        assert not companion_tail.bound_variables
-        companion_disjuncts.append(
-            negated_premise_to_disjunct(companion_tail.premise)
-        )
-        companion_tail = companion_tail.conclusion
-    companion_disjuncts.append(companion_tail)
+    companion_disjuncts = [
+        negated_premise_to_disjunct(premise) for premise in companion_folded
+    ]
+    companion_disjuncts.append(companion_head)
     mapped_companion = [
         map_arguments(item, lambda name: companion_renaming.get(name, name))
         for item in companion_disjuncts
@@ -309,6 +332,94 @@ def _constructed_or_definition(theorem: TheoremRecord) -> dict[str, object]:
     assert len({to_mpl(item) for item in mapped_disjuncts}) == len(
         mapped_disjuncts
     )
+    # The anchor is the first shared layer; the replay works on the body.
+    assert source_order[0] == ["premise", 0]
+    body_order = [
+        [kind, index - 1] if kind == "premise" else [kind, index]
+        for kind, index in source_order[1:]
+    ]
+    return or_atom, mapped_disjuncts, body_order
+
+
+def _or_disjunct_positions(
+    definition: dict[str, object], or_atom: Atom, disjuncts: list[Expression]
+) -> list[int]:
+    """
+    @brief Place each construction disjunct of an OR theorem in its operator.
+    @details
+    One OR operator serves every disjunct order of its body (GL reuses the
+    operator of a canonical body), so an OR theorem may list its disjuncts in
+    another order than the operator stores them. The stored elements,
+    instantiated with the theorem's head arguments, must be exactly the
+    construction disjuncts in some order; the result names, per construction
+    disjunct, its stored position.
+    @param definition The operator: ``elements`` over ``u_<k>`` parameters in
+        stored order.
+    @param or_atom The theorem's OR atom; its arguments fill ``u_1``, ``u_2``, ...
+    @param disjuncts The construction disjuncts in the theorem's variable names.
+    @return Zero-based stored position of each construction disjunct.
+    @invariant The positions are a permutation of the stored positions.
+    """
+
+    parameters = {
+        f"u_{index + 1}": argument
+        for index, argument in enumerate(or_atom.arguments)
+    }
+    instances = [
+        to_mpl(map_arguments(parse_mpl(str(element)), lambda name: parameters.get(name, name)))
+        for element in definition["elements"]
+    ]
+    keys = [to_mpl(item) for item in disjuncts]
+    assert len(set(keys)) == len(keys) == len(instances), (
+        f"{or_atom.head}: the theorem's disjuncts do not match the operator's elements"
+    )
+    assert sorted(keys) == sorted(instances), (
+        f"{or_atom.head}: the theorem's disjuncts do not match the operator's elements"
+    )
+    return [instances.index(key) for key in keys]
+
+
+def _constructed_or_definition(
+    theorem: TheoremRecord, binary_entries: dict[str, dict[str, object]]
+) -> dict[str, object]:
+    """
+    @brief Reconstruct one post-prove OR operator from its OR theorem.
+    @details
+    An operator GL's binary holds keeps GL's stored element order and
+    signature: GL keys every OR by its canonical body, so the theorem may
+    state the disjunction in another order, and the theorem's disjuncts must
+    be the stored elements instantiated with its head arguments (asserted).
+    An operator the binary lacks (a shortcut-local head, a test fixture) is
+    defined by the theorem itself: its elements in construction order, its
+    head arguments in their first appearance in that order (asserted). The
+    result is a neutral certificate fact checked against the processed row,
+    never a backend guess.
+    @param theorem Parsed theorem record whose method is ``or theorem``.
+    @param binary_entries GL binary definitions of the source batch.
+    @return The operator name, the theorem's head arguments, and the elements.
+    @invariant Every OR row has at least two distinct disjuncts and two equivalent parents.
+    """
+
+    assert theorem.method == "or theorem"
+    assert len(theorem.chapters) == 1
+    chapter = theorem.chapters[0]
+    assert len(chapter.rows) == 1
+    or_atom, mapped_disjuncts, _ = _or_construction_disjuncts(
+        theorem.expression, chapter.rows[0]
+    )
+    stored = binary_entries.get(or_atom.head)
+    if stored is not None:
+        assert stored["category"] == "or"
+        _or_disjunct_positions(stored, or_atom, mapped_disjuncts)
+        return {
+            "head": or_atom.head,
+            "arity": len(or_atom.arguments),
+            "category": "or",
+            "elements": list(stored["elements"]),
+            "arguments": list(or_atom.arguments),
+            "signature": stored["signature"],
+            "definition_source": "or_theorem_action",
+        }
 
     ordered_arguments: list[str] = []
     for disjunct in mapped_disjuncts:
@@ -1064,10 +1175,19 @@ def _schema3_action_metadata(
     parent scope, with branch results belonging to that exact parent. OR
     integration proves a selected disjunct under the complements of its peers;
     its parent discharge introduces the compact OR without assuming that goal.
+    A subproof or a contradiction scope may be opened inside another such
+    scope or inside an OR case: its ``validity name`` discharge or closing
+    ``contradiction`` row sits at the scope that opened it, and its context
+    carries that parent's layers before its own, so parents are established
+    first. One worklist builds every context, subproofs and contradiction
+    scopes in depth order and then the OR contexts, and defers a context
+    whose parent is not built yet to a later round.
     A ``reformulated
     from`` row must cite one alpha-resolved theorem, end in a
     compiled existence definition, and carry constructive totality evidence
-    for its well-defined set or relation output.
+    for its well-defined set or relation output. An integration row that
+    states its compact is checked on the rule the compact stands for
+    (D-503).
     @param chapter Parsed processed-proof chapter.
     @param binary_entries Exact compiled definitions available to the certificate.
     @param theorem_references Alpha-keyed selected and imported theorem references.
@@ -1078,7 +1198,9 @@ def _schema3_action_metadata(
 
     metadata: dict[int, dict[str, object]] = {}
     premise_templates: dict[str, ScopedExpression] = {}
+    premise_template_namespaces: dict[str, str] = {}
     validity_rows: dict[str, ProofRow] = {}
+    compact_rules = compact_rule_rows(chapter, binary_entries)
 
     for row in chapter.rows:
         if row.tag == "premise element":
@@ -1088,17 +1210,133 @@ def _schema3_action_metadata(
             existing = premise_templates.get(row.namespace)
             assert existing is None or existing == dependency.scoped_expression
             premise_templates[row.namespace] = dependency.scoped_expression
+            existing_namespace = premise_template_namespaces.get(row.namespace)
+            assert existing_namespace is None or existing_namespace == dependency.namespace
+            premise_template_namespaces[row.namespace] = dependency.namespace
         elif row.tag == "validity name":
-            assert row.namespace == "main" and len(row.dependencies) == 1
+            assert len(row.dependencies) == 1
             boundary = row.dependencies[0].namespace
             assert boundary != "main" and boundary not in validity_rows
+            # A closed subproof's compact lands at the scope that opened it,
+            # its direct parent (I-332).
+            assert boundary.startswith(row.namespace + "_boundary_")
+            assert "_boundary_" not in boundary[len(row.namespace) + len("_boundary_"):]
             validity_rows[boundary] = row
 
     assert set(premise_templates) == set(validity_rows)
     scope_contexts: list[dict[str, object]] = []
-    for namespace in sorted(premise_templates):
+    context_by_namespace: dict[str, dict[str, object]] = {}
+
+    def under_parent(expression: Expression, parent: str) -> Expression:
+        """
+        @brief Prefix a scope template with the layers of the scope that opened it.
+        @details A scope opened at ``main`` keeps its template. A scope opened
+        inside an established context states that context's binders and
+        premises first, ancestor layers before child layers, as every scoped
+        proposition is rendered.
+        @param expression The scope's own template.
+        @param parent The namespace of the scope that opened it.
+        @return The template under the parent's complete layer chain.
+        """
+
+        if parent == "main":
+            return expression
+        assert parent in context_by_namespace, "scope parent is not established"
+        cursor = parse_mpl(str(context_by_namespace[parent]["template"]["mpl"]))
+        layers = []
+        while isinstance(cursor, Implication):
+            layers.append((cursor.bound_variables, cursor.premise))
+            cursor = cursor.conclusion
+        assert layers
+        for bound_variables, premise in reversed(layers):
+            expression = Implication(bound_variables, premise, expression)
+        return expression
+
+    contradiction_seeds: dict[str, ProofRow] = {}
+    known_scope_namespaces = set(premise_templates) | {row.namespace for row in chapter.rows if row.tag == "or disintegration"}
+    for row in chapter.rows:
+        if (
+            row.tag != "task formulation"
+            or row.namespace == "main"
+            or row.namespace in known_scope_namespaces
+        ):
+            continue
+        assert not row.dependencies
+        assert row.namespace not in contradiction_seeds
+        contradiction_seeds[row.namespace] = row
+
+    # Parents before children: the contradiction-scope demand opens a
+    # subproof and its reductio inside a contradiction scope.
+    build_order = sorted(
+        [(namespace.count("_boundary_"), 0, position, namespace)
+         for position, namespace in enumerate(sorted(premise_templates))]
+        + [(namespace.count("_boundary_"), 1, position, namespace)
+           for position, namespace in enumerate(contradiction_seeds)]
+    )
+    contradiction_assumptions: dict[str, ProofRow] = {}
+    or_branch_rows: dict[str, ProofRow] = {}
+    or_integration_rows: dict[str, ProofRow] = {}
+
+    def build_scope_context(kind: int, namespace: str) -> None:
+        """
+        @brief Establish the context of one subproof or contradiction scope.
+        @details The worklist below calls it once the context of the scope
+        that opened it is established.
+        @param kind 1 for a contradiction scope, 0 for an implication subproof.
+        @param namespace The scope's namespace.
+        @return Nothing; the context and its rows' metadata are recorded.
+        """
+        if kind == 1:
+            row = contradiction_seeds[namespace]
+            cut = namespace.rfind("_boundary_")
+            assert cut > 0
+            parent = namespace[:cut]
+            assert namespace[cut + len("_boundary_"):].startswith("contradiction_")
+            contradiction_rows = [
+                candidate
+                for candidate in chapter.rows
+                if (
+                    candidate.tag == "contradiction"
+                    and candidate.namespace == parent
+                    and any(
+                        dependency.namespace == namespace
+                        for dependency in candidate.dependencies
+                    )
+                )
+            ]
+            assert len(contradiction_rows) == 1
+            assert contradiction_rows[0].conclusion.expression == Negation(
+                row.conclusion.expression
+            )
+            template_expression = under_parent(Implication(
+                (),
+                row.conclusion.expression,
+                row.conclusion.expression,
+            ), parent)
+            template = ScopedExpression(
+                template_expression,
+                to_mpl(template_expression),
+                row.conclusion.proof_scope,
+            )
+            scope_context = {
+                "namespace": namespace,
+                "compact": _scoped_expression_json(row.conclusion),
+                "template": _scoped_expression_json(template),
+                "scope_kind": "contradiction_assumption",
+            }
+            if parent != "main":
+                scope_context["parent_namespace"] = parent
+            scope_contexts.append(scope_context)
+            context_by_namespace[namespace] = scope_context
+            metadata[row.source_line] = {"scope_namespace": namespace}
+            contradiction_assumptions[namespace] = row
+            return
+
         template = premise_templates[namespace]
         validity = validity_rows[namespace]
+        parent = validity.namespace
+        assert premise_template_namespaces[namespace] == parent, (
+            "subproof template is not cited at the scope that opened it")
         compact = validity.conclusion.expression
         assert isinstance(compact, Atom)
         assert compact.head in binary_entries
@@ -1125,13 +1363,23 @@ def _schema3_action_metadata(
             )
         ]
         assert len(matching_expansions) == 1
+        if parent != "main":
+            context_expression = under_parent(template.expression, parent)
+            template = ScopedExpression(
+                context_expression,
+                to_mpl(context_expression),
+                template.proof_scope,
+            )
         scope_context = {
             "namespace": namespace,
             "compact": _scoped_expression_json(validity.conclusion),
             "template": _scoped_expression_json(template),
             "definition_head": compact.head,
         }
+        if parent != "main":
+            scope_context["parent_namespace"] = parent
         scope_contexts.append(scope_context)
+        context_by_namespace[namespace] = scope_context
         metadata[validity.source_line] = {"scope_context": scope_context}
 
         for row in chapter.rows:
@@ -1140,65 +1388,14 @@ def _schema3_action_metadata(
             assert row.conclusion.expression in premises
             metadata[row.source_line] = {"scope_namespace": namespace}
 
-    contradiction_assumptions: dict[str, ProofRow] = {}
-    known_scope_namespaces = set(premise_templates) | {row.namespace for row in chapter.rows if row.tag == "or disintegration"}
-    for row in chapter.rows:
-        if (
-            row.tag != "task formulation"
-            or row.namespace == "main"
-            or row.namespace in known_scope_namespaces
-        ):
-            continue
-        assert row.namespace.startswith("main_boundary_contradiction_")
-        assert not row.dependencies
-        assert row.namespace not in contradiction_assumptions
-        contradiction_rows = [
-            candidate
-            for candidate in chapter.rows
-            if (
-                candidate.tag == "contradiction"
-                and candidate.namespace == "main"
-                and any(
-                    dependency.namespace == row.namespace
-                    for dependency in candidate.dependencies
-                )
-            )
-        ]
-        assert len(contradiction_rows) == 1
-        assert contradiction_rows[0].conclusion.expression == Negation(
-            row.conclusion.expression
-        )
-        template_expression = Implication(
-            (),
-            row.conclusion.expression,
-            row.conclusion.expression,
-        )
-        template = ScopedExpression(
-            template_expression,
-            to_mpl(template_expression),
-            row.conclusion.proof_scope,
-        )
-        scope_contexts.append(
-            {
-                "namespace": row.namespace,
-                "compact": _scoped_expression_json(row.conclusion),
-                "template": _scoped_expression_json(template),
-                "scope_kind": "contradiction_assumption",
-            }
-        )
-        metadata[row.source_line] = {"scope_namespace": row.namespace}
-        contradiction_assumptions[row.namespace] = row
-
-    or_branch_rows: dict[str, ProofRow] = {}
-    or_integration_rows: dict[str, ProofRow] = {}
-    context_by_namespace = {context["namespace"]: context for context in scope_contexts}
-    for row in sorted(
-        (item for item in chapter.rows if item.tag in {"or disintegration", "or branch proven"}),
-        key=lambda item: (
-            len(item.namespace if item.tag == "or disintegration" else item.dependencies[0].namespace),
-            item.source_line,
-        ),
-    ):
+    def build_or_context(row: ProofRow) -> None:
+        """
+        @brief Establish the context of one OR case or OR integration scope.
+        @details The worklist below calls it once the context of the scope
+        that opened it is established.
+        @param row The scope's ``or disintegration`` or ``or branch proven`` row.
+        @return Nothing; the context and its rows' metadata are recorded.
+        """
         if row.tag == "or branch proven":
             assert len(row.dependencies) == 1
             assert row.namespace == "main" or row.namespace in context_by_namespace
@@ -1254,7 +1451,7 @@ def _schema3_action_metadata(
                 assert dependency.scoped_expression.proof_scope == INTEGRATION_GOAL_SCOPE
                 assert assumption.conclusion.expression in peer_assumptions
                 metadata[assumption.source_line] = {"scope_namespace": namespace}
-            continue
+            return
         assert row.namespace != "main" and len(row.dependencies) == 1
         assert row.namespace not in premise_templates
         assert row.namespace not in or_branch_rows
@@ -1263,20 +1460,11 @@ def _schema3_action_metadata(
         assert dependency.namespace == "main" or dependency.namespace in context_by_namespace, (
             "OR parent scope is not established")
         compact = dependency.expression
-        assert isinstance(compact, Atom) and compact.head in binary_entries
-        definition = binary_entries[compact.head]
-        assert definition.get("category") == "or"
-        parameter_map = {
-            f"u_{index + 1}": argument
-            for index, argument in enumerate(compact.arguments)
-        }
-        disjuncts = [
-            map_arguments(
-                parse_mpl(str(element)),
-                lambda name: parameter_map.get(name, name),
-            )
-            for element in definition["elements"]
-        ]
+        # A compiled disjunction, or a negated conjunction integration
+        # premise whose cases are its complemented conjuncts
+        # (D-460).
+        from .or_convergence import case_split_cases
+        source_atom, disjuncts = case_split_cases(compact, binary_entries)
         assert disjuncts.count(row.conclusion.expression) == 1
         template_expression = Implication(
             (),
@@ -1301,7 +1489,7 @@ def _schema3_action_metadata(
             "namespace": row.namespace,
             "compact": _scoped_expression_json(dependency.scoped_expression),
             "template": _scoped_expression_json(template),
-            "definition_head": compact.head,
+            "definition_head": source_atom.head,
             "scope_kind": "or_branch",
             "parent_namespace": dependency.namespace,
         }
@@ -1309,6 +1497,53 @@ def _schema3_action_metadata(
         context_by_namespace[row.namespace] = scope_context
         metadata[row.source_line] = {"scope_namespace": row.namespace}
         or_branch_rows[row.namespace] = row
+
+    def opening_scope(item: tuple) -> str:
+        """
+        @brief The namespace of the scope that opens a scheduled context.
+        @param item ``("scope", kind, namespace)`` or ``("or", row)``.
+        @return That namespace, ``main`` for a scope opened at the root.
+        """
+        if item[0] == "scope":
+            _, kind, namespace = item
+            if kind == 1:
+                cut = namespace.rfind("_boundary_")
+                assert cut > 0
+                return namespace[:cut]
+            return validity_rows[namespace].namespace
+        row = item[1]
+        if row.tag == "or branch proven":
+            return row.namespace
+        assert row.dependencies
+        return row.dependencies[0].namespace
+
+    # Every context is built after the context of the scope that opened it:
+    # subproofs and contradiction scopes in depth order, then OR cases and OR
+    # integrations by name length. A context whose parent is not built yet
+    # waits for a later round, as a subproof opened inside an OR case does;
+    # a chapter without such nesting is built in this order in one round.
+    pending = (
+        [("scope", kind, namespace) for _, kind, _, namespace in build_order]
+        + [("or", row) for row in sorted(
+            (item for item in chapter.rows if item.tag in {"or disintegration", "or branch proven"}),
+            key=lambda item: (
+                len(item.namespace if item.tag == "or disintegration" else item.dependencies[0].namespace),
+                item.source_line,
+            ),
+        )]
+    )
+    while pending:
+        waiting = []
+        for item in pending:
+            parent = opening_scope(item)
+            if parent != "main" and parent not in context_by_namespace:
+                waiting.append(item)
+            elif item[0] == "scope":
+                build_scope_context(item[1], item[2])
+            else:
+                build_or_context(item[1])
+        assert len(waiting) < len(pending), "parent scope is not established"
+        pending = waiting
 
     for row in chapter.rows:
         if row.tag != "or convergence":
@@ -1322,8 +1557,8 @@ def _schema3_action_metadata(
         assert compact_dependency.namespace == row.namespace, (
             "OR convergence must cite its OR at the exact parent scope"
         )
-        assert isinstance(compact, Atom) and compact.head in binary_entries
-        assert binary_entries[compact.head].get("category") == "or"
+        from .or_convergence import case_split_cases
+        source_atom, _ = case_split_cases(compact, binary_entries)
         branch_dependencies = [
             dependency
             for dependency in row.dependencies[1:]
@@ -1340,7 +1575,7 @@ def _schema3_action_metadata(
             and or_branch_rows[dependency.namespace].dependencies[0].namespace == row.namespace
             for dependency in branch_dependencies
         )
-        metadata[row.source_line] = {"or_definition_head": compact.head}
+        metadata[row.source_line] = {"or_definition_head": source_atom.head}
         from .or_convergence import convergence_cases, match_equality_convergence
         cases = convergence_cases(compact, row.namespace, binary_entries)
         plan = match_equality_convergence(row.conclusion.expression, row.namespace, cases,
@@ -1430,10 +1665,11 @@ def _schema3_action_metadata(
             assert dependency.scoped_expression.proof_scope == INTEGRATION_GOAL_SCOPE
             compact = dependency.expression
             assert isinstance(compact, Atom)
+            rule = (compact_rules[row.source_line]["rule"]
+                    if row.source_line in compact_rules else row.conclusion.expression)
             metadata[row.source_line] = {
                 "reformulation_definition": compact.head,
-                "flat_integration_plan": build_flat_integration_plan(
-                    row.conclusion.expression, compact, binary_entries),
+                "flat_integration_plan": build_flat_integration_plan(rule, compact, binary_entries),
             }
         elif row.tag in {
             "reformulation for integration >[bound]",
@@ -1441,7 +1677,8 @@ def _schema3_action_metadata(
             "reformulation for integration and",
         }:
             assert len(row.dependencies) == 1
-            cursor = row.conclusion.expression
+            cursor = (compact_rules[row.source_line]["rule"]
+                      if row.source_line in compact_rules else row.conclusion.expression)
             while isinstance(cursor, Implication):
                 cursor = cursor.conclusion
             if (
@@ -1800,6 +2037,52 @@ def _citation_source_indices(
     return chosen
 
 
+def selected_source_indices(selection, records):
+    """
+    @brief Validate exact source membership for a range or explicit selection.
+
+    @details The two representations are mutually exclusive. An optional
+    complete-anchor contract requires every theorem of that anchor, with no
+    exclusions. Existing range fixtures retain their precise old bounds.
+
+    @param selection Schema-two or schema-three selection document.
+    @param records Complete source theorem registry.
+    @return Sorted nonempty selected source indices after declared exclusions.
+    @invariant No duplicate, missing complete-anchor, or out-of-range source passes.
+    """
+    explicit = selection.get("source_indices")
+    source_range = selection.get("source_range")
+    assert (explicit is None) != (source_range is None), "select indices or range, exclusively"
+    if explicit is not None:
+        assert isinstance(explicit, list) and explicit
+        assert all(type(index) is int for index in explicit)
+        assert explicit == sorted(set(explicit)), "indices must be sorted and unique"
+        assert 0 <= explicit[0] <= explicit[-1] < len(records), "source index out of range"
+        indices = explicit
+    else:
+        assert isinstance(source_range, dict)
+        first, last = int(source_range["first"]), int(source_range["last"])
+        assert 0 <= first <= last < len(records)
+        indices = list(range(first, last + 1))
+    exclusions = selection.get("excluded_sources")
+    assert isinstance(exclusions, list)
+    excluded = [int(item["source_index"]) for item in exclusions]
+    assert len(excluded) == len(set(excluded))
+    assert set(excluded) <= set(indices)
+    selected = [index for index in indices if index not in set(excluded)]
+    assert selected, "empty source selection"
+    if "complete_anchor" in selection:
+        anchor = selection["complete_anchor"]
+        assert anchor in {"AnchorPeano", "AnchorGauss", "AnchorFTA"}
+        assert not excluded, "complete anchor cannot exclude sources"
+        expected = [index for index, record in enumerate(records)
+                    if isinstance(record.expression, Implication)
+                    and isinstance(record.expression.premise, Atom)
+                    and record.expression.premise.head == anchor]
+        assert selected == expected, "complete-anchor membership mismatch"
+    return selected
+
+
 def _ordered_selected_theorems(
     selection: dict[str, object],
     records: tuple[TheoremRecord, ...],
@@ -1807,8 +2090,8 @@ def _ordered_selected_theorems(
     """
     @brief Resolve the selected theorem corpus and topologically order its dependencies.
     @details
-    Schema 1 keeps the explicit pilot list. Schemas 2 and 3 select an inclusive
-    source-index range minus explicit exclusions and derive stable theorem
+    Schema 1 keeps the explicit pilot list. Schemas 2 and 3 select an exact
+    index list or inclusive range minus explicit exclusions and derive stable theorem
     identifiers. Schema 3 also admits exact dependencies supplied by a hashed
     certificate. A cycle is rejected before any certificate action is emitted.
     @param selection Parsed selection document.
@@ -1823,15 +2106,7 @@ def _ordered_selected_theorems(
         assert isinstance(raw_selections, list) and raw_selections
     else:
         assert schema_version in {2, 3}
-        source_range = selection.get("source_range")
-        exclusions = selection.get("excluded_sources")
-        assert isinstance(source_range, dict) and isinstance(exclusions, list)
-        first = int(source_range["first"])
-        last = int(source_range["last"])
-        assert 0 <= first <= last < len(records)
-        excluded_indices = [int(item["source_index"]) for item in exclusions]
-        assert len(excluded_indices) == len(set(excluded_indices))
-        assert all(first <= index <= last for index in excluded_indices)
+        indices = selected_source_indices(selection, records)
         identifier_prefix = (
             "peano_source"
             if schema_version == 2
@@ -1850,8 +2125,7 @@ def _ordered_selected_theorems(
                 "source_index": index,
                 "theorem": to_mpl(records[index].expression),
             }
-            for index in range(first, last + 1)
-            if index not in set(excluded_indices)
+            for index in indices
         ]
 
     resolved: list[tuple[dict[str, object], TheoremRecord]] = []
@@ -1898,11 +2172,17 @@ def _ordered_selected_theorems(
                         cited_expressions.extend(
                             dependency.expression for dependency in row.dependencies
                         )
-                    for cited in cited_expressions:
+                    for position, cited in enumerate(cited_expressions):
                         matches = selected_by_alpha.get(alpha_key(cited), [])
                         if row.tag == "compilation" and not matches:
                             # A locally constructed compilation has no selected
                             # theorem reference; chapter resolution checks its producer.
+                            continue
+                        if row.tag == "or theorem" and position == 1 and not matches:
+                            # Single-direction or licensing (D-217): the head-switch
+                            # companion need not be a registered theorem (one proved
+                            # after its in-run or theorem is withheld), and the
+                            # chapter builder drops its citation; so does the order.
                             continue
                         assert len(matches) == 1, (
                             f"source {theorem.source_index} citation resolves to "
@@ -2000,7 +2280,8 @@ def _chapter_certificate(
     @return JSON-ready chapter certificate.
     """
 
-    expressions = []
+    compact_rules = compact_rule_rows(chapter, binary_entries or {})
+    expressions = [record["rule"] for record in compact_rules.values()]
     imported_theorem_keys = set((certificate_theorems or {}))
     selected_theorem_keys = set(selected_theorems)
     for row in chapter.rows:
@@ -2036,30 +2317,24 @@ def _chapter_certificate(
     available: dict[tuple[str, str, str], str] = {}
     theorem_available: dict[tuple[str, str, str], str] = {}
 
-    def local_step_id(dependency, exact_only: bool = False) -> str | None:
+    def citation_resolution(dependency, tag):
         """
-        @brief Resolve one dependency to an already emitted local step.
-        @details Exact citations win; alpha-equivalent theorem rows are the
-        second and only alternate local lookup.
-        @param dependency Parsed proof-row dependency.
-        @param exact_only Require the exact source pair for an explicit zoom in edge.
-        @return Stable step identifier, or None when not emitted yet.
-        """
+        @brief Apply the shared citation policy to current certificate sources.
 
-        exact = available.get(
-            _expression_key(
-                dependency.scoped_expression,
-                dependency.namespace,
-            )
-        )
-        if exact is not None or exact_only:
-            return exact
-        return theorem_available.get(
-            _alpha_expression_key(
-                dependency.scoped_expression,
-                dependency.namespace,
-            )
-        )
+        @details Only emitted rows are available locally. Registered theorem
+        ambiguity is checked by the certificate's unique-reference selector.
+
+        @param dependency Parsed expression with exact namespace and proof scope.
+        @param tag Tag of the row consuming this citation.
+        @return Shared disposition and local step identifier when applicable.
+        """
+        return resolve_citation_source(
+            tag, _expression_key(dependency.scoped_expression, dependency.namespace),
+            _alpha_expression_key(dependency.scoped_expression, dependency.namespace),
+            available, theorem_available, produced_keys,
+            selected_theorem_reference(dependency.expression) is not None,
+            dependency.scoped_expression.proof_scope == INTEGRATION_GOAL_SCOPE,
+            optional_companion=tag == "or theorem")
 
     imported_theorems = certificate_theorems or {}
 
@@ -2112,92 +2387,16 @@ def _chapter_certificate(
     pending = list(chapter.rows)
     while pending:
         ready_index = next(
-            (
-                index
-                for index in range(len(pending) - 1, -1, -1)
-                if all(
-                    local_step_id(dependency, pending[index].tag == "zoom in") is not None
-                    or (
-                        pending[index].tag == "compilation"
-                        and selected_theorem_reference(dependency.expression)
-                        is not None
-                    )
-                    or (
-                        dependency.scoped_expression.proof_scope
-                        == INTEGRATION_GOAL_SCOPE
-                        and _expression_key(
-                            dependency.scoped_expression,
-                            dependency.namespace,
-                        ) not in produced_keys
-                    )
-                    or (
-                        _expression_key(
-                            dependency.scoped_expression,
-                            dependency.namespace,
-                        ) not in produced_keys
-                        and selected_theorem_reference(dependency.expression)
-                        is not None
-                    )
-                    or (
-                        # Single-direction or licensing (D-217): the
-                        # head-switch companion of an or theorem may never
-                        # have been separately proved (it is an
-                        # alpha-permutation of the proved parent), so an
-                        # unresolvable or-theorem citation never blocks
-                        # readiness — the reference builder drops it.
-                        pending[index].tag == "or theorem"
-                        and _expression_key(
-                            dependency.scoped_expression,
-                            dependency.namespace,
-                        ) not in produced_keys
-                    )
-                    for dependency in pending[index].dependencies
-                )
-            ),
-            None,
-        )
+            (index for index in range(len(pending) - 1, -1, -1)
+             if all(citation_resolution(dependency, pending[index].tag)[0] != "pending"
+                    for dependency in pending[index].dependencies)), None)
         if ready_index is None:
             unresolved = [
-                (
-                    row.source_line,
-                    [
-                        _expression_key(
-                            dependency.scoped_expression,
-                            dependency.namespace,
-                        )
-                        for dependency in row.dependencies
-                        if (
-                            local_step_id(dependency, row.tag == "zoom in") is None
-                            and not (
-                                row.tag == "compilation"
-                                and selected_theorem_reference(
-                                    dependency.expression
-                                )
-                                is not None
-                            )
-                            and not (
-                                dependency.scoped_expression.proof_scope
-                                == INTEGRATION_GOAL_SCOPE
-                                and _expression_key(
-                                    dependency.scoped_expression,
-                                    dependency.namespace,
-                                ) not in produced_keys
-                            )
-                            and not (
-                                _expression_key(
-                                    dependency.scoped_expression,
-                                    dependency.namespace,
-                                ) not in produced_keys
-                                and selected_theorem_reference(
-                                    dependency.expression
-                                )
-                                is not None
-                            )
-                        )
-                    ],
-                )
-                for row in pending
-            ]
+                (row.source_line,
+                 [_expression_key(dependency.scoped_expression, dependency.namespace)
+                  for dependency in row.dependencies
+                  if citation_resolution(dependency, row.tag)[0] == "pending"])
+                for row in pending]
             raise AssertionError(
                 f"proof rows are not topologically resolvable in {chapter.path.name}: "
                 f"{unresolved!r}"
@@ -2220,45 +2419,64 @@ def _chapter_certificate(
                 "namespace": dependency.namespace,
             }
             matched_reference = selected_theorem_reference(dependency.expression)
-            resolved_step = local_step_id(dependency, row.tag == "zoom in")
-            if (row.tag == "or theorem"
-                    and resolved_step is None
-                    and matched_reference is None
-                    and key not in produced_keys):
-                # Single-direction or licensing (D-217): the head-switch
-                # companion was never separately proved — it is an
-                # alpha-permutation of the proved parent. The companion
-                # citation is dropped; the Lean renderer re-derives the
-                # disjunction classically from the resolved parent alone.
+            kind, resolved_step = citation_resolution(dependency, row.tag)
+            if kind == "optional":
                 continue
-            if row.tag == "compilation" and matched_reference is not None:
+            if kind == "theorem":
+                assert matched_reference is not None
                 source_kind, theorem_reference = matched_reference
                 reference["source_kind"] = source_kind
                 reference["theorem_reference"] = theorem_reference
-            elif resolved_step is not None:
+            elif kind == "local":
                 reference["source_kind"] = "local_step"
                 reference["step"] = resolved_step
-            elif (
-                _expression_key(
-                    dependency.scoped_expression,
-                    dependency.namespace,
-                ) not in produced_keys
-                and matched_reference is not None
-            ):
-                source_kind, theorem_reference = matched_reference
-                reference["source_kind"] = source_kind
-                reference["theorem_reference"] = theorem_reference
             else:
-                assert (
-                    dependency.scoped_expression.proof_scope
-                    == INTEGRATION_GOAL_SCOPE
-                    and key not in produced_keys
-                ), (
+                assert (kind == "template"
+                        and dependency.scoped_expression.proof_scope == INTEGRATION_GOAL_SCOPE
+                        and key not in produced_keys), (
                     f"unresolved dependency in {chapter.path.name}:{row.source_line}: "
-                    f"{key[0]} at {key[1]} ({key[2]})"
-                )
+                    f"{key[0]} at {key[1]} ({key[2]})")
                 reference["source_kind"] = "integration_goal_template"
             references.append(reference)
+        compact_rule = compact_rules.get(row.source_line)
+        if compact_rule is not None:
+            # A compact-first row (D-503): a
+            # derived step proves the rule the compact stands for with the
+            # row's own action and citations, and the row's step folds that
+            # rule into the compact.
+            rule = ScopedExpression(compact_rule["rule"], to_mpl(compact_rule["rule"]), ORDINARY_SCOPE)
+            rule_step = {
+                "id": f"{step_id}_rule",
+                "source_line": row.source_line,
+                "source_tag": row.tag,
+                "action": ACTION_BY_TAG[row.tag],
+                "conclusion": _scoped_expression_json(rule),
+                "namespace": row.namespace,
+                "dependencies": references,
+                "derived_rule": True,
+            }
+            if "introduction" in compact_rule:
+                rule_step["action"] = "structural_or_introduce"
+                rule_step["introduction"] = compact_rule["introduction"]
+            elif row.source_line in schema3_metadata:
+                rule_step.update(schema3_metadata[row.source_line])
+            steps.append(rule_step)
+            steps.append({
+                "id": step_id,
+                "source_line": row.source_line,
+                "source_tag": row.tag,
+                "action": "integration_compact",
+                "conclusion": _scoped_expression_json(row.conclusion),
+                "namespace": row.namespace,
+                "dependencies": [{
+                    "expression": _scoped_expression_json(rule),
+                    "namespace": row.namespace,
+                    "source_kind": "local_step",
+                    "step": rule_step["id"],
+                }],
+            })
+            available[_expression_key(row.conclusion, row.namespace)] = step_id
+            continue
         step = {
             "id": step_id,
             "source_line": row.source_line,
@@ -2285,6 +2503,15 @@ def _chapter_certificate(
             step["action"] = "conjunction_refute"
             step["refutation"] = build_conjunction_refutation_plan(
                 row.conclusion.expression, refutation_sources, binary_entries or {})
+        elif row.tag == "definition projection":
+            from .definition_projection import build_definition_projection_plan
+            assert len(row.dependencies) == len(references) == 1
+            source = row.dependencies[0]
+            assert source.namespace == row.namespace
+            assert source.scoped_expression.proof_scope == row.conclusion.proof_scope == ORDINARY_SCOPE
+            assert references[0]["source_kind"] == "local_step"
+            step["projection"] = build_definition_projection_plan(
+                row.conclusion.expression, source.expression, binary_entries or {})
         elif row.tag == "zoom in":
             assert len(row.dependencies) == 1 and len(references) == 1
             source = row.dependencies[0]
@@ -2323,14 +2550,36 @@ def _chapter_certificate(
             )
             step["theorem_reference"] = matches[0]
         elif row.tag == "or theorem":
+            # The shared definition fixes the operator; the head arguments are
+            # this row's own, since OR theorems sharing a head may bind
+            # different names, and so is the place of each construction
+            # disjunct among the operator's stored elements.
             matching_definitions = [
-                definition
+                {**definition, "arguments": list(atom.arguments)}
                 for atom in iter_atoms(row.conclusion.expression)
                 if (definition := constructed_or_definitions.get(atom.head))
                 is not None
             ]
             assert len(matching_definitions) == 1
-            step["constructed_or_definition"] = matching_definitions[0]
+            or_atom, disjuncts, parent_order = _or_construction_disjuncts(
+                row.conclusion.expression, row
+            )
+            definition = matching_definitions[0]
+            assert definition["head"] == or_atom.head
+            assert definition["arguments"] == list(or_atom.arguments)
+            definition["disjunct_positions"] = _or_disjunct_positions(
+                definition, or_atom, disjuncts
+            )
+            step["constructed_or_definition"] = definition
+            # Recorded only when a folded premise stands before a shared one;
+            # otherwise every shared layer precedes every case.
+            premise_count = sum(kind == "premise" for kind, _ in parent_order)
+            default_order = (
+                [["premise", index] for index in range(premise_count)]
+                + [["case", index] for index in range(1, len(disjuncts))]
+            )
+            if parent_order != default_order:
+                step["or_parent_order"] = parent_order
             assert references, (
                 f"or-theorem row in {chapter.path.name}:{row.source_line} "
                 "resolved no parent citation at all"
@@ -2368,7 +2617,8 @@ def _chapter_certificate(
             assert isinstance(conclusion, Atom)
             assert conclusion.head == "=" and len(conclusion.arguments) == 2
             source, alias = conclusion.arguments
-            assert alias == source + "_copy"
+            assert alias == source + "_copy" or (
+                alias == TWIN_PREDECESSOR_ALIAS and source != alias)
             step["variable_alias"] = {"source": source, "alias": alias}
         if row.source_line in schema3_metadata:
             step.update(schema3_metadata[row.source_line])
@@ -2402,12 +2652,24 @@ def binary_entries_with_overrides(
     """
     @brief Load the GL binary and complete it from the selected chapters' own rows.
     @details
-    Constructed OR theorems define their compact head from the theorem itself;
-    expansion, compilation and reformulation rows expose definitions the binary
-    file may lack (a shortcut-local compact head, a stale fixture entry). Every
+    Constructed OR theorems define their compact head: in GL's stored order
+    when the binary file holds it (one operator per canonical body, so its
+    theorems may state the disjunction in other orders), else from the theorem
+    itself; expansion, compilation and reformulation rows expose definitions
+    the binary file may lack (a shortcut-local compact head, a stale fixture
+    entry). Every
     reconstructed definition must agree with any earlier reconstruction of the
-    same head, and it overrides the file entry. The result is the definition
-    vocabulary every later validation step reads.
+    same head, and it overrides the file entry. A reformulation row is the
+    exception: an existence the binary file holds keeps GL's body, because GL
+    keys every definition by its canonical form (one body per name) while the
+    rows citing that name may state its output equality either way round; the
+    Lean rendering supplies the symmetry step. Several OR theorems may share
+    one compact head with their own bound-variable names, so their
+    reconstructions agree on the operator (arity, elements, signature) but not
+    on ``arguments``, the head arguments of the theorem that produced them; the
+    first reconstruction is kept, and each ``or theorem`` step reads its own
+    head arguments from its row. The result is the definition vocabulary every
+    later validation step reads.
     @param records Complete theorem registry of the proof graph (for the OR heads).
     @param resolved_selections Selected (selection, parsed theorem) pairs; only
         the theorem record of each pair is read.
@@ -2416,6 +2678,8 @@ def binary_entries_with_overrides(
         and the completed binary entries.
     """
 
+    binary_entries = json.loads(binary_path.read_text(encoding="utf-8"))
+    assert isinstance(binary_entries, dict)
     constructed_or_definitions: dict[str, dict[str, object]] = {}
     for theorem_record in records:
         if theorem_record.method != "or theorem":
@@ -2426,14 +2690,17 @@ def binary_entries_with_overrides(
             theorem_record.method,
             theorem_record.source_index,
         )
-        definition = _constructed_or_definition(theorem)
+        definition = _constructed_or_definition(theorem, binary_entries)
         head = str(definition["head"])
         existing = constructed_or_definitions.get(head)
-        assert existing is None or existing == definition
-        constructed_or_definitions[head] = definition
+        if existing is None:
+            constructed_or_definitions[head] = definition
+            continue
+        assert (
+            {key: value for key, value in existing.items() if key != "arguments"}
+            == {key: value for key, value in definition.items() if key != "arguments"}
+        ), f"OR theorems define {head} differently"
 
-    binary_entries = json.loads(binary_path.read_text(encoding="utf-8"))
-    assert isinstance(binary_entries, dict)
     compiled_overrides = dict(constructed_or_definitions)
     for _, theorem in resolved_selections:
         for chapter in theorem.chapters:
@@ -2443,6 +2710,8 @@ def binary_entries_with_overrides(
                         row.conclusion.expression, [item.expression for item in row.dependencies], binary_entries):
                     continue
                 if len(row.dependencies) != 1:
+                    continue
+                if is_introduction_compact_row(row, binary_entries):
                     continue
                 from .or_introduction import match_or_introduction
                 if row.tag == "expansion" and match_or_introduction(
@@ -2469,6 +2738,13 @@ def binary_entries_with_overrides(
                     or (
                         source.head in binary_entries
                         and len(source.arguments) != len(set(source.arguments))
+                    )
+                    # A reformulation existence keeps GL's own body: one
+                    # canonical body per name, which several rows may cite
+                    # with its equality stated either way round.
+                    or (
+                        row.tag == "reformulated from"
+                        and source.head in binary_entries
                     )
                 ):
                     continue
@@ -2776,7 +3052,11 @@ def build_certificate(
                 "name": str(selected["name"]),
                 "source_index": theorem.source_index,
                 "method": theorem.method,
-                "induction_variable": theorem.reference if theorem.method == "induction" else None,
+                "induction_variable": (
+                    theorem.reference
+                    if theorem.method in ("induction", "strong induction")
+                    else None
+                ),
                 "theorem": expression_json(theorem.expression),
                 "variable_types": theorem_types,
                 "source_tags": sorted(source_tags),
@@ -2862,7 +3142,7 @@ def build_certificate(
                 len(theorem["chapters"]) for theorem in theorem_certificates
             ),
             "rows": sum(
-                len(chapter["steps"])
+                sum(not step.get("derived_rule", False) for step in chapter["steps"])
                 for theorem in theorem_certificates
                 for chapter in theorem["chapters"]
             ),
@@ -2905,7 +3185,7 @@ def build_certificate(
                 len(theorem["chapters"]) for theorem in theorem_certificates
             ),
             "rows": sum(
-                len(chapter["steps"])
+                sum(not step.get("derived_rule", False) for step in chapter["steps"])
                 for theorem in theorem_certificates
                 for chapter in theorem["chapters"]
             ),
@@ -3035,8 +3315,8 @@ def build_certificate(
 def write_certificate(certificate: dict, output_path: Path) -> None:
     """
     @brief Write a deterministic backend-neutral certificate.
-    @details Keys are sorted and UTF-8 line-feed output always ends with one
-    newline.
+    @details Keys are sorted; compact separators keep the file small and let
+    the C encoder write it; UTF-8 line-feed output always ends with one newline.
     @param certificate Complete certificate record.
     @param output_path Destination JSON path.
     @return None.
@@ -3044,7 +3324,7 @@ def write_certificate(certificate: dict, output_path: Path) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(certificate, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        json.dumps(certificate, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
         newline="\n",
     )

@@ -25,6 +25,7 @@
 // Counterexample-filter value types, mirror pairs and selected output routing.
 
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../filter.hpp"
 #include "../prover.hpp"
@@ -77,7 +78,7 @@ TEST(filter, contradictionitem_default_assignable_to_default) {
 
 TEST(filter, contradictionitem_default_in_vector) {
     // Default-constructable means resize() works on a vector — the
-    // type ExpressionAnalyzer holds in `contradictionTable`.
+    // type gl::tests::ProverFixture holds in `contradictionTable`.
     std::vector<gl::ContradictionItem> v;
     v.resize(3);
     ASSERT_EQ(v.size(), static_cast<std::size_t>(3));
@@ -120,7 +121,7 @@ TEST(filter, contradictionitem_int_min_is_truthy) {
 // Mirror refutation (D-229) — the free
 // functions loadMirrorPairs / applyMirrorRefutations, plus the config
 // default. The flip's call-site gating on parameters.mirror_refutation
-// lives in filterConjecturesWithCE, which needs a full ExpressionAnalyzer;
+// lives in filterConjecturesWithCE, which needs a full gl::tests::ProverFixture;
 // it is pinned here indirectly by the default-value test and the Doxygen
 // contract.
 // =============================================================================
@@ -286,7 +287,7 @@ TEST(filter, load_mirror_pairs_duplicate_rows_deduplicated) {
 
 TEST(filter, filtered_conjectures_follow_selected_output_directory) {
     namespace fs = std::filesystem;
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     const auto readBytes = [](const fs::path& path) {
         std::ifstream input(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(input),
@@ -300,7 +301,7 @@ TEST(filter, filtered_conjectures_follow_selected_output_directory) {
     const fs::path secondDir = fs::temp_directory_path()
         / "gl_test_filtered_conjectures_output_second";
     analyzer.filteredConjecturesDirectory = firstDir;
-    analyzer.saveFilteredConjectures({"(first)", "(second)"});
+    analyzer.counterexampleFilter.saveFilteredConjectures({"(first)", "(second)"});
     std::ifstream output(firstDir / "filtered_conjectures.txt");
     std::string first, second, extra;
     ASSERT_TRUE(static_cast<bool>(std::getline(output, first)));
@@ -311,7 +312,7 @@ TEST(filter, filtered_conjectures_follow_selected_output_directory) {
     output.close();
     const std::string firstBefore = readBytes(firstDir / "filtered_conjectures.txt");
     analyzer.filteredConjecturesDirectory = secondDir;
-    analyzer.saveFilteredConjectures({});
+    analyzer.counterexampleFilter.saveFilteredConjectures({});
     ASSERT_EQ(fs::file_size(secondDir / "filtered_conjectures.txt"),
               static_cast<uintmax_t>(0));
     ASSERT_EQ(readBytes(firstDir / "filtered_conjectures.txt"), firstBefore);

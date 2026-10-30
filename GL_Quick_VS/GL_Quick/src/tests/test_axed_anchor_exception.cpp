@@ -34,11 +34,19 @@
 ///        (D-272,
 ///        I-188): set-only containment (axed
 ///        names minted, no statement), the anchor-numeral exception (a
-///        block-#1 root whose goal cites a `(1)`-typed slot value leaves
-///        its subtree untouched), the `_induction_` block-#2 marker
-///        override, and full mint+register outside recursion subtrees.
+///        block-#1 root whose goal cites a `(1)`-typed slot value as a
+///        combinable argument leaves its subtree untouched; a fixed
+///        definition parameter does not count), the `_induction_` block-#2
+///        marker override, and full mint+register outside recursion
+///        subtrees.
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <set>
+#include <string>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../prover.hpp"
 
@@ -48,8 +56,8 @@ namespace {
 
     // Registers kConj; the premise-LB chain:
     // root -> (AnchorPeano[...]) -> (in2[7,8,3]).
-    gl::Memory* innerOf(gl::ExpressionAnalyzer& ea) {
-        ea.addTheoremToMemory(std::string(kConj), ea.body, 0, false,
+    gl::Memory* innerOf(gl::tests::ProverFixture& ea) {
+        ea.proofGridBuilder.addTheoremToMemory(std::string(kConj), ea.body, 0, false,
                               ea.globalDependencies);
         gl::Memory* anchorLB = ea.simpleMapStore.findChild(
             &ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -62,29 +70,29 @@ namespace {
 
     // Mimics prehandleAnchor's axed-variable registration for slot 2.
     void axeX2(gl::Memory& lb) {
-        lb.intAxedVariables.mint(lb.nameMap.encode("x2"));
+        ((lb).intAxedVariables).mint(((lb).nameMap).encode("x2"));
     }
 
-    void deposit(gl::ExpressionAnalyzer& ea, gl::Memory& lb,
+    void deposit(gl::tests::ProverFixture& ea, gl::Memory& lb,
                  const char* expr) {
-        const int lvRun[1] = { lb.level };
+        const int lvRun[1] = { ((lb).level) };
         const gl::TransientOrigin origin{
             true, gl::OriginTag::taskFormulation, nullptr, 0 };
-        ea.addExprToMemoryBlock(
+        ea.statementMemory.addExprToMemoryBlock(
             gl::StrSpan(expr, static_cast<int32_t>(std::strlen(expr))), lb, 0,
             0, lvRun, 1, origin, -1, -1, gl::StrSpan("main", 4), true);
     }
 
     bool knownAtMain(gl::Memory& lb, const char* expr) {
         const gl::StatementFlags* row = gl::lookupStatementFlags(
-            lb.intKnownStatements, lb.nameMap, std::string(expr),
+            ((lb).intKnownStatements), ((lb).nameMap), std::string(expr),
             std::string("main"));
         return row != nullptr;
     }
 }
 
 TEST(axed_anchor_exception, non_anchor_with_axed_arg_stays_filtered) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* lb = innerOf(ea);
     axeX2(*lb);
 
@@ -94,7 +102,7 @@ TEST(axed_anchor_exception, non_anchor_with_axed_arg_stays_filtered) {
 }
 
 TEST(axed_anchor_exception, positive_anchor_with_axed_arg_deposits_when_enabled) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.axed_anchor_exception = true;
     gl::Memory* lb = innerOf(ea);
     axeX2(*lb);
@@ -105,7 +113,7 @@ TEST(axed_anchor_exception, positive_anchor_with_axed_arg_deposits_when_enabled)
 }
 
 TEST(axed_anchor_exception, positive_anchor_with_axed_arg_filtered_by_default) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* lb = innerOf(ea);
     axeX2(*lb);
 
@@ -115,7 +123,7 @@ TEST(axed_anchor_exception, positive_anchor_with_axed_arg_filtered_by_default) {
 }
 
 TEST(axed_anchor_exception, negated_anchor_with_axed_arg_stays_filtered) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     ea.parameters.axed_anchor_exception = true;
     gl::Memory* lb = innerOf(ea);
     axeX2(*lb);
@@ -126,7 +134,7 @@ TEST(axed_anchor_exception, negated_anchor_with_axed_arg_stays_filtered) {
 }
 
 TEST(axed_anchor_exception, axed_free_deposits_unaffected) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* lb = innerOf(ea);
     axeX2(*lb);
 
@@ -148,8 +156,8 @@ namespace {
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
         "(>[7](in2[2,7,3])(>[8](in2[7,8,3])(=[7,8]))))";
 
-    gl::Memory* middleOf(gl::ExpressionAnalyzer& ea, const char* conj) {
-        ea.addTheoremToMemory(std::string(conj), ea.body, 0, false,
+    gl::Memory* middleOf(gl::tests::ProverFixture& ea, const char* conj) {
+        ea.proofGridBuilder.addTheoremToMemory(std::string(conj), ea.body, 0, false,
                               ea.globalDependencies);
         gl::Memory* anchorLB = ea.simpleMapStore.findChild(
             &ea.body, "(AnchorPeano[1,2,3,4,5,6])");
@@ -160,7 +168,7 @@ namespace {
         return middleLB;
     }
 
-    gl::Memory* deepOf(gl::ExpressionAnalyzer& ea, gl::Memory* middleLB) {
+    gl::Memory* deepOf(gl::tests::ProverFixture& ea, gl::Memory* middleLB) {
         gl::Memory* deepLB =
             ea.simpleMapStore.findChild(middleLB, "(in2[7,8,3])");
         ASSERT_TRUE(deepLB != nullptr);
@@ -168,17 +176,17 @@ namespace {
     }
 
     bool axedHasX2(gl::Memory& lb) {
-        return lb.intAxedVariables.contains(lb.nameMap.encode("x2"));
+        return ((lb).intAxedVariables).contains(((lb).nameMap).encode("x2"));
     }
 }
 
 TEST(axed_anchor_exception, set_only_recursion_subtree_mints_without_statement) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* middleLB = middleOf(ea, kConjPlainHead);
     gl::Memory* deepLB = deepOf(ea, middleLB);
-    middleLB->isPartOfRecursion = true;
+    ((*(middleLB)).isPartOfRecursion) = true;
 
-    ea.prehandleAnchor(&ea.body);
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
 
     ASSERT_TRUE(axedHasX2(*middleLB));
     ASSERT_TRUE(axedHasX2(*deepLB));
@@ -187,11 +195,11 @@ TEST(axed_anchor_exception, set_only_recursion_subtree_mints_without_statement) 
 }
 
 TEST(axed_anchor_exception, prehandle_registers_statement_outside_recursion) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* middleLB = middleOf(ea, kConjNumeralHead);
     gl::Memory* deepLB = deepOf(ea, middleLB);
 
-    ea.prehandleAnchor(&ea.body);
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
 
     ASSERT_TRUE(axedHasX2(*middleLB));
     ASSERT_TRUE(knownAtMain(*middleLB, "(AnchorPeano[1,x2,3,4,5,6])"));
@@ -199,12 +207,12 @@ TEST(axed_anchor_exception, prehandle_registers_statement_outside_recursion) {
 }
 
 TEST(axed_anchor_exception, numeral_headed_recursion_root_left_untouched) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* middleLB = middleOf(ea, kConjNumeralHead);
     gl::Memory* deepLB = deepOf(ea, middleLB);
-    deepLB->isPartOfRecursion = true;
+    ((*(deepLB)).isPartOfRecursion) = true;
 
-    ea.prehandleAnchor(&ea.body);
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
 
     ASSERT_FALSE(axedHasX2(*deepLB));
     ASSERT_FALSE(knownAtMain(*deepLB, "(AnchorPeano[1,x2,3,4,5,6])"));
@@ -212,25 +220,114 @@ TEST(axed_anchor_exception, numeral_headed_recursion_root_left_untouched) {
 }
 
 TEST(axed_anchor_exception, induction_marker_root_stays_set_only) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* middleLB = middleOf(ea, kConjNumeralHead);
     gl::Memory* deepLB = deepOf(ea, middleLB);
-    deepLB->isPartOfRecursion = true;
+    ((*(deepLB)).isPartOfRecursion) = true;
     deepLB->setExprKey("(in2[7,8,3])_induction_rec0_");
 
-    ea.prehandleAnchor(&ea.body);
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
 
     ASSERT_TRUE(axedHasX2(*deepLB));
     ASSERT_FALSE(knownAtMain(*deepLB, "(AnchorPeano[1,x2,3,4,5,6])"));
 }
 
 TEST(axed_anchor_exception, door_armed_on_set_only_recursion_lb) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     gl::Memory* middleLB = middleOf(ea, kConjPlainHead);
-    middleLB->isPartOfRecursion = true;
+    ((*(middleLB)).isPartOfRecursion) = true;
 
-    ea.prehandleAnchor(&ea.body);
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
     deposit(ea, *middleLB, "(in[x2,1])");
 
     ASSERT_FALSE(knownAtMain(*middleLB, "(in[x2,1])"));
+}
+
+namespace {
+    // The FTA anchor's (1)-typed slot values: 0, 1 and 2.
+    const std::set<std::string> kFtaSlotValues = { "2", "6", "7" };
+
+    // Premise chains under the FTA anchor whose keys cite slot value 7 (the
+    // numeral 2), so prehandleAnchor's trace guard mints x7:
+    // root -> (AnchorFTA[...]) -> (preorder[1,4,7,9]) -> (in2[9,10,3]).
+    // kFtaFixedHead cites 7 only as nontrivialFactor's fixed lower bound;
+    // kFtaValueHead cites it as a compared value of preorder.
+    const char* kFtaFixedHead =
+        "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])"
+        "(>[9](preorder[1,4,7,9])(>[10](in2[9,10,3])(nontrivialFactor[1,4,5,7,10,9]))))";
+    const char* kFtaValueHead =
+        "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])"
+        "(>[9](preorder[1,4,7,9])(>[10](in2[9,10,3])(preorder[1,4,7,10]))))";
+
+    gl::Memory* ftaStepOf(gl::tests::ProverFixture& ea, const char* conj) {
+        ea.proofGridBuilder.addTheoremToMemory(std::string(conj), ea.body, 0, false,
+                              ea.globalDependencies);
+        gl::Memory* anchorLB = ea.simpleMapStore.findChild(
+            &ea.body, "(AnchorFTA[1,2,3,4,5,6,7,8])");
+        ASSERT_TRUE(anchorLB != nullptr);
+        gl::Memory* middleLB =
+            ea.simpleMapStore.findChild(anchorLB, "(preorder[1,4,7,9])");
+        ASSERT_TRUE(middleLB != nullptr);
+        gl::Memory* stepLB =
+            ea.simpleMapStore.findChild(middleLB, "(in2[9,10,3])");
+        ASSERT_TRUE(stepLB != nullptr);
+        return stepLB;
+    }
+
+    bool axedHasX7(gl::Memory& lb) {
+        return ((lb).intAxedVariables).contains(((lb).nameMap).encode("x7"));
+    }
+}
+
+TEST(axed_anchor_exception, slot_value_counts_only_as_combinable_argument) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    const gl::ProofGridBuilder& grid = ea.proofGridBuilder;
+
+    ASSERT_TRUE(grid.goalCitesSlotValueAsArgument("(preorder[1,4,7,9])", kFtaSlotValues));
+    ASSERT_TRUE(grid.goalCitesSlotValueAsArgument("!(=[6,9])", kFtaSlotValues));
+    ASSERT_FALSE(grid.goalCitesSlotValueAsArgument(
+        "(nontrivialFactor[1,4,5,7,9,10])", kFtaSlotValues));
+    ASSERT_FALSE(grid.goalCitesSlotValueAsArgument(
+        "!(>[10](in[10,1])!(nontrivialFactor[1,4,5,7,9,10]))", kFtaSlotValues));
+    ASSERT_FALSE(grid.goalCitesSlotValueAsArgument("(preorder[1,4,9,10])", kFtaSlotValues));
+}
+
+TEST(axed_anchor_exception, compiled_goal_traced_to_its_atoms) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    // Some x is a nontrivial factor of 9: 2 only as the fixed lower bound.
+    const std::string fixed = ea.structuralCompiler.compileExpression(
+        "!(>[10](in[10,1])!(nontrivialFactor[1,4,5,7,9,10]))");
+    // Some x has x * 2 = 9: 2 as a factor, a combinable argument.
+    const std::string value = ea.structuralCompiler.compileExpression(
+        "!(>[10](in[10,1])!(in3[10,7,9,5]))");
+    // Some x has 2 + x = 9 compiles to the configured preorder[1,4,7,9].
+    const std::string configured = ea.structuralCompiler.compileExpression(
+        "!(>[10](in[10,1])!(in3[7,10,9,4]))");
+
+    ASSERT_TRUE(fixed.find("existence") != std::string::npos);
+    ASSERT_TRUE(value.find(">[") == std::string::npos);
+    ASSERT_TRUE(configured.find(">[") == std::string::npos);
+    ASSERT_FALSE(ea.proofGridBuilder.goalCitesSlotValueAsArgument(fixed, kFtaSlotValues));
+    ASSERT_TRUE(ea.proofGridBuilder.goalCitesSlotValueAsArgument(value, kFtaSlotValues));
+    ASSERT_TRUE(ea.proofGridBuilder.goalCitesSlotValueAsArgument(configured, kFtaSlotValues));
+}
+
+TEST(axed_anchor_exception, fixed_parameter_numeral_root_stays_set_only) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    gl::Memory* stepLB = ftaStepOf(ea, kFtaFixedHead);
+    ((*(stepLB)).isPartOfRecursion) = true;
+
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
+
+    ASSERT_TRUE(axedHasX7(*stepLB));
+}
+
+TEST(axed_anchor_exception, value_numeral_root_left_untouched) {
+    gl::tests::ProverFixture ea(std::string("FTA"));
+    gl::Memory* stepLB = ftaStepOf(ea, kFtaValueHead);
+    ((*(stepLB)).isPartOfRecursion) = true;
+
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
+
+    ASSERT_FALSE(axedHasX7(*stepLB));
 }

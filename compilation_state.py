@@ -20,11 +20,16 @@ def rewrite_references(text: str, replacements: dict) -> str:
 
     @details Changes only complete atom applications and their argument order.
     Surrounding bytes, binders, polarity, tabs and proof-reference pairs survive.
+    Every application the pattern rewrites starts with `(<retired name>[`, so a
+    text holding no such substring is returned as it is without the pattern scan.
     @param text Expression or proof-file text.
     @param replacements Retired names mapped to target and one-based arguments.
     @return Rewritten text; unrelated text is byte-identical.
     @invariant Invalid arities, permutations and cycles assert.
     """
+    if not names_retired_operator(text, replacements):
+        return text
+
     def substitute(match):
         name, argument_text = match.groups()
         if name not in replacements:
@@ -42,9 +47,23 @@ def rewrite_references(text: str, replacements: dict) -> str:
             name = replacement["target"]
         return f"({name}[{','.join(arguments)}])"
 
-    result = ATOM.sub(substitute, text) if replacements else text
+    result = ATOM.sub(substitute, text)
     assert all(f"({name}[" not in result for name in replacements), "malformed retired application"
     return result
+
+
+def names_retired_operator(text: str, replacements: dict) -> bool:
+    """@brief Whether a text applies any retired operator.
+
+    @details A retired application always starts with `(<name>[`; the bracket
+    after the name keeps a retired name from matching a longer name it
+    prefixes. Used to skip the pattern rewrite and the defensive copies for
+    texts and registry entries that name no retired operator.
+    @param text Expression, proof-file text, or a serialized registry entry.
+    @param replacements Retired names mapped to their replacement records.
+    @return True when some retired name is applied in the text.
+    """
+    return any(f"({name}[" in text for name in replacements)
 
 
 def validate_state(state: dict) -> None:
@@ -160,6 +179,8 @@ def rewrite_registry(registry: dict, source: dict, replacements: dict) -> dict:
 
     @details Imports retained public targets and their dependency closure from
     the completed native registry. No retired operator remains as an alias.
+    An entry that applies no retired operator is carried over as the same
+    object: every rewrite of it is the identity, so it needs no copy.
     @param registry Registry to migrate.
     @param source Completed batch registry containing retained public targets.
     @param replacements Complete retired-name substitutions.
@@ -171,7 +192,8 @@ def rewrite_registry(registry: dict, source: dict, replacements: dict) -> dict:
         if name in replacements:
             required.add(replacements[name]["target"])
             continue
-        copied = deepcopy(entity)
+        mentions = names_retired_operator(json.dumps(entity, ensure_ascii=False), replacements)
+        copied = deepcopy(entity) if mentions else entity
         for key in ("signature", "definedSet"):
             if key in copied:
                 copied[key] = rewrite_references(copied[key], replacements)
@@ -180,6 +202,9 @@ def rewrite_registry(registry: dict, source: dict, replacements: dict) -> dict:
                 copied[key] = [rewrite_references(value, replacements) for value in copied[key]]
                 for value in copied[key]:
                     required.update(match.group(1) for match in ATOM.finditer(value))
+        for record in copied.get("integration_implications", []):
+            record["compact"] = rewrite_references(record["compact"], replacements)
+            required.update(match.group(1) for match in ATOM.finditer(record["compact"]))
         for value in rewrite_auxiliary_references(copied, replacements):
             required.update(match.group(1) for match in ATOM.finditer(value))
         result[name] = copied
@@ -199,6 +224,9 @@ def rewrite_registry(registry: dict, source: dict, replacements: dict) -> dict:
             for value in entity.get(key, []):
                 required.update(match.group(1) for match in ATOM.finditer(value)
                                 if match.group(1) not in result)
+        for record in entity.get("integration_implications", []):
+            required.update(match.group(1) for match in ATOM.finditer(record["compact"])
+                            if match.group(1) not in result)
     assert not (result.keys() & replacements.keys())
     return result
 

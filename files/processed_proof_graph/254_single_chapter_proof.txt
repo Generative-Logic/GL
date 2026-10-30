@@ -1,0 +1,14 @@
+(preorder[N,+,v1,v3])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[w1,w2](preorder[N,+,w1,w2])(>[w3](preorder[N,+,w2,w3])(preorder[N,+,w1,w3]))))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(preorder[N,+,v2,v3])	main	(preorder[N,+,v1,v2])	main
+(preorder[N,+,v2,v3])	main	task formulation
+(preorder[N,+,v1,v2])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[w1,w2](in2[w1,w2,s])(preorder[N,+,w1,w2])))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(in2[v1,v2,s])	main
+(in2[v1,v2,s])	main	task formulation
+(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(>[](in2[i1,i2,s])(>[](identity[N,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id])))))	main	(NaturalNumbers[N,i0,s,+,*])	main	(identity[N,id])	main	(in2[i0,i1,s])	main	(in2[i1,i2,s])	main
+(in2[i1,i2,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(identity[N,id])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(>[](in2[i1,i2,s])(>[](identity[N,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id])))))	main	expansion	(implication40[N,i0,s,+,*,i1,i2,id])	main
+(implication40[N,i0,s,+,*,i1,i2,id])	main	reformulation for integration and	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))_integration_goal	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))_integration_goal	main	expansion for integration	(AnchorGauss[N,i0,s,+,*,i1,i2,id])_integration_goal	main
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation

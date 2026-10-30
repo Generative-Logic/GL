@@ -15,6 +15,9 @@ and a commercial license — see https://generative-logic.com/license.
 
 ---
 
+## Runtime operation owners
+`LogicBlockOperations` coordinates one block's existing processing sequence through focused statement, admission, integration, equivalence, case, watch, goal and mail interfaces. These classes borrow the target `Memory` at each call. They do not replace its physical stores, change parent/child links or retain a Prover reference. Scratch collection and scope-guard classes remain local to the same calls; their private fields are accessible only to their operation owners and test fixtures. Shared passive scope/result records keep their original layout.
+
 ## What an LB is
 
 A Logic Block is a self-contained hash-inference engine. Each LB owns:
@@ -30,22 +33,22 @@ A Logic Block is a self-contained hash-inference engine. Each LB owns:
 - **Children (down-edges)** — held in `SimpleMapStore` (parent → child by interned routing key), off the `Memory` shell, no longer a member map.
 - A **status** — `isActive`, `primedForContradiction`, `toBeProved`, etc.
 
-The class that holds all of this is `Memory`, defined at [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp). The name `Memory` is the current name; historically it was `BodyOfProves`, renamed during the `analyze_expressions` monolith split.
+The class that holds all of this is `Memory`, defined at [`memory.hpp`](../../../GL_Quick_VS/GL_Quick/src/memory.hpp). The name `Memory` is the current name; historically it was `BodyOfProves`, renamed during the `analyze_expressions` monolith split.
 
 ---
 
 ## The hierarchy
 
-An `ExpressionAnalyzer` has one root LB: `body`. Child LBs are created dynamically for the following proof structures; OR branching is the scope-level exception:
+An `Prover` has one root LB: `body`. Child LBs are created dynamically for the following proof structures; OR branching is the scope-level exception:
 
-1. **Target proofs** — `ExpressionAnalyzer::addTheoremToMemory` stores a conjecture's head as a goal in its innermost premise LB. The `exprKey` identifies that premise, not the head; conjectures with the same premise chain can share the LB. A negated-head contradiction proof uses a separate child whose key includes `__contradiction__` and the negated head.
+1. **Target proofs** — `ProofGridBuilder::addTheoremToMemory` stores a conjecture's head as a goal in its innermost premise LB. The `exprKey` identifies that premise, not the head; conjectures with the same premise chain can share the LB. A negated-head contradiction proof uses a separate child whose key includes `__contradiction__` and the negated head.
 2. **Hypothesis LBs** — when the prover assumes a premise, a child LB opens with the premise as its `exprKey` and the assumed-premise's scope as its validity.
 3. **OR branch scopes, not LBs** — `_ordis_` and `_orint_` branches are validity scopes inside the current LB. An `_ordis_` branch is seeded only with its selected disjunct.
 4. **Integration LBs** — created during reformulation-for-integration.
 5. **Auxiliary LBs** — for recursion sub-goals (induction base, step, and now typing).
 6. **Compressor LBs** — one per theorem during Phase 1 of the compressor. These are independent trees rooted at fresh `Memory` instances, not children of the main prover body.
 
-The `parentMemory` pointer lets any LB walk up to the root. Cross-scope operations (promotion from branch to parent, hypothesis discharge, integration binding) follow this chain explicitly — never via shared state.
+The `parentMemory` pointer walks the tree of logic blocks. Validity-scope ancestry inside one logic block is instead represented by `NameMap::parentOf`; OR case convergence promotes to that validity parent without changing logic blocks.
 
 ---
 
@@ -54,7 +57,7 @@ The `parentMemory` pointer lets any LB walk up to the root. Cross-scope operatio
 A GL run proceeds in cycles:
 
 1. **Cycle start.** Each active LB pulls the prior retained `MailLog` window from its ancestors into `mailIn` and advances its cumulative cursors.
-2. **Per-LB execution.** `proveKernel` runs the elementary step over every active LB on a pool of `logicalCores` real worker threads (work-stealing over a shared `active` vector), as three barriered phase sweeps — `performElemPhase1` (mail absorb) → `performElemPhase2` (the hashburst) → `performElemPhase3` (post-burst absorb), with a join between each ([`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), [D-114](../40_decisions.md#d-114)). The hashburst (phase 2) is where, per LB:
+2. **Per-LB execution.** `proveKernel` runs the elementary step over every active LB on a pool of `logicalCores` real worker threads (work-stealing over a shared `active` vector), as three barriered phase sweeps — `performElemPhase1` (mail absorb) → `performElemPhase2` (the hashburst) → `performElemPhase3` (post-burst absorb), with a join between each ([`logical_block/var_type_table.hpp`](../../../GL_Quick_VS/GL_Quick/src/logical_block/var_type_table.hpp), [`proof/phase2_executor.cpp`](../../../GL_Quick_VS/GL_Quick/src/proof/phase2_executor.cpp), [D-114](../40_decisions.md#d-114)). The hashburst (phase 2) is where, per LB:
  - Generate hash requests from known expressions.
  - Query `overallHashMemory.encodedMap`.
  - On a hit, fire the rule — build the conclusion instance, invoke `addStatement`, record origin.
@@ -77,22 +80,22 @@ Selected fields of `Memory` (not exhaustive — the struct is large):
 | `level` | `int` | Scope depth relative to root. |
 | `isActive` | `bool` | Whether this LB participates in the cycle. |
 | `primedForContradiction` | `bool` | Keeps LB alive in `deactivateRecursively` for contradiction discharge. |
-| `intToBeProved` | `unordered_map<int32_t, …>` | Goals yet to derive — packed `(originalId, validityId)` keys ([D-130](../40_decisions.md#d-130)). |
+| `intToBeProved` | `TypedColdSetMap<StatementKey, int>` on the persistent arena | Goals yet to derive — packed `(originalId, validityId)` keys ([D-130](../40_decisions.md#d-130)). |
 | `intKnownStatements` | Cold packed-key map | `(originalId, validityId)` key presence is membership; `StatementFlags` carries `local` and `fullyDisintegrated` ([I-85](../30_invariants.md#i-85)). |
-| `intEncodedStatements` | `std::vector<IntEncodedExpr>` | The statement registry — int16 rows, string form on demand via `decodeExpression`. |
-| `intLocalEncodedStatements{,Delta}`, `intLocalEncodedStatementsSet` | local-only variants | Written only when `addStatement(local=true)`. The `Set` variant ([`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp)) is a packed-key `std::unordered_set<int32_t>` for O(1) membership, maintained beside the vector — used by the D-29 disintegration gate ([I-7](../30_invariants.md#i-7) clause 2). |
-| `intStatementLevelsMap` | `packStatementKey(originalId, validityId) → std::set<int>` | Per-statement set of LB depths (`Memory::level` values, anchor=0, child=1, …) whose state contributed to the derivation of that statement. Levels propagate as union(rule.levels, premise.levels) at every firing. Read by `prover.hpp::dischargeToBeProved`'s registration verdict `allLevelsInvolved` (goal closure is level-free) — see [`02_glossary.md::levels`](../02_glossary.md#levels) and [I-51](../30_invariants.md#i-51). |
+| `intEncodedStatements` | `SharedExpressionList` | The statement registry — encoded rows, string form on demand via `decodeExpression`. |
+| `intLocalEncodedStatements{,Delta}`, `intLocalEncodedStatementsSet` | local-only variants | Written only when `addStatement(local=true)`. The `Set` variant ([`memory.hpp`](../../../GL_Quick_VS/GL_Quick/src/memory.hpp)) is a `ColdHashSet<PodKeyStore<int64_t>>` for packed-key membership, maintained beside the shared expression lists — used by the D-29 disintegration gate ([I-7](../30_invariants.md#i-7) clause 2). |
+| `intStatementLevelsMap` | `TypedColdSetMap<StatementKey, int>` | Per-statement set of LB depths (`Memory::level` values, anchor=0, child=1, …) whose state contributed to the derivation of that statement. Levels propagate as union(rule.levels, premise.levels) at every firing. Read by `logical_block/goal_processor.hpp::dischargeToBeProved`'s registration verdict `allLevelsInvolved` (goal closure is level-free) — see [`02_glossary.md::levels`](../02_glossary.md#levels) and [I-51](../30_invariants.md#i-51). |
 | `overallHashMemory` | `HashMemory` | This LB's implication-rule index. |
 | `localHashMemory`, `localHashMemoryDelta` | scoped hash memories | Per-branch or per-hypothesis rule registries. |
-| (scope chains) | `nameMap.stackOfValidity` / `ancestorsOf` | Not a `Memory` field: a scope's ancestor chain is a walk of the `NameMap`'s paged parent-pointer forest ([I-104](../30_invariants.md#i-104)). |
+| (scope chains) | `NameMap::parentOf` / `ancContains` | Not a `Memory` field: a scope's ancestor chain is a walk of the `NameMap`'s paged parent-pointer forest ([I-104](../30_invariants.md#i-104)). |
 | `nameMap` | `NameMap` | Scope-ID encoder. |
 | `equivalenceClassesMap` | Cold blob map keyed by validity id | Equality-class registry, keyed by scope id ([D-134](../40_decisions.md#d-134)); probe via the non-minting `classesAt`. |
 | `mailIn` | `RoutingColdMail` | Inter-LB inbox staging on the never-deloaded mail pool; cleared after phase-1 absorb. |
 | `mailOut` | `DeloadableMailOut` | Inter-LB outbox + private ids on the LB's deloadable main-pool arena; shell pending bit selects serial commit reload. |
-| `sameIterationInternalMail` | `Mail` | Per-LB integration-revival inbox (typed `Mail` since 2026-05-07; [D-53](../40_decisions.md#d-53) unification, renumbered from main's D-46— pre-unification was a separate `struct InternalMail`). Populated during hashburst body by `applyEquivalenceClassToRejectedMapIntegration` / `revisitRejectedIntegration2`; drained at top of next hashburst with `status=1` absorb. Not routed across LBs. See [`03_mail_system.md`](03_mail_system.md#integration-revival-channel). |
+| `sameIterationInternalMail` | `ColdMail` | Per-block internal delivery, including integration revival and OR convergence. Populated during hashburst body by `applyEquivalenceClassToRejectedMapIntegration` / `revisitRejectedIntegration2`; drained at top of next hashburst with `status=1` absorb. Not routed across LBs. See [`03_mail_system.md`](03_mail_system.md#integration-revival-channel). |
 | `parentMemory` | `Memory*` | Up-pointer. |
 | (down-edges) | `SimpleMapStore` (off-shell, not a `Memory` member) | Children, by interned routing key. |
-| `exprOriginMap` | `IdOriginMap` (packed origin-interner keys → `(OriginTag, packed deps)` lines) | Provenance (id form per `D-131`; decode via `Memory::originInterner`). |
+| `exprOriginMap` | `TypedColdBlobMap<int64_t, IdOrigin>` (packed origin-interner keys to history records) | Provenance (id form per `D-131`; decode via `Memory::originInterner`). |
 | `startInt`, `startIntRepl`, `startIntPi` | counter snapshots | Used by Pass B freshness checks. |
 
 ---
@@ -102,16 +105,16 @@ Selected fields of `Memory` (not exhaustive — the struct is large):
 1. **Birth.** The analyzer owns its root `body`; child and compressor logic blocks use `LbStore::create<Memory>` and retain a stable address in the logic-block pool.
 2. **Registration.** Inserted into `permanentBodies` (or `permanentBodiesCE` for CE filter) and linked under its parent in `SimpleMapStore` (`linkChild`; `ceSimpleMapStore` for the CE tree).
 3. **Active execution.** Participates in cycles while `isActive == true`.
-4. **Deactivation.** `deactivateRecursively` — the LB and its descendants are marked inactive when their target is proved or the scope discharges. This active-to-inactive transition is permanent. The only inactive-to-active path is an induction-zero LB born dormant and later woken by `activateZeroCondition` ([I-112](../30_invariants.md#i-112)); this is why any initially dormant grid retains full mail history.
-5. **Tear-down.** `ExpressionAnalyzer::destroyGrid` in [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) releases child cold hash memory, destroys child nodes through `LbStore::destroy`, empties the root hash memory in place, and clears tree links and mail logs. The analyzer-owned root survives this operation.
+4. **Deactivation.** `deactivateRecursively` — the LB and its descendants are marked inactive when their target is proved or the scope discharges. This active-to-inactive transition is permanent. A proved induction step whose proof covers every premise level also switches off its conjecture's other step and contradiction blocks; the premise chain stays alive ([D-517](../40_decisions.md#d-517)). The only inactive-to-active path is an induction-zero LB born dormant and later woken by `activateZeroCondition` ([I-112](../30_invariants.md#i-112)); this is why any initially dormant grid retains full mail history.
+5. **Tear-down.** `ProofGridBuilder::destroyGrid` in [`proof/proof_grid_builder.hpp`](../../../GL_Quick_VS/GL_Quick/src/proof/proof_grid_builder.hpp) releases child cold hash memory, destroys child nodes through `LbStore::destroy`, empties the root hash memory in place, and clears tree links and mail logs. The analyzer-owned root survives this operation.
 
-Closed-scope cleanup stays at the end-of-burst `pendingWipeScopes` drain. `Memory::wipeSubtree` in [`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp) filters `intEncodedStatements`, `intLocalEncodedStatements`, and `intLocalEncodedStatementsDelta` with one stable forward scan each, using the existing closed-scope bitmap. Each surviving row moves at most once through `PagedVector::setAt`; one `truncate` releases the dead tail after all source rows are read. Scope membership, survivor order, whole-record bytes, and `Restructured` dirty-state behavior are preserved; repeated interior erase shifts are avoided.
+Closed-scope cleanup stays at the end-of-burst `pendingWipeScopes` drain. `Memory::wipeSubtree` in [`memory.cpp`](../../../GL_Quick_VS/GL_Quick/src/memory.cpp) filters `intEncodedStatements`, `intLocalEncodedStatements`, and `intLocalEncodedStatementsDelta` with one stable forward scan each, using the existing closed-scope bitmap. Each surviving row moves at most once through `PagedVector::setAt`; one `truncate` releases the dead tail after all source rows are read. Scope membership, survivor order, whole-record bytes, and `Restructured` dirty-state behavior are preserved; repeated interior erase shifts are avoided.
 
 ---
 
 ## Per-batch grid — the `permanentBodies` model
 
-For the main prover, `permanentBodies` is the full vector of all grid LBs, active or dormant. The outer `prove` loop iterates cycles over the current active subset. Cross-LB mail is the pull model — each LB's `mailOut` is committed to its [`MailLog`](03_mail_system.md#the-pull-model) chain at the cycle-end barrier and pulled by descendants in phase 1. The completed-grid dormant scan fixes either rolling delivered-window retirement or full-history catch-up for the batch ([I-161](../30_invariants.md#i-161)). The old per-core `boxes` + `sendMail` / `smashMail` machinery is deleted ([D-137](../40_decisions.md#d-137)); `MailLog` lives on `ExpressionAnalyzer`, not `Memory`.
+For the main prover, `permanentBodies` is the full vector of all grid LBs, active or dormant. The outer `prove` loop iterates cycles over the current active subset. Cross-LB mail is the pull model — each LB's `mailOut` is committed to its [`MailLog`](03_mail_system.md#the-pull-model) chain at the cycle-end barrier and pulled by descendants in phase 1. The completed-grid dormant scan fixes either rolling delivered-window retirement or full-history catch-up for the batch ([I-161](../30_invariants.md#i-161)). The old per-core `boxes` + `sendMail` / `smashMail` machinery is deleted ([D-137](../40_decisions.md#d-137)); `MailLog` lives on `Prover`, not `Memory`.
 
 For CE filtering, the analogous structure is `permanentBodiesCE`. CE runs the same hash-request generator with an empty obligatory stump (`generateEncodedRequestsStatic`, stump length 0) and a different outer budget (`numberIterationsConjectureFiltering`); its isolated clone LBs have no descendants, so the pull is gated off for them.
 
@@ -142,7 +145,7 @@ The LB model maps cleanly to silicon. Every LB becomes a core:
 - **mailIn / mailOut** → network-on-chip packets between cores.
 - **Cycle boundaries** → clock edges at the fabric level.
 
-Post-FTA roadmap targets a 100–1000× memory reduction (LB split, static, no history) — enough to cross the on-die SRAM threshold and enable a meaningful silicon prototype.
+Post-FTA roadmap targets a per-block memory reduction through finer LB split and static memory — enough, if large enough, to cross the on-die SRAM threshold and enable a meaningful silicon prototype. The history is not a lever: it is permanent ([I-44](../30_invariants.md#i-44)). No reduction factor is measured yet.
 
 ---
 

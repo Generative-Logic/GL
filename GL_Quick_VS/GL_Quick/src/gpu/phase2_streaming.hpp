@@ -48,10 +48,26 @@ namespace gl::gpu {
     inline constexpr uint64_t kPhase2DefaultGpuBudgetBytes = 4ull * 1024 * 1024 * 1024;
 
     /// @brief Available GPU budget after the runtime reserve and block rounding.
+    ///
+    /// @details
+    /// `bytes` / `blocks` are the working budget every chunk plan fills.
+    /// `frontierStoreBlocks` are additional blocks reserved only for the
+    /// pass-local growth frontier store, taken from device memory left over
+    /// after the working budget; they never displace working blocks.
     struct Phase2GpuBudget {
         uint64_t reserveBytes{ 0 };
         uint64_t bytes{ 0 };
         uint32_t blocks{ 0 };
+        uint32_t frontierStoreBlocks{ 0 };
+
+        /// @brief Count every block of the device reservation.
+        ///
+        /// @details
+        /// The pool allocates the working budget and the dedicated frontier
+        /// store blocks as one contiguous reservation.
+        ///
+        /// @return `blocks + frontierStoreBlocks`.
+        uint32_t totalBlocks() const { return blocks + frontierStoreBlocks; }
     };
 
     /// @brief Compute a card-independent GPU working budget.
@@ -61,28 +77,42 @@ namespace gl::gpu {
     /// The working storage after that reserve is capped by `limitBytes`, or by
     /// `kPhase2DefaultGpuBudgetBytes` when no limit is given; neither ever
     /// permits consuming the reserve. Rounding releases the incomplete block.
+    /// Device memory still free after the working budget and the reserve
+    /// supplies up to `frontierStoreReserveBytes` of whole blocks dedicated to
+    /// the growth frontier store; a card without that spare memory gets fewer
+    /// or none, and its store then plans inside the working budget.
     ///
     /// @param freeBytes Free memory measured after CUDA initialization.
     /// @param totalBytes Total device memory from the same measurement.
     /// @param limitBytes Optional ceiling (`GL_GPU_BUDGET_MIB`), zero for the
     ///                   default ceiling.
-    /// @return Whole-block working budget and the separate runtime reserve.
-    /// @invariant The working allocation plus reserve fits measured free memory.
+    /// @param frontierStoreReserveBytes Largest dedicated frontier-store
+    ///                   reservation wanted beyond the working budget; zero
+    ///                   requests none.
+    /// @return Whole-block working budget, dedicated frontier-store blocks and
+    ///         the separate runtime reserve.
+    /// @invariant The working allocation, the dedicated store blocks and the
+    ///            reserve together fit measured free memory.
     inline Phase2GpuBudget makePhase2GpuBudget(uint64_t freeBytes,
-        uint64_t totalBytes, uint64_t limitBytes = 0) {
+        uint64_t totalBytes, uint64_t limitBytes = 0,
+        uint64_t frontierStoreReserveBytes = 0) {
         assert(totalBytes > 0 && freeBytes <= totalBytes);
         Phase2GpuBudget result{};
         result.reserveBytes = std::max(256ull * 1024 * 1024,
             static_cast<unsigned long long>(totalBytes / 20));
         assert(freeBytes > result.reserveBytes
             && "GPU memory cannot accommodate the runtime reserve");
-        uint64_t available = freeBytes - result.reserveBytes;
-        available = std::min(available,
+        const uint64_t available = freeBytes - result.reserveBytes;
+        const uint64_t working = std::min(available,
             limitBytes != 0 ? limitBytes : kPhase2DefaultGpuBudgetBytes);
-        const uint64_t blocks = available / kPhase2GpuBlockBytes;
+        const uint64_t blocks = working / kPhase2GpuBlockBytes;
         assert(blocks > 0 && blocks <= std::numeric_limits<uint32_t>::max());
         result.blocks = static_cast<uint32_t>(blocks);
         result.bytes = blocks * kPhase2GpuBlockBytes;
+        const uint64_t storeBlocks = std::min(available - result.bytes,
+            frontierStoreReserveBytes) / kPhase2GpuBlockBytes;
+        assert(storeBlocks <= std::numeric_limits<uint32_t>::max() - blocks);
+        result.frontierStoreBlocks = static_cast<uint32_t>(storeBlocks);
         return result;
     }
 

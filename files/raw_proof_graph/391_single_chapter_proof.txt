@@ -1,0 +1,5 @@
+!(=[9,11])	main	contradiction	!(preorder[1,4,11,10])	main	(preorder[1,4,11,10])	main	(=[9,11])	main
+!(preorder[1,4,11,10])	main	task formulation
+(preorder[1,4,11,10])	main	equality1	(preorder[1,4,9,10])	main	(=[9,11])	main
+(preorder[1,4,9,10])	main	task formulation
+(=[9,11])	main	task formulation

@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 3: The substrate (reference-level).
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html">Compilation &amp; names</a>
@@ -327,7 +327,8 @@ Around it sit the admission and rejection maps (the subject of
 <tr><td><code>productOfDisintegration</code></td><td>true iff a premise has a <code>u_</code> arg; gates OR-disintegration. Stamped on <i>head</i> LMVs only.</td></tr>
 </table>
 <div class="note"><b>Installs are staged, maps are rewritten once.</b> A rule install
-produces hundreds of index records per copy (one per premise permutation and prefix).
+produces hundreds of index records per copy (one per premise ordering and prefix whose
+operator names never decrease; each such prefix is built once).
 They are not written into the cold maps one by one — each in-place write would move
 the map's whole tail — but staged in a per-worker scratch structure for the
 duration of an absorb window (the mail absorbs, the equivalence-class apply, or a
@@ -867,7 +868,11 @@ An implication subproof opened by an arriving fact (or nested below another
 scope) is pointless once its implication is already known at its parent —
 directly or through the parent's equality classes — and it is wiped. When an
 equality makes two such subproofs under one parent prove the same implication,
-the one holding more facts survives and the other is wiped. A wiped subproof
+the one holding more facts survives and the other is wiped. A subproof whose
+implication is refuted at its parent or above is wiped too: the reductio
+opened beside it, which assumes the implication, records the negated
+implication at the parent when a counterexample appears there, and leaves
+with its subproof. A wiped subproof
 is never reopened: its preparation stays recorded, and the filter of closed
 scopes keeps it out of every later sweep. Subproofs opened for a goal follow
 that goal's own lifecycle.

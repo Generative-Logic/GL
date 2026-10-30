@@ -71,6 +71,11 @@ namespace gl {
     /// incremental promotion/demotion ladder; `reset` builds the whole shape.
     /// Beyond `slotsPerPage²` data pages, an L3 root holds L2 roots with the
     /// same L1 shape. Smaller arrays retain their original directory depth.
+    /// On an arena with `LbArena::enableSubPages`, an array whose slots fit a
+    /// sub-page slot (up to half a page, e.g. the 64-slot minimum table in
+    /// 256 bytes) takes that slot instead of a whole page: `rootVid_` is the
+    /// vid of the page that holds it and `firstOffset_` its byte offset, zero
+    /// in every other shape (D-464).
     /// Coverage beyond three directory levels asserts; the signed 32-bit slot
     /// count remains an independent limit, with widened page-count arithmetic.
     ///
@@ -118,6 +123,8 @@ namespace gl {
                 rootVid_ = kNoVid;
                 capacity_ = 0;
                 numPages_ = 0;
+                firstOffset_ = 0;
+                subPageClass_ = 0;
                 return;
             }
             clear();
@@ -169,6 +176,8 @@ namespace gl {
         /// points at L2 roots, each covering `slotsPerPage²` data pages.
         /// Coverage is checked before filling the directory. The page count
         /// uses widened arithmetic even when `cap` is near its int32 limit.
+        /// On a sub-page arena, an array that fits a sub-page slot takes the
+        /// smallest such slot and zeroes it instead.
         ///
         /// @param cap Slot capacity to allocate; `>= 0`.
         void reset(int32_t cap) {
@@ -177,10 +186,24 @@ namespace gl {
             if (cap == 0) return;
             ensureGeometry();
             capacity_ = cap;
-            numPages_ = static_cast<int32_t>((static_cast<int64_t>(cap) + slotsPerPage_ - 1) >> shift_);
+            const int32_t cls = subPageClassFor(cap);
+            if (cls >= 0) {
+                const LbArena::SubPage slot = arena_->allocSubPage(cls);
+                assert(slot.offset >= 0 && slot.offset <= 0xFFFF
+                    && "PagedHashIndex: sub-page offset exceeds 16 bits");
+                rootVid_ = slot.vid;
+                firstOffset_ = static_cast<uint16_t>(slot.offset);
+                subPageClass_ = static_cast<uint8_t>(cls + 1);
+                numPages_ = 1;
+                std::memset(arena_->pageAt(rootVid_) + firstOffset_, 0,
+                            static_cast<std::size_t>(LbArena::subPageBytes(cls)));
+                return;
+            }
+            const int32_t slotsPerPage = mask_ + 1;
+            numPages_ = static_cast<int32_t>((static_cast<int64_t>(cap) + slotsPerPage - 1) >> shift_);
             const std::size_t pageBytes =
                 static_cast<std::size_t>(arena_->pageBytes());
-            const int32_t dirCap = slotsPerPage_;   // int32 directory entry == int32 slot
+            const int32_t dirCap = slotsPerPage;    // int32 directory entry == int32 slot
             if (numPages_ == 1) {                   // single data page, no directory
                 rootVid_ = arena_->allocPage();
                 std::memset(arena_->pageAt(rootVid_), 0, pageBytes);
@@ -238,8 +261,11 @@ namespace gl {
         /// never here.
         void clear() {
             if (capacity_ == 0) return;
-            const int32_t dirCap = slotsPerPage_;
-            if (numPages_ == 1) {
+            const int32_t dirCap = mask_ + 1;
+            if (subPageClass_ != 0) {
+                arena_->freeSubPage(LbArena::SubPage{ rootVid_, firstOffset_ },
+                                    subPageClass_ - 1);
+            } else if (numPages_ == 1) {
                 arena_->freePage(rootVid_);
             } else if (numPages_ <= dirCap) {     // single directory page
                 const int32_t* dir =
@@ -272,15 +298,33 @@ namespace gl {
             rootVid_ = kNoVid;
             capacity_ = 0;
             numPages_ = 0;
+            firstOffset_ = 0;
+            subPageClass_ = 0;
         }
 
         /// @brief Live page footprint in bytes (the steward's pressure input —
         ///        the throw-away pages are real arena pages while resident).
         ///
-        /// @return Held-page bytes; 0 when empty.
+        /// @return Held-page bytes (the slot's bytes for a sub-page array); 0
+        ///         when empty.
         int64_t liveBytes() const {
             if (numPages_ == 0) return 0;
-            const int32_t dirCap = slotsPerPage_;
+            if (subPageClass_ != 0) {
+                const int32_t bytes = LbArena::subPageBytes(subPageClass_ - 1);
+                if (peak_snapshot::active()) {
+                    const char* slot = arena_->pageAt(rootVid_) + firstOffset_;
+                    peak_snapshot::note(slot, static_cast<std::size_t>(bytes), 1);
+                    peak_snapshot::note(slot, static_cast<std::size_t>(capacity_) * sizeof(int32_t), 3);
+                }
+                return bytes;
+            }
+            if (peak_snapshot::active()) {
+                peak_snapshot::observePagedPages(*arena_, rootVid_, numPages_, shift_,
+                    [&](int32_t, const char* page) {
+                        peak_snapshot::note(page, static_cast<std::size_t>(mask_ + 1) * sizeof(int32_t), 3);
+                    });
+            }
+            const int32_t dirCap = mask_ + 1;
             int64_t held = numPages_;                       // data pages
             if (numPages_ > 1 && numPages_ <= dirCap) {
                 held += 1;                                  // one directory page
@@ -299,7 +343,8 @@ namespace gl {
         /// @brief Sentinel "no vid" for the empty / unbound directory root.
         static constexpr int32_t kNoVid = -1;
 
-        /// @brief Byte address of slot `i` (one shift + one mask + one resolve).
+        /// @brief Byte address of slot `i` (one shift + one mask + one resolve,
+        ///        plus the sub-page offset, zero in every whole-page shape).
         ///
         /// @param i Slot index in `[0, capacity())`.
         /// @return Writable byte pointer to the 4-byte slot.
@@ -313,14 +358,14 @@ namespace gl {
                           arena_->pageAt(rootVid_))[pageIdx];
             } else {
                 const int32_t* root = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
-                if (numPages_ > static_cast<int64_t>(slotsPerPage_) * slotsPerPage_)
+                if (numPages_ > static_cast<int64_t>(mask_ + 1) * (mask_ + 1))
                     root = reinterpret_cast<const int32_t*>(arena_->pageAt(
                         root[static_cast<int64_t>(pageIdx) >> (2 * shift_)]));
                 const int32_t l1vid = root[(pageIdx >> shift_) & mask_];
                 vid = reinterpret_cast<const int32_t*>(
                     arena_->pageAt(l1vid))[pageIdx & mask_];
             }
-            return arena_->pageAt(vid)
+            return arena_->pageAt(vid) + firstOffset_
                  + static_cast<std::size_t>(i & mask_) * sizeof(int32_t);
         }
 
@@ -338,14 +383,14 @@ namespace gl {
                           arena_->pageAt(rootVid_))[pageIdx];
             } else {
                 const int32_t* root = reinterpret_cast<const int32_t*>(arena_->pageAt(rootVid_));
-                if (numPages_ > static_cast<int64_t>(slotsPerPage_) * slotsPerPage_)
+                if (numPages_ > static_cast<int64_t>(mask_ + 1) * (mask_ + 1))
                     root = reinterpret_cast<const int32_t*>(arena_->pageAt(
                         root[static_cast<int64_t>(pageIdx) >> (2 * shift_)]));
                 const int32_t l1vid = root[(pageIdx >> shift_) & mask_];
                 vid = reinterpret_cast<const int32_t*>(
                     arena_->pageAt(l1vid))[pageIdx & mask_];
             }
-            return arena_->pageAt(vid)
+            return arena_->pageAt(vid) + firstOffset_
                  + static_cast<std::size_t>(i & mask_) * sizeof(int32_t);
         }
 
@@ -361,7 +406,22 @@ namespace gl {
             while ((2 << s) <= fit) ++s;
             shift_ = s;
             mask_ = (1 << s) - 1;
-            slotsPerPage_ = 1 << s;
+        }
+
+        /// @brief The smallest sub-page size class whose slot holds `cap`
+        ///        slots, or -1 when the arena offers no sub-pages or the array
+        ///        needs a whole page.
+        ///
+        /// @param cap Slot capacity; positive.
+        /// @return The size class, or -1 for whole pages.
+        int32_t subPageClassFor(int32_t cap) const {
+            assert(cap > 0);
+            if (!arena_->subPagesEnabled()) return -1;
+            const int64_t bytes = static_cast<int64_t>(cap) * static_cast<int64_t>(sizeof(int32_t));
+            const int32_t classes = arena_->subPageClassCount();
+            for (int32_t cls = 0; cls < classes; ++cls)
+                if (LbArena::subPageBytes(cls) >= bytes) return cls;
+            return -1;
         }
 
         LbArena* arena_;
@@ -370,7 +430,11 @@ namespace gl {
         int32_t numPages_ = 0;           // data pages held
         int32_t shift_ = -1;             // log2(slotsPerPage); -1 = not computed
         int32_t mask_ = 0;               // slotsPerPage - 1
-        int32_t slotsPerPage_ = 0;       // 1 << shift_
+        uint16_t firstOffset_ = 0;       // sub-page slot offset in its page; 0 otherwise
+        uint8_t subPageClass_ = 0;       // sub-page size class + 1; 0 = whole pages
     };
+
+    static_assert(sizeof(PagedHashIndex) == 32,
+        "PagedHashIndex's sub-page fields must stay inside the 32-byte header");
 
 }

@@ -91,7 +91,14 @@ namespace gl::gpu {
     /// ordinary `FiringRecord` page chains. It performs no rule evaluation,
     /// semantic gate, canonical sort, or proof-state mutation.
     class Phase2SealingArena {
+        GpuHostArena hostStorage_;
     public:
+        /// @brief Measure every simultaneously live download and sealing column.
+        /// @details Includes canonical-order scratch and fragment string handles.
+        /// @param capacity Positive evaluator capacity.
+        /// @return Exact aligned payload layout before block rounding.
+        static GpuHostLayout hostLayout(Phase2EvaluationCapacity capacity);
+
         /// @brief Record the evaluator capacity; allocates nothing.
         ///
         /// @details
@@ -164,6 +171,7 @@ namespace gl::gpu {
         /// @param taskSubkeyCounts Complete cumulative subkey counts per task.
         /// @param taskCapacity Number of supplied task counter slots.
         /// @param doomLines Optional per-block stop states; returns zero or INT64_MAX.
+        /// @param frontierStorage Prepared request-frontier files and resident budget.
         /// @return Logical totals, transfer bytes and completed storage pressure.
         /// @invariant Scratch fits one CPU-supported output fragment; snapshots
         ///            stay immutable and no statement is deposited during drains.
@@ -173,9 +181,10 @@ namespace gl::gpu {
             const Phase2GrowthScheduleArena& schedule,
             const DevicePhase2GrowthParameters& parameters,
             const Phase2BufferPlan& plan, SealedPageSet* const* outputs,
-            uint32_t outputCount, uint64_t* taskSubkeyCounts, uint32_t taskCapacity, int64_t* doomLines = nullptr);
+            uint32_t outputCount, uint64_t* taskSubkeyCounts, uint32_t taskCapacity, int64_t* doomLines = nullptr,
+            RequestFrontierStorageOptions frontierStorage = {});
 
-        /// @brief Heap bytes the sealing arena's download and scratch columns
+        /// @brief Pool bytes the sealing arena's download and scratch columns
         ///        hold — the largest window sealed so far in this chunk.
         ///
         /// @details
@@ -183,26 +192,29 @@ namespace gl::gpu {
         /// the reusable sealing scratch; zero before the first window.
         /// Observability only (Rule 16).
         ///
-        /// @return Reserved heap bytes.
+        /// @return Reserved pool bytes.
         uint64_t hostBytes() const {
-            return vectorCapacityBytes(firingRecords_, generatedBytes_,
-                levelValues_, originDependencies_, markerKeys_,
-                markerRemainingArgs_, markerArgs_, firingOrder_,
-                sealedStringsScratch_, sealedDependenciesScratch_);
+            return hostStorage_.reservedBytes();
         }
 
     private:
+        /// @brief Reserve measured output columns at the first download.
+        /// @details Projection construction has finished; later downloads reuse
+        /// the same lease without changing any column's capacity.
+        /// @return Nothing.
+        void reserveStorage();
+
         Phase2EvaluationCapacity capacity_{};
-        std::vector<DevicePhase2FiringRecord> firingRecords_;
-        std::vector<char> generatedBytes_;
-        std::vector<int32_t> levelValues_;
-        std::vector<DeviceEvaluationDependency> originDependencies_;
-        std::vector<DeviceEvaluationByteSlice> markerKeys_;
-        std::vector<int32_t> markerRemainingArgs_;
-        std::vector<DeviceEvaluationByteSlice> markerArgs_;
-        std::vector<uint32_t> firingOrder_;
-        std::vector<SealedString> sealedStringsScratch_;
-        std::vector<SealedExpressionWithValidity> sealedDependenciesScratch_;
+        ProjectionColumn<DevicePhase2FiringRecord> firingRecords_;
+        ProjectionColumn<char> generatedBytes_;
+        ProjectionColumn<int32_t> levelValues_;
+        ProjectionColumn<DeviceEvaluationDependency> originDependencies_;
+        ProjectionColumn<DeviceEvaluationByteSlice> markerKeys_;
+        ProjectionColumn<int32_t> markerRemainingArgs_;
+        ProjectionColumn<DeviceEvaluationByteSlice> markerArgs_;
+        ProjectionColumn<uint32_t> firingOrder_;
+        ProjectionColumn<SealedString> sealedStringsScratch_;
+        ProjectionColumn<SealedExpressionWithValidity> sealedDependenciesScratch_;
     };
 
 } // namespace gl::gpu

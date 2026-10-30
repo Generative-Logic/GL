@@ -29,13 +29,31 @@
 /// Coverage for the equivalence-class-application functions:
 /// `applyEquiClasses`, `dischargeToBeProved`, `dischargeContradiction`,
 /// `fillMailOut`, and `standardProcessing`. All are members of
-/// `gl::ExpressionAnalyzer`
+/// `gl::tests::ProverFixture`
 /// and require a fully-constructed analyzer plus disk fixtures to
 /// exercise behaviorally — too heavy for the <30 s test budget. The
 /// tests confirm symbol existence and signature; behavioral coverage
 /// is exercised end-to-end via the full main.py run.
 
+#include "../logical_block/statement_registry_operations.hpp"
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "admission_memory_fixture.hpp"
+#include "case_ledger_fixture.hpp"
+#include "case_processor_fixture.hpp"
+#include "compact_rule_processor_fixture.hpp"
+#include "equality_propagation_fixture.hpp"
+#include "equivalence_processor_fixture.hpp"
+#include "hash_rule_installer_fixture.hpp"
+#include "rejected_source_replay_fixture.hpp"
+#include "watch_processor_fixture.hpp"
+
+#include "runtime_support_fixture.hpp"
+#include "rejected_source_memory_fixture.hpp"
+#include "compiled_definition_fixture.hpp"
 #include "canonical_test_helpers.hpp"
 
 #include <set>
@@ -45,17 +63,17 @@
 namespace {
 // Multiplication tests model cores that participate in rule premises.
 void enableFixtureCoreVariants(gl::Memory& mb, const char* core) {
-    const gl::NameId id = mb.nameMap.encode(core);
+    const gl::NameId id = ((mb).nameMap).encode(core);
     const gl::NameId key[] = {id, 0};
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(mb.overallHashMemory.normalizedEncodedSubkeys, 1, key, 2);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(((((mb).overallHashMemory)).normalizedEncodedSubkeys), 1, key, 2);
     gl::refreshUsedAsPremise(mb);
 }
 // Signed twin: make `(core, polarity)` a premise core (polarity 1 = the
 // negated rows of that core are multiplied).
 void enableFixtureCoreVariantsSigned(gl::Memory& mb, const char* core, gl::NameId polarity) {
-    const gl::NameId id = mb.nameMap.encode(core);
+    const gl::NameId id = ((mb).nameMap).encode(core);
     const gl::NameId key[] = {id, polarity};
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(mb.overallHashMemory.normalizedEncodedSubkeys, 1, key, 2);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(((((mb).overallHashMemory)).normalizedEncodedSubkeys), 1, key, 2);
     gl::refreshUsedAsPremise(mb);
 }
 }
@@ -64,38 +82,38 @@ TEST(equi_reshuffle, apply_equi_classes_symbol_signature) {
     // Symbol-existence + signature check: take the method's address
     // with its expected signature `void(gl::Memory&)`. The test
     // compiles only if `applyEquiClasses` is declared on
-    // `gl::ExpressionAnalyzer` with that exact signature, satisfying
+    // `gl::tests::ProverFixture` with that exact signature, satisfying
     // Rule 18's unit-test requirement. Behavioral coverage
     // (intEncodedStatements mutations, mailOut commits,
     // dischargeToBeProved invocation) is exercised end-to-end via the
     // full main.py run.
-    using ApplyFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&);
-    ApplyFn fn = &gl::ExpressionAnalyzer::applyEquiClasses;
+    using ApplyFn = void (gl::EquivalenceProcessor::*)(gl::Memory&);
+    ApplyFn fn = &gl::EquivalenceProcessor::applyEquiClasses;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(equi_reshuffle, negated_equality_straddles_reclaim_scratch_through_recursive_emission) {
     for (bool descendant : {false, true}) {
-        gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+        gl::tests::ProverFixture analyzer(std::string("Peano"));
         analyzer.parameters.trackHistory = false;
         auto& memory = analyzer.body;
         auto& scratch = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount()-1);
         gl::ScratchScope fixtureFrame(scratch);
         const auto classScope = descendant
-            ? memory.nameMap.encodePush(gl::NameMap::MAIN_ID, "straddle_child")
+            ? ((memory).nameMap).encodePush(gl::NameMap::MAIN_ID, "straddle_child")
             : gl::NameMap::MAIN_ID;
-        const std::string scope = memory.nameMap.decode(classScope);
+        const std::string scope = ((memory).nameMap).decode(classScope);
         gl::EquivalenceClass cls;
         std::set<std::string> members;
         for (int i=0; i<36; ++i) members.insert("x"+std::to_string(i));
-        cls.setMembersFromNames(members, memory.nameMap);
+        cls.setMembersFromNames(members, ((memory).nameMap));
         for (auto a : cls.memberIds) for (auto b : cls.memberIds)
             if (a<b) cls.intEqualityLevelsMap[gl::packEqPairKey(a,b)] = {2};
         memory.assignClassesById(classScope, {cls});
         seedFixtureCanonicalClasses(memory);
-        const int bucket = memory.equivalenceClassesMap.lookup(classScope);
+        const int bucket = ((memory).equivalenceClassesMap).lookup(classScope);
         const char* contiguous = nullptr; int32_t length = 0;
-        ASSERT_FALSE(memory.equivalenceClassesMap.inner().peekBlobAt(bucket,0,contiguous,length));
+        ASSERT_FALSE(((memory).equivalenceClassesMap).inner().peekBlobAt(bucket,0,contiguous,length));
         auto* prefix = scratch.allocBytes(32);
         std::memset(prefix,0x39,32);
         const auto start = scratch.cursor();
@@ -103,22 +121,22 @@ TEST(equi_reshuffle, negated_equality_straddles_reclaim_scratch_through_recursiv
         gl::PagedVector<gl::IntEncodedExpr> emitted(&scratch,&dirty);
         const int levels[] = {1};
         for (int call=0; call<64; ++call) {
-            analyzer.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[outside,other])"),
+            analyzer.equalityPropagation.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[outside,other])"),
                 memory,true,levels,1,emitted,gl::StrSpan("main"));
             ASSERT_EQ(scratch.cursor(),start);
         }
         ASSERT_TRUE(emitted.empty());
-        analyzer.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[x0,outside])"),
+        analyzer.equalityPropagation.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[x0,outside])"),
             memory,true,levels,1,emitted,gl::StrSpan("main"));
         ASSERT_EQ(scratch.cursor(),start);
         for (int i=0; i<32; ++i) ASSERT_EQ(prefix[i],char(0x39));
         for (const auto& member : members) {
             if (member=="x0") continue;
             const std::string negation="!(=["+member+",outside])";
-            ASSERT_TRUE(gl::lookupStatementLevels(memory.intStatementLevelsMap,memory.nameMap,
+            ASSERT_TRUE(gl::lookupStatementLevels(((memory).intStatementLevelsMap),((memory).nameMap),
                 gl::StrSpan(negation),gl::StrSpan(scope))!=0);
-            if (descendant) ASSERT_EQ(gl::lookupStatementLevels(memory.intStatementLevelsMap,
-                memory.nameMap,gl::StrSpan(negation),gl::StrSpan("main")),0);
+            if (descendant) ASSERT_EQ(gl::lookupStatementLevels(((memory).intStatementLevelsMap),
+                ((memory).nameMap),gl::StrSpan(negation),gl::StrSpan("main")),0);
         }
     }
 }
@@ -131,15 +149,15 @@ TEST(equi_reshuffle, apply_equi_classes_expands_preexisting_negated_equality) {
     // must now revisit it when the class forms: negation !(=[2,a]) at a
     // branch scope, class {a,c} forming later at main, must yield !(=[2,c])
     // at the branch scope.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
 
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -151,7 +169,7 @@ TEST(equi_reshuffle, apply_equi_classes_expands_preexisting_negated_equality) {
     // 1. The negation arrives FIRST, at the branch scope — no class exists,
     //    so the arrival-time expansion is a no-op.
     const std::string negation = "!(=[2,a])";
-    ana.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(branch), out);
     // 2. The class {a, c} forms LATER, at main (positive-equality arrival).
     //    The equality carries a real origin — production equalities always
@@ -161,18 +179,18 @@ TEST(equi_reshuffle, apply_equi_classes_expands_preexisting_negated_equality) {
     const std::string equality = "(=[a,c])";
     const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
                                         nullptr, 0 };
-    ana.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
                      gl::StrSpan(mainNs), out);
 
     // Pre-check: the expanded form does not exist yet.
     const std::string expanded = "!(=[2,c])";
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(branch)) == 0);
 
     // 3. The class-application pass expands the pre-existing negation.
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
 
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(branch)) != 0);
 
     // 4. Citation-scope contract: the expanded row's equality1 history line
@@ -181,13 +199,13 @@ TEST(equi_reshuffle, apply_equi_classes_expands_preexisting_negated_equality) {
     //    branch-scope citation is unresolvable for the chapter walker: its
     //    ancestor lift refuses to cross an or-branch boundary.
     int64_t expandedPk = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, expanded, branch,
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), expanded, branch,
                                     expandedPk));
     const std::vector<gl::IdOrigin> expandedRows =
-        mb.exprOriginMap.recordsAt(mb.exprOriginMap.lookup(expandedPk));
+        ((mb).exprOriginMap).recordsAt(((mb).exprOriginMap).lookup(expandedPk));
     bool citeChecked = false;
     for (const gl::IdOrigin& o : expandedRows) {
-        const auto line = gl::decodeOrigin(o, mb.originInterner);
+        const auto line = gl::decodeOrigin(o, ((mb).originInterner));
         if (line.first != "equality1") continue;
         ASSERT_TRUE(line.second.size() == 2);
         ASSERT_TRUE(line.second[1].original == equality);
@@ -200,7 +218,7 @@ TEST(equi_reshuffle, apply_equi_classes_expands_preexisting_negated_equality) {
 TEST(equi_reshuffle, discharge_to_be_proved_symbol_signature) {
     // Symbol-existence + signature check for the toBeProved-discharge
     // helper. Compiles only if `dischargeToBeProved` is declared on
-    // `gl::ExpressionAnalyzer` with the current signature. Behavioral
+    // `gl::tests::ProverFixture` with the current signature. Behavioral
     // coverage (induction-recursion proven, non-recursion proven,
     // OR-integration / implication closure routed via the passed
     // `internalMailOut` `ColdMail&`) is exercised end-to-end via the full
@@ -210,21 +228,21 @@ TEST(equi_reshuffle, discharge_to_be_proved_symbol_signature) {
     // `ColdMail& internalMailOut` parameter lets the parent-scope
     // emissions (OR-integration + NotOrScope) be routed same-iter vs
     // cross-iter by the `standardProcessing` caller.
-    using DischargeFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&, int, gl::ColdMail&);
-    DischargeFn fn = &gl::ExpressionAnalyzer::dischargeToBeProved;
+    using DischargeFn = void (gl::GoalProcessor::*)(gl::Memory&, int, gl::ColdMail&);
+    DischargeFn fn = &gl::GoalProcessor::dischargeToBeProved;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(equi_reshuffle, fill_mail_out_symbol_signature) {
     // Symbol-existence + signature check for the centralised mailOut
     // population helper. Compiles only if `fillMailOut` is declared
-    // on `gl::ExpressionAnalyzer` with signature `void(Memory&)`.
+    // on `gl::tests::ProverFixture` with signature `void(Memory&)`.
     // Behavioral coverage (mailOut.statements + mailOut.exprOriginMap
     // population from intLocalEncodedStatementsDelta) is exercised
     // end-to-end via the full main.py run at commit 19 of
     // `sandbox/equi_reshuffle`.
-    using FillFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&);
-    FillFn fn = &gl::ExpressionAnalyzer::fillMailOut;
+    using FillFn = void (gl::BlockMailProcessor::*)(gl::Memory&);
+    FillFn fn = &gl::BlockMailProcessor::fillMailOut;
     ASSERT_TRUE(fn != nullptr);
 }
 
@@ -233,7 +251,7 @@ TEST(equi_reshuffle, ship_expr_history_transitively_symbol_signature) {
     // walk helper introduced by the buildStack-crash fix
     // (2026-05-25). Compiles only if
     // `shipExprHistoryTransitively` is declared on
-    // `gl::ExpressionAnalyzer` with signature
+    // `gl::tests::ProverFixture` with signature
     // `void(Memory&, const ExpressionWithValidity&, int)`.
     //
     // The helper is invoked from `fillMailOut` on every sub-dep of a
@@ -248,16 +266,16 @@ TEST(equi_reshuffle, ship_expr_history_transitively_symbol_signature) {
     // export succeeds on `__contradiction__(=[2,6])` and
     // `__contradiction__(in2[10,10,3])`) is exercised end-to-end via
     // the post-fix main.py run for IncubatorPeano 5-iter.
-    using ShipFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&,
+    using ShipFn = void (gl::ProofHistory::*)(gl::Memory&,
                                                      const gl::ExpressionWithValidity&,
                                                      int);
-    ShipFn fn = &gl::ExpressionAnalyzer::shipExprHistoryTransitively;
+    ShipFn fn = &gl::ProofHistory::shipExprHistoryTransitively;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(equi_reshuffle, buildstack_path_refcount_doubleentry) {
     // Behavioral test for the per-frame `insertedHere` ownership fix in
-    // `visualizer.cpp::ExpressionAnalyzer::buildStack`. Pre-fix:
+    // `visualizer.cpp::gl::tests::ProverFixture::buildStack`. Pre-fix:
     // `g_buildStackPath` is a flat `std::set<ExpressionWithValidity>` whose
     // `erase` has no refcount. When a node X appears on the recursion stack
     // twice (outer frame walking X; inner frame re-entering X because X is
@@ -311,31 +329,31 @@ TEST(equi_reshuffle, buildstack_path_refcount_doubleentry) {
     //     A-in-path check FIRES → cyclic → no other candidate → fallback
     //     returns false → C2 subtreeOk=false.
     //   - C3: F is broadcast foundation → succeeds → no cyclic row for B.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
     const gl::ExpressionWithValidity A("A", "main");
     const gl::ExpressionWithValidity B("B", "main");
     const gl::ExpressionWithValidity F("FOUNDATION", "main");
-    const int64_t kA = gl::mintOriginKey(mb.originInterner, A.original, A.validityName);
-    const int64_t kB = gl::mintOriginKey(mb.originInterner, B.original, B.validityName);
-    const int64_t kF = gl::mintOriginKey(mb.originInterner, F.original, F.validityName);
-    mb.exprOriginMap.assignRun(kA, std::vector<gl::IdOrigin>{
+    const int64_t kA = gl::mintOriginKey(((mb).originInterner), A.original, A.validityName);
+    const int64_t kB = gl::mintOriginKey(((mb).originInterner), B.original, B.validityName);
+    const int64_t kF = gl::mintOriginKey(((mb).originInterner), F.original, F.validityName);
+    ((mb).exprOriginMap).assignRun(kA, std::vector<gl::IdOrigin>{
         gl::IdOrigin(gl::OriginTag::implication, {kB}),     // C1 — cyclic via B
         gl::IdOrigin(gl::OriginTag::implication, {kB}),     // C2 — second cyclic candidate (pre-fix this is the one that falsely succeeds)
         gl::IdOrigin(gl::OriginTag::implication, {kF}),     // C3 — acyclic via foundation
     });
-    mb.exprOriginMap.assignRun(kB, std::vector<gl::IdOrigin>{
+    ((mb).exprOriginMap).assignRun(kB, std::vector<gl::IdOrigin>{
         gl::IdOrigin(gl::OriginTag::equality1, {kA}),       // E1 — back-edge to A
     });
-    mb.exprOriginMap.assignRun(kF, std::vector<gl::IdOrigin>{
+    ((mb).exprOriginMap).assignRun(kF, std::vector<gl::IdOrigin>{
         gl::IdOrigin(gl::OriginTag::broadcast, {}),         // early-return tag, no row emitted, success
     });
 
     std::vector<std::vector<std::string>> stack;
     std::set<gl::ExpressionWithValidity> covered;
-    ana.buildStack(mb, A, stack, covered);
+    ana.proofReconstructor.buildStack(mb, A, stack, covered);
 
     // Pass criterion: NO chapter row whose head is B exists in the stack.
     // Pre-fix would emit `B equality1 A` via the last-resort fallback
@@ -361,7 +379,7 @@ TEST(equi_reshuffle, standard_processing_symbol_signature) {
     // Symbol-existence + signature check for the per-call mail-absorb
     // driver introduced by the follow-up consolidation plan at
     // `~/.claude/plans/standard-processing.md`. Compiles only if
-    // `standardProcessing` is declared on `gl::ExpressionAnalyzer`
+    // `standardProcessing` is declared on `gl::tests::ProverFixture`
     // with signature
     // `void(Memory&, RoutingColdMail* externalMailIn, ColdMail& internalMailIn,
     //       ColdMail& internalMailOut, int coreId)`.
@@ -379,26 +397,26 @@ TEST(equi_reshuffle, standard_processing_symbol_signature) {
     // fillMailOut, changedClassesThisStep clear) is exercised by the two
     // `standardProcessing` call sites in `performElemPhase1` (pre-burst) and
     // `performElemPhase3` (post-burst), validated by the full main.py + verifier run.
-    using StdFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&,
+    using StdFn = void (gl::LogicBlockOperations::*)(gl::Memory&,
                                                     gl::RoutingColdMail*,
                                                     gl::ColdMail&,
                                                     gl::ColdMail&,
                                                     int);
-    StdFn fn = &gl::ExpressionAnalyzer::standardProcessing;
+    StdFn fn = &gl::LogicBlockOperations::standardProcessing;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(equi_reshuffle, discharge_contradiction_symbol_signature) {
     // Symbol-existence + signature check for the consolidated contradiction
     // discharge sweep. Compiles only if `dischargeContradiction` is declared
-    // on `gl::ExpressionAnalyzer` with signature `void(Memory&, int)`.
+    // on `gl::tests::ProverFixture` with signature `void(Memory&, int)`.
     // The function sweeps the int statement registry once per step (from
     // `standardProcessing`, directly before `dischargeToBeProved`) and fires
     // the matching incubator / CE-filter / vacuous-truth reaction on the
     // first main-scope contradiction. Behavioral coverage is the tests
     // below plus the full main.py + verifier run.
-    using DischargeContraFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&, int);
-    DischargeContraFn fn = &gl::ExpressionAnalyzer::dischargeContradiction;
+    using DischargeContraFn = void (gl::GoalProcessor::*)(gl::Memory&, int);
+    DischargeContraFn fn = &gl::GoalProcessor::dischargeContradiction;
     ASSERT_TRUE(fn != nullptr);
 }
 
@@ -410,48 +428,48 @@ TEST(equi_reshuffle, discharge_contradiction_refutes_ce_lb) {
     // (contradictionIndex >= 0) whose statement and negation are both known at
     // main gets its contradictionTable row marked and is
     // deactivated.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    mb.primedForContradiction = false;
-    mb.isPartOfRecursion = false;
+    ((mb).isActive) = true;
+    ((mb).primedForContradiction) = false;
+    ((mb).isPartOfRecursion) = false;
     ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(in[7,N])"), false));
-    mb.contradictionIndex = 0;
+    ((mb).contradictionIndex) = 0;
 
     const std::string P = "(in[7,N])";
     const std::string V = "main";
     const gl::EncodedExpression encP(P, V);
-    mb.intEncodedStatements.push_back(gl::encodeExpression(encP, mb.nameMap));
-    const int16_t negId = mb.nameMap.encode(ana.negate(P));
-    const int16_t vId = mb.nameMap.encode(V);
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, vId }, gl::StatementFlags{ true, false });
+    ((mb).intEncodedStatements).push_back(gl::encodeExpression(encP, ((mb).nameMap)));
+    const int16_t negId = ((mb).nameMap).encode(gl::DefinitionExpansion::negate(P));
+    const int16_t vId = ((mb).nameMap).encode(V);
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, vId }, gl::StatementFlags{ true, false });
 
-    ana.dischargeContradiction(mb, /*coreId=*/0);
+    ana.goalProcessor.dischargeContradiction(mb, /*coreId=*/0);
 
     // dischargeContradiction now handles CE: the table row is marked and the LB
     // is deactivated.
     ASSERT_TRUE(ana.contradictionTable[0].successful);
-    ASSERT_FALSE(mb.isActive);
+    ASSERT_FALSE(((mb).isActive));
 }
 
 TEST(equi_reshuffle, discharge_contradiction_no_contradiction_noop) {
     // Negative: active CE-filter LB whose statement has NO negation in scope.
     // No contradiction -> no reaction; LB stays active, table row unmarked.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
     ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(in[7,N])"), false));
-    mb.contradictionIndex = 0;
+    ((mb).contradictionIndex) = 0;
     const gl::EncodedExpression encP(std::string("(in[7,N])"), std::string("main"));
-    mb.intEncodedStatements.push_back(gl::encodeExpression(encP, mb.nameMap));
+    ((mb).intEncodedStatements).push_back(gl::encodeExpression(encP, ((mb).nameMap)));
 
-    ana.dischargeContradiction(mb, /*coreId=*/0);
+    ana.goalProcessor.dischargeContradiction(mb, /*coreId=*/0);
 
-    ASSERT_TRUE(mb.isActive);
+    ASSERT_TRUE(((mb).isActive));
     ASSERT_FALSE(ana.contradictionTable[0].successful);
 }
 
@@ -460,36 +478,36 @@ TEST(equi_reshuffle, discharge_contradiction_requires_both_sides_at_main) {
     // branch rejection / OR-disintegration rewriting is a separate known gap.
     // When the same positive also exists at main, the main row is sufficient
     // and the CE contradiction discharges even though the deeper copy remains.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
     ana.contradictionTable.push_back(
         gl::ContradictionItem(std::string("(in[7,N])"), false));
-    mb.contradictionIndex = 0;
+    ((mb).contradictionIndex) = 0;
 
     const std::string P = "(in[7,N])";
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID,
         "ordis_(or0[7,N])_((in[7,N]))");
-    const std::string branch = mb.nameMap.decode(branchId);
-    mb.intEncodedStatements.push_back(
-        gl::encodeExpression(gl::EncodedExpression(P, branch), mb.nameMap));
-    const gl::NameId negId = mb.nameMap.encode(ana.negate(P));
-    mb.intKnownStatements.insert(
+    const std::string branch = ((mb).nameMap).decode(branchId);
+    ((mb).intEncodedStatements).push_back(
+        gl::encodeExpression(gl::EncodedExpression(P, branch), ((mb).nameMap)));
+    const gl::NameId negId = ((mb).nameMap).encode(gl::DefinitionExpansion::negate(P));
+    ((mb).intKnownStatements).insert(
         gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
         gl::StatementFlags{ true, false });
 
-    ana.dischargeContradiction(mb, /*coreId=*/0);
-    ASSERT_TRUE(mb.isActive);
+    ana.goalProcessor.dischargeContradiction(mb, /*coreId=*/0);
+    ASSERT_TRUE(((mb).isActive));
     ASSERT_FALSE(ana.contradictionTable[0].successful);
 
-    mb.intEncodedStatements.push_back(
+    ((mb).intEncodedStatements).push_back(
         gl::encodeExpression(
-            gl::EncodedExpression(P, std::string("main")), mb.nameMap));
-    ana.dischargeContradiction(mb, /*coreId=*/0);
-    ASSERT_FALSE(mb.isActive);
+            gl::EncodedExpression(P, std::string("main")), ((mb).nameMap)));
+    ana.goalProcessor.dischargeContradiction(mb, /*coreId=*/0);
+    ASSERT_FALSE(((mb).isActive));
     ASSERT_TRUE(ana.contradictionTable[0].successful);
 }
 
@@ -498,21 +516,21 @@ TEST(equi_reshuffle, discharge_contradiction_inactive_noop) {
     // contradicting pair present. This is the phase-1/phase-3 double-run
     // idempotency guard (`standardProcessing` runs in both phases and phase 3
     // is not re-filtered by isActive).
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = false;
+    ((mb).isActive) = false;
     ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(in[7,N])"), false));
-    mb.contradictionIndex = 0;
+    ((mb).contradictionIndex) = 0;
     const std::string P = "(in[7,N])";
     const gl::EncodedExpression encP(P, std::string("main"));
-    mb.intEncodedStatements.push_back(gl::encodeExpression(encP, mb.nameMap));
-    const int16_t negId = mb.nameMap.encode(ana.negate(P));
-    const int16_t vId = mb.nameMap.encode(std::string("main"));
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, vId }, gl::StatementFlags{ true, false });
+    ((mb).intEncodedStatements).push_back(gl::encodeExpression(encP, ((mb).nameMap)));
+    const int16_t negId = ((mb).nameMap).encode(gl::DefinitionExpansion::negate(P));
+    const int16_t vId = ((mb).nameMap).encode(std::string("main"));
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, vId }, gl::StatementFlags{ true, false });
 
-    ana.dischargeContradiction(mb, /*coreId=*/0);
+    ana.goalProcessor.dischargeContradiction(mb, /*coreId=*/0);
 
     ASSERT_FALSE(ana.contradictionTable[0].successful);
 }
@@ -525,15 +543,15 @@ TEST(equi_reshuffle, negated_equality_arrival_expands_via_descendant_class) {
     // main (deeperOf(main, branch) == branch). Without the descendant
     // direction an ancestor-scope negation is invisible to a deeper class
     // and the branch-scope variant is never derived.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
 
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -547,7 +565,7 @@ TEST(equi_reshuffle, negated_equality_arrival_expands_via_descendant_class) {
     const std::string equality = "(=[a,c])";
     const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
                                         nullptr, 0 };
-    ana.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
                      gl::StrSpan(branch), out);
 
     // 2. The negation arrives LATER, at main — the arrival-time descendant
@@ -555,27 +573,27 @@ TEST(equi_reshuffle, negated_equality_arrival_expands_via_descendant_class) {
     out.clear();
     const std::string negation = "!(=[2,a])";
     const gl::TransientOrigin noOrigin{};
-    ana.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(mainNs), out);
 
     const std::string expanded = "!(=[2,c])";
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(branch)) != 0);
     // The product lands at the class's scope only — never at main.
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(mainNs)) == 0);
 
     // Citation contract: the expanded row's equality1 history line cites
     // the source negation at ITS scope (main) and the justifying equality
     // at the scope where its origin row lives (the branch).
     int64_t expandedPk = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, expanded, branch,
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), expanded, branch,
                                     expandedPk));
     const std::vector<gl::IdOrigin> expandedRows =
-        mb.exprOriginMap.recordsAt(mb.exprOriginMap.lookup(expandedPk));
+        ((mb).exprOriginMap).recordsAt(((mb).exprOriginMap).lookup(expandedPk));
     bool citeChecked = false;
     for (const gl::IdOrigin& o : expandedRows) {
-        const auto line = gl::decodeOrigin(o, mb.originInterner);
+        const auto line = gl::decodeOrigin(o, ((mb).originInterner));
         if (line.first != "equality1") continue;
         ASSERT_TRUE(line.second.size() == 2);
         ASSERT_TRUE(line.second[0].original == negation);
@@ -593,15 +611,15 @@ TEST(equi_reshuffle, apply_equi_classes_expands_negation_via_later_descendant_cl
     // class {a,c} forms LATER at a branch scope. Pass 1's three-way
     // comparability pre-gate must revisit the main-scope negation for the
     // branch-scope delta class and deposit !(=[2,c]) at the branch.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
 
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -613,7 +631,7 @@ TEST(equi_reshuffle, apply_equi_classes_expands_negation_via_later_descendant_cl
     // 1. The negation arrives FIRST, at main — no class exists anywhere,
     //    so the arrival-time expansion is a no-op.
     const std::string negation = "!(=[2,a])";
-    ana.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(mainNs), out);
 
     // 2. The class {a, c} forms LATER, at the branch scope.
@@ -621,70 +639,70 @@ TEST(equi_reshuffle, apply_equi_classes_expands_negation_via_later_descendant_cl
     const std::string equality = "(=[a,c])";
     const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
                                         nullptr, 0 };
-    ana.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
                      gl::StrSpan(branch), out);
 
     // Pre-check: the expanded form does not exist yet at either scope.
     const std::string expanded = "!(=[2,c])";
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(branch)) == 0);
 
     // 3. The class-application pass expands the pre-existing negation via
     //    the strictly-deeper delta class.
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
 
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(branch)) != 0);
     // The product lands at the class's scope only — never at main.
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(expanded), gl::StrSpan(mainNs)) == 0);
 }
 
 TEST(equi_reshuffle, ancestor_known_predicate_directions) {
     // Direct coverage of the shared Site F predicate (Rule 18): strict
     // ancestors vs self, and the deliberate absence of a descendant check.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
 
-    const gl::NameId exprId = mb.nameMap.encode(std::string("(in[7,N])"));
-    gl::upsertStatementKey(mb.intKnownStatements,
+    const gl::NameId exprId = ((mb).nameMap).encode(std::string("(in[7,N])"));
+    gl::upsertStatementKey(((mb).intKnownStatements),
         gl::packStatementKey(exprId, gl::NameMap::MAIN_ID), /*local=*/true);
     // Known at main: strict-ancestor-known from the branch, self-known at main.
-    ASSERT_TRUE(gl::ancestorKnown(mb, exprId, branchId, /*includeSelf=*/false));
-    ASSERT_TRUE(gl::ancestorKnown(mb, exprId, branchId, /*includeSelf=*/true));
-    ASSERT_FALSE(gl::ancestorKnown(mb, exprId, gl::NameMap::MAIN_ID,
+    ASSERT_TRUE(gl::StatementKnowledge::ancestorKnown(mb, exprId, branchId, /*includeSelf=*/false));
+    ASSERT_TRUE(gl::StatementKnowledge::ancestorKnown(mb, exprId, branchId, /*includeSelf=*/true));
+    ASSERT_FALSE(gl::StatementKnowledge::ancestorKnown(mb, exprId, gl::NameMap::MAIN_ID,
                                    /*includeSelf=*/false));
-    ASSERT_TRUE(gl::ancestorKnown(mb, exprId, gl::NameMap::MAIN_ID,
+    ASSERT_TRUE(gl::StatementKnowledge::ancestorKnown(mb, exprId, gl::NameMap::MAIN_ID,
                                   /*includeSelf=*/true));
 
     // Known only at the branch: never visible from main (no descendant
     // scan), self-only at the branch.
-    const gl::NameId expr2Id = mb.nameMap.encode(std::string("(in[8,N])"));
-    gl::upsertStatementKey(mb.intKnownStatements,
+    const gl::NameId expr2Id = ((mb).nameMap).encode(std::string("(in[8,N])"));
+    gl::upsertStatementKey(((mb).intKnownStatements),
         gl::packStatementKey(expr2Id, branchId), /*local=*/true);
-    ASSERT_FALSE(gl::ancestorKnown(mb, expr2Id, gl::NameMap::MAIN_ID,
+    ASSERT_FALSE(gl::StatementKnowledge::ancestorKnown(mb, expr2Id, gl::NameMap::MAIN_ID,
                                    /*includeSelf=*/true));
-    ASSERT_FALSE(gl::ancestorKnown(mb, expr2Id, branchId,
+    ASSERT_FALSE(gl::StatementKnowledge::ancestorKnown(mb, expr2Id, branchId,
                                    /*includeSelf=*/false));
-    ASSERT_TRUE(gl::ancestorKnown(mb, expr2Id, branchId,
+    ASSERT_TRUE(gl::StatementKnowledge::ancestorKnown(mb, expr2Id, branchId,
                                   /*includeSelf=*/true));
 }
 
 TEST(equi_reshuffle, add_statement_refuses_ancestor_known_descendant_copy) {
     // The addStatement door gate: a statement known at main is refused at a
     // descendant branch scope — no registration, no newStatements row.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    ((mb).isActive) = true;
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -694,33 +712,33 @@ TEST(equi_reshuffle, add_statement_refuses_ancestor_known_descendant_copy) {
     const gl::TransientOrigin noOrigin{};
     const std::string stmt = "(in[7,N])";
 
-    ana.addStatement(gl::StrSpan(stmt), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(stmt), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(mainNs), out);
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(stmt), gl::StrSpan(mainNs)) != 0);
 
     out.clear();
-    ana.addStatement(gl::StrSpan(stmt), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(stmt), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(branch), out);
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(stmt), gl::StrSpan(branch)) == 0);
     ASSERT_EQ(out.size(), 0);
     // The main row is untouched.
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(stmt), gl::StrSpan(mainNs)) != 0);
 }
 
 TEST(equi_reshuffle, add_statement_refuses_ancestor_known_equality_pair) {
     // Equality shapes refuse as a PAIR (I-180 pair invariant holds at the
     // ancestor too): neither orientation registers at the branch.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    ((mb).isActive) = true;
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -731,19 +749,19 @@ TEST(equi_reshuffle, add_statement_refuses_ancestor_known_equality_pair) {
     const std::string eq = "(=[x,y])";
     const std::string eqMirror = "(=[y,x])";
 
-    ana.addStatement(gl::StrSpan(eq), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(eq), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(mainNs), out);
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(eq), gl::StrSpan(mainNs)) != 0);
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(eqMirror), gl::StrSpan(mainNs)) != 0);
 
     out.clear();
-    ana.addStatement(gl::StrSpan(eq), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(eq), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(branch), out);
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(eq), gl::StrSpan(branch)) == 0);
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(eqMirror), gl::StrSpan(branch)) == 0);
     ASSERT_EQ(out.size(), 0);
 }
@@ -753,15 +771,15 @@ TEST(equi_reshuffle, apply_equi_classes_refuses_ancestor_known_product) {
     // main statement is refused when the product is itself main-known.
     // Lex order makes the class {a,c} canonicalize toward a, so the
     // rewrite direction is (in[c,N]) -> (in[a,N]).
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    mb.level = 0;  // the commit's max-level gate compares against this
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    ((mb).isActive) = true;
+    ((mb).level) = 0;  // the commit's max-level gate compares against this
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -772,34 +790,34 @@ TEST(equi_reshuffle, apply_equi_classes_refuses_ancestor_known_product) {
     const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
                                         nullptr, 0 };
 
-    ana.addStatement(gl::StrSpan(std::string("(in[a,N])")), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(std::string("(in[a,N])")), mb, true, lv, 1,
                      noOrigin, gl::StrSpan(mainNs), out);
     out.clear();
-    ana.addStatement(gl::StrSpan(std::string("(in[c,N])")), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(std::string("(in[c,N])")), mb, true, lv, 1,
                      noOrigin, gl::StrSpan(mainNs), out);
     out.clear();
-    ana.addStatement(gl::StrSpan(std::string("(=[a,c])")), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(std::string("(=[a,c])")), mb, true, lv, 1,
                      eqOrigin, gl::StrSpan(branch), out);
 
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
 
     // The rewrite at the branch is refused: main already knows (in[a,N]).
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(std::string("(in[a,N])")), gl::StrSpan(branch)) == 0);
 }
 
 TEST(equi_reshuffle, apply_equi_classes_descendant_rewrite_still_deposits) {
     // D-33 control: with no ancestor-known collision, the descendant-scope
     // class still rewrites the main statement and deposits at the branch.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    mb.level = 0;  // the commit's max-level gate compares against this
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    ((mb).isActive) = true;
+    ((mb).level) = 0;  // the commit's max-level gate compares against this
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -810,15 +828,15 @@ TEST(equi_reshuffle, apply_equi_classes_descendant_rewrite_still_deposits) {
     const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
                                         nullptr, 0 };
 
-    ana.addStatement(gl::StrSpan(std::string("(in[c,N])")), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(std::string("(in[c,N])")), mb, true, lv, 1,
                      noOrigin, gl::StrSpan(mainNs), out);
     out.clear();
-    ana.addStatement(gl::StrSpan(std::string("(=[a,c])")), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(std::string("(=[a,c])")), mb, true, lv, 1,
                      eqOrigin, gl::StrSpan(branch), out);
 
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
 
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(std::string("(in[a,N])")), gl::StrSpan(branch)) != 0);
 }
 
@@ -827,15 +845,15 @@ TEST(equi_reshuffle, positive_rewrite_cites_inherited_equality_at_origin_scope) 
     // class. Its equality1 history must cite each justifying equality where
     // that equality's origin row lives; otherwise a branch-scope citation of
     // main-scope content cannot cross the ordis boundary in buildStack.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    mb.level = 0;
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    ((mb).isActive) = true;
+    ((mb).level) = 0;
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
@@ -847,12 +865,12 @@ TEST(equi_reshuffle, positive_rewrite_cites_inherited_equality_at_origin_scope) 
                                         nullptr, 0 };
 
     const std::string ancestorEquality = "(=[a,c])";
-    ana.addStatement(gl::StrSpan(ancestorEquality), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(ancestorEquality), mb, true, lv, 1,
                      eqOrigin, gl::StrSpan(mainNs), out);
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
 
     out.clear();
-    ana.addStatement(gl::StrSpan(std::string("(=[c,d])")), mb, true, lv, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(std::string("(=[c,d])")), mb, true, lv, 1,
                      eqOrigin, gl::StrSpan(branch), out);
 
     // The branch merge creates d=a through bridge c. The branch equality
@@ -860,13 +878,13 @@ TEST(equi_reshuffle, positive_rewrite_cites_inherited_equality_at_origin_scope) 
     // in the equality2 row.
     const std::string mergedEquality = "(=[d,a])";
     int64_t mergedPk = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, mergedEquality, branch,
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), mergedEquality, branch,
                                     mergedPk));
     const std::vector<gl::IdOrigin> mergedRows =
-        mb.exprOriginMap.recordsAt(mb.exprOriginMap.lookup(mergedPk));
+        ((mb).exprOriginMap).recordsAt(((mb).exprOriginMap).lookup(mergedPk));
     bool mergeCiteChecked = false;
     for (const gl::IdOrigin& o : mergedRows) {
-        const auto line = gl::decodeOrigin(o, mb.originInterner);
+        const auto line = gl::decodeOrigin(o, ((mb).originInterner));
         if (line.first != "equality2") continue;
         ASSERT_TRUE(line.second.size() == 2);
         ASSERT_TRUE(line.second[0].original == "(=[d,c])");
@@ -879,23 +897,23 @@ TEST(equi_reshuffle, positive_rewrite_cites_inherited_equality_at_origin_scope) 
 
     out.clear();
     const std::string source = "(in[c,N])";
-    ana.addStatement(gl::StrSpan(source), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(source), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(branch), out);
 
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
 
     const std::string product = "(in[a,N])";
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap,
-        mb.nameMap, gl::StrSpan(product), gl::StrSpan(branch)) != 0);
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap),
+        ((mb).nameMap), gl::StrSpan(product), gl::StrSpan(branch)) != 0);
 
     int64_t productPk = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, product, branch,
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), product, branch,
                                     productPk));
     const std::vector<gl::IdOrigin> productRows =
-        mb.exprOriginMap.recordsAt(mb.exprOriginMap.lookup(productPk));
+        ((mb).exprOriginMap).recordsAt(((mb).exprOriginMap).lookup(productPk));
     bool citeChecked = false;
     for (const gl::IdOrigin& o : productRows) {
-        const auto line = gl::decodeOrigin(o, mb.originInterner);
+        const auto line = gl::decodeOrigin(o, ((mb).originInterner));
         if (line.first != "equality1") continue;
         ASSERT_TRUE(line.second.size() == 2);
         ASSERT_TRUE(line.second[0].original == source);
@@ -912,14 +930,14 @@ TEST(equi_reshuffle, sweep_ancestor_known_rows_drops_lists_keeps_tombstones) {
     // residue simulated by direct container writes, bypassing the door
     // gates) loses its statement-LIST rows; the registry rows (known /
     // levels / local-set) survive as tombstones; main rows are untouched.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
-    const gl::NameId branchId = mb.nameMap.encodePush(
+    ((mb).isActive) = true;
+    const gl::NameId branchId = ((mb).nameMap).encodePush(
         gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string branch = ((mb).nameMap).decode(branchId);
     const std::string mainNs = "main";
     const std::string stmt = "(in[7,N])";
 
@@ -930,61 +948,61 @@ TEST(equi_reshuffle, sweep_ancestor_known_rows_drops_lists_keeps_tombstones) {
     const gl::TransientOrigin noOrigin{};
 
     // Ancestor row through the door.
-    ana.addStatement(gl::StrSpan(stmt), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(stmt), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(mainNs), out);
 
     // Legacy duplicate at the branch: direct writes simulating the
     // pre-gate state (register + list rows at the branch scope).
-    const gl::NameId stmtId = mb.nameMap.encode(stmt);
+    const gl::NameId stmtId = ((mb).nameMap).encode(stmt);
     const int64_t pkBranch = gl::packStatementKey(stmtId, branchId);
-    mb.intStatementLevelsMap.assignSetRange(pkBranch, lv, lv + 1);
-    gl::upsertStatementKey(mb.intKnownStatements, pkBranch, /*local=*/true);
-    mb.intLocalEncodedStatementsSet.mint(pkBranch);
+    ((mb).intStatementLevelsMap).assignSetRange(pkBranch, lv, lv + 1);
+    gl::upsertStatementKey(((mb).intKnownStatements), pkBranch, /*local=*/true);
+    ((mb).intLocalEncodedStatementsSet).mint(pkBranch);
     const gl::IntEncodedExpr ieBranch = gl::encodeExpression(
-        gl::StrSpan(stmt), gl::StrSpan(branch), mb.nameMap);
-    mb.intEncodedStatements.push_back(ieBranch);
-    mb.intLocalEncodedStatements.push_back(ieBranch);
-    mb.intLocalEncodedStatementsDelta.push_back(ieBranch);
+        gl::StrSpan(stmt), gl::StrSpan(branch), ((mb).nameMap));
+    ((mb).intEncodedStatements).push_back(ieBranch);
+    ((mb).intLocalEncodedStatements).push_back(ieBranch);
+    ((mb).intLocalEncodedStatementsDelta).push_back(ieBranch);
 
-    mb.mutatedThisBurst = false;
-    ana.sweepAncestorKnownRows(mb);
+    ((mb).mutatedThisBurst) = false;
+    ana.statementMemory.sweepAncestorKnownRows(mb);
 
     // Branch LIST rows gone from all three vectors.
-    for (int32_t i = 0; i < mb.intEncodedStatements.size(); ++i) {
-        ASSERT_FALSE(mb.intEncodedStatements[i].originalId == stmtId
-                     && mb.intEncodedStatements[i].validityId == branchId);
+    for (int32_t i = 0; i < ((mb).intEncodedStatements).size(); ++i) {
+        ASSERT_FALSE(((mb).intEncodedStatements)[i].originalId == stmtId
+                     && ((mb).intEncodedStatements)[i].validityId == branchId);
     }
-    for (int32_t i = 0; i < mb.intLocalEncodedStatements.size(); ++i) {
-        ASSERT_FALSE(mb.intLocalEncodedStatements[i].originalId == stmtId
-                     && mb.intLocalEncodedStatements[i].validityId == branchId);
+    for (int32_t i = 0; i < ((mb).intLocalEncodedStatements).size(); ++i) {
+        ASSERT_FALSE(((mb).intLocalEncodedStatements)[i].originalId == stmtId
+                     && ((mb).intLocalEncodedStatements)[i].validityId == branchId);
     }
-    for (int32_t i = 0; i < mb.intLocalEncodedStatementsDelta.size(); ++i) {
+    for (int32_t i = 0; i < ((mb).intLocalEncodedStatementsDelta).size(); ++i) {
         ASSERT_FALSE(
-            mb.intLocalEncodedStatementsDelta[i].originalId == stmtId
-            && mb.intLocalEncodedStatementsDelta[i].validityId == branchId);
+            ((mb).intLocalEncodedStatementsDelta)[i].originalId == stmtId
+            && ((mb).intLocalEncodedStatementsDelta)[i].validityId == branchId);
     }
     // Tombstones survive (I-58 / I-85 discipline of the removal door).
-    ASSERT_TRUE(mb.intKnownStatements.find(
+    ASSERT_TRUE(((mb).intKnownStatements).find(
         gl::StatementKey{ stmtId, branchId }) != nullptr);
-    ASSERT_TRUE(mb.intStatementLevelsMap.lookup(pkBranch) != 0);
+    ASSERT_TRUE(((mb).intStatementLevelsMap).lookup(pkBranch) != 0);
     // Main rows untouched.
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(stmt), gl::StrSpan(mainNs)) != 0);
     bool mainListRow = false;
-    for (int32_t i = 0; i < mb.intEncodedStatements.size(); ++i) {
-        if (mb.intEncodedStatements[i].originalId == stmtId
-            && mb.intEncodedStatements[i].validityId == gl::NameMap::MAIN_ID) {
+    for (int32_t i = 0; i < ((mb).intEncodedStatements).size(); ++i) {
+        if (((mb).intEncodedStatements)[i].originalId == stmtId
+            && ((mb).intEncodedStatements)[i].validityId == gl::NameMap::MAIN_ID) {
             mainListRow = true;
         }
     }
     ASSERT_TRUE(mainListRow);
     // Quiescence mutation flag raised (D-194).
-    ASSERT_TRUE(mb.mutatedThisBurst);
+    ASSERT_TRUE(((mb).mutatedThisBurst));
 
     // Idempotence: a second sweep finds nothing and flags nothing.
-    mb.mutatedThisBurst = false;
-    ana.sweepAncestorKnownRows(mb);
-    ASSERT_FALSE(mb.mutatedThisBurst);
+    ((mb).mutatedThisBurst) = false;
+    ana.statementMemory.sweepAncestorKnownRows(mb);
+    ASSERT_FALSE(((mb).mutatedThisBurst));
 }
 
 TEST(equi_reshuffle, remove_expression_repairs_eqclass_waterlines) {
@@ -992,11 +1010,11 @@ TEST(equi_reshuffle, remove_expression_repairs_eqclass_waterlines) {
     // row below a stored per-class waterline decrements it by exactly the
     // erased-below count; a waterline at or below the erased position is
     // untouched.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
     const std::string mainNs = "main";
 
     // Four rows at positions 0..3.
@@ -1006,32 +1024,32 @@ TEST(equi_reshuffle, remove_expression_repairs_eqclass_waterlines) {
     const std::string t3 = "(in[s,N])";
     for (const std::string* t : { &t0, &t1, &t2, &t3 }) {
         const gl::IntEncodedExpr ie = gl::encodeExpression(
-            gl::StrSpan(*t), gl::StrSpan(mainNs), mb.nameMap);
-        mb.intEncodedStatements.push_back(ie);
+            gl::StrSpan(*t), gl::StrSpan(mainNs), ((mb).nameMap));
+        ((mb).intEncodedStatements).push_back(ie);
     }
-    const int32_t baseCount = mb.intEncodedStatements.size();
+    const int32_t baseCount = ((mb).intEncodedStatements).size();
     ASSERT_TRUE(baseCount >= 4);
     const int32_t posQ = baseCount - 3;  // t1's position
 
     // Two waterlines: one above the erase position, one at it.
     const std::vector<gl::NameId> membersHigh = {
-        mb.nameMap.encode(std::string("wlA")),
-        mb.nameMap.encode(std::string("wlB")) };
+        ((mb).nameMap).encode(std::string("wlA")),
+        ((mb).nameMap).encode(std::string("wlB")) };
     const std::vector<gl::NameId> membersLow = {
-        mb.nameMap.encode(std::string("wlC")),
-        mb.nameMap.encode(std::string("wlD")) };
-    gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, gl::NameMap::MAIN_ID,
+        ((mb).nameMap).encode(std::string("wlC")),
+        ((mb).nameMap).encode(std::string("wlD")) };
+    gl::upsertEqClassIndex(((mb).eqClassSttmntIndexMapMap), gl::NameMap::MAIN_ID,
                            membersHigh, baseCount);       // above posQ
-    gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, gl::NameMap::MAIN_ID,
+    gl::upsertEqClassIndex(((mb).eqClassSttmntIndexMapMap), gl::NameMap::MAIN_ID,
                            membersLow, posQ);             // at posQ
 
-    ana.removeExpressionFromMemoryBlock(gl::StrSpan(t1), gl::StrSpan(mainNs),
+    gl::StatementRegistryOperations::removeExpressionFromMemoryBlock(gl::StrSpan(t1), gl::StrSpan(mainNs),
                                         mb, /*state=*/0);
 
-    ASSERT_EQ(mb.intEncodedStatements.size(), baseCount - 1);
-    ASSERT_EQ(gl::lookupEqClassIndex(mb.eqClassSttmntIndexMapMap,
+    ASSERT_EQ(((mb).intEncodedStatements).size(), baseCount - 1);
+    ASSERT_EQ(gl::lookupEqClassIndex(((mb).eqClassSttmntIndexMapMap),
         gl::NameMap::MAIN_ID, membersHigh), baseCount - 1);
-    ASSERT_EQ(gl::lookupEqClassIndex(mb.eqClassSttmntIndexMapMap,
+    ASSERT_EQ(gl::lookupEqClassIndex(((mb).eqClassSttmntIndexMapMap),
         gl::NameMap::MAIN_ID, membersLow), posQ);
 }
 
@@ -1045,14 +1063,14 @@ TEST(equi_reshuffle, seeding_time_class_delta_survives_to_first_step) {
     // Pass-2 waterline is seeded to the then-current registry size, so
     // Pass 2 never revisits them. After the step, Step 7 must have cleared
     // the consumed tracker.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    mb.isActive = true;
+    ((mb).isActive) = true;
     // The product-commit gate requires max(product levels) == mb.level; the
     // bare analyzer root defaults to -1, so pin the production level-0 shape.
-    mb.level = 0;
+    ((mb).level) = 0;
 
     gl::DirtyState outDirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(
@@ -1064,19 +1082,19 @@ TEST(equi_reshuffle, seeding_time_class_delta_survives_to_first_step) {
     // the plain fact first, then the copy-axiom-shaped equality.
     const std::string mainNs = "main";
     const std::string fact = "(in2[2,a,3])";
-    ana.addStatement(gl::StrSpan(fact), mb, true, lv, 1, noOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(fact), mb, true, lv, 1, noOrigin,
                      gl::StrSpan(mainNs), out);
     out.clear();
     const std::string equality = "(=[a,c])";
     const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
                                         nullptr, 0 };
-    ana.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
+    ana.statementMemory.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
                      gl::StrSpan(mainNs), out);
 
     // The seeding delta is pending; the class product does not exist yet.
-    ASSERT_TRUE(mb.changedClassesThisStep.size() > 0);
+    ASSERT_TRUE(((mb).changedClassesThisStep).size() > 0);
     const std::string product = "(in2[2,c,3])";
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(product), gl::StrSpan(mainNs)) == 0);
 
     // First elementary step, phase 1: the pre-burst standardProcessing
@@ -1084,9 +1102,9 @@ TEST(equi_reshuffle, seeding_time_class_delta_survives_to_first_step) {
     // seeded fact) and its Step 7 clears the tracker.
     ana.performElemPhase1(mb, 0);
 
-    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(product), gl::StrSpan(mainNs)) != 0);
-    ASSERT_TRUE(mb.changedClassesThisStep.size() == 0);
+    ASSERT_TRUE(((mb).changedClassesThisStep).size() == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1103,36 +1121,36 @@ void putClassesAt(gl::Memory& mb, gl::NameId vid,
     std::vector<int32_t> lens;
     for (const auto& names : memberLists) {
         gl::EquivalenceClass cls;
-        cls.setMembersFromNames(names, mb.nameMap);
+        cls.setMembersFromNames(names, ((mb).nameMap));
         const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
         pool.insert(pool.end(), blob.begin(), blob.end());
         lens.push_back(static_cast<int32_t>(blob.size()));
     }
-    mb.equivalenceClassesMap.inner().assignRun(vid, pool.data(), lens.data(),
+    ((mb).equivalenceClassesMap).inner().assignRun(vid, pool.data(), lens.data(),
                                                static_cast<int32_t>(lens.size()));
     seedFixtureCanonicalClasses(mb);
 }
 
 void pushDelta(gl::Memory& mb, gl::NameId vid, const std::set<std::string>& names) {
     gl::EquivalenceClass cls;
-    cls.setMembersFromNames(names, mb.nameMap);
+    cls.setMembersFromNames(names, ((mb).nameMap));
     const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
-    mb.changedClassesThisStep.push(vid, blob.data(), static_cast<int32_t>(blob.size()));
+    ((mb).changedClassesThisStep).push(vid, blob.data(), static_cast<int32_t>(blob.size()));
 }
 
 // The merge seam's ledger re-key for a class placed by `putClassesAt`.
-int32_t rekeyAt(gl::ExpressionAnalyzer& ana, gl::Memory& mb, gl::NameId vid,
+int32_t rekeyAt(gl::tests::ProverFixture& ana, gl::Memory& mb, gl::NameId vid,
                 const std::set<std::string>& names) {
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::PagedVector<gl::NameId> members(&gl::genScratchArenas().forSlot(0), &d);
-    for (const auto& n : names) members.push_back(mb.nameMap.encode(n));
-    return ana.recanonicalizeWatchLedgers(mb, vid, members);
+    for (const auto& n : names) members.push_back(((mb).nameMap).encode(n));
+    return ana.watchProcessor.recanonicalizeWatchLedgers(mb, vid, members);
 }
 
 gl::IntEncodedExpr pushRow(gl::Memory& mb, const char* text, gl::NameId vid) {
-    const gl::EncodedExpression src(text, mb.nameMap.decode(vid));
-    const gl::IntEncodedExpr row = gl::encodeExpression(src, mb.nameMap);
-    mb.intEncodedStatements.push_back(row);
+    const gl::EncodedExpression src(text, ((mb).nameMap).decode(vid));
+    const gl::IntEncodedExpr row = gl::encodeExpression(src, ((mb).nameMap));
+    ((mb).intEncodedStatements).push_back(row);
     return row;
 }
 
@@ -1157,16 +1175,16 @@ TEST(equi_batch, merge_level_runs_non_derived_tier_transparent) {
 
 TEST(equi_batch, class_table_posts_every_member_once_per_class) {
     gl::Memory mb;
-    const gl::NameId mainId = mb.nameMap.encode("main");
-    gl::EquivalenceClass c1; c1.setMembersFromNames({ "a", "b" }, mb.nameMap);
-    gl::EquivalenceClass c2; c2.setMembersFromNames({ "b", "c" }, mb.nameMap);
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
+    gl::EquivalenceClass c1; c1.setMembersFromNames({ "a", "b" }, ((mb).nameMap));
+    gl::EquivalenceClass c2; c2.setMembersFromNames({ "b", "c" }, ((mb).nameMap));
     const std::vector<char> b1 = gl::serializeEquivalenceClass(c1);
     const std::vector<char> b2 = gl::serializeEquivalenceClass(c2);
     const gl::EquivalenceClassView v1{ b1.data(), static_cast<int32_t>(b1.size()) };
     const gl::EquivalenceClassView v2{ b2.data(), static_cast<int32_t>(b2.size()) };
-    const gl::NameId idA = mb.nameMap.lookup(gl::StrSpan("a", 1));
-    const gl::NameId idB = mb.nameMap.lookup(gl::StrSpan("b", 1));
-    const gl::NameId idC = mb.nameMap.lookup(gl::StrSpan("c", 1));
+    const gl::NameId idA = ((mb).nameMap).lookup(gl::StrSpan("a", 1));
+    const gl::NameId idB = ((mb).nameMap).lookup(gl::StrSpan("b", 1));
+    const gl::NameId idC = ((mb).nameMap).lookup(gl::StrSpan("c", 1));
     const gl::NameId strong1[2] = { idA, idB };
     const gl::NameId strong2[2] = { idB, idC };
 
@@ -1190,7 +1208,7 @@ TEST(equi_batch, class_table_posts_every_member_once_per_class) {
     table.forEachClassContaining(idA, [&](int32_t c) { ++hitsA; ASSERT_EQ(c, i1); });
     ASSERT_EQ(hitsA, 1);
     ASSERT_TRUE(table.anyClassContains(idC));
-    ASSERT_FALSE(table.anyClassContains(mb.nameMap.encode("d")));
+    ASSERT_FALSE(table.anyClassContains(((mb).nameMap).encode("d")));
 
     table.setDueFrom(i2, 11);
     ASSERT_EQ(table.rowAt(i2).dueFrom, static_cast<int64_t>(11));
@@ -1240,12 +1258,12 @@ TEST(equi_batch, staged_products_dedup_key_and_pools) {
 }
 
 TEST(equi_batch, build_class_table_delta_rank_due_and_dead_skip) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId mainId = mb.nameMap.encode("main");
-    const gl::NameId branchId = mb.nameMap.encodePush(mainId, "ordis_(or9[1,7,3,2])_((=[6,x]))");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
+    const gl::NameId branchId = ((mb).nameMap).encodePush(mainId, "ordis_(or9[1,7,3,2])_((=[6,x]))");
 
     // main: {a,b} (delta entry 0) and {x,y} (non-delta, waterline 7);
     // branch: {p,q} (delta entry 1, but dead-scope-skipped by Pass 1).
@@ -1254,8 +1272,8 @@ TEST(equi_batch, build_class_table_delta_rank_due_and_dead_skip) {
     pushDelta(mb, mainId, { "a", "b" });
     pushDelta(mb, branchId, { "p", "q" });
     {
-        gl::EquivalenceClass xy; xy.setMembersFromNames({ "x", "y" }, mb.nameMap);
-        gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, mainId, xy.memberIds, 7);
+        gl::EquivalenceClass xy; xy.setMembersFromNames({ "x", "y" }, ((mb).nameMap));
+        gl::upsertEqClassIndex(((mb).eqClassSttmntIndexMapMap), mainId, xy.memberIds, 7);
     }
 
     gl::DirtyState dirty = gl::DirtyState::Clean;
@@ -1265,13 +1283,13 @@ TEST(equi_batch, build_class_table_delta_rank_due_and_dead_skip) {
     deltaLive.push_back(1); deltaLive.push_back(0);
     startIdx.push_back(0);  startIdx.push_back(0);
     gl::EquiClassTable table(&gArena, &dirty);
-    ana.buildEquiClassTable(mb, table, deltaLive, startIdx, gArena);
+    gl::tests::EquivalenceProcessorFixture::buildEquiClassTable(ana.equivalenceProcessor, mb, table, deltaLive, startIdx, gArena);
 
     // The dead delta class is absent; the two main classes are present.
     ASSERT_EQ(table.classCount(), 2);
-    const gl::NameId idA = mb.nameMap.lookup(gl::StrSpan("a", 1));
-    const gl::NameId idX = mb.nameMap.lookup(gl::StrSpan("x", 1));
-    const gl::NameId idP = mb.nameMap.lookup(gl::StrSpan("p", 1));
+    const gl::NameId idA = ((mb).nameMap).lookup(gl::StrSpan("a", 1));
+    const gl::NameId idX = ((mb).nameMap).lookup(gl::StrSpan("x", 1));
+    const gl::NameId idP = ((mb).nameMap).lookup(gl::StrSpan("p", 1));
     ASSERT_FALSE(table.anyClassContains(idP));
     int32_t cAB = -1, cXY = -1;
     table.forEachClassContaining(idA, [&](int32_t c) { cAB = c; });
@@ -1288,13 +1306,13 @@ TEST(equi_batch, build_class_table_delta_rank_due_and_dead_skip) {
 }
 
 TEST(equi_batch, collect_affected_rows_due_shape_and_scope) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId mainId = mb.nameMap.encode("main");
-    const gl::NameId br1 = mb.nameMap.encodePush(mainId, "ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const gl::NameId br2 = mb.nameMap.encodePush(mainId, "ordis_(or9[1,7,3,2])_((=[6,y]))");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
+    const gl::NameId br1 = ((mb).nameMap).encodePush(mainId, "ordis_(or9[1,7,3,2])_((=[6,x]))");
+    const gl::NameId br2 = ((mb).nameMap).encodePush(mainId, "ordis_(or9[1,7,3,2])_((=[6,y]))");
 
     // main: {a,b} delta (due from 0), {x,y} non-delta (due from 5); br1: {p,q} delta.
     putClassesAt(mb, mainId, { { "a", "b" }, { "x", "y" } });
@@ -1302,8 +1320,8 @@ TEST(equi_batch, collect_affected_rows_due_shape_and_scope) {
     pushDelta(mb, mainId, { "a", "b" });
     pushDelta(mb, br1, { "p", "q" });
     {
-        gl::EquivalenceClass xy; xy.setMembersFromNames({ "x", "y" }, mb.nameMap);
-        gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, mainId, xy.memberIds, 5);
+        gl::EquivalenceClass xy; xy.setMembersFromNames({ "x", "y" }, ((mb).nameMap));
+        gl::upsertEqClassIndex(((mb).eqClassSttmntIndexMapMap), mainId, xy.memberIds, 5);
     }
 
     // Rows (positions 0..7).
@@ -1324,26 +1342,26 @@ TEST(equi_batch, collect_affected_rows_due_shape_and_scope) {
     deltaLive.push_back(1); deltaLive.push_back(1);
     startIdx.push_back(0);  startIdx.push_back(0);
     gl::EquiClassTable table(&gArena, &dirty);
-    ana.buildEquiClassTable(mb, table, deltaLive, startIdx, gArena);
+    gl::tests::EquivalenceProcessorFixture::buildEquiClassTable(ana.equivalenceProcessor, mb, table, deltaLive, startIdx, gArena);
     ASSERT_EQ(table.classCount(), 3);
 
     gl::PagedVector<int32_t> rows(&gArena, &dirty);
     gl::PagedVector<int32_t> negeq(&gArena, &dirty);
     gl::PagedVector<int64_t> negeqKeys(&gArena, &dirty);
-    ana.collectEquiAffectedRows(mb, table, rows, negeq, negeqKeys);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, table, rows, negeq, negeqKeys);
     ASSERT_EQ(rows.size(), 2);
     ASSERT_EQ(rows[0], 0);
     ASSERT_EQ(rows[1], 5);
     ASSERT_EQ(negeq.size(), 1);
     ASSERT_EQ(negeq[0], 4);
     ASSERT_EQ(negeqKeys.size(), 1);
-    ASSERT_EQ(negeqKeys[0], gl::packStatementKey(mb.intEncodedStatements[4].originalId,
-                                                 mb.intEncodedStatements[4].validityId));
+    ASSERT_EQ(negeqKeys[0], gl::packStatementKey(((mb).intEncodedStatements)[4].originalId,
+                                                 ((mb).intEncodedStatements)[4].validityId));
 
     // Advancing every class past the registry makes nothing due.
     for (int32_t c = 0; c < table.classCount(); ++c)
-        table.setDueFrom(c, mb.intEncodedStatements.size());
-    ana.collectEquiAffectedRows(mb, table, rows, negeq, negeqKeys);
+        table.setDueFrom(c, ((mb).intEncodedStatements).size());
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, table, rows, negeq, negeqKeys);
     ASSERT_EQ(rows.size(), 0);
     ASSERT_EQ(negeq.size(), 0);
 }
@@ -1359,8 +1377,8 @@ namespace {
 gl::IntEncodedExpr registerRow(gl::Memory& mb, const char* text, gl::NameId vid, int lv) {
     const gl::IntEncodedExpr row = pushRow(mb, text, vid);
     const int64_t pk = gl::packStatementKey(row.originalId, row.validityId);
-    mb.intStatementLevelsMap.insertSorted(pk, lv);
-    gl::upsertStatementKey(mb.intKnownStatements, pk, /*local=*/true);
+    ((mb).intStatementLevelsMap).insertSorted(pk, lv);
+    gl::upsertStatementKey(((mb).intKnownStatements), pk, /*local=*/true);
     return row;
 }
 
@@ -1387,10 +1405,10 @@ struct BatchFixture {
           rows(&gArena, &dirty), negeq(&gArena, &dirty),
           negeqKeys(&gArena, &dirty), committed(&gArena, &dirty) {}
 
-    void build(gl::ExpressionAnalyzer& ana, gl::Memory& mb) {
-        const int32_t n = mb.changedClassesThisStep.size();
+    void build(gl::tests::ProverFixture& ana, gl::Memory& mb) {
+        const int32_t n = ((mb).changedClassesThisStep).size();
         for (int32_t k = 0; k < n; ++k) { deltaLive.push_back(1); startIdx.push_back(0); }
-        ana.buildEquiClassTable(mb, table, deltaLive, startIdx, gArena);
+        gl::tests::EquivalenceProcessorFixture::buildEquiClassTable(ana.equivalenceProcessor, mb, table, deltaLive, startIdx, gArena);
         for (int32_t c = 0; c < table.classCount(); ++c) classStamp.push_back(-1);
     }
 };
@@ -1411,20 +1429,20 @@ int32_t findStaged(const gl::StagedEquiProducts& s, gl::NameId vid, const char* 
 }  // namespace
 
 TEST(equi_batch, closure_single_class_orbit_drops_identity) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId mainId = mb.nameMap.encode("main");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
     putClassesAt(mb, mainId, { { "a", "b", "c" } });
     pushDelta(mb, mainId, { "a", "b", "c" });
     registerRow(mb, "(in[a,x])", mainId, 2);
 
     BatchFixture f;
     f.build(ana, mb);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
     ASSERT_EQ(f.rows.size(), 1);
-    ana.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
+    ana.equalityPropagation.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
 
     // Seed + the two real products; the identity (in[a,x]) is known and dropped.
     ASSERT_EQ(countKind(f.staged, gl::StagedEquiProducts::Seed), 1);
@@ -1436,22 +1454,22 @@ TEST(equi_batch, closure_single_class_orbit_drops_identity) {
     // Source = the seed, one justifier (a -> b), levels = the row's {2}.
     ASSERT_EQ(f.staged.recordAt(rb).sourceRec, 0);
     ASSERT_EQ(f.staged.recordAt(rb).pairCount, 1);
-    ASSERT_EQ(f.staged.pairFromAt(rb, 0), mb.nameMap.lookup(gl::StrSpan("a", 1)));
-    ASSERT_EQ(f.staged.pairToAt(rb, 0), mb.nameMap.lookup(gl::StrSpan("b", 1)));
+    ASSERT_EQ(f.staged.pairFromAt(rb, 0), ((mb).nameMap).lookup(gl::StrSpan("a", 1)));
+    ASSERT_EQ(f.staged.pairToAt(rb, 0), ((mb).nameMap).lookup(gl::StrSpan("b", 1)));
     int lv[4];
     ASSERT_EQ(f.staged.copyLevels(rb, lv, 4), 1);
     ASSERT_EQ(lv[0], 2);
     ASSERT_EQ(f.staged.recordAt(rb).argCount, 2);
-    ASSERT_EQ(f.staged.argAt(rb, 0), mb.nameMap.lookup(gl::StrSpan("b", 1)));
-    ASSERT_EQ(f.staged.argAt(rb, 1), mb.nameMap.lookup(gl::StrSpan("x", 1)));
+    ASSERT_EQ(f.staged.argAt(rb, 0), ((mb).nameMap).lookup(gl::StrSpan("b", 1)));
+    ASSERT_EQ(f.staged.argAt(rb, 1), ((mb).nameMap).lookup(gl::StrSpan("x", 1)));
 }
 
 TEST(equi_batch, closure_two_classes_reach_the_cartesian_orbit) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId mainId = mb.nameMap.encode("main");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
     putClassesAt(mb, mainId, { { "a", "b" }, { "x", "y" } });
     pushDelta(mb, mainId, { "a", "b" });
     pushDelta(mb, mainId, { "x", "y" });
@@ -1459,8 +1477,8 @@ TEST(equi_batch, closure_two_classes_reach_the_cartesian_orbit) {
 
     BatchFixture f;
     f.build(ana, mb);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
-    ana.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    ana.equalityPropagation.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
 
     ASSERT_EQ(countKind(f.staged, gl::StagedEquiProducts::Full), 3);
     const int32_t rbx = findStaged(f.staged, mainId, "(in[b,x])");
@@ -1477,12 +1495,12 @@ TEST(equi_batch, closure_two_classes_reach_the_cartesian_orbit) {
 }
 
 TEST(equi_batch, closure_descendant_class_deposits_below_and_refuses_ancestor_known) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId mainId = mb.nameMap.encode("main");
-    const gl::NameId subId = mb.nameMap.encodePush(mainId, "sub_(in[9,1])");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
+    const gl::NameId subId = ((mb).nameMap).encodePush(mainId, "sub_(in[9,1])");
     putClassesAt(mb, subId, { { "a", "b" } });
     pushDelta(mb, subId, { "a", "b" });
     registerRow(mb, "(in[a,x])", mainId, 1);
@@ -1492,10 +1510,10 @@ TEST(equi_batch, closure_descendant_class_deposits_below_and_refuses_ancestor_kn
 
     BatchFixture f;
     f.build(ana, mb);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
     ASSERT_EQ(f.rows.size(), 3);
     for (int32_t i = 0; i < f.rows.size(); ++i)
-        ana.stageEquiClosure(mb, f.table, f.rows[i], f.staged, f.classStamp, f.stamp, f.cand);
+        ana.equalityPropagation.stageEquiClosure(mb, f.table, f.rows[i], f.staged, f.classStamp, f.stamp, f.cand);
 
     // (in[a,x]) -> (in[b,x]) at sub: refused (known at the ancestor main);
     // identity copies at sub: refused; (in[b,x]) -> (in[a,x]) at sub: refused;
@@ -1507,12 +1525,12 @@ TEST(equi_batch, closure_descendant_class_deposits_below_and_refuses_ancestor_kn
 }
 
 TEST(equi_batch, closure_refuses_a_product_staged_at_an_ancestor_earlier) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
-    const gl::NameId mainId = mb.nameMap.encode("main");
-    const gl::NameId subId = mb.nameMap.encodePush(mainId, "sub_(in[9,1])");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
+    const gl::NameId subId = ((mb).nameMap).encodePush(mainId, "sub_(in[9,1])");
     // {a,b} at main; {a,c} at sub (a descendant class formed before an
     // ancestor class exists is not merged — both stay visible at sub).
     putClassesAt(mb, mainId, { { "a", "b" } });
@@ -1523,8 +1541,8 @@ TEST(equi_batch, closure_refuses_a_product_staged_at_an_ancestor_earlier) {
 
     BatchFixture f;
     f.build(ana, mb);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
-    ana.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    ana.equalityPropagation.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
 
     // Products: (in[b,x])@main (class {a,b}), (in[c,x])@sub (class {a,c});
     // the identity copy of (in[a,x]) at sub and the copy of (in[b,x]) at sub
@@ -1537,12 +1555,12 @@ TEST(equi_batch, closure_refuses_a_product_staged_at_an_ancestor_earlier) {
 }
 
 TEST(equi_batch, compressor_mode_stages_origin_only_beside_the_row_seed) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
     ana.parameters.compressor_mode = true;
-    const gl::NameId mainId = mb.nameMap.encode("main");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
     const std::string mainNs = "main";
     putClassesAt(mb, mainId, { { "a", "b" } });
     pushDelta(mb, mainId, { "a", "b" });
@@ -1550,16 +1568,16 @@ TEST(equi_batch, compressor_mode_stages_origin_only_beside_the_row_seed) {
     registerRow(mb, "(in[a,x])", mainId, 1);
     registerRow(mb, "(in[b,x])", mainId, 1);
     for (const char* eq : { "(=[a,b])", "(=[b,a])" })
-        gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner, gl::StrSpan(eq, 8),
+        gl::addOriginEncoded(((mb).exprOriginMap), ((mb).originInterner), gl::StrSpan(eq, 8),
             gl::StrSpan(mainNs), gl::OriginTag::broadcast, nullptr, 0,
             ana.parameters.compressor_max_origins_per_expr);
 
     BatchFixture f;
     f.build(ana, mb);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
     ASSERT_EQ(f.rows.size(), 2);
     for (int32_t i = 0; i < f.rows.size(); ++i)
-        ana.stageEquiClosure(mb, f.table, f.rows[i], f.staged, f.classStamp, f.stamp, f.cand);
+        ana.equalityPropagation.stageEquiClosure(mb, f.table, f.rows[i], f.staged, f.classStamp, f.stamp, f.cand);
 
     // Two seeds, two origin-only records (each row is the other's known
     // product), no full record; each key carries one seed and one product.
@@ -1569,71 +1587,71 @@ TEST(equi_batch, compressor_mode_stages_origin_only_beside_the_row_seed) {
     ASSERT_TRUE(f.staged.hasSeed(mainId, gl::StrSpan("(in[b,x])", 9)));
     ASSERT_TRUE(f.staged.hasProduct(mainId, gl::StrSpan("(in[b,x])", 9)));
 
-    const int32_t before = mb.intEncodedStatements.size();
-    ana.drainStagedEquiProducts(mb, f.staged, f.table, f.committed, f.gArena);
+    const int32_t before = ((mb).intEncodedStatements).size();
+    ana.equalityPropagation.drainStagedEquiProducts(mb, f.staged, f.table, f.committed, f.gArena);
     ASSERT_EQ(f.committed.size(), 0);
-    ASSERT_EQ(mb.intEncodedStatements.size(), before);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), before);
     // Both rows now carry the equality1 history row the pairwise sink emitted
     // for a known, origin-less product.
     for (const char* text : { "(in[a,x])", "(in[b,x])" }) {
         int64_t opk = 0;
-        ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, std::string(text), mainNs, opk));
-        const int32_t oid = mb.exprOriginMap.lookup(opk);
+        ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), std::string(text), mainNs, opk));
+        const int32_t oid = ((mb).exprOriginMap).lookup(opk);
         ASSERT_NE(oid, 0);
-        const auto rows = mb.exprOriginMap.recordsAt(oid);
+        const auto rows = ((mb).exprOriginMap).recordsAt(oid);
         ASSERT_EQ(rows.size(), static_cast<std::size_t>(1));
-        ASSERT_TRUE(gl::decodeOrigin(rows[0], mb.originInterner).first == "equality1");
+        ASSERT_TRUE(gl::decodeOrigin(rows[0], ((mb).originInterner)).first == "equality1");
     }
 }
 
 TEST(equi_batch, drain_commits_products_with_levels_bits_and_history) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
     ASSERT_TRUE(ana.parameters.trackHistory);
-    const gl::NameId mainId = mb.nameMap.encode("main");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
     const std::string mainNs = "main";
     putClassesAt(mb, mainId, { { "a", "b" } });
     pushDelta(mb, mainId, { "a", "b" });
     registerRow(mb, "(in[a,x])", mainId, 3);
     // The justifying equality needs an origin row at the class scope for
     // the citation walk.
-    gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner,
+    gl::addOriginEncoded(((mb).exprOriginMap), ((mb).originInterner),
         gl::StrSpan("(=[a,b])", 8), gl::StrSpan(mainNs),
         gl::OriginTag::broadcast, nullptr, 0, ana.parameters.max_origin_per_expr);
 
     BatchFixture f;
     f.build(ana, mb);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
-    ana.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    ana.equalityPropagation.stageEquiClosure(mb, f.table, f.rows[0], f.staged, f.classStamp, f.stamp, f.cand);
     ASSERT_EQ(countKind(f.staged, gl::StagedEquiProducts::Full), 1);
-    const int32_t before = mb.intEncodedStatements.size();
+    const int32_t before = ((mb).intEncodedStatements).size();
 
-    ana.drainStagedEquiProducts(mb, f.staged, f.table, f.committed, f.gArena);
+    ana.equalityPropagation.drainStagedEquiProducts(mb, f.staged, f.table, f.committed, f.gArena);
 
     ASSERT_EQ(f.committed.size(), 1);
-    ASSERT_EQ(mb.intEncodedStatements.size(), before + 1);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), before + 1);
     const std::string product = "(in[b,x])";
-    const int32_t lvId = gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+    const int32_t lvId = gl::lookupStatementLevels(((mb).intStatementLevelsMap), ((mb).nameMap),
         gl::StrSpan(product), gl::StrSpan(mainNs));
     ASSERT_NE(lvId, 0);
     int lv[4];
-    ASSERT_EQ(gl::coldIntRunAt(mb.intStatementLevelsMap, lvId, lv, 4), 1);
+    ASSERT_EQ(gl::coldIntRunAt(((mb).intStatementLevelsMap), lvId, lv, 4), 1);
     ASSERT_EQ(lv[0], 3);
-    const gl::NameId prodId = mb.nameMap.lookup(gl::StrSpan(product));
+    const gl::NameId prodId = ((mb).nameMap).lookup(gl::StrSpan(product));
     ASSERT_NE(prodId, 0);
     const int64_t pk = gl::packStatementKey(prodId, mainId);
-    ASSERT_NE(mb.intLocalEncodedStatementsSet.lookup(pk), 0);
-    ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{ prodId, mainId }) != nullptr);
-    ASSERT_EQ(mb.intLocalEncodedStatementsDelta.size(), 1);
+    ASSERT_NE(((mb).intLocalEncodedStatementsSet).lookup(pk), 0);
+    ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{ prodId, mainId }) != nullptr);
+    ASSERT_EQ(((mb).intLocalEncodedStatementsDelta).size(), 1);
 
     // History: one equality1 row, source (in[a,x])@main, justifier (=[a,b])@main.
     int64_t opk = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, product, mainNs, opk));
-    const std::vector<gl::IdOrigin> rows = mb.exprOriginMap.recordsAt(mb.exprOriginMap.lookup(opk));
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), product, mainNs, opk));
+    const std::vector<gl::IdOrigin> rows = ((mb).exprOriginMap).recordsAt(((mb).exprOriginMap).lookup(opk));
     ASSERT_EQ(rows.size(), static_cast<std::size_t>(1));
-    const auto line = gl::decodeOrigin(rows[0], mb.originInterner);
+    const auto line = gl::decodeOrigin(rows[0], ((mb).originInterner));
     ASSERT_TRUE(line.first == "equality1");
     ASSERT_EQ(line.second.size(), static_cast<std::size_t>(2));
     ASSERT_TRUE(line.second[0].original == "(in[a,x])");
@@ -1643,9 +1661,9 @@ TEST(equi_batch, drain_commits_products_with_levels_bits_and_history) {
 
     // A second drain of the same list must not re-commit: the row is known now.
     f.staged.clear();
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
     for (int32_t c = 0; c < f.table.classCount(); ++c) f.table.setDueFrom(c, before + 1);
-    ana.collectEquiAffectedRows(mb, f.table, f.rows, f.negeq, f.negeqKeys);
+    gl::tests::EquivalenceProcessorFixture::collectEquiAffectedRows(ana.equivalenceProcessor, mb, f.table, f.rows, f.negeq, f.negeqKeys);
     ASSERT_EQ(f.rows.size(), 0);
 }
 
@@ -1708,7 +1726,7 @@ namespace gl {
         /// @see `updateEquivalenceClasses` — top-level driver.
         /// @see [`docs/agentic_swdd/20_core_concepts/05_equivalence_classes.md`](../../docs/agentic_swdd/20_core_concepts/05_equivalence_classes.md).
         template <class ClassT>
-        inline void applyEquivalenceClassOracle(ExpressionAnalyzer& ana,
+        inline void applyEquivalenceClassOracle(gl::tests::ProverFixture& ana,
             const ClassT& clss,
             const NameId exprOriginalId,
             const NameId exprValidityId,
@@ -1720,16 +1738,16 @@ namespace gl {
             // Arena copies onto the per-slot string scratch — they survive the
             // emission block's NameMap mints (I-3) off the heap; the read uses
             // take spans, only the value-struct boundaries below materialize.
-            const unsigned aecStrSlot = (ExpressionAnalyzer::g_currentCoreId >= 0)
-                ? static_cast<unsigned>(ExpressionAnalyzer::g_currentCoreId)
+            const unsigned aecStrSlot = (gl::WorkerContext::coreId() >= 0)
+                ? static_cast<unsigned>(gl::WorkerContext::coreId())
                 : scratchArenas().slotCount() - 1;
             ScratchArena& aecStrArena = scratchArenas().forSlot(aecStrSlot);
             ScratchScope aecStrScope(aecStrArena);
-            const StrSpan exprOrigView = memoryBlock.nameMap.decodeView(exprOriginalId);
+            const StrSpan exprOrigView = ((memoryBlock).nameMap).decodeView(exprOriginalId);
             const ScratchString exprOriginalCopy =
                 ScratchString::copyFrom(aecStrArena, exprOrigView.ptr, exprOrigView.len);
             const StrSpan exprOriginal(exprOriginalCopy);
-            const StrSpan exprValidView = memoryBlock.nameMap.decodeView(exprValidityId);
+            const StrSpan exprValidView = ((memoryBlock).nameMap).decodeView(exprValidityId);
             const ScratchString exprValidityCopy =
                 ScratchString::copyFrom(aecStrArena, exprValidView.ptr, exprValidView.len);
             const StrSpan exprValidityName(exprValidityCopy);
@@ -1753,7 +1771,7 @@ namespace gl {
             // (encode(depositValidity) at pkApplied), so copy onto the string
             // scratch arena — a DIFFERENT arena — to survive that mint (I-3).
             const StrSpan dvSpan =
-                memoryBlock.nameMap.deeperOf(StrSpan(validityName), exprValidityName);
+                ((memoryBlock).nameMap).deeperOf(StrSpan(validityName), exprValidityName);
             const ScratchString depositValidity =
                 ScratchString::copyFrom(aecStrArena, dvSpan.ptr, dvSpan.len);
 
@@ -1770,8 +1788,8 @@ namespace gl {
                 int32_t eqStart, eqCount;        // run in eqPool (interned, sorted)
                 int32_t seq;                     // emission order (group tie-break)
             };
-            const unsigned aecSlot = (ExpressionAnalyzer::g_currentCoreId >= 0)
-                ? static_cast<unsigned>(ExpressionAnalyzer::g_currentCoreId)
+            const unsigned aecSlot = (gl::WorkerContext::coreId() >= 0)
+                ? static_cast<unsigned>(gl::WorkerContext::coreId())
                 : genScratchArenas().slotCount() - 1;
             ScratchArena& aecArena = genScratchArenas().forSlot(aecSlot);
             DirtyState aecDirty = DirtyState::Clean;
@@ -1794,7 +1812,7 @@ namespace gl {
             // page-tier PagedVector on aecArena).
             NameId eqListBuf[ExecutionParameters::MAX_ARITY
                               * ExecutionParameters::MAX_KEY_SLOTS];
-            const int32_t eqListCount = ana.reduceEqClassIds(
+            const int32_t eqListCount = gl::tests::EquivalenceProcessorFixture::reduceEqClassIds(ana.equivalenceProcessor,
                 clss, memoryBlock, validityName, eqListBuf,
                 ExecutionParameters::MAX_ARITY * ExecutionParameters::MAX_KEY_SLOTS);
 
@@ -1820,10 +1838,10 @@ namespace gl {
             // Sink lambda fills exprLevelsMap and exprOriginMapLocal — the
             // downstream emission block (intEncodedStatements push, origin
             // record) below consumes those.
-            ana.enumerateEqClassRewrites(clss,
+            gl::tests::EqualityPropagationFixture::enumerateEqClassRewrites(ana.equalityPropagation, clss,
                 argSpans, argCount, eqListBuf, eqListCount, baseExpr, wrapLeft, wrapRight,
-                memoryBlock.nameMap,
-                [&](const ExpressionAnalyzer::EqClassRewrite& r) {
+                ((memoryBlock).nameMap),
+                [&](const gl::EqClassRewrite& r) {
                     const int32_t exprId = exprKeys.mint(r.rewrittenExpr);
 
                     // newLevels = merge(levels, r.extraLevels), sorted-unique.
@@ -1930,7 +1948,7 @@ namespace gl {
                 const StrSpan applied = exprKeys.keyAt(row.exprId);
 
                 const int32_t appliedLvlsId = lookupStatementLevels(
-                    memoryBlock.intStatementLevelsMap, memoryBlock.nameMap,
+                    ((memoryBlock).intStatementLevelsMap), ((memoryBlock).nameMap),
                     applied, StrSpan(depositValidity));
 
                 if (!ana.parameters.compressor_mode && appliedLvlsId != 0) {
@@ -1947,23 +1965,23 @@ namespace gl {
                 // or-branch resolution signal survives the refusal (I-174).
                 if (!ana.parameters.compressor_mode) {
                     const NameId apOrigId =
-                        memoryBlock.nameMap.lookup(applied);
+                        ((memoryBlock).nameMap).lookup(applied);
                     const NameId apValId =
-                        memoryBlock.nameMap.lookup(StrSpan(depositValidity));
+                        ((memoryBlock).nameMap).lookup(StrSpan(depositValidity));
                     if (apOrigId != 0 && apValId != 0
-                        && ancestorKnown(memoryBlock, apOrigId, apValId,
+                        && gl::StatementKnowledge::ancestorKnown(memoryBlock, apOrigId, apValId,
                                          /*includeSelf=*/false)) {
-                        ana.stageOrReleaseForRefusedDeposit(
+                        ana.caseProcessor.stageOrReleaseForRefusedDeposit(
                             memoryBlock, apOrigId, apValId);
                         continue;
                     }
                 }
 
-                const int mn = ana.extractMaxIterationNumber(applied);
+                const int mn = ana.admissionPolicy.extractMaxIterationNumber(applied);
                 if (mn != -1 && mn > ana.parameters.maxIterationNumberVariable) {
                     continue;
                 }
-                if (ana.countPatternOccurrences(applied, memoryBlock.overallHashMemory, memoryBlock.nameMap) >
+                if (ana.admissionPolicy.countPatternOccurrences(applied, ((memoryBlock).overallHashMemory), ((memoryBlock).nameMap)) >
                     ana.parameters.maxNumberSecondaryVariables) {
                     continue;
                 }
@@ -1979,9 +1997,9 @@ namespace gl {
                     const int32_t oaxN = getArgsSpans(applied, oax,
                         ExecutionParameters::MAX_ARITY);
                     for (int32_t k = 0; k < oaxN; ++k) {
-                        const NameId aid = memoryBlock.nameMap.lookup(oax[k]);
+                        const NameId aid = ((memoryBlock).nameMap).lookup(oax[k]);
                         if (aid != 0
-                            && memoryBlock.intAxedVariables.contains(aid)) {
+                            && ((memoryBlock).intAxedVariables).contains(aid)) {
                             orbitAxed = true;
                             break;
                         }
@@ -2018,25 +2036,25 @@ namespace gl {
                     // Commit to memory block
 
                     const int64_t pkApplied = packStatementKey(
-                        memoryBlock.nameMap.encode(applied),
-                        memoryBlock.nameMap.encode(StrSpan(depositValidity)));
+                        ((memoryBlock).nameMap).encode(applied),
+                        ((memoryBlock).nameMap).encode(StrSpan(depositValidity)));
                     // The statement-levels contract at this writer: a row is
                     // never empty, and never mixes {-1} with real levels.
                     assert(row.levelCount > 0
                         && ((row.levelCount == 1 && lvlsBuf[0] == -1)
                             || lvlsBuf[0] >= 0)
                         && "equi-class commit: invalid statement level run");
-                    memoryBlock.intStatementLevelsMap.assignSetRange(
+                    ((memoryBlock).intStatementLevelsMap).assignSetRange(
                         pkApplied, lvlsBuf, lvlsBuf + row.levelCount);
                     // The equivalence-class commit is an admission door: the
                     // rewritten product gets its row + levels here.
-                    upsertStatementKey(memoryBlock.intKnownStatements, pkApplied,
+                    upsertStatementKey(((memoryBlock).intKnownStatements), pkApplied,
                         /*local=*/true);
-                    memoryBlock.intLocalEncodedStatementsSet.mint(pkApplied);
-                    { IntEncodedExpr ie = encodeExpression(applied, StrSpan(depositValidity), memoryBlock.nameMap);
-                      memoryBlock.intEncodedStatements.push_back(ie);
-                      memoryBlock.intLocalEncodedStatements.push_back(ie);
-                      memoryBlock.intLocalEncodedStatementsDelta.push_back(ie);
+                    ((memoryBlock).intLocalEncodedStatementsSet).mint(pkApplied);
+                    { IntEncodedExpr ie = encodeExpression(applied, StrSpan(depositValidity), ((memoryBlock).nameMap));
+                      ((memoryBlock).intEncodedStatements).push_back(ie);
+                      ((memoryBlock).intLocalEncodedStatements).push_back(ie);
+                      ((memoryBlock).intLocalEncodedStatementsDelta).push_back(ie);
                       // OR-convergence product in id form — the SAME row (its ids
                       // were minted at `pkApplied` above; encodeExpression re-finds
                       // them, no new mint). The caller sorts via `sortStatementRows`
@@ -2073,7 +2091,7 @@ namespace gl {
                     // exprOriginMapLocal populate above stays unconditional
                     // to preserve the well-formedness of any FIRST emission
                     // for a target (verifier check_equality1 rejects len(rest) < 4).
-                    if (!ana.originRowExists(memoryBlock, applied, StrSpan(depositValidity))) {
+                    if (!ana.proofHistory.originRowExists(memoryBlock, applied, StrSpan(depositValidity))) {
                         // equality1 history record via the OriginDep span door —
                         // no heap OriginLine / EWV. deps[0] is the source
                         // antecedent (the rewritten expression at its scope); the
@@ -2101,10 +2119,10 @@ namespace gl {
                             const StrSpan equality = eqKeys.keyAt(
                                 eqPool[static_cast<std::size_t>(row.eqStart + k)]);
                             deps[1 + k] = OriginDep{ equality,
-                                ana.findEqualityCiteScope(memoryBlock, equality, validityName) };
+                                ana.proofHistory.findEqualityCiteScope(memoryBlock, equality, validityName) };
                         }
-                        addOriginEncoded(memoryBlock.exprOriginMap,
-                            memoryBlock.originInterner, applied, StrSpan(depositValidity),
+                        addOriginEncoded(((memoryBlock).exprOriginMap),
+                            ((memoryBlock).originInterner), applied, StrSpan(depositValidity),
                             OriginTag::equality1, deps, depN,
                             (ana.parameters.compressor_mode ? ana.parameters.compressor_max_origins_per_expr : ana.parameters.max_origin_per_expr));
                         // mailOut.exprOriginMap addOrigin is driven by
@@ -2136,12 +2154,12 @@ struct TwinSetup {
 };
 
 gl::NameId scopeId(gl::Memory& mb, const std::string& scope) {
-    const gl::NameId mainId = mb.nameMap.encode("main");
+    const gl::NameId mainId = ((mb).nameMap).encode("main");
     if (scope == "main") return mainId;
-    return mb.nameMap.encodePush(mainId, scope);
+    return ((mb).nameMap).encodePush(mainId, scope);
 }
 
-void applySetup(gl::ExpressionAnalyzer& ana, const TwinSetup& su) {
+void applySetup(gl::tests::ProverFixture& ana, const TwinSetup& su) {
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
@@ -2155,11 +2173,11 @@ void applySetup(gl::ExpressionAnalyzer& ana, const TwinSetup& su) {
         enableFixtureCoreVariants(mb, core.c_str());
     }
     for (const auto& w : su.weak)
-        mb.intWeakVariables.mint(gl::packStatementKey(mb.nameMap.encode(w.second), scopeId(mb, w.first)));
-    for (const auto& x : su.axed) mb.intAxedVariables.mint(mb.nameMap.encode(x));
+        ((mb).intWeakVariables).mint(gl::packStatementKey(((mb).nameMap).encode(w.second), scopeId(mb, w.first)));
+    for (const auto& x : su.axed) ((mb).intAxedVariables).mint(((mb).nameMap).encode(x));
     for (const auto& e : su.equalityOrigins) {
-        const std::string scope = mb.nameMap.decode(scopeId(mb, e.first));
-        gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner,
+        const std::string scope = ((mb).nameMap).decode(scopeId(mb, e.first));
+        gl::addOriginEncoded(((mb).exprOriginMap), ((mb).originInterner),
             gl::StrSpan(e.second), gl::StrSpan(scope), gl::OriginTag::broadcast,
             nullptr, 0, ana.parameters.max_origin_per_expr);
     }
@@ -2170,15 +2188,15 @@ void applySetup(gl::ExpressionAnalyzer& ana, const TwinSetup& su) {
 // non-delta class × the rows since its waterline, until the registry stops
 // growing). Equality-shaped rows are skipped as both passes did; the
 // negated-equality expander is covered by its own tests.
-void pairwiseApply(gl::ExpressionAnalyzer& ana) {
+void pairwiseApply(gl::tests::ProverFixture& ana) {
     gl::Memory& mb = ana.body;
     enableFixtureCoreVariants(mb, "in");
     enableFixtureCoreVariants(mb, "in2");
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(0);
     gl::PagedVector<gl::IntEncodedExpr> products(&gArena, &dirty);
-    const gl::NameId eqId = mb.nameMap.lookup(gl::StrSpan("=", 1));
-    const int32_t deltaN = mb.changedClassesThisStep.size();
+    const gl::NameId eqId = ((mb).nameMap).lookup(gl::StrSpan("=", 1));
+    const int32_t deltaN = ((mb).changedClassesThisStep).size();
     std::vector<std::size_t> startIdx(static_cast<std::size_t>(deltaN), 0);
     std::map<std::string, std::size_t> waterline;   // non-delta classes, keyed by (scope, members) text
     std::set<std::string> deltaKeys;
@@ -2188,49 +2206,49 @@ void pairwiseApply(gl::ExpressionAnalyzer& ana) {
         return k;
     };
     for (int32_t k = 0; k < deltaN; ++k)
-        deltaKeys.insert(keyOf(mb.changedClassesThisStep.validityAt(k),
-                               mb.changedClassesThisStep.classViewAt(k, gArena)));
+        deltaKeys.insert(keyOf(((mb).changedClassesThisStep).validityAt(k),
+                               ((mb).changedClassesThisStep).classViewAt(k, gArena)));
     auto applyOne = [&](const gl::EquivalenceClassView& cls, gl::NameId cvid, std::size_t from) {
-        const std::string cv = mb.nameMap.decode(cvid);
-        for (std::size_t s = from; s < static_cast<std::size_t>(mb.intEncodedStatements.size()); ++s) {
-            const gl::IntEncodedExpr row = mb.intEncodedStatements[static_cast<int32_t>(s)];
+        const std::string cv = ((mb).nameMap).decode(cvid);
+        for (std::size_t s = from; s < static_cast<std::size_t>(((mb).intEncodedStatements).size()); ++s) {
+            const gl::IntEncodedExpr row = ((mb).intEncodedStatements)[static_cast<int32_t>(s)];
             if (eqId != 0 && row.nameId == eqId) continue;
             const bool comparable = row.validityId == cvid
-                || mb.nameMap.isStrictAncestor(cvid, row.validityId)
-                || mb.nameMap.isStrictAncestor(row.validityId, cvid);
+                || ((mb).nameMap).isStrictAncestor(cvid, row.validityId)
+                || ((mb).nameMap).isStrictAncestor(row.validityId, cvid);
             if (!comparable) continue;
-            const int32_t lvId = mb.intStatementLevelsMap.lookup(
+            const int32_t lvId = ((mb).intStatementLevelsMap).lookup(
                 gl::packStatementKey(row.originalId, row.validityId));
             int lv[256];
-            const int32_t lvN = gl::coldIntRunAt(mb.intStatementLevelsMap, lvId, lv, 256);
+            const int32_t lvN = gl::coldIntRunAt(((mb).intStatementLevelsMap), lvId, lv, 256);
             products.clear();
             gl::applyEquivalenceClassOracle(ana, cls, row.originalId, row.validityId, mb,
                                             lv, lvN, products, gl::StrSpan(cv));
         }
     };
     while (true) {
-        const std::size_t before = static_cast<std::size_t>(mb.intEncodedStatements.size());
+        const std::size_t before = static_cast<std::size_t>(((mb).intEncodedStatements).size());
         for (int32_t k = 0; k < deltaN; ++k) {
-            const gl::EquivalenceClassView cls = mb.changedClassesThisStep.classViewAt(k, gArena);
-            applyOne(cls, mb.changedClassesThisStep.validityAt(k), startIdx[static_cast<std::size_t>(k)]);
-            startIdx[static_cast<std::size_t>(k)] = static_cast<std::size_t>(mb.intEncodedStatements.size());
+            const gl::EquivalenceClassView cls = ((mb).changedClassesThisStep).classViewAt(k, gArena);
+            applyOne(cls, ((mb).changedClassesThisStep).validityAt(k), startIdx[static_cast<std::size_t>(k)]);
+            startIdx[static_cast<std::size_t>(k)] = static_cast<std::size_t>(((mb).intEncodedStatements).size());
         }
-        const int32_t vCount = mb.equivalenceClassesMap.count();
+        const int32_t vCount = ((mb).equivalenceClassesMap).count();
         for (int32_t kid = 1; kid <= vCount; ++kid) {
-            const gl::NameId vid = mb.equivalenceClassesMap.keyAt(kid);
-            const int32_t bucketId = mb.equivalenceClassesMap.lookup(vid);
-            const int32_t cc = mb.equivalenceClassesMap.runLen(bucketId);
+            const gl::NameId vid = ((mb).equivalenceClassesMap).keyAt(kid);
+            const int32_t bucketId = ((mb).equivalenceClassesMap).lookup(vid);
+            const int32_t cc = ((mb).equivalenceClassesMap).runLen(bucketId);
             for (int32_t ci = 0; ci < cc; ++ci) {
                 int32_t blen = 0;
-                const char* bp = mb.equivalenceClassesMap.inner().peekBlobContiguous(bucketId, ci, blen, gArena);
+                const char* bp = ((mb).equivalenceClassesMap).inner().peekBlobContiguous(bucketId, ci, blen, gArena);
                 const gl::EquivalenceClassView cls{ bp, blen };
                 const std::string key = keyOf(vid, cls);
                 if (deltaKeys.count(key)) continue;
                 applyOne(cls, vid, waterline[key]);
-                waterline[key] = static_cast<std::size_t>(mb.intEncodedStatements.size());
+                waterline[key] = static_cast<std::size_t>(((mb).intEncodedStatements).size());
             }
         }
-        if (static_cast<std::size_t>(mb.intEncodedStatements.size()) == before) break;
+        if (static_cast<std::size_t>(((mb).intEncodedStatements).size()) == before) break;
     }
 }
 
@@ -2238,26 +2256,26 @@ void pairwiseApply(gl::ExpressionAnalyzer& ana) {
 // origin rows.
 std::map<std::string, std::string> registrySnapshot(gl::Memory& mb) {
     std::map<std::string, std::string> out;
-    for (int32_t s = 0; s < mb.intEncodedStatements.size(); ++s) {
-        const gl::IntEncodedExpr& row = mb.intEncodedStatements[s];
-        const std::string text = mb.nameMap.decode(row.originalId);
-        const std::string scope = mb.nameMap.decode(row.validityId);
-        const int32_t lvId = mb.intStatementLevelsMap.lookup(
+    for (int32_t s = 0; s < ((mb).intEncodedStatements).size(); ++s) {
+        const gl::IntEncodedExpr& row = ((mb).intEncodedStatements)[s];
+        const std::string text = ((mb).nameMap).decode(row.originalId);
+        const std::string scope = ((mb).nameMap).decode(row.validityId);
+        const int32_t lvId = ((mb).intStatementLevelsMap).lookup(
             gl::packStatementKey(row.originalId, row.validityId));
         int lv[256];
-        const int32_t lvN = gl::coldIntRunAt(mb.intStatementLevelsMap, lvId, lv, 256);
+        const int32_t lvN = gl::coldIntRunAt(((mb).intStatementLevelsMap), lvId, lv, 256);
         std::string v = "lv";
         for (int32_t k = 0; k < lvN; ++k) v += " " + std::to_string(lv[k]);
-        const gl::StatementFlags* fl = mb.intKnownStatements.find(gl::StatementKey{ row.originalId, row.validityId });
+        const gl::StatementFlags* fl = ((mb).intKnownStatements).find(gl::StatementKey{ row.originalId, row.validityId });
         v += fl ? " known" : " unknown";
-        v += mb.intLocalEncodedStatementsSet.lookup(gl::packStatementKey(row.originalId, row.validityId)) ? " local" : " nonlocal";
+        v += ((mb).intLocalEncodedStatementsSet).lookup(gl::packStatementKey(row.originalId, row.validityId)) ? " local" : " nonlocal";
         int64_t opk = 0;
         std::set<std::string> origins;
-        if (gl::lookupOriginKey(mb.originInterner, text, scope, opk)) {
-            const int32_t oid = mb.exprOriginMap.lookup(opk);
+        if (gl::lookupOriginKey(((mb).originInterner), text, scope, opk)) {
+            const int32_t oid = ((mb).exprOriginMap).lookup(opk);
             if (oid != 0) {
-                for (const gl::IdOrigin& o : mb.exprOriginMap.recordsAt(oid)) {
-                    const auto line = gl::decodeOrigin(o, mb.originInterner);
+                for (const gl::IdOrigin& o : ((mb).exprOriginMap).recordsAt(oid)) {
+                    const auto line = gl::decodeOrigin(o, ((mb).originInterner));
                     std::string ol = line.first;
                     for (const auto& d : line.second) ol += " | " + d.original + " @ " + d.validityName;
                     origins.insert(ol);
@@ -2271,11 +2289,11 @@ std::map<std::string, std::string> registrySnapshot(gl::Memory& mb) {
 }
 
 void assertTwinsAgree(const TwinSetup& su, std::size_t expectedRows) {
-    gl::ExpressionAnalyzer batch(std::string("Peano"));
-    gl::ExpressionAnalyzer pairwise(std::string("Peano"));
+    gl::tests::ProverFixture batch(std::string("Peano"));
+    gl::tests::ProverFixture pairwise(std::string("Peano"));
     applySetup(batch, su);
     applySetup(pairwise, su);
-    batch.applyEquiClasses(batch.body);
+    batch.equivalenceProcessor.applyEquiClasses(batch.body);
     pairwiseApply(pairwise);
     const auto a = registrySnapshot(batch.body);
     const auto b = registrySnapshot(pairwise.body);
@@ -2286,13 +2304,13 @@ void assertTwinsAgree(const TwinSetup& su, std::size_t expectedRows) {
     // stale view (a wrong key) leaves the old value behind here.
     for (const auto& c : su.classes) {
         gl::EquivalenceClass cls;
-        cls.setMembersFromNames(c.second, batch.body.nameMap);
-        ASSERT_EQ(gl::lookupEqClassIndex(batch.body.eqClassSttmntIndexMapMap,
+        cls.setMembersFromNames(c.second, ((batch.body).nameMap));
+        ASSERT_EQ(gl::lookupEqClassIndex(((batch.body).eqClassSttmntIndexMapMap),
                                          scopeId(batch.body, c.first), cls.memberIds),
-                  static_cast<int>(batch.body.intEncodedStatements.size()));
+                  static_cast<int>(((batch.body).intEncodedStatements).size()));
     }
     // The batch reached the fixpoint: a second apply changes nothing.
-    batch.applyEquiClasses(batch.body);
+    batch.equivalenceProcessor.applyEquiClasses(batch.body);
     ASSERT_TRUE(registrySnapshot(batch.body) == a);
 }
 
@@ -2359,148 +2377,148 @@ TEST(equi_batch, twins_weak_member_and_axed_variable) {
 
 TEST(canonical_unused, signed_premises_only_and_shape_exclusions) {
     gl::Memory mb;
-    const auto positive = gl::encodeExpression(gl::StrSpan("(p[a])", 6), gl::StrSpan("main", 4), mb.nameMap);
-    const auto negative = gl::encodeExpression(gl::StrSpan("!(p[a])", 7), gl::StrSpan("main", 4), mb.nameMap);
-    const auto equality = gl::encodeExpression(gl::StrSpan("(=[a,b])", 8), gl::StrSpan("main", 4), mb.nameMap);
-    const auto anchor = gl::encodeExpression(gl::StrSpan("(AnchorX[a])", 12), gl::StrSpan("main", 4), mb.nameMap);
+    const auto positive = gl::encodeExpression(gl::StrSpan("(p[a])", 6), gl::StrSpan("main", 4), ((mb).nameMap));
+    const auto negative = gl::encodeExpression(gl::StrSpan("!(p[a])", 7), gl::StrSpan("main", 4), ((mb).nameMap));
+    const auto equality = gl::encodeExpression(gl::StrSpan("(=[a,b])", 8), gl::StrSpan("main", 4), ((mb).nameMap));
+    const auto anchor = gl::encodeExpression(gl::StrSpan("(AnchorX[a])", 12), gl::StrSpan("main", 4), ((mb).nameMap));
     gl::refreshUsedAsPremise(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb, positive));
     ASSERT_FALSE(gl::usedAsPremise(mb, negative));
     ASSERT_TRUE(gl::usedAsPremise(mb, equality));
     ASSERT_TRUE(gl::usedAsPremise(mb, anchor));
     const gl::NameId key[4] = {positive.nameId, 1, 1, 0};
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(mb.localHashMemory.normalizedEncodedSubkeys, 1, key, 4);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(((((mb).localHashMemory)).normalizedEncodedSubkeys), 1, key, 4);
     gl::refreshUsedAsPremise(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb, positive));
     ASSERT_TRUE(gl::usedAsPremise(mb, negative));
     // A goal never makes a core used (it is watched, not multiplied): the
     // signed premise membership alone decides, before and after settlement.
-    mb.intToBeProved.assignSet(gl::packStatementKey(positive.originalId, positive.validityId), nullptr, 0);
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(positive.originalId, positive.validityId), nullptr, 0);
     gl::refreshUsedAsPremise(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb, positive));
     ASSERT_TRUE(gl::usedAsPremise(mb, negative));
-    mb.intToBeProved.resetToFresh();
+    ((mb).intToBeProved).resetToFresh();
     gl::refreshUsedAsPremise(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb, positive));
     ASSERT_TRUE(gl::usedAsPremise(mb, negative));
     gl::Memory other;
-    const auto otherRow = gl::encodeExpression(gl::StrSpan("!(p[a])", 7), gl::StrSpan("main", 4), other.nameMap);
+    const auto otherRow = gl::encodeExpression(gl::StrSpan("!(p[a])", 7), gl::StrSpan("main", 4), ((other).nameMap));
     gl::refreshUsedAsPremise(other);
     ASSERT_FALSE(gl::usedAsPremise(other, otherRow));
 }
 
 TEST(canonical_unused, dormant_rows_stay_stored_and_new_arrivals_canonicalize) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
-    const gl::NameId main = mb.nameMap.encode("main");
+    const gl::NameId main = ((mb).nameMap).encode("main");
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
     const int levels[] = {0};
-    ana.addStatement(gl::StrSpan("(p[b,d])",8), mb, true, levels, 1,
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b,d])",8), mb, true, levels, 1,
         gl::TransientOrigin{}, gl::StrSpan("main",4), out);
-    const auto original = mb.intEncodedStatements[0];
+    const auto original = ((mb).intEncodedStatements)[0];
     putClassesAt(mb, main, {{"a","b"},{"c","d"}});
     for (int pass = 0; pass < 3; ++pass) {
-        ana.applyEquiClasses(mb);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
         cleanUpScopes(ana, mb, { main });
-        ASSERT_EQ(mb.intEncodedStatements.size(),1);
-        ASSERT_EQ(mb.intEncodedStatements[0].originalId,original.originalId);
-        ASSERT_EQ(mb.intLocalEncodedStatements[0].originalId,original.originalId);
-        ASSERT_EQ(mb.intLocalEncodedStatementsDelta[0].originalId,original.originalId);
-        ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{original.originalId,main}) != nullptr);
+        ASSERT_EQ(((mb).intEncodedStatements).size(),1);
+        ASSERT_EQ(((mb).intEncodedStatements)[0].originalId,original.originalId);
+        ASSERT_EQ(((mb).intLocalEncodedStatements)[0].originalId,original.originalId);
+        ASSERT_EQ(((mb).intLocalEncodedStatementsDelta)[0].originalId,original.originalId);
+        ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{original.originalId,main}) != nullptr);
     }
     out.clear();
-    ana.addStatement(gl::StrSpan("(r[b,d])",8), mb, true, levels, 1,
+    ana.statementMemory.addStatement(gl::StrSpan("(r[b,d])",8), mb, true, levels, 1,
         gl::TransientOrigin{}, gl::StrSpan("main",4), out);
     ASSERT_EQ(out.size(),1);
-    ASSERT_EQ(mb.nameMap.decode(out[0].originalId),std::string("(r[a,c])"));
-    const auto rejected = mb.nameMap.lookup(gl::StrSpan("(r[b,d])",8));
-    ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{rejected,main}) == nullptr);
-    ASSERT_EQ(mb.intStatementLevelsMap.lookup(gl::packStatementKey(rejected,main)),0);
+    ASSERT_EQ(((mb).nameMap).decode(out[0].originalId),std::string("(r[a,c])"));
+    const auto rejected = ((mb).nameMap).lookup(gl::StrSpan("(r[b,d])",8));
+    ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{rejected,main}) == nullptr);
+    ASSERT_EQ(((mb).intStatementLevelsMap).lookup(gl::packStatementKey(rejected,main)),0);
     enableFixtureCoreVariants(mb,"p");
-    ana.applyEquiClasses(mb);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements,mb.nameMap,
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements),((mb).nameMap),
         gl::StrSpan("(p[a,c])",8),gl::StrSpan("main",4)) != nullptr);
-    ASSERT_TRUE(mb.intLocalEncodedStatementsSet.lookup(gl::packStatementKey(original.originalId,main)) != 0);
+    ASSERT_TRUE(((mb).intLocalEncodedStatementsSet).lookup(gl::packStatementKey(original.originalId,main)) != 0);
 }
 
 TEST(canonical_unused, dormant_external_rows_keep_identity_levels_and_scope) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
-    const auto main = mb.nameMap.encode("main");
-    const auto child = mb.nameMap.encodePush(main,"hypo_(h[a])");
+    const auto main = ((mb).nameMap).encode("main");
+    const auto child = ((mb).nameMap).encodePush(main,"hypo_(h[a])");
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int first[] = {0}, second[] = {2};
-    ana.addStatement(gl::StrSpan("(p[a])",6),mb,false,first,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.addStatement(gl::StrSpan("(p[b])",6),mb,false,second,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    const auto raw = mb.intEncodedStatements[1];
-    for (int32_t i=0;i<mb.intEncodedStatements.size();++i) mb.intExternalStatements.push_back(mb.intEncodedStatements[i]);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6),mb,false,first,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b])",6),mb,false,second,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    const auto raw = ((mb).intEncodedStatements)[1];
+    for (int32_t i=0;i<((mb).intEncodedStatements).size();++i) ((mb).intExternalStatements).push_back(((mb).intEncodedStatements)[i]);
     putClassesAt(mb,child,{{"a","b"}});
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     putClassesAt(mb,main,{{"a","b"}});
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     cleanUpScopes(ana, mb, { main });
-    ASSERT_EQ(mb.intEncodedStatements.size(),2);
-    ASSERT_EQ(mb.intExternalStatements.size(),2);
-    ASSERT_EQ(mb.intExternalStatements[1].originalId,raw.originalId);
-    const int32_t id=mb.intStatementLevelsMap.lookup(gl::packStatementKey(raw.originalId,main));
-    ASSERT_EQ(mb.intStatementLevelsMap.runLen(id),1);
-    ASSERT_EQ(mb.intStatementLevelsMap.valueAt(id,0),2);
+    ASSERT_EQ(((mb).intEncodedStatements).size(),2);
+    ASSERT_EQ(((mb).intExternalStatements).size(),2);
+    ASSERT_EQ(((mb).intExternalStatements)[1].originalId,raw.originalId);
+    const int32_t id=((mb).intStatementLevelsMap).lookup(gl::packStatementKey(raw.originalId,main));
+    ASSERT_EQ(((mb).intStatementLevelsMap).runLen(id),1);
+    ASSERT_EQ(((mb).intStatementLevelsMap).valueAt(id,0),2);
     mb.wipeSubtree(child);
-    ASSERT_EQ(mb.intEncodedStatements.size(),2);
+    ASSERT_EQ(((mb).intEncodedStatements).size(),2);
 }
 
 TEST(canonical_unused, later_premise_revisits_existing_class_waterline) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
-    const gl::NameId main = mb.nameMap.encode("main");
+    const gl::NameId main = ((mb).nameMap).encode("main");
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
     const int level[] = {0};
-    ana.addStatement(gl::StrSpan("(p[a])",6), mb, true, level, 1, gl::TransientOrigin{}, gl::StrSpan("main",4), out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6), mb, true, level, 1, gl::TransientOrigin{}, gl::StrSpan("main",4), out);
     putClassesAt(mb, main, {{"a","b"}});
-    ana.applyEquiClasses(mb);
-    ASSERT_EQ(mb.intEncodedStatements.size(), 1);
-    const gl::NameId core = mb.intEncodedStatements[0].nameId;
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), 1);
+    const gl::NameId core = ((mb).intEncodedStatements)[0].nameId;
     const gl::NameId key[] = {core, 0, 1, 0};
-    gl::ExpressionAnalyzer::ensureEmptySubkeyRecord(mb.overallHashMemory.normalizedEncodedSubkeys,1,key,4);
-    ana.applyEquiClasses(mb);
-    ASSERT_EQ(mb.intEncodedStatements.size(), 2);
-    ASSERT_TRUE(mb.nameMap.lookup(gl::StrSpan("(p[b])",6)) != 0);
-    mb.overallHashMemory.normalizedEncodedSubkeys.resetToFresh();
-    ana.applyEquiClasses(mb);
-    ASSERT_EQ(mb.intEncodedStatements.size(), 2);
-    const auto goal = gl::encodeExpression(gl::StrSpan("(p[z])",6),gl::StrSpan("main",4),mb.nameMap);
-    mb.intToBeProved.assignSet(gl::packStatementKey(goal.originalId, main), nullptr, 0);
-    ana.applyEquiClasses(mb);
-    ASSERT_EQ(mb.intEncodedStatements.size(), 2);
+    gl::tests::HashRuleInstallerFixture::ensureEmptySubkeyRecord(((((mb).overallHashMemory)).normalizedEncodedSubkeys),1,key,4);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), 2);
+    ASSERT_TRUE(((mb).nameMap).lookup(gl::StrSpan("(p[b])",6)) != 0);
+    ((((mb).overallHashMemory)).normalizedEncodedSubkeys).resetToFresh();
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), 2);
+    const auto goal = gl::encodeExpression(gl::StrSpan("(p[z])",6),gl::StrSpan("main",4),((mb).nameMap));
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(goal.originalId, main), nullptr, 0);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), 2);
 }
 
 TEST(canonical_unused, ordis_deposit_order_selects_the_capped_contradiction_origin) {
     const auto witness = [](bool reverse) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory = true;
         ana.parameters.max_origin_per_expr = 1;
         gl::Memory mb;
-        const gl::NameId main = mb.nameMap.encode("main");
-        const gl::NameId branch = mb.nameMap.encodePush(main,"ordis_(or90[1,2])_((a[1]))");
-        const std::string scope = mb.nameMap.decode(branch);
+        const gl::NameId main = ((mb).nameMap).encode("main");
+        const gl::NameId branch = ((mb).nameMap).encodePush(main,"ordis_(or90[1,2])_((a[1]))");
+        const std::string scope = ((mb).nameMap).decode(branch);
         const int levels[] = {0};
         for (const std::string neg : {std::string("!(p[1])"),std::string("!(q[1])")}) {
-            const gl::NameId id = mb.nameMap.encode(neg);
-            gl::upsertStatementKey(mb.intKnownStatements,gl::packStatementKey(id,main),true);
-            mb.intStatementLevelsMap.assignSet(gl::packStatementKey(id,main),levels,1);
+            const gl::NameId id = ((mb).nameMap).encode(neg);
+            gl::upsertStatementKey(((mb).intKnownStatements),gl::packStatementKey(id,main),true);
+            ((mb).intStatementLevelsMap).assignSet(gl::packStatementKey(id,main),levels,1);
         }
         const std::string first = reverse ? "(q[1])" : "(p[1])";
         const std::string second = reverse ? "(p[1])" : "(q[1])";
-        ana.ordisMerge(gl::StrSpan(first),gl::StrSpan(scope),levels,1,mb);
-        ana.ordisMerge(gl::StrSpan(second),gl::StrSpan(scope),levels,1,mb);
+        ana.caseProcessor.ordisMerge(gl::StrSpan(first),gl::StrSpan(scope),levels,1,mb);
+        ana.caseProcessor.ordisMerge(gl::StrSpan(second),gl::StrSpan(scope),levels,1,mb);
         std::string selected;
-        for (const auto& row : gl::decodeInternalMailOrigins(mb.sameIterationInternalMail,mb.originInterner)) {
+        for (const auto& row : gl::decodeInternalMailOrigins(((mb).sameIterationInternalMail),((mb).originInterner))) {
             if (row.first.original != "!(a[1])") continue;
             ASSERT_EQ(row.second.size(), 1u);
             selected = row.second[0].second[0].original;
@@ -2512,64 +2530,64 @@ TEST(canonical_unused, ordis_deposit_order_selects_the_capped_contradiction_orig
 }
 
 TEST(canonical_unused, counterexample_facts_need_no_history_bridge) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.ceFilteringActive = true;
     ana.parameters.trackHistory = true;
     gl::Memory& mb = ana.body;
-    const gl::NameId main = mb.nameMap.encode("main");
+    const gl::NameId main = ((mb).nameMap).encode("main");
     const int levels[] = {0};
-    ana.addExprToMemoryBlock(gl::StrSpan("(p[b])",6), mb, 0, 4,
+    ana.statementMemory.addExprToMemoryBlock(gl::StrSpan("(p[b])",6), mb, 0, 4,
         levels, 1, gl::TransientOrigin{}, -1, -1, gl::StrSpan("main",4), false);
-    ASSERT_TRUE(mb.exprOriginMap.empty());
+    ASSERT_TRUE(((mb).exprOriginMap).empty());
     putClassesAt(mb, main, {{"a","b"}});
     gl::refreshUsedAsPremise(mb);
-    ana.applyEquiClasses(mb);
-    ASSERT_EQ(mb.intEncodedStatements.size(), 1);
-    ASSERT_EQ(mb.nameMap.decode(mb.intEncodedStatements[0].originalId), std::string("(p[b])"));
-    ASSERT_TRUE(mb.exprOriginMap.empty());
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), 1);
+    ASSERT_EQ(((mb).nameMap).decode(((mb).intEncodedStatements)[0].originalId), std::string("(p[b])"));
+    ASSERT_TRUE(((mb).exprOriginMap).empty());
 }
 
 TEST(or_equality_support, books_actual_fact_without_a_literal_statement_and_survives_freeze) {
     for (bool endpointFirst : {false, true}) {
-        gl::ExpressionAnalyzer analyzer("Peano");
+        gl::tests::ProverFixture analyzer("Peano");
         analyzer.parameters.trackHistory = true;
         gl::Memory& memory = analyzer.body;
-        const gl::NameId main = memory.nameMap.encode("main");
-        const gl::NameId parent = memory.nameMap.encodePush(main, "hypo_(h[N])");
-        const gl::NameId old = memory.nameMap.encodePush(parent, "ordis_(or90[a,z])_((r[z]))");
-        const gl::NameId endpoint = memory.nameMap.encodePush(parent, "ordis_(or90[a,z])_((=[a,z]))");
-        const std::string parentName = memory.nameMap.decode(parent);
-        const std::string oldName = memory.nameMap.decode(old);
-        const std::string endpointName = memory.nameMap.decode(endpoint);
-        const gl::NameId goal = memory.nameMap.encode("(p[z,N,g])");
-        memory.intToBeProved.assignSet(gl::StatementKey{goal, parent}, nullptr, 0);
-        const int cohort = gl::mintOrCohortId(memory.lbStateInterner,
-            memory.lbStateInterner.encode(parentName), memory.lbStateInterner.encode("(or90[a,z])"));
-        memory.orDisjunctCount.insert(cohort, 2);
+        const gl::NameId main = ((memory).nameMap).encode("main");
+        const gl::NameId parent = ((memory).nameMap).encodePush(main, "hypo_(h[N])");
+        const gl::NameId old = ((memory).nameMap).encodePush(parent, "ordis_(or90[a,z])_((r[z]))");
+        const gl::NameId endpoint = ((memory).nameMap).encodePush(parent, "ordis_(or90[a,z])_((=[a,z]))");
+        const std::string parentName = ((memory).nameMap).decode(parent);
+        const std::string oldName = ((memory).nameMap).decode(old);
+        const std::string endpointName = ((memory).nameMap).decode(endpoint);
+        const gl::NameId goal = ((memory).nameMap).encode("(p[z,N,g])");
+        ((memory).intToBeProved).assignSet(gl::StatementKey{goal, parent}, nullptr, 0);
+        const int cohort = gl::mintOrCohortId(((memory).lbStateInterner),
+            ((memory).lbStateInterner).encode(parentName), ((memory).lbStateInterner).encode("(or90[a,z])"));
+        ((memory).orDisjunctCount).insert(cohort, 2);
         const auto source = registerRow(memory, "(p[a,N,g])", endpoint, 3);
         registerRow(memory, "(p[z,N,g])", old, 5);
         putClassesAt(memory, endpoint, {{"a", "z"}});
         seedFixtureCanonicalClasses(memory);
-        seedFixtureClassEvidence(memory, memory.equivalenceClassesMap.recordAt(
-            memory.equivalenceClassesMap.lookup(endpoint), 0), gl::StrSpan(endpointName));
-        memory.orLiveBranches.mint(endpoint);
+        seedFixtureClassEvidence(memory, ((memory).equivalenceClassesMap).recordAt(
+            ((memory).equivalenceClassesMap).lookup(endpoint), 0), gl::StrSpan(endpointName));
+        ((memory).orLiveBranches).mint(endpoint);
         const auto oldContribution = [&] {
             const int levels[] = {5};
-            analyzer.ordisMerge(gl::StrSpan("(p[z,N,g])",10),gl::StrSpan(oldName), levels,1,memory);
+            analyzer.caseProcessor.ordisMerge(gl::StrSpan("(p[z,N,g])",10),gl::StrSpan(oldName), levels,1,memory);
         };
         if (!endpointFirst) oldContribution();
-        analyzer.bookOrEqualitySupport(memory, goal, endpoint, source.originalId, endpoint);
-        analyzer.bookOrEqualitySupport(memory, goal, endpoint, source.originalId, endpoint);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(), 1);
-        ASSERT_TRUE(memory.intKnownStatements.find(gl::StatementKey{goal, endpoint}) == nullptr);
-        ASSERT_TRUE(analyzer.orBranchGoalsResolved(memory, endpoint));
-        analyzer.freezeResolvedOrBranches(memory);
+        gl::tests::WatchProcessorFixture::bookOrEqualitySupport(analyzer.watchProcessor, memory, goal, endpoint, source.originalId, endpoint);
+        gl::tests::WatchProcessorFixture::bookOrEqualitySupport(analyzer.watchProcessor, memory, goal, endpoint, source.originalId, endpoint);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(), 1);
+        ASSERT_TRUE(((memory).intKnownStatements).find(gl::StatementKey{goal, endpoint}) == nullptr);
+        ASSERT_TRUE(gl::tests::CaseProcessorFixture::orBranchGoalsResolved(analyzer.caseProcessor, memory, endpoint));
+        analyzer.caseProcessor.freezeResolvedOrBranches(memory);
         memory.wipeSubtree(endpoint);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(), 1);
-        ASSERT_TRUE(memory.lbMemory.closedOrGoalLevels.lookup(gl::StatementKey{goal,endpoint}) != 0);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(), 1);
+        ASSERT_TRUE(((memory).lbMemory).closedOrGoalLevels.lookup(gl::StatementKey{goal,endpoint}) != 0);
         if (endpointFirst) oldContribution();
         bool found = false;
-        for (const auto& row : gl::decodeInternalMailOrigins(memory.sameIterationInternalMail, memory.originInterner)) {
+        for (const auto& row : gl::decodeInternalMailOrigins(((memory).sameIterationInternalMail), ((memory).originInterner))) {
             if (row.first.original != "(p[z,N,g])" || row.first.validityName != parentName) continue;
             for (const auto& origin : row.second) if (origin.first == "or convergence") {
                 ASSERT_EQ(origin.second.size(), 4u);
@@ -2581,47 +2599,47 @@ TEST(or_equality_support, books_actual_fact_without_a_literal_statement_and_surv
         ASSERT_TRUE(found);
         gl::LbStore store{&gl::lbMemory(), sizeof(gl::Memory), alignof(gl::Memory)};
         gl::Memory* clone = memory.cloneFactsTemplate(store);
-        ASSERT_EQ(clone->lbMemory.orSupportFacts.count(), 0);
-        ASSERT_EQ(clone->lbMemory.orSupportEqualities.count(), 0);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(), 1);
+        ASSERT_EQ(((*(clone)).lbMemory).orSupportFacts.count(), 0);
+        ASSERT_EQ(((*(clone)).lbMemory).orSupportEqualities.count(), 0);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(), 1);
         store.destroy(clone);
         memory.wipeSubtree(parent);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(), 0);
-        ASSERT_EQ(memory.lbMemory.orSupportEqualities.count(), 0);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(), 0);
+        ASSERT_EQ(((memory).lbMemory).orSupportEqualities.count(), 0);
     }
 }
 
 TEST(or_equality_support, watch_scan_handles_late_equality_and_rejects_other_scopes_and_shapes) {
     for (int mode = 0; mode < 10; ++mode) {
-        gl::ExpressionAnalyzer analyzer("Peano");
+        gl::tests::ProverFixture analyzer("Peano");
         analyzer.parameters.trackHistory = false;
         gl::Memory& memory = analyzer.body;
-        const gl::NameId main = memory.nameMap.encode("main");
-        const gl::NameId branch = memory.nameMap.encodePush(main,"ordis_(or90[a,z])_((=[a,z]))");
-        const gl::NameId sibling = memory.nameMap.encodePush(main,"ordis_(or90[a,z])_((r[z]))");
-        const gl::NameId descendant = memory.nameMap.encodePush(branch,"hypo_(s[a])");
-        const gl::NameId goal = memory.nameMap.encode(mode == 7 ? "!(p[z,N,g])" : "(p[z,N,g])");
-        memory.intToBeProved.assignSet(gl::StatementKey{goal,main},nullptr,0);
-        memory.orLiveBranches.mint(branch);
+        const gl::NameId main = ((memory).nameMap).encode("main");
+        const gl::NameId branch = ((memory).nameMap).encodePush(main,"ordis_(or90[a,z])_((=[a,z]))");
+        const gl::NameId sibling = ((memory).nameMap).encodePush(main,"ordis_(or90[a,z])_((r[z]))");
+        const gl::NameId descendant = ((memory).nameMap).encodePush(branch,"hypo_(s[a])");
+        const gl::NameId goal = ((memory).nameMap).encode(mode == 7 ? "!(p[z,N,g])" : "(p[z,N,g])");
+        ((memory).intToBeProved).assignSet(gl::StatementKey{goal,main},nullptr,0);
+        ((memory).orLiveBranches).mint(branch);
         if (mode == 9) putClassesAt(memory,branch,{{"a","z"}});
         const char* text = mode == 3 ? "!(p[a,N,g])" : mode == 4 ? "(p[a,N,h])"
             : mode == 5 ? "(p[a,N,a])" : mode == 7 ? "!(p[a,N,g])" : "(p[a,N,g])";
         registerRow(memory,text,mode == 2 ? sibling : mode == 6 ? descendant : mode == 8 ? main : branch,2);
-        analyzer.materializeWatchHits(memory,0);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(),mode == 9 ? 1 : 0);
+        analyzer.watchProcessor.materializeWatchHits(memory,0);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(),mode == 9 ? 1 : 0);
         putClassesAt(memory,mode == 1 ? sibling : branch,{{"a","z"}});
         seedFixtureCanonicalClasses(memory);
-        analyzer.materializeWatchHits(memory,0);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(),(mode == 0 || mode >= 7) ? 1 : 0);
-        ASSERT_TRUE(memory.intKnownStatements.find(gl::StatementKey{goal,branch}) == nullptr);
-        analyzer.materializeWatchHits(memory,0);
-        ASSERT_EQ(memory.lbMemory.orSupportFacts.count(),(mode == 0 || mode >= 7) ? 1 : 0);
+        analyzer.watchProcessor.materializeWatchHits(memory,0);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(),(mode == 0 || mode >= 7) ? 1 : 0);
+        ASSERT_TRUE(((memory).intKnownStatements).find(gl::StatementKey{goal,branch}) == nullptr);
+        analyzer.watchProcessor.materializeWatchHits(memory,0);
+        ASSERT_EQ(((memory).lbMemory).orSupportFacts.count(),(mode == 0 || mode >= 7) ? 1 : 0);
     }
 }
 
 TEST(ordis_merge_order, production_consumers_keep_first_emitted_witness) {
     const auto witness = [](bool negativeUse, bool reverse) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory = true;
         ana.parameters.max_origin_per_expr = 1;
         gl::Memory& mb = ana.body;
@@ -2634,34 +2652,34 @@ TEST(ordis_merge_order, production_consumers_keep_first_emitted_witness) {
         setup.equalityOrigins = {{branchKey, "(=[a,b])"},
                                  {branchKey, "(=[b,a])"}};
         applySetup(ana, setup);
-        const gl::NameId main = mb.nameMap.lookup("main");
-        const std::string scope = mb.nameMap.decode(scopeId(mb, branchKey));
+        const gl::NameId main = ((mb).nameMap).lookup("main");
+        const std::string scope = ((mb).nameMap).decode(scopeId(mb, branchKey));
         const int levels[] = {1};
         for (const auto& row : setup.rows) {
-            gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner,
+            gl::addOriginEncoded(((mb).exprOriginMap), ((mb).originInterner),
                 gl::StrSpan(row.second), gl::StrSpan(scope),
                 gl::OriginTag::broadcast, nullptr, 0, 1);
         }
         for (const std::string neg : {std::string("!(p[a])"), std::string("!(q[a])")}) {
-            const gl::NameId id = mb.nameMap.encode(neg);
-            gl::upsertStatementKey(mb.intKnownStatements,
+            const gl::NameId id = ((mb).nameMap).encode(neg);
+            gl::upsertStatementKey(((mb).intKnownStatements),
                 gl::packStatementKey(id, main), true);
-            mb.intStatementLevelsMap.assignSet(gl::packStatementKey(id, main), levels, 1);
+            ((mb).intStatementLevelsMap).assignSet(gl::packStatementKey(id, main), levels, 1);
         }
         if (negativeUse) {
             // The second usage configuration: both polarities of `p` and
             // `q` are premise cores (a negated core used as a premise plus
             // the positive one) — the only way a row is multiplied now.
-            mb.overallHashMemory.normalizedEncodedSubkeys.resetToFresh();
+            ((((mb).overallHashMemory)).normalizedEncodedSubkeys).resetToFresh();
             enableFixtureCoreVariantsSigned(mb, "p", 0);
             enableFixtureCoreVariantsSigned(mb, "p", 1);
             enableFixtureCoreVariantsSigned(mb, "q", 0);
             enableFixtureCoreVariantsSigned(mb, "q", 1);
         }
-        ana.applyEquiClasses(mb);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
         std::string selected;
         for (const auto& row : gl::decodeInternalMailOrigins(
-                 mb.sameIterationInternalMail, mb.originInterner)) {
+                 ((mb).sameIterationInternalMail), ((mb).originInterner))) {
             if (row.first.original != "!(a[1])") continue;
             ASSERT_EQ(row.second.size(), 1u);
             selected = row.second[0].second[0].original;
@@ -2677,53 +2695,53 @@ TEST(ordis_merge_order, production_consumers_keep_first_emitted_witness) {
 }
 
 TEST(canonical_unused, ancestor_known_refusal_precedes_canonical_history) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = true;
     gl::Memory& mb = ana.body;
-    const gl::NameId main = mb.nameMap.encode("main");
-    const gl::NameId child = mb.nameMap.encodePush(main,"hypo_(h[a])");
-    const std::string scope = mb.nameMap.decode(child);
+    const gl::NameId main = ((mb).nameMap).encode("main");
+    const gl::NameId child = ((mb).nameMap).encodePush(main,"hypo_(h[a])");
+    const std::string scope = ((mb).nameMap).decode(child);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[] = {0};
     const gl::TransientOrigin origin{true,gl::OriginTag::taskFormulation,nullptr,0};
-    ana.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,origin,gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,origin,gl::StrSpan("main",4),out);
     putClassesAt(mb,child,{{"a","b"}});
     gl::refreshUsedAsPremise(mb);
     out.clear();
-    ana.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(scope),out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(scope),out);
     ASSERT_TRUE(out.empty());
-    ASSERT_EQ(mb.intEncodedStatements.size(),1);
+    ASSERT_EQ(((mb).intEncodedStatements).size(),1);
 }
 
 TEST(canonical_unused, rejected_negative_and_canonical_target_do_not_activate) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    const auto forbidden=mb.nameMap.encode("a");
-    mb.intAxedVariables.mint(forbidden);
-    ana.addStatement(gl::StrSpan("!(p[a])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    const auto forbidden=((mb).nameMap).encode("a");
+    ((mb).intAxedVariables).mint(forbidden);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[a])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
     ASSERT_TRUE(out.empty());
-    ASSERT_EQ(mb.negationLedger.lookup(gl::ExpressionAnalyzer::watchKey(main,mb.nameMap.lookup("p"))),0);
-    ana.addStatement(gl::StrSpan("(r[c])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ASSERT_EQ(((mb).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(main,((mb).nameMap).lookup("p"))),0);
+    ana.statementMemory.addStatement(gl::StrSpan("(r[c])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
     putClassesAt(mb,main,{{"a","b","d"}});
     out.clear();
-    ana.addStatement(gl::StrSpan("(r[d])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("(r[d])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
     ASSERT_TRUE(out.empty());
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements,mb.nameMap,gl::StrSpan("(r[d])",6),gl::StrSpan("main",4))==nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements),((mb).nameMap),gl::StrSpan("(r[d])",6),gl::StrSpan("main",4))==nullptr);
 }
 
 TEST(canonical_unused, settled_goal_retains_export_identity_through_discharge) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
-    const gl::NameId main = mb.nameMap.encode("main");
-    const auto goal = gl::encodeExpression(gl::StrSpan("(p[b])",6),gl::StrSpan("main",4),mb.nameMap);
-    mb.intToBeProved.assignSet(gl::packStatementKey(goal.originalId,main),nullptr,0);
+    const gl::NameId main = ((mb).nameMap).encode("main");
+    const auto goal = gl::encodeExpression(gl::StrSpan("(p[b])",6),gl::StrSpan("main",4),((mb).nameMap));
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(goal.originalId,main),nullptr,0);
     putClassesAt(mb,main,{{"a","b"}});
     gl::refreshUsedAsPremise(mb);
     gl::DirtyState dirty = gl::DirtyState::Clean;
@@ -2732,130 +2750,130 @@ TEST(canonical_unused, settled_goal_retains_export_identity_through_discharge) {
     // The head arrives while the goal is pending: the door collapses the
     // unused deposit to its canonical spelling, the watch drain writes the
     // goal's literal spelling back (the export identity) as a derived row.
-    ana.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);
-    mb.intToBeProved.resetToFresh();
-    ana.applyEquiClasses(mb);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
+    ((mb).intToBeProved).resetToFresh();
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb,goal));   // a goal never makes a core used
-    ASSERT_TRUE(mb.intLocalEncodedStatementsSet.lookup(gl::packStatementKey(goal.originalId,main)) != 0);
-    ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{goal.originalId,main}) != nullptr);
+    ASSERT_TRUE(((mb).intLocalEncodedStatementsSet).lookup(gl::packStatementKey(goal.originalId,main)) != 0);
+    ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{goal.originalId,main}) != nullptr);
     gl::LbArena dischargeScratch(&gl::staticMemory());
-    mb.isActive = false;
+    ((mb).isActive) = false;
     mb.dischargeStatementContent(dischargeScratch);
-    ASSERT_TRUE(mb.dischargedRegistryKeys.count(gl::packStatementKey(goal.originalId,main)) != 0);
+    ASSERT_TRUE(((mb).dischargedRegistryKeys).count(gl::packStatementKey(goal.originalId,main)) != 0);
 }
 
 
 TEST(dormant_usage, negative_arrival_never_activates_the_positive_core) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
-    const auto child=mb.nameMap.encodePush(main,"hypo_(h[a])");
-    const std::string childName=mb.nameMap.decode(child);
+    const auto main=((mb).nameMap).encode("main");
+    const auto child=((mb).nameMap).encodePush(main,"hypo_(h[a])");
+    const std::string childName=((mb).nameMap).decode(child);
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    ana.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    const auto positive=mb.intEncodedStatements[0];
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    const auto positive=((mb).intEncodedStatements)[0];
     putClassesAt(mb,main,{{"a","b"}});
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb,positive));
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements,mb.nameMap,gl::StrSpan("(p[a])",6),gl::StrSpan("main",4))==nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements),((mb).nameMap),gl::StrSpan("(p[a])",6),gl::StrSpan("main",4))==nullptr);
     // A negated arrival of the same core (not contradictory: `z` is in no
     // class) is watched, not multiplied, and activates nothing.
-    ana.addStatement(gl::StrSpan("!(p[z])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(childName),out);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[z])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(childName),out);
     ASSERT_FALSE(gl::usedAsPremise(mb,positive));
-    ana.applyEquiClasses(mb);
-    ana.materializeWatchHits(mb,0);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements,mb.nameMap,gl::StrSpan("(p[a])",6),gl::StrSpan("main",4))==nullptr);
-    ASSERT_EQ(mb.intEncodedStatements.size(),2);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ana.watchProcessor.materializeWatchHits(mb,0);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements),((mb).nameMap),gl::StrSpan("(p[a])",6),gl::StrSpan("main",4))==nullptr);
+    ASSERT_EQ(((mb).intEncodedStatements).size(),2);
     mb.wipeSubtree(child);
     gl::refreshUsedAsPremise(mb);
     ASSERT_FALSE(gl::usedAsPremise(mb,positive));
-    ASSERT_EQ(mb.lbMemory.usedAsPremiseCorePairs.lookup(gl::packInt32Pair(positive.nameId,0)),0);
-    ASSERT_EQ(mb.lbMemory.usedAsPremiseCorePairs.lookup(gl::packInt32Pair(positive.nameId,1)),0);
+    ASSERT_EQ(((mb).lbMemory).usedAsPremiseCorePairs.lookup(gl::packInt32Pair(positive.nameId,0)),0);
+    ASSERT_EQ(((mb).lbMemory).usedAsPremiseCorePairs.lookup(gl::packInt32Pair(positive.nameId,1)),0);
     gl::Memory other;
-    const auto isolated=gl::encodeExpression(gl::StrSpan("(p[b])",6),gl::StrSpan("main",4),other.nameMap);
+    const auto isolated=gl::encodeExpression(gl::StrSpan("(p[b])",6),gl::StrSpan("main",4),((other).nameMap));
     ASSERT_FALSE(gl::usedAsPremise(other,isolated));
 }
 
 TEST(dormant_usage, stale_special_row_stays_stored_after_goal_assignment) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
     const std::string raw="(p[it_0_lev_1_0])";
-    ana.addStatement(gl::StrSpan(raw),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    const auto original=mb.intEncodedStatements[0];
+    ana.statementMemory.addStatement(gl::StrSpan(raw),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    const auto original=((mb).intEncodedStatements)[0];
     putClassesAt(mb,main,{{"int_0_lev_1_0","it_0_lev_1_0"}});
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     cleanUpScopes(ana, mb, { main });
-    ASSERT_EQ(mb.intEncodedStatements.size(),1);
-    ASSERT_EQ(mb.intEncodedStatements[0].originalId,original.originalId);
+    ASSERT_EQ(((mb).intEncodedStatements).size(),1);
+    ASSERT_EQ(((mb).intEncodedStatements)[0].originalId,original.originalId);
     // A goal of the same core (not canonically equal: `z` is in no class)
     // is watched, not multiplied: the stored row keeps its spelling.
-    const auto goal=gl::encodeExpression(gl::StrSpan("(p[z])",6),gl::StrSpan("main",4),mb.nameMap);
-    mb.intToBeProved.assignSet(gl::packStatementKey(goal.originalId,main),nullptr,0);
-    ana.applyEquiClasses(mb);
-    ana.materializeWatchHits(mb,0);
-    ASSERT_EQ(mb.intEncodedStatements.size(),1);
-    ASSERT_EQ(mb.intEncodedStatements[0].originalId,original.originalId);
-    ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{original.originalId,main})!=nullptr);
-    ASSERT_TRUE(mb.intStatementLevelsMap.lookup(gl::packStatementKey(original.originalId,main))!=0);
+    const auto goal=gl::encodeExpression(gl::StrSpan("(p[z])",6),gl::StrSpan("main",4),((mb).nameMap));
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(goal.originalId,main),nullptr,0);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ana.watchProcessor.materializeWatchHits(mb,0);
+    ASSERT_EQ(((mb).intEncodedStatements).size(),1);
+    ASSERT_EQ(((mb).intEncodedStatements)[0].originalId,original.originalId);
+    ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{original.originalId,main})!=nullptr);
+    ASSERT_TRUE(((mb).intStatementLevelsMap).lookup(gl::packStatementKey(original.originalId,main))!=0);
 }
 
 TEST(dormant_usage, both_fact_arrival_orders_and_later_equality_find_contradiction) {
     for (int order=0;order<3;++order) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory=false;
         gl::Memory& mb=ana.body;
-        const auto main=mb.nameMap.encode("main");
+        const auto main=((mb).nameMap).encode("main");
         ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(p[a])"),false));
-        mb.contradictionIndex=0;
+        ((mb).contradictionIndex)=0;
         gl::DirtyState dirty=gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
         const int levels[]={0};
         const std::string first=order==1?"!(p[b])":"(p[a])";
         const std::string second=order==1?"(p[a])":"!(p[b])";
-        ana.addStatement(gl::StrSpan(first),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+        ana.statementMemory.addStatement(gl::StrSpan(first),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
         if (order!=2) putClassesAt(mb,main,{{"a","b"}});
-        ana.applyEquiClasses(mb);
-        ana.addStatement(gl::StrSpan(second),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
+        ana.statementMemory.addStatement(gl::StrSpan(second),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
         if (order==2) { putClassesAt(mb,main,{{"a","b"}}); pushDelta(mb,main,{"a","b"}); rekeyAt(ana,mb,main,{"a","b"}); }
-        ana.applyEquiClasses(mb);
-        ana.materializeWatchHits(mb,0);   // the production order: drain, then sweep
-        ana.dischargeContradiction(mb,0);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
+        ana.watchProcessor.materializeWatchHits(mb,0);   // the production order: drain, then sweep
+        ana.goalProcessor.dischargeContradiction(mb,0);
         ASSERT_TRUE(ana.contradictionTable[0].successful);
-        ASSERT_FALSE(mb.isActive);
+        ASSERT_FALSE(((mb).isActive));
     }
 }
 
 TEST(dormant_usage, descendant_classes_rewrite_ancestor_facts_without_sibling_leak) {
     for (bool siblings : {false,true}) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory=false;
         gl::Memory& mb=ana.body;
-        const auto main=mb.nameMap.encode("main");
-        const auto child=mb.nameMap.encodePush(main,"contradiction_!(r[z])");
-        const auto sibling=mb.nameMap.encodePush(main,"hypo_(h[z])");
-        const std::string childName=mb.nameMap.decode(child);
-        const std::string positiveScope=mb.nameMap.decode(siblings?sibling:main);
+        const auto main=((mb).nameMap).encode("main");
+        const auto child=((mb).nameMap).encodePush(main,"contradiction_!(r[z])");
+        const auto sibling=((mb).nameMap).encodePush(main,"hypo_(h[z])");
+        const std::string childName=((mb).nameMap).decode(child);
+        const std::string positiveScope=((mb).nameMap).decode(siblings?sibling:main);
         gl::DirtyState dirty=gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
         const int levels[]={0};
-        ana.addStatement(gl::StrSpan("(p[c])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(positiveScope),out);
-        ana.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(childName),out);
+        ana.statementMemory.addStatement(gl::StrSpan("(p[c])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(positiveScope),out);
+        ana.statementMemory.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(childName),out);
         putClassesAt(mb,child,{{"b","c"}});
         pushDelta(mb,child,{"b","c"});
-        ana.applyEquiClasses(mb);
-        ana.materializeWatchHits(mb,0);   // the production order: drain, then sweep
-        ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements,mb.nameMap,gl::StrSpan("(p[b])",6),gl::StrSpan("main",4))==nullptr);
-        ana.dischargeContradictionScopes(mb,mb.nextIterationInternalMail);
-        const gl::Mail mail=gl::makeHeapMail(mb.nextIterationInternalMail,mb.nameMap,mb.originInterner);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
+        ana.watchProcessor.materializeWatchHits(mb,0);   // the production order: drain, then sweep
+        ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements),((mb).nameMap),gl::StrSpan("(p[b])",6),gl::StrSpan("main",4))==nullptr);
+        ana.goalProcessor.dischargeContradictionScopes(mb,((mb).nextIterationInternalMail));
+        const gl::Mail mail=gl::makeHeapMail(((mb).nextIterationInternalMail),((mb).nameMap),((mb).originInterner));
         bool found=false;
         for (const auto& row:mail.statements) if(row.first.original=="!(r[z])" && row.first.validityName=="main") found=true;
         ASSERT_EQ(found,!siblings);
@@ -2864,43 +2882,43 @@ TEST(dormant_usage, descendant_classes_rewrite_ancestor_facts_without_sibling_le
 
 TEST(scoped_vacuity, records_both_facts_and_levels_then_uses_normal_scope_closure) {
     for (bool sameScope : {false, true}) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory = true;
         gl::Memory& mb = ana.body;
         const std::string compact = "(implication0[f,I])";
-        const auto scope = mb.nameMap.encodePush(gl::NameMap::MAIN_ID, compact);
-        const std::string scopeName = mb.nameMap.decode(scope);
+        const auto scope = ((mb).nameMap).encodePush(gl::NameMap::MAIN_ID, compact);
+        const std::string scopeName = ((mb).nameMap).decode(scope);
         const std::string oppositeScope = sameScope ? scopeName : "main";
-        const auto head = gl::encodeExpression(gl::StrSpan("(in[x,I])",9), gl::StrSpan(scopeName), mb.nameMap);
-        mb.intToBeProved.assignSet(gl::packStatementKey(head.originalId, scope), nullptr, 0);
+        const auto head = gl::encodeExpression(gl::StrSpan("(in[x,I])",9), gl::StrSpan(scopeName), ((mb).nameMap));
+        ((mb).intToBeProved).assignSet(gl::packStatementKey(head.originalId, scope), nullptr, 0);
         gl::DirtyState dirty = gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
         const int ownLevels[] = {2};
         const int ancestorLevels[] = {0,1};
-        ana.addStatement(gl::StrSpan("(p[x])",6), mb, true, ownLevels, 1,
+        ana.statementMemory.addStatement(gl::StrSpan("(p[x])",6), mb, true, ownLevels, 1,
             gl::TransientOrigin{}, gl::StrSpan(scopeName), out);
-        ana.dischargeVacuousImplicationScopes(mb);
-        ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{head.originalId, scope}) == nullptr);
-        ana.addStatement(gl::StrSpan("!(p[x])",7), mb, true, ancestorLevels, 2,
+        ana.goalProcessor.dischargeVacuousImplicationScopes(mb);
+        ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{head.originalId, scope}) == nullptr);
+        ana.statementMemory.addStatement(gl::StrSpan("!(p[x])",7), mb, true, ancestorLevels, 2,
             gl::TransientOrigin{}, gl::StrSpan(oppositeScope), out);
-        mb.intLocalEncodedStatementsDelta.clear();
-        ana.dischargeVacuousImplicationScopes(mb);
-        ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{head.originalId, scope}) != nullptr);
-        const auto levelRow = mb.intStatementLevelsMap.lookup(gl::packStatementKey(head.originalId, scope));
+        ((mb).intLocalEncodedStatementsDelta).clear();
+        ana.goalProcessor.dischargeVacuousImplicationScopes(mb);
+        ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{head.originalId, scope}) != nullptr);
+        const auto levelRow = ((mb).intStatementLevelsMap).lookup(gl::packStatementKey(head.originalId, scope));
         int levels[8];
-        ASSERT_EQ(gl::coldIntRunNonNegAt(mb.intStatementLevelsMap, levelRow, levels, 8), 3);
+        ASSERT_EQ(gl::coldIntRunNonNegAt(((mb).intStatementLevelsMap), levelRow, levels, 8), 3);
         ASSERT_EQ(levels[0], 0);
         ASSERT_EQ(levels[1], 1);
         ASSERT_EQ(levels[2], 2);
         int64_t originKey = 0;
-        ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, "(in[x,I])", scopeName, originKey));
-        ASSERT_TRUE(mb.exprOriginMap.lookup(originKey) != 0);
-        const auto origin = mb.exprOriginMap.recordAt(mb.exprOriginMap.lookup(originKey), 0);
+        ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), "(in[x,I])", scopeName, originKey));
+        ASSERT_TRUE(((mb).exprOriginMap).lookup(originKey) != 0);
+        const auto origin = ((mb).exprOriginMap).recordAt(((mb).exprOriginMap).lookup(originKey), 0);
         ASSERT_TRUE(origin.first == gl::OriginTag::vacuousTruth);
         ASSERT_EQ(origin.second.size(), static_cast<size_t>(2));
         gl::StrSpan expression0, validity0, expression1, validity1;
-        gl::decodeOriginKeyView(origin.second[0], mb.originInterner, expression0, validity0);
-        gl::decodeOriginKeyView(origin.second[1], mb.originInterner, expression1, validity1);
+        gl::decodeOriginKeyView(origin.second[0], ((mb).originInterner), expression0, validity0);
+        gl::decodeOriginKeyView(origin.second[1], ((mb).originInterner), expression1, validity1);
         const bool negativeFirst = gl::equalSpans(expression0, gl::StrSpan("!(p[x])",7));
         ASSERT_TRUE(gl::equalSpans(expression0, negativeFirst
             ? gl::StrSpan("!(p[x])",7) : gl::StrSpan("(p[x])",6)));
@@ -2908,401 +2926,401 @@ TEST(scoped_vacuity, records_both_facts_and_levels_then_uses_normal_scope_closur
             ? gl::StrSpan("(p[x])",6) : gl::StrSpan("!(p[x])",7)));
         ASSERT_TRUE(gl::equalSpans(validity0, gl::StrSpan(scopeName)));
         ASSERT_TRUE(gl::equalSpans(validity1, gl::StrSpan(sameScope ? scopeName : oppositeScope)));
-        const auto before = mb.intEncodedStatements.size();
-        ana.dischargeVacuousImplicationScopes(mb);
-        ASSERT_EQ(mb.intEncodedStatements.size(), before);
-        ana.dischargeToBeProved(mb, 0, mb.nextIterationInternalMail);
-        ASSERT_TRUE(mb.pendingWipeScopes.contains(scope));
-        const gl::Mail mail = gl::makeHeapMail(mb.nextIterationInternalMail, mb.nameMap, mb.originInterner);
+        const auto before = ((mb).intEncodedStatements).size();
+        ana.goalProcessor.dischargeVacuousImplicationScopes(mb);
+        ASSERT_EQ(((mb).intEncodedStatements).size(), before);
+        ana.goalProcessor.dischargeToBeProved(mb, 0, ((mb).nextIterationInternalMail));
+        ASSERT_TRUE(((mb).pendingWipeScopes).contains(scope));
+        const gl::Mail mail = gl::makeHeapMail(((mb).nextIterationInternalMail), ((mb).nameMap), ((mb).originInterner));
         bool emitted = false;
         for (const auto& row : mail.statements)
             if (row.first.original == compact && row.first.validityName == "main") emitted = true;
         ASSERT_TRUE(emitted);
         mb.wipeSubtree(scope);
-        ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{head.originalId, scope}) == nullptr);
-        if (!sameScope) ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, mb.nameMap,
+        ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{head.originalId, scope}) == nullptr);
+        if (!sameScope) ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements), ((mb).nameMap),
             gl::StrSpan("!(p[x])",7), gl::StrSpan("main",4)) != nullptr);
-        ASSERT_TRUE(mb.isActive);
+        ASSERT_TRUE(((mb).isActive));
     }
 }
 
 TEST(scoped_vacuity, isolates_siblings_descendants_and_non_implication_goals) {
     for (int mode = 0; mode < 7; ++mode) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory = false;
         gl::Memory& mb = ana.body;
         const char* payload = mode == 3 ? "contradiction_!(implication0[f,I])"
             : mode == 4 ? "ordis_(implication0[f,I])"
             : mode == 5 ? "hypo_(implication0[f,I])" : "(implication0[f,I])";
         const auto scope = mode == 6 ? gl::NameMap::MAIN_ID
-            : mb.nameMap.encodePush(gl::NameMap::MAIN_ID, payload);
-        const auto sibling = mb.nameMap.encodePush(gl::NameMap::MAIN_ID, "hypo_sibling");
-        const auto descendant = mb.nameMap.encodePush(scope, "hypo_child");
-        const std::string scopeName = mb.nameMap.decode(scope);
-        const auto head = gl::encodeExpression(gl::StrSpan("(in[x,I])",9), gl::StrSpan(scopeName), mb.nameMap);
-        mb.intToBeProved.assignSet(gl::packStatementKey(head.originalId, scope), nullptr, 0);
+            : ((mb).nameMap).encodePush(gl::NameMap::MAIN_ID, payload);
+        const auto sibling = ((mb).nameMap).encodePush(gl::NameMap::MAIN_ID, "hypo_sibling");
+        const auto descendant = ((mb).nameMap).encodePush(scope, "hypo_child");
+        const std::string scopeName = ((mb).nameMap).decode(scope);
+        const auto head = gl::encodeExpression(gl::StrSpan("(in[x,I])",9), gl::StrSpan(scopeName), ((mb).nameMap));
+        ((mb).intToBeProved).assignSet(gl::packStatementKey(head.originalId, scope), nullptr, 0);
         const auto positiveScope = mode == 2 ? gl::NameMap::MAIN_ID : scope;
         const auto negativeScope = mode == 0 ? sibling : mode == 1 ? descendant
             : mode == 2 ? gl::NameMap::MAIN_ID : scope;
         gl::DirtyState dirty = gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
         const int levels[] = {0};
-        const std::string positiveName = mb.nameMap.decode(positiveScope);
-        const std::string negativeName = mb.nameMap.decode(negativeScope);
-        ana.addStatement(gl::StrSpan("(p[x])",6), mb, true, levels, 1,
+        const std::string positiveName = ((mb).nameMap).decode(positiveScope);
+        const std::string negativeName = ((mb).nameMap).decode(negativeScope);
+        ana.statementMemory.addStatement(gl::StrSpan("(p[x])",6), mb, true, levels, 1,
             gl::TransientOrigin{}, gl::StrSpan(positiveName), out);
-        ana.addStatement(gl::StrSpan("!(p[x])",7), mb, true, levels, 1,
+        ana.statementMemory.addStatement(gl::StrSpan("!(p[x])",7), mb, true, levels, 1,
             gl::TransientOrigin{}, gl::StrSpan(negativeName), out);
-        ana.dischargeVacuousImplicationScopes(mb);
-        ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{head.originalId, scope}) == nullptr);
-        ASSERT_FALSE(mb.pendingWipeScopes.contains(scope));
-        ASSERT_TRUE(mb.isActive);
+        ana.goalProcessor.dischargeVacuousImplicationScopes(mb);
+        ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{head.originalId, scope}) == nullptr);
+        ASSERT_FALSE(((mb).pendingWipeScopes).contains(scope));
+        ASSERT_TRUE(((mb).isActive));
     }
 }
 
 TEST(scoped_vacuity, equality_watch_closes_goal_owned_scope_in_both_arrival_orders) {
     for (bool reverse : {false, true}) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory = false;
         gl::Memory& mb = ana.body;
-        const auto scope = mb.nameMap.encodePush(gl::NameMap::MAIN_ID,
+        const auto scope = ((mb).nameMap).encodePush(gl::NameMap::MAIN_ID,
             "(fold[N,s,add,mul,P,z,z,a])_subproof_(implication0[f,I])");
-        const std::string scopeName = mb.nameMap.decode(scope);
-        const auto head = gl::encodeExpression(gl::StrSpan("(in[x,I])",9), gl::StrSpan(scopeName), mb.nameMap);
-        mb.intToBeProved.assignSet(gl::packStatementKey(head.originalId, scope), nullptr, 0);
+        const std::string scopeName = ((mb).nameMap).decode(scope);
+        const auto head = gl::encodeExpression(gl::StrSpan("(in[x,I])",9), gl::StrSpan(scopeName), ((mb).nameMap));
+        ((mb).intToBeProved).assignSet(gl::packStatementKey(head.originalId, scope), nullptr, 0);
         gl::DirtyState dirty = gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
         const int levels[] = {0};
         for (int index = 0; index < 2; ++index) {
             const bool negative = (index == 0) == reverse;
-            ana.addStatement(negative ? gl::StrSpan("!(p[b])",7) : gl::StrSpan("(p[c])",6),
+            ana.statementMemory.addStatement(negative ? gl::StrSpan("!(p[b])",7) : gl::StrSpan("(p[c])",6),
                 mb, true, levels, 1, gl::TransientOrigin{},
                 negative ? gl::StrSpan(scopeName) : gl::StrSpan("main",4), out);
         }
         putClassesAt(mb, scope, {{"b","c"}});
         pushDelta(mb, scope, {"b","c"});
-        ana.applyEquiClasses(mb);
-        ana.materializeWatchHits(mb, 0);
-        ana.dischargeVacuousImplicationScopes(mb);
-        ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{head.originalId, scope}) != nullptr);
-        ASSERT_TRUE(mb.isActive);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
+        ana.watchProcessor.materializeWatchHits(mb, 0);
+        ana.goalProcessor.dischargeVacuousImplicationScopes(mb);
+        ASSERT_TRUE(((mb).intKnownStatements).find(gl::StatementKey{head.originalId, scope}) != nullptr);
+        ASSERT_TRUE(((mb).isActive));
     }
 }
 
 TEST(watch_ledger, record_probe_and_clear_under_visible_classes) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
-    const auto row=gl::encodeExpression(gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4),mb.nameMap);
+    const auto main=((mb).nameMap).encode("main");
+    const auto row=gl::encodeExpression(gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4),((mb).nameMap));
     // No classes yet: the canonical id is the original id. The row is in
     // the registry too (the re-key finds affected entries through the rows).
-    mb.intEncodedStatements.push_back(row);
-    ana.recordWatch(mb.negationLedger,ana.body,row.originalId,main,row.nameId);
+    ((mb).intEncodedStatements).push_back(row);
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),ana.body,row.originalId,main,row.nameId);
     gl::NameId orig=0;
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,row.nameId,row.originalId,&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,row.nameId,row.originalId,&orig));
     ASSERT_EQ(orig,row.originalId);
     // A class at main changes the canonical half after the re-key.
     putClassesAt(mb,main,{{"a","b"}});
     ASSERT_EQ(rekeyAt(ana,mb,main,{"a","b"}),1);
-    const gl::NameId canon=ana.canonicalWatchIdAt(mb,row.originalId,main);
+    const gl::NameId canon=gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,row.originalId,main);
     ASSERT_TRUE(canon!=row.originalId);
-    ASSERT_EQ(mb.nameMap.decode(canon),std::string("!(p[a])"));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,row.nameId,row.originalId,&orig));
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,row.nameId,canon,&orig));
+    ASSERT_EQ(((mb).nameMap).decode(canon),std::string("!(p[a])"));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,row.nameId,row.originalId,&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,row.nameId,canon,&orig));
     ASSERT_EQ(orig,row.originalId);
     // A second re-key without a class change touches nothing; a class over
     // other names touches nothing either.
     ASSERT_EQ(rekeyAt(ana,mb,main,{"a","b"}),0);
     ASSERT_EQ(rekeyAt(ana,mb,main,{"x","y"}),0);
     // Other core / other scope / other ledger: no run.
-    const auto q=mb.nameMap.encode("q");
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,q,canon,&orig));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.goalLedger,main,row.nameId,canon,&orig));
+    const auto q=((mb).nameMap).encode("q");
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,q,canon,&orig));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).goalLedger),main,row.nameId,canon,&orig));
     // Duplicate record is a no-op; clear removes exactly the entry.
-    ana.recordWatch(mb.negationLedger,ana.body,row.originalId,main,row.nameId);
-    ASSERT_EQ(mb.negationLedger.runLen(mb.negationLedger.lookup(gl::ExpressionAnalyzer::watchKey(main,row.nameId))),1);
-    ASSERT_TRUE(ana.clearWatch(mb.negationLedger,mb,row.originalId,main,row.nameId));
-    ASSERT_FALSE(ana.clearWatch(mb.negationLedger,mb,row.originalId,main,row.nameId));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,row.nameId,canon,&orig));
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),ana.body,row.originalId,main,row.nameId);
+    ASSERT_EQ(((mb).negationLedger).runLen(((mb).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(main,row.nameId))),1);
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::clearWatch(ana.watchProcessor, ((mb).negationLedger),mb,row.originalId,main,row.nameId));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::clearWatch(ana.watchProcessor, ((mb).negationLedger),mb,row.originalId,main,row.nameId));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,row.nameId,canon,&orig));
 }
 
 TEST(watch_ledger, rekey_covers_the_merged_scope_and_its_descendants_only) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
-    const gl::NameId child=mb.nameMap.encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const gl::NameId sibling=mb.nameMap.encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((=[7,x]))");
-    const std::string childName=mb.nameMap.decode(child);
-    const std::string siblingName=mb.nameMap.decode(sibling);
-    const auto atMain=gl::encodeExpression(gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4),mb.nameMap);
-    const auto atChild=gl::encodeExpression(gl::StrSpan("!(p[b,d])",9),gl::StrSpan(childName),mb.nameMap);
-    const auto atSibling=gl::encodeExpression(gl::StrSpan("!(p[b,d])",9),gl::StrSpan(siblingName),mb.nameMap);
-    const auto goalAtChild=gl::encodeExpression(gl::StrSpan("(q[d])",6),gl::StrSpan(childName),mb.nameMap);
-    for (const auto& r : {atMain, atChild, atSibling}) mb.intEncodedStatements.push_back(r);
-    ana.recordWatch(mb.negationLedger,mb,atMain.originalId,main,atMain.nameId);
-    ana.recordWatch(mb.negationLedger,mb,atChild.originalId,child,atChild.nameId);
-    ana.recordWatch(mb.negationLedger,mb,atSibling.originalId,sibling,atSibling.nameId);
-    mb.intToBeProved.assignSet(gl::packStatementKey(goalAtChild.originalId,child),nullptr,0);
-    ana.ensureGoalLedgerCurrent(mb);
+    const auto main=((mb).nameMap).encode("main");
+    const gl::NameId child=((mb).nameMap).encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((=[6,x]))");
+    const gl::NameId sibling=((mb).nameMap).encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((=[7,x]))");
+    const std::string childName=((mb).nameMap).decode(child);
+    const std::string siblingName=((mb).nameMap).decode(sibling);
+    const auto atMain=gl::encodeExpression(gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4),((mb).nameMap));
+    const auto atChild=gl::encodeExpression(gl::StrSpan("!(p[b,d])",9),gl::StrSpan(childName),((mb).nameMap));
+    const auto atSibling=gl::encodeExpression(gl::StrSpan("!(p[b,d])",9),gl::StrSpan(siblingName),((mb).nameMap));
+    const auto goalAtChild=gl::encodeExpression(gl::StrSpan("(q[d])",6),gl::StrSpan(childName),((mb).nameMap));
+    for (const auto& r : {atMain, atChild, atSibling}) ((mb).intEncodedStatements).push_back(r);
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),mb,atMain.originalId,main,atMain.nameId);
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),mb,atChild.originalId,child,atChild.nameId);
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),mb,atSibling.originalId,sibling,atSibling.nameId);
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(goalAtChild.originalId,child),nullptr,0);
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(ana.watchProcessor, mb);
     // A merge at main is visible at main, child and sibling: three negation
     // entries change; the unrelated goal keeps its current ledger entry.
     putClassesAt(mb,main,{{"a","b"}});
     ASSERT_EQ(rekeyAt(ana,mb,main,{"a","b"}),3);
-    ASSERT_FALSE(mb.goalLedgerStale);
+    ASSERT_FALSE(((mb).goalLedgerStale));
     gl::NameId orig=0;
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,child,atChild.nameId,
-        mb.nameMap.encode("!(p[a,d])"),&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),child,atChild.nameId,
+        ((mb).nameMap).encode("!(p[a,d])"),&orig));
     ASSERT_EQ(orig,atChild.originalId);
     // A merge at the child is visible at the child only: the child's
     // negation entry changes (`d` -> `c`), the sibling's and main's do not;
     // the goal follows through the rebuild.
     putClassesAt(mb,child,{{"c","d"}});
     ASSERT_EQ(rekeyAt(ana,mb,child,{"c","d"}),1);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,child,atChild.nameId,
-        mb.nameMap.encode("!(p[a,c])"),&orig));
-    ana.ensureGoalLedgerCurrent(mb);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.goalLedger,child,goalAtChild.nameId,
-        mb.nameMap.encode("(q[c])"),&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),child,atChild.nameId,
+        ((mb).nameMap).encode("!(p[a,c])"),&orig));
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(ana.watchProcessor, mb);
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).goalLedger),child,goalAtChild.nameId,
+        ((mb).nameMap).encode("(q[c])"),&orig));
     ASSERT_EQ(orig,goalAtChild.originalId);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,sibling,atSibling.nameId,
-        mb.nameMap.encode("!(p[a,d])"),&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),sibling,atSibling.nameId,
+        ((mb).nameMap).encode("!(p[a,d])"),&orig));
     // The visible-bucket canonical composes main's and the child's classes
     // directly too.
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalWatchIdAt(mb,atChild.originalId,child)),std::string("!(p[a,c])"));
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalWatchIdAt(mb,atSibling.originalId,sibling)),std::string("!(p[a,d])"));
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,atChild.originalId,child)),std::string("!(p[a,c])"));
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,atSibling.originalId,sibling)),std::string("!(p[a,d])"));
 }
 
 TEST(watch_ledger, registration_doors_and_unknow_mirror_known_negated_rows) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    ana.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.addStatement(gl::StrSpan("!(=[c,d])",9),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    const auto p=mb.nameMap.lookup("p");
-    const auto eq=mb.nameMap.lookup("=");
-    const auto neg=mb.nameMap.lookup("!(p[b])");
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("!(=[c,d])",9),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    const auto p=((mb).nameMap).lookup("p");
+    const auto eq=((mb).nameMap).lookup("=");
+    const auto neg=((mb).nameMap).lookup("!(p[b])");
     ASSERT_TRUE(p!=0 && eq!=0 && neg!=0);
     gl::NameId orig=0;
     // The negated non-equality row is recorded (canonical == original: no classes yet);
     // the positive row and the negated equality are not.
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,p,neg,&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,p,neg,&orig));
     ASSERT_EQ(orig,neg);
-    ASSERT_EQ(mb.negationLedger.runLen(mb.negationLedger.lookup(gl::ExpressionAnalyzer::watchKey(main,p))),1);
-    ASSERT_EQ(mb.negationLedger.lookup(gl::ExpressionAnalyzer::watchKey(main,eq)),0);
+    ASSERT_EQ(((mb).negationLedger).runLen(((mb).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(main,p))),1);
+    ASSERT_EQ(((mb).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(main,eq)),0);
     // A merge through the equality door re-keys the entry at the seam.
-    ana.addStatement(gl::StrSpan("(=[a,b])",8),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    const gl::NameId canon=ana.canonicalWatchIdAt(mb,neg,main);
+    ana.statementMemory.addStatement(gl::StrSpan("(=[a,b])",8),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    const gl::NameId canon=gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,neg,main);
     ASSERT_TRUE(canon!=neg);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,p,canon,&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,p,canon,&orig));
     ASSERT_EQ(orig,neg);
     // The un-know seam drops the entry with the known row.
-    ana.resetResentExpressionRegistries(mb,gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,p,canon,&orig));
+    ana.equivalenceAdmissionRewriter.resetResentExpressionRegistries(mb,gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,p,canon,&orig));
     // Un-knowing a never-known statement is a defined no-op.
-    ana.resetResentExpressionRegistries(mb,gl::StrSpan("!(p[z])",7),gl::StrSpan("main",4));
+    ana.equivalenceAdmissionRewriter.resetResentExpressionRegistries(mb,gl::StrSpan("!(p[z])",7),gl::StrSpan("main",4));
 }
 
 TEST(watch_ledger, goal_ledger_is_derived_from_the_goal_registry) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     const int lv[1]={0};
     // Seeded straight into the registry (the ledger is derived, so no door
     // is involved — exactly what the production goal door does not need).
-    const auto goalRow=gl::encodeExpression(gl::StrSpan("(p[a,b])",8),gl::StrSpan("main",4),mb.nameMap);
+    const auto goalRow=gl::encodeExpression(gl::StrSpan("(p[a,b])",8),gl::StrSpan("main",4),((mb).nameMap));
     const auto goal=goalRow.originalId;
     const auto p=goalRow.nameId;
     ASSERT_TRUE(p!=0 && goal!=0);
     const int64_t pk=gl::packStatementKey(goal,main);
-    mb.intToBeProved.assignSet(pk,nullptr,0);
+    ((mb).intToBeProved).assignSet(pk,nullptr,0);
     gl::NameId orig=0;
     // Rebuilt on first probe.
-    ana.ensureGoalLedgerCurrent(mb);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.goalLedger,main,p,goal,&orig));
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(ana.watchProcessor, mb);
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).goalLedger),main,p,goal,&orig));
     ASSERT_EQ(orig,goal);
     // A merge through the equality door marks it stale; the rebuild carries
     // the new canonical.
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
-    ana.addStatement(gl::StrSpan("(=[a,b])",8),mb,true,lv,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ASSERT_TRUE(mb.goalLedgerStale);
-    ana.ensureGoalLedgerCurrent(mb);
-    const gl::NameId canon=ana.canonicalWatchIdAt(mb,goal,main);
+    ana.statementMemory.addStatement(gl::StrSpan("(=[a,b])",8),mb,true,lv,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ASSERT_TRUE(((mb).goalLedgerStale));
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(ana.watchProcessor, mb);
+    const gl::NameId canon=gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,goal,main);
     ASSERT_TRUE(canon!=goal);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.goalLedger,main,p,canon,&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).goalLedger),main,p,canon,&orig));
     ASSERT_EQ(orig,goal);
     // A direct registry erase (no door) changes the count: the next probe
     // sees the goal gone; a direct seed is picked up the same way.
-    mb.intToBeProved.eraseSet(pk);
-    ana.ensureGoalLedgerCurrent(mb);
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.goalLedger,main,p,canon,&orig));
-    const auto seededRow=gl::encodeExpression(gl::StrSpan("(q[b])",6),gl::StrSpan("main",4),mb.nameMap);
+    ((mb).intToBeProved).eraseSet(pk);
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(ana.watchProcessor, mb);
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).goalLedger),main,p,canon,&orig));
+    const auto seededRow=gl::encodeExpression(gl::StrSpan("(q[b])",6),gl::StrSpan("main",4),((mb).nameMap));
     const auto seeded=seededRow.originalId;
-    mb.intToBeProved.assignSet(gl::packStatementKey(seeded,main),nullptr,0);
-    ana.ensureGoalLedgerCurrent(mb);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.goalLedger,main,seededRow.nameId,
-        ana.canonicalWatchIdAt(mb,seeded,main),&orig));
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(seeded,main),nullptr,0);
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(ana.watchProcessor, mb);
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).goalLedger),main,seededRow.nameId,
+        gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,seeded,main),&orig));
     ASSERT_EQ(orig,seeded);
 }
 
 TEST(watch_ledger, wipe_drops_the_closed_scope_entries_only) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
-    const auto child=mb.nameMap.encodePush(main,"hypo_(h[a])");
-    const std::string childName=mb.nameMap.decode(child);
-    const auto atMain=gl::encodeExpression(gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4),mb.nameMap);
-    const auto atChild=gl::encodeExpression(gl::StrSpan("!(p[c])",7),gl::StrSpan(childName),mb.nameMap);
-    ana.recordWatch(mb.negationLedger,mb,atMain.originalId,main,atMain.nameId);
-    ana.recordWatch(mb.negationLedger,mb,atChild.originalId,child,atChild.nameId);
-    mb.goalLedgerStale=false;
+    const auto main=((mb).nameMap).encode("main");
+    const auto child=((mb).nameMap).encodePush(main,"hypo_(h[a])");
+    const std::string childName=((mb).nameMap).decode(child);
+    const auto atMain=gl::encodeExpression(gl::StrSpan("!(p[b])",7),gl::StrSpan("main",4),((mb).nameMap));
+    const auto atChild=gl::encodeExpression(gl::StrSpan("!(p[c])",7),gl::StrSpan(childName),((mb).nameMap));
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),mb,atMain.originalId,main,atMain.nameId);
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger),mb,atChild.originalId,child,atChild.nameId);
+    ((mb).goalLedgerStale)=false;
     mb.wipeSubtree(child);
     gl::NameId orig=0;
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,main,atMain.nameId,atMain.originalId,&orig));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,child,atChild.nameId,atChild.originalId,&orig));
-    ASSERT_TRUE(mb.goalLedgerStale);
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),main,atMain.nameId,atMain.originalId,&orig));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),child,atChild.nameId,atChild.originalId,&orig));
+    ASSERT_TRUE(((mb).goalLedgerStale));
 }
 
 // The watch drain must supply the exact pair on its own: no rule makes `p`
 // a premise in the tests below, so nothing is multiplied.
 static bool knownAt(const gl::Memory& mb, const char* text, gl::NameId scope) {
-    const gl::NameId id = mb.nameMap.lookup(text);
-    return id != 0 && mb.intKnownStatements.find(gl::StatementKey{ id, scope }) != nullptr;
+    const gl::NameId id = ((mb).nameMap).lookup(text);
+    return id != 0 && ((mb).intKnownStatements).find(gl::StatementKey{ id, scope }) != nullptr;
 }
 
 TEST(watch_ledger, positive_arrival_finds_a_negated_entry_through_the_ledger) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(p[a])"),false));
-    mb.contradictionIndex=0;
+    ((mb).contradictionIndex)=0;
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
     // The negation is stored raw (no class yet); the class forms afterwards
     // with `a` canonical, and the positive arrives already canonical.
-    ana.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
     putClassesAt(mb,main,{{"a","b"}});
     ASSERT_EQ(rekeyAt(ana,mb,main,{"a","b"}),1);
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     ASSERT_FALSE(knownAt(mb,"!(p[a])",main));   // not multiplied
-    ana.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
     ASSERT_TRUE(knownAt(mb,"!(p[a])",main));    // the twin
-    ana.dischargeContradiction(mb,0);
+    ana.goalProcessor.dischargeContradiction(mb,0);
     ASSERT_TRUE(ana.contradictionTable[0].successful);
-    ASSERT_FALSE(mb.isActive);
+    ASSERT_FALSE(((mb).isActive));
 }
 
 TEST(watch_ledger, negated_arrival_finds_an_unused_positive_through_the_batch_sweep) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(p[a])"),false));
-    mb.contradictionIndex=0;
+    ((mb).contradictionIndex)=0;
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    ana.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);            // nothing to pair yet
+    ana.statementMemory.addStatement(gl::StrSpan("(p[b])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);            // nothing to pair yet
     putClassesAt(mb,main,{{"a","b"}});
     rekeyAt(ana,mb,main,{"a","b"});
-    ana.applyEquiClasses(mb);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     ASSERT_FALSE(knownAt(mb,"(p[a])",main));    // the unused positive stays raw
-    ana.addStatement(gl::StrSpan("!(p[a])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[a])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
     ASSERT_TRUE(knownAt(mb,"(p[a])",main));     // the positive twin from (p[b])
-    ana.dischargeContradiction(mb,0);
+    ana.goalProcessor.dischargeContradiction(mb,0);
     ASSERT_TRUE(ana.contradictionTable[0].successful);
 }
 
 TEST(watch_ledger, merge_created_contradiction_is_found_by_the_recheck) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     ana.contradictionTable.push_back(gl::ContradictionItem(std::string("(p[a])"),false));
-    mb.contradictionIndex=0;
+    ((mb).contradictionIndex)=0;
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    ana.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);
-    ana.dischargeContradiction(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
+    ana.goalProcessor.dischargeContradiction(mb,0);
     ASSERT_FALSE(ana.contradictionTable[0].successful);   // nothing equal yet
     // The equality door merges the class: the re-key seam stages the moved
     // negation entry, the drain pairs it with the stored positive.
-    ana.addStatement(gl::StrSpan("(=[a,b])",8),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ASSERT_TRUE(mb.pendingWatchRechecks.size()>0);
-    ana.materializeWatchHits(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("(=[a,b])",8),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ASSERT_TRUE(((mb).pendingWatchRechecks).size()>0);
+    ana.watchProcessor.materializeWatchHits(mb,0);
     ASSERT_TRUE(knownAt(mb,"!(p[a])",main));
-    ana.dischargeContradiction(mb,0);
+    ana.goalProcessor.dischargeContradiction(mb,0);
     ASSERT_TRUE(ana.contradictionTable[0].successful);
 }
 
 TEST(watch_ledger, goal_reached_through_the_ledger_gets_its_literal_twin) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
     putClassesAt(mb,main,{{"a","b"}});
     // A literal, non-canonical goal.
-    const auto goalRow=gl::encodeExpression(gl::StrSpan("(p[b])",6),gl::StrSpan("main",4),mb.nameMap);
-    mb.intToBeProved.assignSet(gl::packStatementKey(goalRow.originalId,main),nullptr,0);
+    const auto goalRow=gl::encodeExpression(gl::StrSpan("(p[b])",6),gl::StrSpan("main",4),((mb).nameMap));
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(goalRow.originalId,main),nullptr,0);
     // The canonical fact arrives.
-    ana.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
     // The goal's literal spelling is now a known local delta row at main —
     // exactly what the exact goal probe fires on — derived, not multiplied.
     ASSERT_TRUE(knownAt(mb,"(p[b])",main));
     bool inDelta=false;
-    for (int32_t i=0;i<mb.intLocalEncodedStatementsDelta.size();++i)
-        if (mb.intLocalEncodedStatementsDelta[i].originalId==goalRow.originalId) inDelta=true;
+    for (int32_t i=0;i<((mb).intLocalEncodedStatementsDelta).size();++i)
+        if (((mb).intLocalEncodedStatementsDelta)[i].originalId==goalRow.originalId) inDelta=true;
     ASSERT_TRUE(inDelta);
-    ASSERT_TRUE(mb.intToBeProved.lookup(gl::packStatementKey(goalRow.originalId,main))!=0);
+    ASSERT_TRUE(((mb).intToBeProved).lookup(gl::packStatementKey(goalRow.originalId,main))!=0);
 }
 
 TEST(watch_ledger, ancestor_negation_is_imported_under_a_branch_class_and_paired_there) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
-    const gl::NameId child=mb.nameMap.encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((=[6,x]))");
-    const std::string childName=mb.nameMap.decode(child);
+    const auto main=((mb).nameMap).encode("main");
+    const gl::NameId child=((mb).nameMap).encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((=[6,x]))");
+    const std::string childName=((mb).nameMap).decode(child);
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    ana.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
-    ana.materializeWatchHits(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
     // A class at the child only: the ancestor negation names `b`, so the
     // merge seam imports it into the child's run.
     putClassesAt(mb,child,{{"a","b"}});
     gl::PagedVector<gl::NameId> members(&gl::genScratchArenas().forSlot(0),&dirty);
-    members.push_back(mb.nameMap.encode("a"));
-    members.push_back(mb.nameMap.encode("b"));
-    ana.importAncestorNegationsForClass(mb,child,members);
+    members.push_back(((mb).nameMap).encode("a"));
+    members.push_back(((mb).nameMap).encode("b"));
+    ana.watchProcessor.importAncestorNegationsForClass(mb,child,members);
     gl::NameId orig=0;
-    const auto p=mb.nameMap.lookup("p");
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger,child,p,mb.nameMap.encode("!(p[a])"),&orig));
-    ana.applyEquiClasses(mb);
+    const auto p=((mb).nameMap).lookup("p");
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger),child,p,((mb).nameMap).encode("!(p[a])"),&orig));
+    ana.equivalenceProcessor.applyEquiClasses(mb);
     ASSERT_FALSE(knownAt(mb,"!(p[a])",child));
-    ana.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(childName),out);
-    ana.materializeWatchHits(mb,0);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[a])",6),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan(childName),out);
+    ana.watchProcessor.materializeWatchHits(mb,0);
     // The negation's twin lands at the child (deeper scope), the positive
     // stays where it is: the exact pair now exists at the child.
     ASSERT_TRUE(knownAt(mb,"!(p[a])",child));
@@ -3310,68 +3328,68 @@ TEST(watch_ledger, ancestor_negation_is_imported_under_a_branch_class_and_paired
 }
 
 TEST(watch_ledger, live_branch_assumption_refuted_through_the_ledger) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory& mb=ana.body;
-    const auto main=mb.nameMap.encode("main");
+    const auto main=((mb).nameMap).encode("main");
     // The branch asserts `(p[a])`; `main` knows `!(p[b])`; the class {a,b}
     // at main makes them contradictory, but no exact `!(p[a])` exists.
-    const gl::NameId branch=mb.nameMap.encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((p[a]))");
+    const gl::NameId branch=((mb).nameMap).encodePush(gl::NameMap::MAIN_ID,"ordis_(or9[1,7,3,2])_((p[a]))");
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0),&dirty);
     const int levels[]={0};
-    ana.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[b])",7),mb,true,levels,1,gl::TransientOrigin{},gl::StrSpan("main",4),out);
     putClassesAt(mb,main,{{"a","b"}});
     rekeyAt(ana,mb,main,{"a","b"});
-    ana.applyEquiClasses(mb);
-    mb.orLiveBranches.mint(branch);
-    ASSERT_EQ(ana.refutedOrBranchAtOrAbove(branch,mb),0);   // exact probe: nothing
-    ana.materializeWatchHits(mb,0);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ((mb).orLiveBranches).mint(branch);
+    ASSERT_EQ(ana.caseProcessor.refutedOrBranchAtOrAbove(branch,mb),0);   // exact probe: nothing
+    ana.watchProcessor.materializeWatchHits(mb,0);
     ASSERT_TRUE(knownAt(mb,"!(p[a])",branch));              // the exact negation at the branch
-    ASSERT_EQ(ana.refutedOrBranchAtOrAbove(branch,mb),branch);
-    ASSERT_TRUE(mb.pendingDeadOrBranches.lookup(branch)!=0);
+    ASSERT_EQ(ana.caseProcessor.refutedOrBranchAtOrAbove(branch,mb),branch);
+    ASSERT_TRUE(((mb).pendingDeadOrBranches).lookup(branch)!=0);
 }
 
 TEST(watch_ledger, clone_copies_and_discharge_reclaims) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory=false;
     gl::Memory facts;
-    const auto main=facts.nameMap.encode("main");
-    const auto row=gl::encodeExpression(gl::StrSpan("!(q[a])",7),gl::StrSpan("main",4),facts.nameMap);
-    ana.recordWatch(facts.negationLedger,facts,row.originalId,main,row.nameId);
+    const auto main=((facts).nameMap).encode("main");
+    const auto row=gl::encodeExpression(gl::StrSpan("!(q[a])",7),gl::StrSpan("main",4),((facts).nameMap));
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((facts).negationLedger),facts,row.originalId,main,row.nameId);
     gl::LbStore store{&gl::lbMemory(),sizeof(gl::Memory),alignof(gl::Memory)};
     gl::Memory* copy=facts.cloneFactsTemplate(store);
     gl::NameId orig=0;
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(copy->negationLedger,main,row.nameId,row.originalId,&orig));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((*(copy)).negationLedger),main,row.nameId,row.originalId,&orig));
     ASSERT_EQ(orig,row.originalId);
-    facts.negationLedger.resetToFresh();
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(copy->negationLedger,main,row.nameId,row.originalId,&orig));
+    ((facts).negationLedger).resetToFresh();
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((*(copy)).negationLedger),main,row.nameId,row.originalId,&orig));
     store.destroy(copy);
 }
 
 TEST(dormant_usage, child_delta_does_not_hide_reactivated_ancestor_cleanup) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
-    const auto main = mb.nameMap.encode("main");
-    const auto child = mb.nameMap.encodePush(main, "hypo_(h[a])");
+    const auto main = ((mb).nameMap).encode("main");
+    const auto child = ((mb).nameMap).encodePush(main, "hypo_(h[a])");
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
     const int levels[] = {0};
     const std::string raw = "(p[it_0_lev_1_0])";
-    ana.addStatement(gl::StrSpan(raw), mb, true, levels, 1,
+    ana.statementMemory.addStatement(gl::StrSpan(raw), mb, true, levels, 1,
         gl::TransientOrigin{}, gl::StrSpan("main",4), out);
-    const auto original = mb.intEncodedStatements[0];
+    const auto original = ((mb).intEncodedStatements)[0];
     putClassesAt(mb, main, {{"int_0_lev_1_0", "it_0_lev_1_0"}});
-    ana.applyEquiClasses(mb);
-    ASSERT_EQ(mb.intEncodedStatements.size(), 1);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).intEncodedStatements).size(), 1);
     putClassesAt(mb, child, {{"int_0_lev_1_0", "int_0_lev_1_1", "it_0_lev_1_0"}});
     pushDelta(mb, child, {"int_0_lev_1_0", "int_0_lev_1_1", "it_0_lev_1_0"});
     enableFixtureCoreVariants(mb, "p");   // `(p, positive)` becomes a premise core
-    ana.applyEquiClasses(mb);
-    ASSERT_TRUE(mb.intLocalEncodedStatementsSet.lookup(
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_TRUE(((mb).intLocalEncodedStatementsSet).lookup(
         gl::packStatementKey(original.originalId,main)) == 0);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements,mb.nameMap,
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements),((mb).nameMap),
         gl::StrSpan("(p[int_0_lev_1_0])", 18),gl::StrSpan("main",4)) != nullptr);
 }
 
@@ -3380,49 +3398,49 @@ TEST(equi_reshuffle, standard_processing_ce_mode_only_checks_contradictions) {
     // Positive mail and registry witnesses, missing opposition, and both
     // directions of the main-scope boundary exercise the dedicated CE gate.
     for (int scenario = 0; scenario < 5; ++scenario) {
-        gl::ExpressionAnalyzer analyzer("Peano");
+        gl::tests::ProverFixture analyzer("Peano");
         analyzer.ceFilteringActive = true;
         gl::Memory& memory = analyzer.body;
         enableFixtureCoreVariants(memory, "in");
         enableFixtureCoreVariants(memory, "in2");
-        memory.isActive = true;
-        memory.contradictionIndex = 0;
+        ((memory).isActive) = true;
+        ((memory).contradictionIndex) = 0;
         analyzer.contradictionTable.emplace_back("(in[7,N])", false);
         const gl::NameId main = gl::NameMap::MAIN_ID;
-        const gl::NameId branch = memory.nameMap.encodePush(main, "ce_gate_branch");
+        const gl::NameId branch = ((memory).nameMap).encodePush(main, "ce_gate_branch");
         const std::string head = "(in[7,N])";
-        const gl::NameId positive = memory.nameMap.encode(head);
-        const gl::NameId negative = memory.nameMap.encode(analyzer.negate(head));
+        const gl::NameId positive = ((memory).nameMap).encode(head);
+        const gl::NameId negative = ((memory).nameMap).encode(gl::DefinitionExpansion::negate(head));
         if (scenario != 1) {
-            memory.intKnownStatements.insert(
+            ((memory).intKnownStatements).insert(
                 gl::StatementKey{negative, scenario == 2 ? branch : main},
                 gl::StatementFlags{true, false});
         }
         const int levels[] = {0};
-        gl::insertInternalStatement(memory.sameIterationInternalMail, memory.nameMap,
-            gl::StrSpan(head), gl::StrSpan(memory.nameMap.decode(scenario == 3 ? branch : main)),
+        gl::insertInternalStatement(((memory).sameIterationInternalMail), ((memory).nameMap),
+            gl::StrSpan(head), gl::StrSpan(((memory).nameMap).decode(scenario == 3 ? branch : main)),
             levels, 1);
         if (scenario == 4) {
-            memory.intEncodedStatements.push_back(gl::encodeExpression(
-                gl::EncodedExpression(head, "main"), memory.nameMap));
+            ((memory).intEncodedStatements).push_back(gl::encodeExpression(
+                gl::EncodedExpression(head, "main"), ((memory).nameMap)));
         }
-        memory.intToBeProved.assignSet(gl::packStatementKey(positive, main), nullptr, 0);
+        ((memory).intToBeProved).assignSet(gl::packStatementKey(positive, main), nullptr, 0);
         putClassesAt(memory, main, {{"a", "b"}});
         pushDelta(memory, main, {"a", "b"});
-        const auto statements = memory.intEncodedStatements.size();
-        const auto changed = memory.changedClassesThisStep.size();
-        const auto mail = memory.sameIterationInternalMail.statements_.count();
+        const auto statements = ((memory).intEncodedStatements).size();
+        const auto changed = ((memory).changedClassesThisStep).size();
+        const auto mail = ((memory).sameIterationInternalMail).statements_.count();
         for (int call = 0; call < 2; ++call) {
-            analyzer.standardProcessing(memory, &memory.mailIn,
-                memory.sameIterationInternalMail, memory.nextIterationInternalMail, 0);
+            analyzer.logicBlockOperations.standardProcessing(memory, &((memory).mailIn),
+                ((memory).sameIterationInternalMail), ((memory).nextIterationInternalMail), 0);
             ASSERT_EQ(analyzer.contradictionTable[0].successful, scenario == 0 || scenario == 4);
-            ASSERT_EQ(memory.isActive, scenario != 0 && scenario != 4);
-            ASSERT_EQ(memory.intEncodedStatements.size(), statements);
-            ASSERT_EQ(memory.changedClassesThisStep.size(), changed);
-            ASSERT_EQ(memory.sameIterationInternalMail.statements_.count(), mail);
-            ASSERT_EQ(memory.nextIterationInternalMail.statements_.count(), 0);
-            ASSERT_EQ(memory.intToBeProved.count(), 1);
-            ASSERT_EQ(memory.ruleStagingArmDepth, 0);
+            ASSERT_EQ(((memory).isActive), scenario != 0 && scenario != 4);
+            ASSERT_EQ(((memory).intEncodedStatements).size(), statements);
+            ASSERT_EQ(((memory).changedClassesThisStep).size(), changed);
+            ASSERT_EQ(((memory).sameIterationInternalMail).statements_.count(), mail);
+            ASSERT_EQ(((memory).nextIterationInternalMail).statements_.count(), 0);
+            ASSERT_EQ(((memory).intToBeProved).count(), 1);
+            ASSERT_EQ(((memory).ruleStagingArmDepth), 0);
         }
     }
 }
@@ -3430,13 +3448,13 @@ TEST(equi_reshuffle, standard_processing_ce_mode_only_checks_contradictions) {
 TEST(equi_reshuffle, standard_processing_hypothesis_copy_is_applied_and_published) {
     for (bool postBurst : {false, true}) {
         for (int scenario = 0; scenario < 3; ++scenario) {
-            gl::ExpressionAnalyzer analyzer("Peano");
+            gl::tests::ProverFixture analyzer("Peano");
             auto& memory = analyzer.body;
-            memory.isActive = true;
-            memory.level = 0;
+            ((memory).isActive) = true;
+            ((memory).level) = 0;
             analyzer.parameters.trackHistory = true;
             const auto main = gl::NameMap::MAIN_ID;
-            const auto hypothesis = memory.nameMap.encodePush(main,
+            const auto hypothesis = ((memory).nameMap).encodePush(main,
                 "_var0_x_hypo_(in[x,N])");
             enableFixtureCoreVariants(memory, "in");
             const int levels[] = {0};
@@ -3445,40 +3463,40 @@ TEST(equi_reshuffle, standard_processing_hypothesis_copy_is_applied_and_publishe
                 &gl::genScratchArenas().forSlot(0), &dirty);
             // Register actual equality premises, including their levels and
             // history, so class application can cite every hypothetical rewrite.
-            const std::string hypothesisScope = memory.nameMap.decode(hypothesis);
+            const std::string hypothesisScope = ((memory).nameMap).decode(hypothesis);
             if (scenario != 1) {
                 const std::string equality = "(=[x,int_0_lev_0_1])";
-                analyzer.addStatement(gl::StrSpan(equality), memory, true, levels, 1,
+                analyzer.statementMemory.addStatement(gl::StrSpan(equality), memory, true, levels, 1,
                     gl::TransientOrigin{true, gl::OriginTag::taskFormulation, nullptr, 0},
                     gl::StrSpan(hypothesisScope), added);
             }
             if (scenario == 2) {
-                analyzer.addStatement(gl::StrSpan("(=[x,y])", 8), memory, true, levels, 1,
+                analyzer.statementMemory.addStatement(gl::StrSpan("(=[x,y])", 8), memory, true, levels, 1,
                     gl::TransientOrigin{true, gl::OriginTag::taskFormulation, nullptr, 0},
                     gl::StrSpan(hypothesisScope), added);
             }
-            analyzer.addStatement(gl::StrSpan("(in[x_copy,N])", 14), memory,
+            analyzer.statementMemory.addStatement(gl::StrSpan("(in[x_copy,N])", 14), memory,
                 true, levels, 1, gl::TransientOrigin{true, gl::OriginTag::taskFormulation, nullptr, 0},
                 gl::StrSpan("main", 4), added);
-            auto& input = postBurst ? memory.sameIterationInternalMail : memory.nextIterationInternalMail;
-            auto& output = postBurst ? memory.nextIterationInternalMail : memory.sameIterationInternalMail;
-            analyzer.standardProcessing(memory, nullptr, input, output, -1);
-            const auto copiedFact = memory.nameMap.lookup(gl::StrSpan("(in[x,N])", 9));
-            ASSERT_EQ(memory.intKnownStatements.lookup(gl::StatementKey{copiedFact, main}) != 0,
+            auto& input = postBurst ? ((memory).sameIterationInternalMail) : ((memory).nextIterationInternalMail);
+            auto& output = postBurst ? ((memory).nextIterationInternalMail) : ((memory).sameIterationInternalMail);
+            analyzer.logicBlockOperations.standardProcessing(memory, nullptr, input, output, -1);
+            const auto copiedFact = ((memory).nameMap).lookup(gl::StrSpan("(in[x,N])", 9));
+            ASSERT_EQ(((memory).intKnownStatements).lookup(gl::StatementKey{copiedFact, main}) != 0,
                 scenario == 0);
-            ASSERT_EQ(memory.changedClassesThisStep.size(), 0);
+            ASSERT_EQ(((memory).changedClassesThisStep).size(), 0);
             const auto copyHistoryCount = [&]() {
                 int count = 0;
-                for (const auto& row : gl::decodeMailOutOrigins(memory.mailOut, memory.mailOutInterner))
+                for (const auto& row : gl::decodeMailOutOrigins(((memory).mailOut), ((memory).mailOutInterner)))
                     for (const auto& origin : row.second)
                         if (origin.first == "variable copy") ++count;
                 return count;
             };
             const int firstCount = copyHistoryCount();
             ASSERT_EQ(firstCount, scenario == 0 ? 1 : 0);
-            analyzer.standardProcessing(memory, nullptr, output, input, -1);
+            analyzer.logicBlockOperations.standardProcessing(memory, nullptr, output, input, -1);
             ASSERT_EQ(copyHistoryCount(), firstCount);
-            ASSERT_EQ(memory.changedClassesThisStep.size(), 0);
+            ASSERT_EQ(((memory).changedClassesThisStep).size(), 0);
         }
     }
 }
@@ -3486,46 +3504,46 @@ TEST(equi_reshuffle, standard_processing_hypothesis_copy_is_applied_and_publishe
 
 namespace {
 std::vector<std::set<std::string>> canonicalClassNames(gl::Memory& mb, gl::NameId scope) {
-    const int32_t bucket = mb.canonicalEquivalenceClassesMap.lookup(scope);
+    const int32_t bucket = ((mb).canonicalEquivalenceClassesMap).lookup(scope);
     ASSERT_TRUE(bucket != 0);
     std::vector<std::set<std::string>> result;
-    for (int32_t i = 0; i < mb.canonicalEquivalenceClassesMap.runLen(bucket); ++i) {
-        const auto cls = mb.canonicalEquivalenceClassesMap.recordAt(bucket, i);
+    for (int32_t i = 0; i < ((mb).canonicalEquivalenceClassesMap).runLen(bucket); ++i) {
+        const auto cls = ((mb).canonicalEquivalenceClassesMap).recordAt(bucket, i);
         std::set<std::string> names;
-        for (auto id : cls.memberIds) names.insert(mb.nameMap.decode(id));
+        for (auto id : cls.memberIds) names.insert(((mb).nameMap).decode(id));
         result.push_back(names);
     }
     return result;
 }
-void addCanonicalFixtureEquality(gl::ExpressionAnalyzer& ana, gl::Memory& mb,
+void addCanonicalFixtureEquality(gl::tests::ProverFixture& ana, gl::Memory& mb,
                                  gl::NameId scope, const std::string& equality, int level) {
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> rows(&gl::genScratchArenas().forSlot(0), &dirty);
     const gl::TransientOrigin origin{true, gl::OriginTag::broadcast, nullptr, 0};
-    const std::string validity = mb.nameMap.decode(scope);
-    ana.addStatement(gl::StrSpan(equality), mb, true, &level, 1, origin,
+    const std::string validity = ((mb).nameMap).decode(scope);
+    ana.statementMemory.addStatement(gl::StrSpan(equality), mb, true, &level, 1, origin,
                      gl::StrSpan(validity), rows);
 }
 }
 
 TEST(canonical_classes, initialization_copies_independent_ancestors_without_application_events) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
     putClassesAt(mb, root, {{"a", "z"}, {"m", "n"}});
-    const auto child = mb.nameMap.encodePush(root, "canonical_child");
-    const auto grandchild = mb.nameMap.encodePush(child, "canonical_grandchild");
-    const auto classCount = mb.equivalenceClassesMap.count();
-    const auto deltas = mb.changedClassesThisStep.size();
-    ana.initializeCanonicalScope(mb, grandchild);
+    const auto child = ((mb).nameMap).encodePush(root, "canonical_child");
+    const auto grandchild = ((mb).nameMap).encodePush(child, "canonical_grandchild");
+    const auto classCount = ((mb).equivalenceClassesMap).count();
+    const auto deltas = ((mb).changedClassesThisStep).size();
+    ana.canonicalizer.initializeCanonicalScope(mb, grandchild);
     const std::vector<std::set<std::string>> expected{{"a","z"}, {"m","n"}};
     ASSERT_TRUE(canonicalClassNames(mb, root) == expected);
     ASSERT_TRUE(canonicalClassNames(mb, child) == expected);
     ASSERT_TRUE(canonicalClassNames(mb, grandchild) == expected);
-    ASSERT_EQ(mb.equivalenceClassesMap.count(), classCount);
-    ASSERT_EQ(mb.changedClassesThisStep.size(), deltas);
-    ASSERT_EQ(mb.equivalenceClassesMap.lookup(child), 0);
-    ana.initializeCanonicalScope(mb, grandchild);
+    ASSERT_EQ(((mb).equivalenceClassesMap).count(), classCount);
+    ASSERT_EQ(((mb).changedClassesThisStep).size(), deltas);
+    ASSERT_EQ(((mb).equivalenceClassesMap).lookup(child), 0);
+    ana.canonicalizer.initializeCanonicalScope(mb, grandchild);
     ASSERT_TRUE(canonicalClassNames(mb, grandchild) == expected);
 }
 
@@ -3553,7 +3571,8 @@ std::string classRunBytes(Map& map, gl::NameId scope) {
 TEST(canonical_classes, run_overlay_holds_and_finds_runs) {
     auto& arena = gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
-    gl::ExpressionAnalyzer::CanonicalRunOverlay held(arena, 2);
+    gl::CanonicalRunOverlay held(arena, 2);
+    ASSERT_EQ(held.entryCount(), 0);
     const gl::StrSpan first[2] = { gl::StrSpan("abc", 3), gl::StrSpan("", 0) };
     const gl::StrSpan second[1] = { gl::StrSpan("de", 2) };
     held.add(7, first, 2);
@@ -3561,7 +3580,11 @@ TEST(canonical_classes, run_overlay_holds_and_finds_runs) {
     ASSERT_EQ(held.find(7), 0);
     ASSERT_EQ(held.find(9), 1);
     ASSERT_EQ(held.find(8), -1);
-    ASSERT_EQ(held.entries[0].records, 2);
+    ASSERT_EQ(held.entryCount(), 2);
+    ASSERT_EQ(held.scopeAt(0), gl::NameId{7});
+    ASSERT_EQ(held.scopeAt(1), gl::NameId{9});
+    ASSERT_EQ(held.recordCount(0), 2);
+    ASSERT_EQ(held.recordCount(1), 1);
     ASSERT_TRUE(gl::equalSpans(held.copyRecord(0, 0, arena), gl::StrSpan("abc", 3)));
     ASSERT_EQ(held.copyRecord(0, 1, arena).len, 0);
     ASSERT_TRUE(gl::equalSpans(held.copyRecord(1, 0, arena), gl::StrSpan("de", 2)));
@@ -3570,30 +3593,31 @@ TEST(canonical_classes, run_overlay_holds_and_finds_runs) {
 // refreshCanonicalClasses + flushCanonicalRuns — the held runs written in one
 // pass equal the runs written scope by scope in the same order.
 TEST(canonical_classes, refresh_one_pass_write_matches_scope_by_scope_writes) {
-    const auto build = [](gl::ExpressionAnalyzer& ana) {
+    const auto build = [](gl::tests::ProverFixture& ana) {
+        gl::Canonicalizer scopes(ana.parameters);
         gl::Memory& mb = ana.body;
         const auto root = gl::NameMap::MAIN_ID;
         putClassesAt(mb, root, {{"a", "z"}, {"m", "n"}});
-        const auto child = mb.nameMap.encodePush(root, "held_child");
-        const auto sibling = mb.nameMap.encodePush(root, "held_sibling");
-        const auto grandchild = mb.nameMap.encodePush(child, "held_grandchild");
+        const auto child = ((mb).nameMap).encodePush(root, "held_child");
+        const auto sibling = ((mb).nameMap).encodePush(root, "held_sibling");
+        const auto grandchild = ((mb).nameMap).encodePush(child, "held_grandchild");
         putClassesAt(mb, child, {{"c", "d"}});
-        ana.initializeCanonicalScope(mb, grandchild);
-        ana.initializeCanonicalScope(mb, sibling);
+        scopes.initializeCanonicalScope(mb, grandchild);
+        scopes.initializeCanonicalScope(mb, sibling);
         putClassesAt(mb, root, {{"a", "y", "z"}, {"m", "n"}});
         return std::vector<gl::NameId>{ root, child, sibling, grandchild };
     };
-    gl::ExpressionAnalyzer batched(std::string("Peano"));
-    gl::ExpressionAnalyzer sequential(std::string("Peano"));
+    gl::tests::ProverFixture batched(std::string("Peano"));
+    gl::tests::ProverFixture sequential(std::string("Peano"));
     const auto scopes = build(batched);
     const auto sameScopes = build(sequential);
     ASSERT_TRUE(scopes == sameScopes);
-    batched.refreshCanonicalClasses(batched.body, gl::NameMap::MAIN_ID);
+    batched.equivalenceProcessor.refreshCanonicalClasses(batched.body, gl::NameMap::MAIN_ID);
     for (const auto scope : { scopes[0], scopes[1], scopes[3], scopes[2] })
-        sequential.rebuildCanonicalScope(sequential.body, scope);
+        sequential.canonicalizer.rebuildCanonicalScope(sequential.body, scope);
     for (const auto scope : scopes)
-        ASSERT_EQ(classRunBytes(batched.body.canonicalEquivalenceClassesMap, scope),
-                  classRunBytes(sequential.body.canonicalEquivalenceClassesMap, scope));
+        ASSERT_EQ(classRunBytes(((batched.body).canonicalEquivalenceClassesMap), scope),
+                  classRunBytes(((sequential.body).canonicalEquivalenceClassesMap), scope));
     const std::vector<std::set<std::string>> expected{{"a", "y", "z"}, {"c", "d"}, {"m", "n"}};
     ASSERT_TRUE(canonicalClassNames(batched.body, scopes[3]) == expected);
 }
@@ -3602,21 +3626,21 @@ TEST(canonical_classes, refresh_one_pass_write_matches_scope_by_scope_writes) {
 // records its pair in the scope's own class and leaves every complete view as
 // it was; an equality that adds a member refreshes them.
 TEST(canonical_classes, only_a_membership_change_refreshes_complete_views) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
     addCanonicalFixtureEquality(ana, mb, root, "(=[a,b])", 1);
     addCanonicalFixtureEquality(ana, mb, root, "(=[b,c])", 1);
-    const auto child = mb.nameMap.encodePush(root, "watch_child");
-    ana.initializeCanonicalScope(mb, child);
-    const std::string ownBefore = classRunBytes(mb.equivalenceClassesMap, root);
-    const std::string rootViewBefore = classRunBytes(mb.canonicalEquivalenceClassesMap, root);
-    const std::string childViewBefore = classRunBytes(mb.canonicalEquivalenceClassesMap, child);
+    const auto child = ((mb).nameMap).encodePush(root, "watch_child");
+    ana.canonicalizer.initializeCanonicalScope(mb, child);
+    const std::string ownBefore = classRunBytes(((mb).equivalenceClassesMap), root);
+    const std::string rootViewBefore = classRunBytes(((mb).canonicalEquivalenceClassesMap), root);
+    const std::string childViewBefore = classRunBytes(((mb).canonicalEquivalenceClassesMap), child);
 
     addCanonicalFixtureEquality(ana, mb, root, "(=[a,c])", 5);
-    ASSERT_NE(classRunBytes(mb.equivalenceClassesMap, root), ownBefore);
-    ASSERT_EQ(classRunBytes(mb.canonicalEquivalenceClassesMap, root), rootViewBefore);
-    ASSERT_EQ(classRunBytes(mb.canonicalEquivalenceClassesMap, child), childViewBefore);
+    ASSERT_NE(classRunBytes(((mb).equivalenceClassesMap), root), ownBefore);
+    ASSERT_EQ(classRunBytes(((mb).canonicalEquivalenceClassesMap), root), rootViewBefore);
+    ASSERT_EQ(classRunBytes(((mb).canonicalEquivalenceClassesMap), child), childViewBefore);
 
     addCanonicalFixtureEquality(ana, mb, root, "(=[c,d])", 1);
     const std::vector<std::set<std::string>> expected{{"a", "b", "c", "d"}};
@@ -3625,14 +3649,14 @@ TEST(canonical_classes, only_a_membership_change_refreshes_complete_views) {
 }
 
 TEST(canonical_classes, routine_updates_close_late_overlaps_without_upward_or_sibling_leakage) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root, "canonical_child");
-    const auto sibling = mb.nameMap.encodePush(root, "canonical_sibling");
-    const auto grandchild = mb.nameMap.encodePush(child, "canonical_grandchild");
-    ana.initializeCanonicalScope(mb, grandchild);
-    ana.initializeCanonicalScope(mb, sibling);
+    const auto child = ((mb).nameMap).encodePush(root, "canonical_child");
+    const auto sibling = ((mb).nameMap).encodePush(root, "canonical_sibling");
+    const auto grandchild = ((mb).nameMap).encodePush(child, "canonical_grandchild");
+    ana.canonicalizer.initializeCanonicalScope(mb, grandchild);
+    ana.canonicalizer.initializeCanonicalScope(mb, sibling);
     addCanonicalFixtureEquality(ana, mb, child, "(=[b,z])", 2);
     addCanonicalFixtureEquality(ana, mb, child, "(=[c,y])", 3);
     addCanonicalFixtureEquality(ana, mb, root, "(=[y,z])", 1);
@@ -3642,77 +3666,77 @@ TEST(canonical_classes, routine_updates_close_late_overlaps_without_upward_or_si
     const std::vector<std::set<std::string>> parent{{"y","z"}};
     ASSERT_TRUE(canonicalClassNames(mb, root) == parent);
     ASSERT_TRUE(canonicalClassNames(mb, sibling) == parent);
-    ASSERT_EQ(mb.equivalenceClassesMap.runLen(mb.equivalenceClassesMap.lookup(child)), 2);
-    ASSERT_EQ(mb.equivalenceClassesMap.lookup(grandchild), 0);
-    const auto cls = mb.canonicalEquivalenceClassesMap.recordAt(
-        mb.canonicalEquivalenceClassesMap.lookup(child), 0);
-    const auto pair = gl::packEqPairKey(mb.nameMap.lookup("b"), mb.nameMap.lookup("c"));
+    ASSERT_EQ(((mb).equivalenceClassesMap).runLen(((mb).equivalenceClassesMap).lookup(child)), 2);
+    ASSERT_EQ(((mb).equivalenceClassesMap).lookup(grandchild), 0);
+    const auto cls = ((mb).canonicalEquivalenceClassesMap).recordAt(
+        ((mb).canonicalEquivalenceClassesMap).lookup(child), 0);
+    const auto pair = gl::packEqPairKey(((mb).nameMap).lookup("b"), ((mb).nameMap).lookup("c"));
     ASSERT_TRUE(cls.intEqualityLevelsMap.at(pair) == std::set<int>({1,2,3}));
-    ASSERT_TRUE(gl::equalSpans(ana.findEqualityCiteScope(mb, gl::StrSpan("(=[y,z])",8),
-        mb.nameMap.decodeView(child)), gl::StrSpan("main",4)));
+    ASSERT_TRUE(gl::equalSpans(ana.proofHistory.findEqualityCiteScope(mb, gl::StrSpan("(=[y,z])",8),
+        ((mb).nameMap).decodeView(child)), gl::StrSpan("main",4)));
     int64_t key = 0;
-    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, "(=[b,c])", mb.nameMap.decode(child), key));
-    ASSERT_TRUE(mb.exprOriginMap.lookup(key) != 0);
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), "(=[b,c])", ((mb).nameMap).decode(child), key));
+    ASSERT_TRUE(((mb).exprOriginMap).lookup(key) != 0);
     addCanonicalFixtureEquality(ana, mb, root, "(=[a,y])", 4);
     const std::vector<std::set<std::string>> enlarged{{"a","b","c","y","z"}};
     ASSERT_TRUE(canonicalClassNames(mb, grandchild) == enlarged);
 }
 
 TEST(canonical_classes, explicit_rebuild_preserves_local_pair_levels_and_ancestor_provenance) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root, "canonical_child");
+    const auto child = ((mb).nameMap).encodePush(root, "canonical_child");
     addCanonicalFixtureEquality(ana, mb, child, "(=[a,z])", 5);
     addCanonicalFixtureEquality(ana, mb, root, "(=[a,z])", 2);
-    ana.rebuildCanonicalScope(mb, child);
-    auto cls = mb.canonicalEquivalenceClassesMap.recordAt(
-        mb.canonicalEquivalenceClassesMap.lookup(child), 0);
-    const auto pair = gl::packEqPairKey(mb.nameMap.lookup("a"), mb.nameMap.lookup("z"));
+    ana.canonicalizer.rebuildCanonicalScope(mb, child);
+    auto cls = ((mb).canonicalEquivalenceClassesMap).recordAt(
+        ((mb).canonicalEquivalenceClassesMap).lookup(child), 0);
+    const auto pair = gl::packEqPairKey(((mb).nameMap).lookup("a"), ((mb).nameMap).lookup("z"));
     ASSERT_TRUE(cls.intEqualityLevelsMap.at(pair) == std::set<int>({5}));
-    const auto parent = mb.canonicalEquivalenceClassesMap.recordAt(
-        mb.canonicalEquivalenceClassesMap.lookup(root), 0);
+    const auto parent = ((mb).canonicalEquivalenceClassesMap).recordAt(
+        ((mb).canonicalEquivalenceClassesMap).lookup(root), 0);
     ASSERT_TRUE(parent.intEqualityLevelsMap.at(pair) == std::set<int>({2}));
 }
 
 TEST(canonical_classes, facts_clone_and_cleanup_keep_both_sets_independent) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory source;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = source.nameMap.encodePush(root, "canonical_child");
-    const auto sibling = source.nameMap.encodePush(root, "canonical_sibling");
+    const auto child = ((source).nameMap).encodePush(root, "canonical_child");
+    const auto sibling = ((source).nameMap).encodePush(root, "canonical_sibling");
     putClassesAt(source, root, {{"a", "z"}});
     putClassesAt(source, child, {{"b", "c"}});
-    ana.initializeCanonicalScope(source, child);
-    ana.initializeCanonicalScope(source, sibling);
+    ana.canonicalizer.initializeCanonicalScope(source, child);
+    ana.canonicalizer.initializeCanonicalScope(source, sibling);
     gl::LbStore store{&gl::lbMemory(), sizeof(gl::Memory), alignof(gl::Memory)};
     gl::Memory* clone = source.cloneFactsTemplate(store);
     ASSERT_TRUE(canonicalClassNames(*clone, child) == canonicalClassNames(source, child));
-    ASSERT_EQ(clone->equivalenceClassesMap.runLen(clone->equivalenceClassesMap.lookup(child)), 1);
+    ASSERT_EQ(((*(clone)).equivalenceClassesMap).runLen(((*(clone)).equivalenceClassesMap).lookup(child)), 1);
     clone->wipeSubtree(child);
-    ASSERT_EQ(clone->canonicalEquivalenceClassesMap.lookup(child), 0);
-    ASSERT_EQ(clone->equivalenceClassesMap.lookup(child), 0);
-    ASSERT_TRUE(clone->canonicalEquivalenceClassesMap.lookup(sibling) != 0);
-    ASSERT_TRUE(source.canonicalEquivalenceClassesMap.lookup(child) != 0);
+    ASSERT_EQ(((*(clone)).canonicalEquivalenceClassesMap).lookup(child), 0);
+    ASSERT_EQ(((*(clone)).equivalenceClassesMap).lookup(child), 0);
+    ASSERT_TRUE(((*(clone)).canonicalEquivalenceClassesMap).lookup(sibling) != 0);
+    ASSERT_TRUE(((source).canonicalEquivalenceClassesMap).lookup(child) != 0);
     store.destroy(clone);
 }
 
 TEST(canonical_classes, full_scope_chain_preserves_independent_components) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root, "true_child");
-    const auto leaf = mb.nameMap.encodePush(child, "true_leaf");
+    const auto child = ((mb).nameMap).encodePush(root, "true_child");
+    const auto leaf = ((mb).nameMap).encodePush(child, "true_leaf");
     putClassesAt(mb, root, {{"a", "b"}, {"f", "g"}});
     putClassesAt(mb, child, {{"b", "c"}, {"g", "h"}});
     putClassesAt(mb, leaf, {{"c", "d"}});
     const auto recordEdge = [&](gl::NameId scope, const char* a, const char* b) {
-        const std::string validity = mb.nameMap.decode(scope);
+        const std::string validity = ((mb).nameMap).decode(scope);
         const std::string forward = std::string("(=[") + a + "," + b + "])";
         const std::string reverse = std::string("(=[") + b + "," + a + "])";
-        gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner, gl::StrSpan(forward),
+        gl::addOriginEncoded(((mb).exprOriginMap), ((mb).originInterner), gl::StrSpan(forward),
             gl::StrSpan(validity), gl::OriginTag::broadcast, nullptr, 0, ana.parameters.max_origin_per_expr);
-        gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner, gl::StrSpan(reverse),
+        gl::addOriginEncoded(((mb).exprOriginMap), ((mb).originInterner), gl::StrSpan(reverse),
             gl::StrSpan(validity), gl::OriginTag::broadcast, nullptr, 0, ana.parameters.max_origin_per_expr);
     };
     recordEdge(root, "a", "b");
@@ -3720,192 +3744,192 @@ TEST(canonical_classes, full_scope_chain_preserves_independent_components) {
     recordEdge(child, "b", "c");
     recordEdge(child, "g", "h");
     recordEdge(leaf, "c", "d");
-    ana.initializeCanonicalScope(mb, leaf);
+    ana.canonicalizer.initializeCanonicalScope(mb, leaf);
     const std::vector<std::set<std::string>> expected{{"a", "b", "c", "d"}, {"f", "g", "h"}};
     ASSERT_TRUE(canonicalClassNames(mb, leaf) == expected);
-    ASSERT_EQ(mb.equivalenceClassesMap.runLen(mb.equivalenceClassesMap.lookup(leaf)), 1);
-    const int64_t key = gl::packStatementKey(mb.nameMap.lookup("d"), leaf);
-    const int64_t* selected = mb.lbMemory.canonicalMemberRepresentatives.find(key);
+    ASSERT_EQ(((mb).equivalenceClassesMap).runLen(((mb).equivalenceClassesMap).lookup(leaf)), 1);
+    const int64_t key = gl::packStatementKey(((mb).nameMap).lookup("d"), leaf);
+    const int64_t* selected = ((mb).lbMemory).canonicalMemberRepresentatives.find(key);
     ASSERT_TRUE(selected != nullptr);
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(*selected) >> 32), mb.nameMap.lookup("a"));
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(*selected) >> 32), ((mb).nameMap).lookup("a"));
 }
 
 TEST(canonical_classes, unchanged_refresh_has_no_changes_and_late_bridge_marks_old_representative) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root, "true_child");
-    ana.initializeCanonicalScope(mb, child);
+    const auto child = ((mb).nameMap).encodePush(root, "true_child");
+    ana.canonicalizer.initializeCanonicalScope(mb, child);
     addCanonicalFixtureEquality(ana, mb, root, "(=[f,g])", 1);
     addCanonicalFixtureEquality(ana, mb, child, "(=[b,z])", 2);
-    mb.lbMemory.canonicalClassChanges.resetToFresh();
-    ASSERT_TRUE(!ana.rebuildCanonicalScope(mb, child));
-    ASSERT_EQ(mb.lbMemory.canonicalClassChanges.count(), 0);
+    ((mb).lbMemory).canonicalClassChanges.resetToFresh();
+    ASSERT_TRUE(!ana.canonicalizer.rebuildCanonicalScope(mb, child));
+    ASSERT_EQ(((mb).lbMemory).canonicalClassChanges.count(), 0);
     addCanonicalFixtureEquality(ana, mb, root, "(=[a,z])", 3);
-    const int64_t changed = gl::packStatementKey(mb.nameMap.lookup("b"), child);
-    const int32_t* flags = mb.lbMemory.canonicalClassChanges.find(changed);
+    const int64_t changed = gl::packStatementKey(((mb).nameMap).lookup("b"), child);
+    const int32_t* flags = ((mb).lbMemory).canonicalClassChanges.find(changed);
     ASSERT_TRUE(flags != nullptr && (*flags & 1) != 0);
-    ASSERT_TRUE(mb.lbMemory.canonicalClassChanges.find(
-        gl::packStatementKey(mb.nameMap.lookup("f"), child)) == nullptr);
-    ASSERT_TRUE(mb.lbMemory.canonicalClassChanges.find(
-        gl::packStatementKey(mb.nameMap.lookup("g"), child)) == nullptr);
-    mb.lbMemory.canonicalClassChanges.resetToFresh();
-    ASSERT_TRUE(!ana.rebuildCanonicalScope(mb, child));
-    ASSERT_EQ(mb.lbMemory.canonicalClassChanges.count(), 0);
+    ASSERT_TRUE(((mb).lbMemory).canonicalClassChanges.find(
+        gl::packStatementKey(((mb).nameMap).lookup("f"), child)) == nullptr);
+    ASSERT_TRUE(((mb).lbMemory).canonicalClassChanges.find(
+        gl::packStatementKey(((mb).nameMap).lookup("g"), child)) == nullptr);
+    ((mb).lbMemory).canonicalClassChanges.resetToFresh();
+    ASSERT_TRUE(!ana.canonicalizer.rebuildCanonicalScope(mb, child));
+    ASSERT_EQ(((mb).lbMemory).canonicalClassChanges.count(), 0);
 }
 
 TEST(canonical_classes, representative_snapshot_survives_weak_metadata_change_and_scope_wipe) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root, "true_child");
+    const auto child = ((mb).nameMap).encodePush(root, "true_child");
     putClassesAt(mb, child, {{"int_0_lev_1_0", "int_0_lev_1_1"}});
-    ana.initializeCanonicalScope(mb, child);
-    const auto first = mb.nameMap.lookup("int_0_lev_1_0");
-    const auto second = mb.nameMap.lookup("int_0_lev_1_1");
+    ana.canonicalizer.initializeCanonicalScope(mb, child);
+    const auto first = ((mb).nameMap).lookup("int_0_lev_1_0");
+    const auto second = ((mb).nameMap).lookup("int_0_lev_1_1");
     const int64_t key = gl::packStatementKey(first, child);
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(*mb.lbMemory.canonicalMemberRepresentatives.find(key)) >> 32), first);
-    mb.lbMemory.canonicalClassChanges.resetToFresh();
-    mb.intWeakVariables.mint(key);
-    ASSERT_TRUE(ana.rebuildCanonicalScope(mb, child));
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(*mb.lbMemory.canonicalMemberRepresentatives.find(key)) >> 32), second);
-    ASSERT_TRUE((*mb.lbMemory.canonicalClassChanges.find(key) & 1) != 0);
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(*((mb).lbMemory).canonicalMemberRepresentatives.find(key)) >> 32), first);
+    ((mb).lbMemory).canonicalClassChanges.resetToFresh();
+    ((mb).intWeakVariables).mint(key);
+    ASSERT_TRUE(ana.canonicalizer.rebuildCanonicalScope(mb, child));
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(*((mb).lbMemory).canonicalMemberRepresentatives.find(key)) >> 32), second);
+    ASSERT_TRUE((*((mb).lbMemory).canonicalClassChanges.find(key) & 1) != 0);
     mb.wipeSubtree(child);
-    ASSERT_TRUE(mb.lbMemory.canonicalMemberRepresentatives.find(key) == nullptr);
-    ASSERT_TRUE(mb.lbMemory.canonicalClassChanges.find(key) == nullptr);
+    ASSERT_TRUE(((mb).lbMemory).canonicalMemberRepresentatives.find(key) == nullptr);
+    ASSERT_TRUE(((mb).lbMemory).canonicalClassChanges.find(key) == nullptr);
 }
 
 TEST(canonical_forms, representative_at_follows_the_rebuilt_view_and_weak_members) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
     const auto main = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(main, "true_child");
+    const auto child = ((mb).nameMap).encodePush(main, "true_child");
     putClassesAt(mb, main, {{"b", "z"}});
     putClassesAt(mb, child, {{"a", "b"}, {"int_0_lev_1_0", "int_0_lev_1_1"}});
-    const auto id = [&](const char* name) { return mb.nameMap.lookup(name); };
+    const auto id = [&](const char* name) { return ((mb).nameMap).lookup(name); };
     // Main: z -> b; the child's view merges {a, b, z} -> a.
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, id("z"), main), id("b"));
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, id("b"), main), id("b"));
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, id("z"), child), id("a"));
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, id("z"), main), id("b"));
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, id("b"), main), id("b"));
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, id("z"), child), id("a"));
     // A token in no class keeps its spelling.
-    const auto c = mb.nameMap.encode("c");
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, c, main), c);
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, id("a"), main), id("a"));
+    const auto c = ((mb).nameMap).encode("c");
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, c, main), c);
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, id("a"), main), id("a"));
     // Every member weak at the child: nothing is replaced there.
     const auto first = id("int_0_lev_1_0"), second = id("int_0_lev_1_1");
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, second, child), first);
-    mb.intWeakVariables.mint(gl::packStatementKey(first, child));
-    mb.intWeakVariables.mint(gl::packStatementKey(second, child));
-    ASSERT_TRUE(ana.rebuildCanonicalScope(mb, child));
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, first, child), first);
-    ASSERT_EQ(gl::ExpressionAnalyzer::canonicalRepresentativeAt(mb, second, child), second);
-    const auto special = mb.nameMap.encode("(p[int_0_lev_1_1])");
-    ASSERT_EQ(ana.canonicalWatchIdAt(mb, special, child), special);
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, second, child), first);
+    ((mb).intWeakVariables).mint(gl::packStatementKey(first, child));
+    ((mb).intWeakVariables).mint(gl::packStatementKey(second, child));
+    ASSERT_TRUE(ana.canonicalizer.rebuildCanonicalScope(mb, child));
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, first, child), first);
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalRepresentativeAt(mb, second, child), second);
+    const auto special = ((mb).nameMap).encode("(p[int_0_lev_1_1])");
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, special, child), special);
 }
 
 TEST(canonical_forms, same_spelling_implies_the_same_canonical_form) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
     const auto main = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(main, "true_child");
-    const auto quiet = mb.nameMap.encodePush(main, "true_quiet");
+    const auto child = ((mb).nameMap).encodePush(main, "true_child");
+    const auto quiet = ((mb).nameMap).encodePush(main, "true_quiet");
     putClassesAt(mb, main, {{"b", "z"}});
     putClassesAt(mb, child, {{"a", "b"}, {"c", "d"}});
     putClassesAt(mb, quiet, {{"x", "y"}});
-    const auto expr = [&](const char* text) { return mb.nameMap.encode(text); };
+    const auto expr = [&](const char* text) { return ((mb).nameMap).encode(text); };
     const auto zc = expr("!(p[z,c])"), zd = expr("!(p[z,d])"), zx = expr("(q[z,x])"),
         zy = expr("(q[z,y])"), free = expr("(q[e,f])");
-    ASSERT_TRUE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, zc, child, child));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, zc, child, child));
     // z -> b at main and quiet, z -> a at the child.
-    ASSERT_TRUE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, zc, main, quiet));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, zc, main, child));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, zd, quiet, child));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, zc, main, quiet));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, zc, main, child));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, zd, quiet, child));
     // x is its own class's representative at quiet: nothing replaces it there.
-    ASSERT_TRUE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, zx, main, quiet));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, zy, main, quiet));
-    ASSERT_TRUE(gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, free, main, child));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, zx, main, quiet));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, zy, main, quiet));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, free, main, child));
     const gl::NameId scopes[] = {main, child, quiet};
     for (const auto e : {zc, zd, zx, zy, free})
         for (const auto from : scopes)
             for (const auto to : scopes)
-                if (gl::ExpressionAnalyzer::sameCanonicalSpelling(mb, e, from, to))
-                    ASSERT_EQ(ana.canonicalWatchIdAt(mb, e, from), ana.canonicalWatchIdAt(mb, e, to));
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalWatchIdAt(mb, zd, child)), std::string("!(p[a,c])"));
+                if (gl::tests::WatchProcessorFixture::sameCanonicalSpelling(mb, e, from, to))
+                    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, e, from), gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, e, to));
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, zd, child)), std::string("!(p[a,c])"));
 }
 
 TEST(canonical_forms, cache_shares_anchor_forms_and_renews_after_a_class_change) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
     const auto main = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(main, "true_child");
-    const auto quiet = mb.nameMap.encodePush(main, "true_quiet");
+    const auto child = ((mb).nameMap).encodePush(main, "true_child");
+    const auto quiet = ((mb).nameMap).encodePush(main, "true_quiet");
     putClassesAt(mb, main, {{"b", "z"}});
     putClassesAt(mb, child, {{"a", "b"}});
     putClassesAt(mb, quiet, {{"x", "y"}});
-    const auto zc = mb.nameMap.encode("(p[z,c])");
-    const auto plain = mb.nameMap.encode("(p[c,e])");
-    gl::ExpressionAnalyzer::CanonicalFormCache forms(gl::genScratchArenas().forSlot(0));
+    const auto zc = ((mb).nameMap).encode("(p[z,c])");
+    const auto plain = ((mb).nameMap).encode("(p[c,e])");
+    gl::CanonicalFormCache forms(gl::genScratchArenas().forSlot(0));
     // The quiet scope shares main's form; the child computes its own.
-    const auto atMain = ana.canonicalIdCached(mb, forms, zc, main, main);
-    ASSERT_EQ(mb.nameMap.decode(atMain), std::string("(p[b,c])"));
-    ASSERT_EQ(ana.canonicalIdCached(mb, forms, zc, main, quiet), atMain);
-    ASSERT_EQ(forms.forms.count(), 2);
-    ASSERT_EQ(forms.texts.count(), 1);
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalIdCached(mb, forms, zc, main, child)), std::string("(p[a,c])"));
-    ASSERT_EQ(forms.texts.count(), 2);
-    ASSERT_EQ(ana.canonicalIdCached(mb, forms, zc, main, quiet), atMain);
-    ASSERT_EQ(forms.forms.count(), 3);
+    const auto atMain = gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, main);
+    ASSERT_EQ(((mb).nameMap).decode(atMain), std::string("(p[b,c])"));
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, quiet), atMain);
+    ASSERT_EQ(gl::tests::RuntimeSupportFixture::forms(forms).count(), 2);
+    ASSERT_EQ(gl::tests::RuntimeSupportFixture::texts(forms).count(), 1);
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, child)), std::string("(p[a,c])"));
+    ASSERT_EQ(gl::tests::RuntimeSupportFixture::texts(forms).count(), 2);
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, quiet), atMain);
+    ASSERT_EQ(gl::tests::RuntimeSupportFixture::forms(forms).count(), 3);
     // An expression already canonical keeps its id and needs no text.
-    ASSERT_EQ(ana.canonicalIdCached(mb, forms, plain, main, child), plain);
-    ASSERT_EQ(forms.texts.count(), 2);
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, plain, main, child), plain);
+    ASSERT_EQ(gl::tests::RuntimeSupportFixture::texts(forms).count(), 2);
     {
         gl::ScratchArena& strings = gl::scratchArenas().forSlot(0);
         gl::ScratchScope frame(strings);
-        ASSERT_TRUE(gl::equalSpans(ana.canonicalTextCached(mb, forms, zc, main, child, strings),
+        ASSERT_TRUE(gl::equalSpans(gl::tests::WatchProcessorFixture::canonicalTextCached(ana.watchProcessor, mb, forms, zc, main, child, strings),
             gl::StrSpan("(p[a,c])", 8)));
-        ASSERT_TRUE(gl::equalSpans(ana.canonicalTextCached(mb, forms, plain, main, quiet, strings),
+        ASSERT_TRUE(gl::equalSpans(gl::tests::WatchProcessorFixture::canonicalTextCached(ana.watchProcessor, mb, forms, plain, main, quiet, strings),
             gl::StrSpan("(p[c,e])", 8)));
     }
     // A complete-view change renews the cache: c now joins {bb, c} -> bb at main.
     putClassesAt(mb, main, {{"b", "z"}, {"bb", "c"}});
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalIdCached(mb, forms, zc, main, quiet)), std::string("(p[b,bb])"));
-    ASSERT_EQ(forms.version, mb.lbMemory.canonicalUses.version);
-    ASSERT_EQ(ana.canonicalIdCached(mb, forms, zc, main, quiet), ana.canonicalWatchIdAt(mb, zc, quiet));
-    ASSERT_EQ(ana.canonicalIdCached(mb, forms, zc, main, child), ana.canonicalWatchIdAt(mb, zc, child));
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, quiet)), std::string("(p[b,bb])"));
+    ASSERT_EQ(gl::tests::RuntimeSupportFixture::version(forms), ((mb).lbMemory).canonicalUses.version);
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, quiet), gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, zc, quiet));
+    ASSERT_EQ(gl::tests::WatchProcessorFixture::canonicalIdCached(ana.watchProcessor, mb, forms, zc, main, child), gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, zc, child));
 }
 
 TEST(watch_ledger, record_with_known_canonical_matches_record_and_run_membership) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
     const auto main = gl::NameMap::MAIN_ID;
     putClassesAt(mb, main, {{"a", "b"}});
-    const auto first = gl::encodeExpression(gl::StrSpan("!(p[b])", 7), gl::StrSpan("main", 4), mb.nameMap);
-    const auto second = gl::encodeExpression(gl::StrSpan("!(p[c])", 7), gl::StrSpan("main", 4), mb.nameMap);
-    const auto canonical = ana.canonicalWatchIdAt(mb, first.originalId, main);
-    ASSERT_EQ(mb.nameMap.decode(canonical), std::string("!(p[a])"));
-    ana.recordWatchCanonical(mb.negationLedger, mb, first.originalId, main, first.nameId, canonical);
-    ana.recordWatch(mb.negationLedger, mb, second.originalId, main, second.nameId);
-    const int64_t key = gl::ExpressionAnalyzer::watchKey(main, first.nameId);
+    const auto first = gl::encodeExpression(gl::StrSpan("!(p[b])", 7), gl::StrSpan("main", 4), ((mb).nameMap));
+    const auto second = gl::encodeExpression(gl::StrSpan("!(p[c])", 7), gl::StrSpan("main", 4), ((mb).nameMap));
+    const auto canonical = gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb, first.originalId, main);
+    ASSERT_EQ(((mb).nameMap).decode(canonical), std::string("!(p[a])"));
+    gl::tests::WatchProcessorFixture::recordWatchCanonical(ana.watchProcessor, ((mb).negationLedger), mb, first.originalId, main, first.nameId, canonical);
+    gl::tests::WatchProcessorFixture::recordWatch(ana.watchProcessor, ((mb).negationLedger), mb, second.originalId, main, second.nameId);
+    const int64_t key = gl::tests::WatchProcessorFixture::watchKey(main, first.nameId);
     const int64_t firstValue = gl::packInt32Pair(canonical, first.originalId);
     const int64_t secondValue = gl::packInt32Pair(second.originalId, second.originalId);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunContainsValue(mb.negationLedger, key, firstValue));
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunContainsValue(mb.negationLedger, key, secondValue));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunContainsValue(mb.negationLedger, key,
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunContainsValue(((mb).negationLedger), key, firstValue));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunContainsValue(((mb).negationLedger), key, secondValue));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunContainsValue(((mb).negationLedger), key,
         gl::packInt32Pair(first.originalId, first.originalId)));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::watchRunContainsValue(mb.negationLedger,
-        gl::ExpressionAnalyzer::watchKey(main, mb.nameMap.encode("q")), firstValue));
-    ASSERT_TRUE(mb.lbMemory.canonicalUses.watches.contains(gl::packStatementKey(first.originalId, main)));
+    ASSERT_FALSE(gl::tests::WatchProcessorFixture::watchRunContainsValue(((mb).negationLedger),
+        gl::tests::WatchProcessorFixture::watchKey(main, ((mb).nameMap).encode("q")), firstValue));
+    ASSERT_TRUE(((mb).lbMemory).canonicalUses.watches.contains(gl::packStatementKey(first.originalId, main)));
     // A duplicate is a no-op on the sorted-unique run.
-    const int32_t run = mb.negationLedger.lookup(key);
-    ASSERT_EQ(mb.negationLedger.runLen(run), 2);
-    ana.recordWatchCanonical(mb.negationLedger, mb, first.originalId, main, first.nameId, canonical);
-    ASSERT_EQ(mb.negationLedger.runLen(mb.negationLedger.lookup(key)), 2);
+    const int32_t run = ((mb).negationLedger).lookup(key);
+    ASSERT_EQ(((mb).negationLedger).runLen(run), 2);
+    gl::tests::WatchProcessorFixture::recordWatchCanonical(ana.watchProcessor, ((mb).negationLedger), mb, first.originalId, main, first.nameId, canonical);
+    ASSERT_EQ(((mb).negationLedger).runLen(((mb).negationLedger).lookup(key)), 2);
     gl::NameId found = 0;
-    ASSERT_TRUE(gl::ExpressionAnalyzer::watchRunHasCanonical(mb.negationLedger, main, first.nameId, canonical, &found));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((mb).negationLedger), main, first.nameId, canonical, &found));
     ASSERT_EQ(found, first.originalId);
 }
 
@@ -3913,36 +3937,36 @@ TEST(watch_ledger, shared_refresh_forms_leave_ancestor_imports_unchanged) {
     // The same fixture imported with one cache for both targets and with a
     // per-call cache: identical ledger values, identifiers and re-checks.
     const auto run = [](bool shared) {
-        gl::ExpressionAnalyzer ana("Peano");
+        gl::tests::ProverFixture ana("Peano");
         ana.parameters.trackHistory = false;
         gl::Memory& mb = ana.body;
-        const auto main = mb.nameMap.encode("main");
-        const auto left = mb.nameMap.encodePush(main, "hypo_(h[c])");
-        const auto right = mb.nameMap.encodePush(main, "hypo_(h[d])");
+        const auto main = ((mb).nameMap).encode("main");
+        const auto left = ((mb).nameMap).encodePush(main, "hypo_(h[c])");
+        const auto right = ((mb).nameMap).encodePush(main, "hypo_(h[d])");
         gl::DirtyState dirty = gl::DirtyState::Clean;
         gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
         const int levels[] = {0};
-        ana.addStatement(gl::StrSpan("!(p[z,c])", 9), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
-        ana.addStatement(gl::StrSpan("!(p[z,d])", 9), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
+        ana.statementMemory.addStatement(gl::StrSpan("!(p[z,c])", 9), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
+        ana.statementMemory.addStatement(gl::StrSpan("!(p[z,d])", 9), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
         putClassesAt(mb, main, {{"b", "z"}});
         putClassesAt(mb, left, {{"c", "d"}});
         putClassesAt(mb, right, {{"c", "d"}});
         gl::PagedVector<gl::NameId> members(&gl::genScratchArenas().forSlot(0), &dirty);
-        members.push_back(mb.nameMap.lookup("c"));
-        members.push_back(mb.nameMap.lookup("d"));
-        gl::ExpressionAnalyzer::CanonicalFormCache forms(gl::genScratchArenas().forSlot(0));
-        mb.pendingWatchRechecks.clear();
-        ana.importAncestorNegationsForClass(mb, left, members, shared ? &forms : nullptr);
-        ana.importAncestorNegationsForClass(mb, right, members, shared ? &forms : nullptr);
+        members.push_back(((mb).nameMap).lookup("c"));
+        members.push_back(((mb).nameMap).lookup("d"));
+        gl::CanonicalFormCache forms(gl::genScratchArenas().forSlot(0));
+        ((mb).pendingWatchRechecks).clear();
+        ana.watchProcessor.importAncestorNegationsForClass(mb, left, members, shared ? &forms : nullptr);
+        ana.watchProcessor.importAncestorNegationsForClass(mb, right, members, shared ? &forms : nullptr);
         std::vector<int64_t> state;
         for (const auto scope : {left, right}) {
-            const int32_t id = mb.negationLedger.lookup(gl::ExpressionAnalyzer::watchKey(scope, mb.nameMap.lookup("p")));
+            const int32_t id = ((mb).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(scope, ((mb).nameMap).lookup("p")));
             assert(id != 0);
-            for (int32_t j = 0; j < mb.negationLedger.runLen(id); ++j) state.push_back(mb.negationLedger.valueAt(id, j));
+            for (int32_t j = 0; j < ((mb).negationLedger).runLen(id); ++j) state.push_back(((mb).negationLedger).valueAt(id, j));
         }
-        for (int32_t i = 0; i < mb.pendingWatchRechecks.size(); ++i) state.push_back(mb.pendingWatchRechecks[i]);
-        state.push_back(mb.nameMap.nameCount());
-        const std::string canonical = mb.nameMap.decode(static_cast<gl::NameId>(uint64_t(state[0]) >> 32));
+        for (int32_t i = 0; i < ((mb).pendingWatchRechecks).size(); ++i) state.push_back(((mb).pendingWatchRechecks)[i]);
+        state.push_back(((mb).nameMap).nameCount());
+        const std::string canonical = ((mb).nameMap).decode(static_cast<gl::NameId>(uint64_t(state[0]) >> 32));
         assert(canonical == "!(p[b,c])");
         return state;
     };
@@ -3952,155 +3976,155 @@ TEST(watch_ledger, shared_refresh_forms_leave_ancestor_imports_unchanged) {
 }
 
 TEST(watch_drain, grouped_sweep_serves_requests_of_several_cores) {
-    gl::ExpressionAnalyzer ana("Peano");
+    gl::tests::ProverFixture ana("Peano");
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
-    const auto main = mb.nameMap.encode("main");
-    const auto child = mb.nameMap.encodePush(main, "hypo_(h[b])");
-    const std::string childName = mb.nameMap.decode(child);
+    const auto main = ((mb).nameMap).encode("main");
+    const auto child = ((mb).nameMap).encodePush(main, "hypo_(h[b])");
+    const std::string childName = ((mb).nameMap).decode(child);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> out(&gl::genScratchArenas().forSlot(0), &dirty);
     const int levels[] = {0};
-    ana.addStatement(gl::StrSpan("(q[c])", 6), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
-    ana.addStatement(gl::StrSpan("(p[c])", 6), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
-    ana.addStatement(gl::StrSpan("(p[e])", 6), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
-    ana.addStatement(gl::StrSpan("!(q[b])", 7), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan(childName), out);
-    ana.addStatement(gl::StrSpan("!(p[b])", 7), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan(childName), out);
+    ana.statementMemory.addStatement(gl::StrSpan("(q[c])", 6), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[c])", 6), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
+    ana.statementMemory.addStatement(gl::StrSpan("(p[e])", 6), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan("main", 4), out);
+    ana.statementMemory.addStatement(gl::StrSpan("!(q[b])", 7), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan(childName), out);
+    ana.statementMemory.addStatement(gl::StrSpan("!(p[b])", 7), mb, true, levels, 1, gl::TransientOrigin{}, gl::StrSpan(childName), out);
     putClassesAt(mb, child, {{"b", "c"}});
     pushDelta(mb, child, {"b", "c"});
-    ana.applyEquiClasses(mb);
-    ana.materializeWatchHits(mb, 0);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ana.watchProcessor.materializeWatchHits(mb, 0);
     const gl::StrSpan childSpan(childName);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, mb.nameMap, gl::StrSpan("(p[b])", 6), childSpan) != nullptr);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, mb.nameMap, gl::StrSpan("(q[b])", 6), childSpan) != nullptr);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, mb.nameMap, gl::StrSpan("(p[b])", 6), gl::StrSpan("main", 4)) == nullptr);
-    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, mb.nameMap, gl::StrSpan("(p[e])", 6), childSpan) == nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements), ((mb).nameMap), gl::StrSpan("(p[b])", 6), childSpan) != nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements), ((mb).nameMap), gl::StrSpan("(q[b])", 6), childSpan) != nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements), ((mb).nameMap), gl::StrSpan("(p[b])", 6), gl::StrSpan("main", 4)) == nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements), ((mb).nameMap), gl::StrSpan("(p[e])", 6), childSpan) == nullptr);
 }
 
 
 TEST(canonical_classes, compact_and_watch_readers_share_the_child_representative) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     gl::Memory& mb = ana.body;
     const auto main = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(main,"canonical_child");
+    const auto child = ((mb).nameMap).encodePush(main,"canonical_child");
     putClassesAt(mb,main,{{"b","z"}});
     putClassesAt(mb,child,{{"a","b","z"}});
-    const auto original = mb.nameMap.encode("(or98[z,7])");
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalWatchIdAt(mb,original,main)),std::string("(or98[b,7])"));
-    ASSERT_EQ(mb.nameMap.decode(ana.canonicalWatchIdAt(mb,original,child)),std::string("(or98[a,7])"));
+    const auto original = ((mb).nameMap).encode("(or98[z,7])");
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,original,main)),std::string("(or98[b,7])"));
+    ASSERT_EQ(((mb).nameMap).decode(gl::tests::WatchProcessorFixture::canonicalWatchIdAt(ana.watchProcessor, mb,original,child)),std::string("(or98[a,7])"));
     gl::ScratchArena& strings=gl::scratchArenas().forSlot(0);
     gl::ScratchArena& scratch=gl::genScratchArenas().forSlot(0);
     gl::ScratchScope textFrame(strings), frame(scratch);
     gl::ScratchString rewritten;
-    gl::ExpressionAnalyzer::CompactCanonPair pairs[gl::ExecutionParameters::MAX_ARITY];
+    gl::CompactCanonPair pairs[gl::ExecutionParameters::MAX_ARITY];
     int32_t pairCount=0,levelCount=0;
     int levels[256];
-    const std::string validity=mb.nameMap.decode(child);
-    ASSERT_TRUE(ana.canonicalizeCompact(mb,mb.nameMap.decodeView(original),gl::StrSpan(validity),
+    const std::string validity=((mb).nameMap).decode(child);
+    ASSERT_TRUE(gl::tests::CompactRuleProcessorFixture::canonicalizeCompact(ana.compactRuleProcessor, mb,((mb).nameMap).decodeView(original),gl::StrSpan(validity),
         strings,scratch,rewritten,pairs,pairCount,levels,levelCount,256));
     ASSERT_EQ(rewritten.toStdString(),std::string("(or98[a,7])"));
 }
 
 
 TEST(canonical_classes, late_ancestor_change_rekeys_before_importing_the_same_negation) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory=false;
     auto& mb=ana.body;
     const auto root=gl::NameMap::MAIN_ID;
-    const auto child=mb.nameMap.encodePush(root,"canonical_child");
+    const auto child=((mb).nameMap).encodePush(root,"canonical_child");
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> rows(&gl::genScratchArenas().forSlot(0),&dirty);
     const std::string negative="!(p[b])";
     const int level=0;
-    ana.addStatement(gl::StrSpan(negative),mb,true,&level,1,gl::TransientOrigin{},
+    ana.statementMemory.addStatement(gl::StrSpan(negative),mb,true,&level,1,gl::TransientOrigin{},
         gl::StrSpan("main",4),rows);
     addCanonicalFixtureEquality(ana,mb,child,"(=[a,b])",0);
-    const auto key=gl::packInt32Pair(child,mb.nameMap.lookup("p"));
-    const auto before=mb.negationLedger.lookup(key);
+    const auto key=gl::packInt32Pair(child,((mb).nameMap).lookup("p"));
+    const auto before=((mb).negationLedger).lookup(key);
     ASSERT_TRUE(before!=0);
-    ASSERT_EQ(mb.negationLedger.runLen(before),1);
+    ASSERT_EQ(((mb).negationLedger).runLen(before),1);
     addCanonicalFixtureEquality(ana,mb,root,"(=[0,a])",0);
-    const auto after=mb.negationLedger.lookup(key);
+    const auto after=((mb).negationLedger).lookup(key);
     ASSERT_TRUE(after!=0);
-    ASSERT_EQ(mb.negationLedger.runLen(after),1);
-    const auto pair=mb.negationLedger.valueAt(after,0);
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair)>>32),mb.nameMap.lookup("!(p[0])"));
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair)),mb.nameMap.lookup(negative));
+    ASSERT_EQ(((mb).negationLedger).runLen(after),1);
+    const auto pair=((mb).negationLedger).valueAt(after,0);
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair)>>32),((mb).nameMap).lookup("!(p[0])"));
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair)),((mb).nameMap).lookup(negative));
 }
 
 TEST(canonical_classes, evidence_only_classes_keep_source_indexes_warm_and_source_writes_current) {
     for (bool integration : {false, true}) {
-        gl::ExpressionAnalyzer analyzer("Peano");
+        gl::tests::ProverFixture analyzer("Peano");
         analyzer.parameters.trackHistory = false;
         auto& memory = analyzer.body;
         const auto root = gl::NameMap::MAIN_ID;
         addCanonicalFixtureEquality(analyzer, memory, root, "(=[a,z])", 2);
-        const auto child = memory.nameMap.encodePush(root, "source_child");
-        const auto sibling = memory.nameMap.encodePush(root, "source_sibling");
-        analyzer.initializeCanonicalScope(memory, child);
-        analyzer.initializeCanonicalScope(memory, sibling);
-        const std::string validity = memory.nameMap.decode(child);
+        const auto child = ((memory).nameMap).encodePush(root, "source_child");
+        const auto sibling = ((memory).nameMap).encodePush(root, "source_sibling");
+        analyzer.canonicalizer.initializeCanonicalScope(memory, child);
+        analyzer.canonicalizer.initializeCanonicalScope(memory, sibling);
+        const std::string validity = ((memory).nameMap).decode(child);
         const char* marker = "(K[z,marker])";
         const int level = 1;
         const auto park = [&](const char* source) {
-            if (integration) analyzer.updateRejectedMapIntegration(gl::StrSpan(marker), gl::StrSpan(source),
-                0, 2, &level, 1, memory.overallHashMemory, memory, gl::StrSpan(validity));
-            else analyzer.updateRejectedMap(gl::StrSpan(marker), gl::StrSpan(source),
-                0, 1, &level, 1, memory.overallHashMemory, memory, gl::StrSpan(validity));
+            if (integration) analyzer.rejectedSources.updateRejectedMapIntegration(gl::StrSpan(marker), gl::StrSpan(source),
+                0, 2, &level, 1, ((memory).overallHashMemory), memory, gl::StrSpan(validity));
+            else analyzer.rejectedSources.updateRejectedMap(gl::StrSpan(marker), gl::StrSpan(source),
+                0, 1, &level, 1, ((memory).overallHashMemory), memory, gl::StrSpan(validity));
         };
         park("(existence98[z])");
-        const auto owner = gl::mintTemplateKey(memory.templateInterner, memory.nameMap, marker, validity);
+        const auto owner = gl::mintTemplateKey(((memory).templateInterner), ((memory).nameMap), marker, validity);
         auto& arena = gl::genScratchArenas().forSlot(0);
         gl::ScratchScope frame(arena);
         gl::DirtyState dirty = gl::DirtyState::Clean;
         gl::PagedVector<gl::NameId> noIdentities(&arena, &dirty);
-        auto& lookup = integration ? memory.lbMemory.existenceLookups.integrationSources
-                                   : memory.lbMemory.existenceLookups.algebraSources;
-        auto& uses = integration ? memory.lbMemory.canonicalUses.integrationSources
-                                 : memory.lbMemory.canonicalUses.algebraSources;
-        if (integration) analyzer.ensureExistenceSourceLookup(memory.overallHashMemory.rejectedMapIntegration,
+        auto& lookup = integration ? ((memory).lbMemory).existenceLookups.integrationSources
+                                   : ((memory).lbMemory).existenceLookups.algebraSources;
+        auto& uses = integration ? ((memory).lbMemory).canonicalUses.integrationSources
+                                 : ((memory).lbMemory).canonicalUses.algebraSources;
+        if (integration) analyzer.rejectedSources.ensureExistenceSourceLookup(((((memory).overallHashMemory)).rejectedMapIntegration),
             lookup, arena, memory);
-        else analyzer.ensureExistenceSourceLookup(memory.overallHashMemory.rejectedMap,
+        else analyzer.rejectedSources.ensureExistenceSourceLookup(((((memory).overallHashMemory)).rejectedMap),
             lookup, arena, memory);
-        analyzer.refreshCanonicalSourceUses(memory, child, noIdentities, arena);
-        const auto canonical = memory.nameMap.lookup("(existence98[a])");
+        analyzer.rejectedSources.refreshCanonicalSourceUses(memory, child, noIdentities, arena);
+        const auto canonical = ((memory).nameMap).lookup("(existence98[a])");
         const auto identity = gl::packOriginKey(canonical, child);
         ASSERT_TRUE(canonical != 0 && lookup.postings.containsKey(identity));
         ASSERT_FALSE(lookup.postings.containsKey(gl::packOriginKey(canonical, sibling)));
-        const auto memberKey = gl::packStatementKey(memory.nameMap.lookup("z"), child);
-        const int32_t oldVersion = *memory.lbMemory.canonicalUses.memberVersions.find(memberKey);
+        const auto memberKey = gl::packStatementKey(((memory).nameMap).lookup("z"), child);
+        const int32_t oldVersion = *((memory).lbMemory).canonicalUses.memberVersions.find(memberKey);
         uses.markRawClean();
-        memory.lbMemory.canonicalClassChanges.resetToFresh();
-        auto cls = memory.equivalenceClassesMap.recordAt(memory.equivalenceClassesMap.lookup(root), 0);
+        ((memory).lbMemory).canonicalClassChanges.resetToFresh();
+        auto cls = ((memory).equivalenceClassesMap).recordAt(((memory).equivalenceClassesMap).lookup(root), 0);
         for (auto& pair : cls.intEqualityLevelsMap) pair.second.insert(7);
         memory.assignClassesById(root, {cls});
-        analyzer.refreshCanonicalClasses(memory, root);
-        const auto* flags = memory.lbMemory.canonicalClassChanges.find(memberKey);
+        analyzer.equivalenceProcessor.refreshCanonicalClasses(memory, root);
+        const auto* flags = ((memory).lbMemory).canonicalClassChanges.find(memberKey);
         ASSERT_TRUE(flags != nullptr && (*flags & 4) != 0 && (*flags & 1) == 0);
-        ASSERT_TRUE(*memory.lbMemory.canonicalUses.memberVersions.find(memberKey) > oldVersion);
+        ASSERT_TRUE(*((memory).lbMemory).canonicalUses.memberVersions.find(memberKey) > oldVersion);
         ASSERT_FALSE(uses.hasRawChanges());
         ASSERT_TRUE(lookup.postings.containsKey(identity));
         {
             auto& strings = gl::scratchArenas().forSlot(0);
             gl::ScratchScope textFrame(strings);
             int levels[256]; int32_t count = 0;
-            const auto rewritten = analyzer.canonicalFormAtScope(gl::StrSpan("(p[z])"),
+            const auto rewritten = analyzer.canonicalizer.canonicalFormAtScope(gl::StrSpan("(p[z])"),
                 gl::StrSpan(validity), memory, strings, levels, count, 256);
             ASSERT_TRUE(gl::equalSpans(rewritten.text, gl::StrSpan("(p[a])")));
             ASSERT_TRUE(std::find(levels, levels + count, 7) != levels + count);
         }
         park("(existence98[y])");
         uses.markRawClean();
-        analyzer.refreshCanonicalSourceUses(memory, child, noIdentities, arena);
+        analyzer.rejectedSources.refreshCanonicalSourceUses(memory, child, noIdentities, arena);
         ASSERT_TRUE(uses.hasRawChanges());
-        const auto later = memory.nameMap.lookup("(existence98[y])");
+        const auto later = ((memory).nameMap).lookup("(existence98[y])");
         ASSERT_TRUE(later != 0 && lookup.postings.containsKey(gl::packOriginKey(later, child)));
         int found = 0;
         uses.forEach(child, gl::StrSpan("y"), [&](int64_t key) { ASSERT_EQ(key, owner); ++found; });
         ASSERT_EQ(found, 1);
         addCanonicalFixtureEquality(analyzer, memory, root, "(=[0,a])", 3);
-        const auto replacement = memory.nameMap.lookup("(existence98[0])");
+        const auto replacement = ((memory).nameMap).lookup("(existence98[0])");
         ASSERT_TRUE(replacement != 0 && lookup.postings.containsKey(gl::packOriginKey(replacement, child)));
         ASSERT_FALSE(lookup.postings.containsKey(identity));
         ASSERT_TRUE(lookup.postings.containsKey(gl::packOriginKey(later, child)));
@@ -4109,157 +4133,157 @@ TEST(canonical_classes, evidence_only_classes_keep_source_indexes_warm_and_sourc
 }
 
 TEST(canonical_classes, ancestor_identity_import_keeps_evidence_and_independent_arrivals) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(root, "negative_child");
-    const auto sibling = memory.nameMap.encodePush(root, "negative_sibling");
-    analyzer.initializeCanonicalScope(memory, child);
-    analyzer.initializeCanonicalScope(memory, sibling);
+    const auto child = ((memory).nameMap).encodePush(root, "negative_child");
+    const auto sibling = ((memory).nameMap).encodePush(root, "negative_sibling");
+    analyzer.canonicalizer.initializeCanonicalScope(memory, child);
+    analyzer.canonicalizer.initializeCanonicalScope(memory, sibling);
     auto& arena = gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> rows(&arena, &dirty);
     const int level = 0;
-    analyzer.addStatement(gl::StrSpan("!(p[z])"), memory, true, &level, 1,
+    analyzer.statementMemory.addStatement(gl::StrSpan("!(p[z])"), memory, true, &level, 1,
         gl::TransientOrigin{}, gl::StrSpan("main"), rows);
     addCanonicalFixtureEquality(analyzer, memory, child, "(=[a,z])", 2);
-    const auto pKey = analyzer.watchKey(child, memory.nameMap.lookup("p"));
-    auto run = memory.negationLedger.lookup(pKey);
+    const auto pKey = gl::tests::WatchProcessorFixture::watchKey(child, ((memory).nameMap).lookup("p"));
+    auto run = ((memory).negationLedger).lookup(pKey);
     ASSERT_TRUE(run != 0);
-    const auto initial = memory.negationLedger.valueAt(run, 0);
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(initial) >> 32), memory.nameMap.lookup("!(p[a])"));
-    const auto pending = memory.pendingWatchRechecks.size();
-    auto cls = memory.equivalenceClassesMap.recordAt(memory.equivalenceClassesMap.lookup(child), 0);
+    const auto initial = ((memory).negationLedger).valueAt(run, 0);
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(initial) >> 32), ((memory).nameMap).lookup("!(p[a])"));
+    const auto pending = ((memory).pendingWatchRechecks).size();
+    auto cls = ((memory).equivalenceClassesMap).recordAt(((memory).equivalenceClassesMap).lookup(child), 0);
     for (auto& pair : cls.intEqualityLevelsMap) pair.second.insert(7);
     memory.assignClassesById(child, {cls});
-    memory.lbMemory.canonicalClassChanges.resetToFresh();
-    analyzer.refreshCanonicalClasses(memory, child);
-    const auto* flags = memory.lbMemory.canonicalClassChanges.find(
-        gl::packStatementKey(memory.nameMap.lookup("z"), child));
+    ((memory).lbMemory).canonicalClassChanges.resetToFresh();
+    analyzer.equivalenceProcessor.refreshCanonicalClasses(memory, child);
+    const auto* flags = ((memory).lbMemory).canonicalClassChanges.find(
+        gl::packStatementKey(((memory).nameMap).lookup("z"), child));
     ASSERT_TRUE(flags != nullptr && (*flags & 4) != 0 && (*flags & 1) == 0);
-    ASSERT_EQ(memory.negationLedger.valueAt(memory.negationLedger.lookup(pKey), 0), initial);
-    ASSERT_EQ(memory.pendingWatchRechecks.size(), pending);
-    analyzer.addStatement(gl::StrSpan("!(q[z])"), memory, true, &level, 1,
+    ASSERT_EQ(((memory).negationLedger).valueAt(((memory).negationLedger).lookup(pKey), 0), initial);
+    ASSERT_EQ(((memory).pendingWatchRechecks).size(), pending);
+    analyzer.statementMemory.addStatement(gl::StrSpan("!(q[z])"), memory, true, &level, 1,
         gl::TransientOrigin{}, gl::StrSpan("main"), rows);
-    const auto incoming = gl::encodeExpression(gl::StrSpan("!(q[z])"), gl::StrSpan("main"), memory.nameMap);
-    const auto qKey = analyzer.watchKey(child, incoming.nameId);
-    ASSERT_EQ(memory.negationLedger.lookup(qKey), 0);
-    ASSERT_FALSE(memory.pendingWatchArrivals.empty());
-    cls = memory.equivalenceClassesMap.recordAt(memory.equivalenceClassesMap.lookup(child), 0);
+    const auto incoming = gl::encodeExpression(gl::StrSpan("!(q[z])"), gl::StrSpan("main"), ((memory).nameMap));
+    const auto qKey = gl::tests::WatchProcessorFixture::watchKey(child, incoming.nameId);
+    ASSERT_EQ(((memory).negationLedger).lookup(qKey), 0);
+    ASSERT_FALSE(((memory).pendingWatchArrivals).empty());
+    cls = ((memory).equivalenceClassesMap).recordAt(((memory).equivalenceClassesMap).lookup(child), 0);
     for (auto& pair : cls.intEqualityLevelsMap) pair.second.insert(9);
     memory.assignClassesById(child, {cls});
-    analyzer.refreshCanonicalClasses(memory, child);
-    run = memory.negationLedger.lookup(qKey);
+    analyzer.equivalenceProcessor.refreshCanonicalClasses(memory, child);
+    run = ((memory).negationLedger).lookup(qKey);
     ASSERT_TRUE(run != 0);
-    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(memory.negationLedger.valueAt(run, 0)) >> 32),
-        memory.nameMap.lookup("!(q[a])"));
-    const auto afterArrival = memory.pendingWatchRechecks.size();
-    analyzer.importNegationIntoDescendantClassScopes(memory, incoming);
-    ASSERT_EQ(memory.pendingWatchRechecks.size(), afterArrival);
+    ASSERT_EQ(static_cast<gl::NameId>(uint64_t(((memory).negationLedger).valueAt(run, 0)) >> 32),
+        ((memory).nameMap).lookup("!(q[a])"));
+    const auto afterArrival = ((memory).pendingWatchRechecks).size();
+    gl::tests::WatchProcessorFixture::importNegationIntoDescendantClassScopes(analyzer.watchProcessor, memory, incoming);
+    ASSERT_EQ(((memory).pendingWatchRechecks).size(), afterArrival);
     addCanonicalFixtureEquality(analyzer, memory, root, "(=[0,a])", 3);
     for (const char* core : {"p", "q"}) {
-        const auto coreId = memory.nameMap.lookup(core);
-        const auto key = analyzer.watchKey(child, coreId);
-        run = memory.negationLedger.lookup(key);
+        const auto coreId = ((memory).nameMap).lookup(core);
+        const auto key = gl::tests::WatchProcessorFixture::watchKey(child, coreId);
+        run = ((memory).negationLedger).lookup(key);
         ASSERT_TRUE(run != 0);
-        ASSERT_EQ(memory.negationLedger.runLen(run), 1);
-        const auto pair = memory.negationLedger.valueAt(run, 0);
+        ASSERT_EQ(((memory).negationLedger).runLen(run), 1);
+        const auto pair = ((memory).negationLedger).valueAt(run, 0);
         const std::string canonical = "!(" + std::string(core) + "[0])";
         const std::string original = "!(" + std::string(core) + "[z])";
-        ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair) >> 32), memory.nameMap.lookup(canonical));
-        ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair)), memory.nameMap.lookup(original));
-        ASSERT_EQ(memory.negationLedger.lookup(analyzer.watchKey(sibling, coreId)), 0);
+        ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair) >> 32), ((memory).nameMap).lookup(canonical));
+        ASSERT_EQ(static_cast<gl::NameId>(uint64_t(pair)), ((memory).nameMap).lookup(original));
+        ASSERT_EQ(((memory).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(sibling, coreId)), 0);
     }
 }
 
 TEST(canonical_classes, ancestor_candidates_preserve_eligible_order_and_deduplication) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(root, "filtered_child");
-    analyzer.initializeCanonicalScope(memory, child);
+    const auto child = ((memory).nameMap).encodePush(root, "filtered_child");
+    analyzer.canonicalizer.initializeCanonicalScope(memory, child);
     addCanonicalFixtureEquality(analyzer, memory, child, "(=[a,z])", 2);
     auto& arena = gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> rows(&arena, &dirty);
     gl::PagedVector<gl::NameId> members(&arena, &dirty);
-    members.push_back(memory.nameMap.lookup("z"));
-    members.push_back(memory.nameMap.lookup("a"));
+    members.push_back(((memory).nameMap).lookup("z"));
+    members.push_back(((memory).nameMap).lookup("a"));
     const int level = 0;
     for (const char* text : {"(r[z])", "!(=[a,z])"})
-        analyzer.addStatement(gl::StrSpan(text), memory, true, &level, 1,
+        analyzer.statementMemory.addStatement(gl::StrSpan(text), memory, true, &level, 1,
             gl::TransientOrigin{}, gl::StrSpan("main"), rows);
-    const auto before = memory.pendingWatchRechecks.size();
-    analyzer.importAncestorNegationsForClass(memory, child, members);
-    ASSERT_EQ(memory.pendingWatchRechecks.size(), before);
+    const auto before = ((memory).pendingWatchRechecks).size();
+    analyzer.watchProcessor.importAncestorNegationsForClass(memory, child, members);
+    ASSERT_EQ(((memory).pendingWatchRechecks).size(), before);
     for (const char* text : {"!(q[z])", "!(p[z,a])", "!(unrelated[u])"})
-        analyzer.addStatement(gl::StrSpan(text), memory, true, &level, 1,
+        analyzer.statementMemory.addStatement(gl::StrSpan(text), memory, true, &level, 1,
             gl::TransientOrigin{}, gl::StrSpan("main"), rows);
-    analyzer.importAncestorNegationsForClass(memory, child, members);
-    ASSERT_EQ(memory.pendingWatchRechecks.size(), before + 2);
-    ASSERT_EQ(memory.pendingWatchRechecks[before],
-        gl::packInt32Pair(child, memory.nameMap.lookup("!(p[z,a])")));
-    ASSERT_EQ(memory.pendingWatchRechecks[before + 1],
-        gl::packInt32Pair(child, memory.nameMap.lookup("!(q[z])")));
+    analyzer.watchProcessor.importAncestorNegationsForClass(memory, child, members);
+    ASSERT_EQ(((memory).pendingWatchRechecks).size(), before + 2);
+    ASSERT_EQ(((memory).pendingWatchRechecks)[before],
+        gl::packInt32Pair(child, ((memory).nameMap).lookup("!(p[z,a])")));
+    ASSERT_EQ(((memory).pendingWatchRechecks)[before + 1],
+        gl::packInt32Pair(child, ((memory).nameMap).lookup("!(q[z])")));
     for (const char* core : {"p", "q"}) {
-        const auto coreId = memory.nameMap.lookup(core);
-        const auto run = memory.negationLedger.lookup(analyzer.watchKey(child, coreId));
+        const auto coreId = ((memory).nameMap).lookup(core);
+        const auto run = ((memory).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(child, coreId));
         ASSERT_TRUE(run != 0);
-        ASSERT_EQ(memory.negationLedger.runLen(run), 1);
-        const auto original = memory.nameMap.lookup(core[0] == 'p' ? "!(p[z,a])" : "!(q[z])");
-        const auto canonical = memory.nameMap.lookup(core[0] == 'p' ? "!(p[a,a])" : "!(q[a])");
-        ASSERT_EQ(memory.negationLedger.valueAt(run, 0), gl::packInt32Pair(canonical, original));
+        ASSERT_EQ(((memory).negationLedger).runLen(run), 1);
+        const auto original = ((memory).nameMap).lookup(core[0] == 'p' ? "!(p[z,a])" : "!(q[z])");
+        const auto canonical = ((memory).nameMap).lookup(core[0] == 'p' ? "!(p[a,a])" : "!(q[a])");
+        ASSERT_EQ(((memory).negationLedger).valueAt(run, 0), gl::packInt32Pair(canonical, original));
     }
-    ASSERT_EQ(memory.negationLedger.lookup(analyzer.watchKey(child, memory.nameMap.lookup("unrelated"))), 0);
-    analyzer.importAncestorNegationsForClass(memory, child, members);
-    ASSERT_EQ(memory.pendingWatchRechecks.size(), before + 2);
+    ASSERT_EQ(((memory).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(child, ((memory).nameMap).lookup("unrelated"))), 0);
+    analyzer.watchProcessor.importAncestorNegationsForClass(memory, child, members);
+    ASSERT_EQ(((memory).pendingWatchRechecks).size(), before + 2);
 }
 
 TEST(canonical_classes, admission_chain_preserves_a_placeholder_equal_to_a_new_fixed_representative) {
     for (bool prefixed : {false, true}) {
-        gl::ExpressionAnalyzer ana(std::string("Peano"));
+        gl::tests::ProverFixture ana(std::string("Peano"));
         ana.parameters.trackHistory = false;
         auto& mb = ana.body;
         putClassesAt(mb, gl::NameMap::MAIN_ID, {{"10", "9"}});
         const std::string text = prefixed ? "(in3[u_6,u_9,10,u_5])" : "(in3[6,9,10,5])";
         const gl::StrSpan key[] = {gl::StrSpan(text)};
         const gl::StrSpan remaining[] = {gl::StrSpan("5",1), gl::StrSpan("6",1), gl::StrSpan("9",1)};
-        ana.updateAdmissionMap(mb, key, 1, remaining, 3, 4, 4, false, gl::StrSpan("main",4));
-        const auto demand = gl::packInt32Pair(mb.templateInterner.lookup("(in3[6,10,marker,5])"), gl::NameMap::MAIN_ID);
-        const auto bucket = mb.overallHashMemory.admissionMap.lookup(demand);
+        ana.admissionMemory.updateAdmissionMap(mb, key, 1, remaining, 3, 4, 4, false, gl::StrSpan("main",4));
+        const auto demand = gl::packInt32Pair(((mb).templateInterner).lookup("(in3[6,10,marker,5])"), gl::NameMap::MAIN_ID);
+        const auto bucket = ((((mb).overallHashMemory)).admissionMap).lookup(demand);
         ASSERT_TRUE(bucket != 0);
-        const auto values = gl::admissionRecordsAt(mb.overallHashMemory.admissionMap, demand, mb.valueInterner);
+        const auto values = gl::admissionRecordsAt(((((mb).overallHashMemory)).admissionMap), demand, ((mb).valueInterner));
         ASSERT_EQ(values.size(), 1);
         const auto& row = *values.begin();
         ASSERT_EQ(row.key.size(), 1);
-        ASSERT_EQ(mb.valueInterner.decode(row.key[0]), std::string("(in3[6,10,1,5])"));
+        ASSERT_EQ(((mb).valueInterner).decode(row.key[0]), std::string("(in3[6,10,1,5])"));
     }
 }
 
 TEST(canonical_classes, admission_chain_keeps_fixed_metadata_absent_from_the_remaining_premise) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     auto& mb = ana.body;
     putClassesAt(mb, gl::NameMap::MAIN_ID, {{"10", "9"}});
     const std::string text = "(in3[6,9,10,5])";
     const gl::StrSpan key[] = {gl::StrSpan(text)};
     const gl::StrSpan remaining[] = {gl::StrSpan("5",1), gl::StrSpan("6",1), gl::StrSpan("8",1), gl::StrSpan("9",1)};
-    ana.updateAdmissionMap(mb, key, 1, remaining, 4, 4, 4, false, gl::StrSpan("main",4));
-    const auto demand = gl::packInt32Pair(mb.templateInterner.lookup("(in3[6,10,marker,5])"), gl::NameMap::MAIN_ID);
-    const auto values = gl::admissionRecordsAt(mb.overallHashMemory.admissionMap, demand, mb.valueInterner);
+    ana.admissionMemory.updateAdmissionMap(mb, key, 1, remaining, 4, 4, 4, false, gl::StrSpan("main",4));
+    const auto demand = gl::packInt32Pair(((mb).templateInterner).lookup("(in3[6,10,marker,5])"), gl::NameMap::MAIN_ID);
+    const auto values = gl::admissionRecordsAt(((((mb).overallHashMemory)).admissionMap), demand, ((mb).valueInterner));
     ASSERT_EQ(values.size(), 1);
     const auto& row = *values.begin();
     ASSERT_EQ(row.remainingArgs.size(), 4);
-    ASSERT_EQ(mb.valueInterner.decode(row.remainingArgs.back()), std::string("8"));
-    ASSERT_EQ(mb.valueInterner.decode(row.key[0]), std::string("(in3[6,10,1,5])"));
+    ASSERT_EQ(((mb).valueInterner).decode(row.remainingArgs.back()), std::string("8"));
+    ASSERT_EQ(((mb).valueInterner).decode(row.key[0]), std::string("(in3[6,10,1,5])"));
 }
 
 TEST(canonical_classes, admission_chain_normalizer_preserves_bindings_and_anchor_exclusion) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     auto& mb = ana.body;
     const auto scope = gl::NameMap::MAIN_ID;
@@ -4271,54 +4295,54 @@ TEST(canonical_classes, admission_chain_normalizer_preserves_bindings_and_anchor
     bool excluded = false;
     const std::string text = "(in3[6,9,10,5])";
     const gl::StrSpan chain[] = {gl::StrSpan(text)};
-    ASSERT_EQ(ana.canonicalAdmissionChain(mb, chain, 1, remaining, 3, scope, arena, output, remainingOutput, excluded),3);
+    ASSERT_EQ(ana.canonicalTemplates.canonicalAdmissionChain(mb, chain, 1, remaining, 3, scope, arena, output, remainingOutput, excluded),3);
     ASSERT_FALSE(excluded);
     ASSERT_EQ(output[0].toStdString(),std::string("(in3[6,10,1,5])"));
     const std::string anchor = "(Anchor[9])";
     const gl::StrSpan protectedChain[] = {gl::StrSpan(anchor),gl::StrSpan(text)};
-    ASSERT_EQ(ana.canonicalAdmissionChain(mb, protectedChain, 2, remaining, 3, scope, arena, output, remainingOutput, excluded),3);
+    ASSERT_EQ(ana.canonicalTemplates.canonicalAdmissionChain(mb, protectedChain, 2, remaining, 3, scope, arena, output, remainingOutput, excluded),3);
     ASSERT_TRUE(excluded);
     ASSERT_EQ(output[0].toStdString(),anchor);
     ASSERT_EQ(output[1].toStdString(),text);
     const std::string named = "(in[b])";
     const gl::StrSpan namedChain[] = {gl::StrSpan(named)};
     const gl::StrReplacement replacements[] = {{gl::StrSpan("b",1),gl::StrSpan("a",1)}};
-    ASSERT_EQ(ana.canonicalAdmissionChain(mb,namedChain,1,nullptr,0,scope,arena,output,remainingOutput,excluded,replacements,1),0);
+    ASSERT_EQ(ana.canonicalTemplates.canonicalAdmissionChain(mb,namedChain,1,nullptr,0,scope,arena,output,remainingOutput,excluded,replacements,1),0);
     ASSERT_FALSE(excluded);
     ASSERT_EQ(output[0].toStdString(),std::string("(in[a])"));
 }
 
 TEST(canonical_classes, recursion_replay_marks_the_original_output_before_canonicalizing_fixed_arguments) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     auto& mb = ana.body;
     putClassesAt(mb, gl::NameMap::MAIN_ID, {{"10", "9"}});
-    const auto key = gl::mintTemplateKey(mb.templateInterner, mb.nameMap, "(in3[6,10,marker,5])", "main");
+    const auto key = gl::mintTemplateKey(((mb).templateInterner), ((mb).nameMap), "(in3[6,10,marker,5])", "main");
     gl::AdmissionMapValue value;
-    value.key = {mb.valueInterner.encode("(in3[6,10,1,5])"), mb.valueInterner.encode("(in3[6,1,2,5])")};
-    value.remainingArgs = {mb.valueInterner.encode("10"),mb.valueInterner.encode("5"),mb.valueInterner.encode("6")};
+    value.key = {((mb).valueInterner).encode("(in3[6,10,1,5])"), ((mb).valueInterner).encode("(in3[6,1,2,5])")};
+    value.remainingArgs = {((mb).valueInterner).encode("10"),((mb).valueInterner).encode("5"),((mb).valueInterner).encode("6")};
     value.standardMaxAdmissionDepth = 2;
     value.standardMaxSecondaryNumber = 2;
     value.flag = true;
     auto& arena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount()-1);
-    gl::insertAdmissionValue(mb.overallHashMemory.admissionMap,key,value,mb.valueInterner,arena);
-    mb.overallHashMemory.admissionStatusMap.upsert(key,uint8_t(1));
+    gl::insertAdmissionValue(((((mb).overallHashMemory)).admissionMap),key,value,((mb).valueInterner),arena);
+    ((((mb).overallHashMemory)).admissionStatusMap).upsert(key,uint8_t(1));
     const std::string arrived = "(in3[6,9,10,5])";
-    ana.updateAdmissionMapRecursion(gl::StrSpan(arrived),mb,gl::StrSpan("main",4),true);
-    const auto values = gl::admissionRecordsAt(mb.overallHashMemory.admissionMap,key,mb.valueInterner);
+    ana.admissionMemory.updateAdmissionMapRecursion(gl::StrSpan(arrived),mb,gl::StrSpan("main",4),true);
+    const auto values = gl::admissionRecordsAt(((((mb).overallHashMemory)).admissionMap),key,((mb).valueInterner));
     bool replayed = false;
     for (const auto& row : values)
-        replayed |= mb.valueInterner.decode(row.key[0]) == "(in3[6,10,10,5])";
+        replayed |= ((mb).valueInterner).decode(row.key[0]) == "(in3[6,10,10,5])";
     ASSERT_TRUE(replayed);
-    const auto beforeRepeated = mb.overallHashMemory.admissionMap.count();
+    const auto beforeRepeated = ((((mb).overallHashMemory)).admissionMap).count();
     const std::string repeated = "(in3[6,10,10,5])";
-    ana.updateAdmissionMapRecursion(gl::StrSpan(repeated),mb,gl::StrSpan("main",4),true);
-    const auto repeatedProbe = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,"(in3[6,marker,marker,5])","main");
-    ASSERT_EQ(mb.overallHashMemory.admissionMap.lookup(repeatedProbe),0);
-    ASSERT_EQ(mb.overallHashMemory.admissionMap.count(),beforeRepeated);
-    ASSERT_EQ(*mb.overallHashMemory.admissionStatusMap.find(repeatedProbe),uint8_t(0));
-    gl::CanonicalUseIndex uses(&mb.lbMemory.manager);
-    ana.indexCanonicalRecord(mb,mb.overallHashMemory.admissionMap,uses,key,0,arena);
+    ana.admissionMemory.updateAdmissionMapRecursion(gl::StrSpan(repeated),mb,gl::StrSpan("main",4),true);
+    const auto repeatedProbe = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(in3[6,marker,marker,5])","main");
+    ASSERT_EQ(((((mb).overallHashMemory)).admissionMap).lookup(repeatedProbe),0);
+    ASSERT_EQ(((((mb).overallHashMemory)).admissionMap).count(),beforeRepeated);
+    ASSERT_EQ(*((((mb).overallHashMemory)).admissionStatusMap).find(repeatedProbe),uint8_t(0));
+    gl::CanonicalUseIndex uses(&((mb).lbMemory).manager);
+    gl::tests::EquivalenceProcessorFixture::indexCanonicalRecord(ana.equivalenceProcessor, mb,((((mb).overallHashMemory)).admissionMap),uses,key,0,arena);
     int placeholderHits = 0;
     uses.forEach(gl::NameMap::MAIN_ID,gl::StrSpan("2",1),[&](int64_t){++placeholderHits;});
     ASSERT_EQ(placeholderHits,0);
@@ -4328,7 +4352,7 @@ TEST(canonical_classes, recursion_replay_marks_the_original_output_before_canoni
 }
 
 TEST(canonical_classes, integration_replay_keeps_distinct_original_argument_groups_when_fixed_names_merge) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = false;
     auto& mb = ana.body;
     const auto scope = gl::NameMap::MAIN_ID;
@@ -4339,16 +4363,32 @@ TEST(canonical_classes, integration_replay_keeps_distinct_original_argument_grou
     const std::string goal = "(existence90[u_9])";
     instruction.setMarkedGoal(gl::StrSpan(goal));
     instruction.commitEntity(gl::StrSpan("atomic",6),gl::StrSpan(signature),gl::StrSpan(),4,instruction.elemMark());
-    ana.prepareIntegrationCore2(instruction,nullptr,0,mb,gl::StrSpan("main",4),gl::StrSpan());
-    const auto key = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,"(in3[u_6,u_10,marker,u_5])","main");
-    ASSERT_TRUE(mb.overallHashMemory.admissionMapIntegration.lookup(key)!=0);
+    ana.integrationProcessor.prepareIntegrationCore2(instruction,nullptr,0,mb,gl::StrSpan("main",4),gl::StrSpan());
+    const auto key = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(in3[u_6,u_10,marker,u_5])","main");
+    ASSERT_TRUE(((((mb).overallHashMemory)).admissionMapIntegration).lookup(key)!=0);
     const std::string arrived = "(in3[6,9,10,5])";
-    ana.updateAdmissionMapIntegration(gl::StrSpan(arrived),mb,gl::StrSpan("main",4));
-    gl::ArenaIntegrationMap entries(&arena,&mb.valueInterner);
-    entries.buildFromCold(mb.overallHashMemory.admissionMapIntegration,key);
+    ana.admissionMemory.updateAdmissionMapIntegration(gl::StrSpan(arrived),mb,gl::StrSpan("main",4),0,0,true);
+    gl::ArenaIntegrationMap entries(&arena,&((mb).valueInterner));
+    entries.buildFromCold(((((mb).overallHashMemory)).admissionMapIntegration),key);
     ASSERT_EQ(entries.entries.size(),1);
-    ASSERT_TRUE(ana.integrationValueSeenAtScope(mb,entries,0,gl::StrSpan("10",2),scope));
-    ASSERT_FALSE(ana.integrationValueSeenAtScope(mb,entries,0,gl::StrSpan("6",1),scope));
+    ASSERT_TRUE(ana.canonicalTemplates.integrationValueSeenAtScope(mb,entries,0,gl::StrSpan("10",2),scope));
+    ASSERT_FALSE(ana.canonicalTemplates.integrationValueSeenAtScope(mb,entries,0,gl::StrSpan("6",1),scope));
+}
+
+// A key filed at a scope names a head variable of its goal through the
+// scope's classes: with 10 and 9 one class at `main`, the key over the
+// representative 10 is connected to the goal on 9, a key over neither is not
+// (D-593).
+TEST(canonical_classes, goal_key_connection_reads_head_variables_through_classes) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    auto& mb = ana.body;
+    const auto scope = gl::NameMap::MAIN_ID;
+    putClassesAt(mb, scope, {{"10", "9"}});
+    ana.canonicalizer.initializeCanonicalScope(mb, scope);
+    const gl::StrSpan goal("(existence90[u_9])", 18);
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalArgumentAtScope(mb, gl::StrSpan("9", 1), scope).toStdString() == "10");
+    ASSERT_TRUE(ana.admissionMemory.goalKeyConnected(mb, gl::StrSpan("(in3[u_6,u_10,marker,u_5])", 26), goal, scope));
+    ASSERT_FALSE(ana.admissionMemory.goalKeyConnected(mb, gl::StrSpan("(in3[u_6,u_7,marker,u_5])", 25), goal, scope));
 }
 
 TEST(canonical_classes, dependency_index_selects_only_changed_tokens_and_tracks_value_replacements) {
@@ -4357,7 +4397,7 @@ TEST(canonical_classes, dependency_index_selects_only_changed_tokens_and_tracks_
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::TypedColdMap<int64_t, int32_t> records(&arena, &dirty);
-    gl::CanonicalUseIndex uses(&mb.lbMemory.manager);
+    gl::CanonicalUseIndex uses(&((mb).lbMemory).manager);
     const auto scope = gl::NameMap::MAIN_ID;
     for (int32_t i = 1; i <= 1001; ++i) records.upsert(i, i == 1 ? 1 : 2);
     int decoded = 0;
@@ -4389,36 +4429,37 @@ TEST(canonical_classes, dependency_index_selects_only_changed_tokens_and_tracks_
 }
 
 TEST(canonical_classes, template_comparison_uses_target_scope_and_keeps_unrelated_projections_warm) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    gl::CanonicalTemplateMatcher templates(ana.canonicalizer);
     ana.parameters.trackHistory=false;
     auto& mb=ana.body;
     const auto root=gl::NameMap::MAIN_ID;
-    const auto child=mb.nameMap.encodePush(root,"match_child");
-    const auto sibling=mb.nameMap.encodePush(root,"match_sibling");
+    const auto child=((mb).nameMap).encodePush(root,"match_child");
+    const auto sibling=((mb).nameMap).encodePush(root,"match_sibling");
     putClassesAt(mb,root,{{"a","z"},{"f","g"}});
     putClassesAt(mb,child,{{"b","z"}});
-    ana.initializeCanonicalScope(mb,sibling);
+    ana.canonicalizer.initializeCanonicalScope(mb,sibling);
     gl::ScratchArena& arena=gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty=gl::DirtyState::Clean;
     gl::TypedColdMap<int64_t,int32_t> records(&arena,&dirty);
-    const auto original=mb.templateInterner.encode("(K[b,marker])");
+    const auto original=((mb).templateInterner).encode("(K[b,marker])");
     const int64_t owner=gl::packInt32Pair(original,root);
     records.upsert(owner,1);
     for(int i=0;i<100;++i) {
         const std::string text="(Q"+std::to_string(i)+"[g,marker])";
-        records.upsert(gl::packInt32Pair(mb.templateInterner.encode(text),root),1);
+        records.upsert(gl::packInt32Pair(((mb).templateInterner).encode(text),root),1);
     }
-    auto& index=mb.lbMemory.canonicalUses.algebraMatches;
+    auto& index=((mb).lbMemory).canonicalUses.algebraMatches;
     gl::PagedVector<int64_t> result(&arena,&dirty);
     auto query=[&](const char* text,gl::NameId target) {
         result.clear();
-        ana.matchingCanonicalTemplates(mb,records,index,gl::StrSpan(text),root,target,result,arena);
+        templates.matchingCanonicalTemplates(mb,records,index,gl::StrSpan(text),root,target,result,arena);
     };
     query("(K[a,marker])",child);
     ASSERT_EQ(result.size(),1); ASSERT_EQ(result[0],owner);
-    ASSERT_TRUE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),child));
-    ASSERT_FALSE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[x,marker])"),gl::StrSpan("main",4),child));
+    ASSERT_TRUE(templates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),child));
+    ASSERT_FALSE(templates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[x,marker])"),gl::StrSpan("main",4),child));
     query("(Q0[f,marker])",child); ASSERT_EQ(result.size(),1);
     const auto built=index.rebuildCount;
     query("(K[a,marker])",child); ASSERT_EQ(index.rebuildCount,built);
@@ -4432,12 +4473,12 @@ TEST(canonical_classes, template_comparison_uses_target_scope_and_keeps_unrelate
     query("(K[0,marker])",child); ASSERT_EQ(index.rebuildCount,before+1);
     gl::ScratchArena& strings=gl::scratchArenas().forSlot(0);
     gl::ScratchScope textFrame(strings);
-    ASSERT_EQ(ana.canonicalAdmissionText(mb,gl::StrSpan("(K[u_b,marker])"),child,strings,true).toStdString(),std::string("(K[u_0,marker])"));
-    ASSERT_EQ(ana.canonicalAdmissionText(mb,gl::StrSpan("(Anchor[b])"),child,strings,true).toStdString(),std::string("(Anchor[b])"));
-    ASSERT_EQ(ana.canonicalAdmissionText(mb,gl::StrSpan("(K[b,marker])"),child,strings,false,gl::StrSpan("b",1)).toStdString(),std::string("(K[b,marker])"));
-    ASSERT_EQ(ana.canonicalAdmissionText(mb,gl::StrSpan("(goal[b])_subproof_(K[b,marker])"),child,strings).toStdString(),
+    ASSERT_EQ(templates.canonicalAdmissionText(mb,gl::StrSpan("(K[u_b,marker])"),child,strings,true).toStdString(),std::string("(K[u_0,marker])"));
+    ASSERT_EQ(templates.canonicalAdmissionText(mb,gl::StrSpan("(Anchor[b])"),child,strings,true).toStdString(),std::string("(Anchor[b])"));
+    ASSERT_EQ(templates.canonicalAdmissionText(mb,gl::StrSpan("(K[b,marker])"),child,strings,false,gl::StrSpan("b",1)).toStdString(),std::string("(K[b,marker])"));
+    ASSERT_EQ(templates.canonicalAdmissionText(mb,gl::StrSpan("(goal[b])_subproof_(K[b,marker])"),child,strings).toStdString(),
         std::string("(goal[b])_subproof_(K[0,marker])"));
-    const int64_t goalOwner=gl::packInt32Pair(mb.templateInterner.encode("(goal[b])_subproof_(K[b,marker])"),root);
+    const int64_t goalOwner=gl::packInt32Pair(((mb).templateInterner).encode("(goal[b])_subproof_(K[b,marker])"),root);
     records.upsert(goalOwner,1);
     query("(goal[b])_subproof_(K[0,marker])",child); ASSERT_EQ(result.size(),1);
     query("(goal[0])_subproof_(K[0,marker])",child); ASSERT_EQ(result.size(),0);
@@ -4448,11 +4489,11 @@ TEST(canonical_classes, template_comparison_uses_target_scope_and_keeps_unrelate
 TEST(canonical_classes, comparison_queue_coalesces_and_partitions_effective_scopes) {
     gl::Memory memory;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(root, "queued_child");
-    const auto original = memory.templateInterner.encode("(K[z,marker])");
+    const auto child = ((memory).nameMap).encodePush(root, "queued_child");
+    const auto original = ((memory).templateInterner).encode("(K[z,marker])");
     const int64_t first = gl::packInt32Pair(original, root);
     const int64_t second = gl::packInt32Pair(original, child);
-    gl::CanonicalTemplateIndex index(&memory.lbMemory.manager);
+    gl::CanonicalTemplateIndex index(&((memory).lbMemory).manager);
     index.markRawClean();
     index.enqueueProjection(first);
     index.enqueueProjection(first);
@@ -4476,16 +4517,16 @@ TEST(canonical_classes, comparison_queue_coalesces_and_partitions_effective_scop
 
 TEST(canonical_classes, comparison_member_change_reaches_every_store_and_only_its_scope) {
     gl::Memory memory;
-    const auto child = memory.nameMap.encodePush(gl::NameMap::MAIN_ID, "queued_child");
-    const auto sibling = memory.nameMap.encodePush(gl::NameMap::MAIN_ID, "queued_sibling");
-    auto& uses = memory.lbMemory.canonicalUses;
+    const auto child = ((memory).nameMap).encodePush(gl::NameMap::MAIN_ID, "queued_child");
+    const auto sibling = ((memory).nameMap).encodePush(gl::NameMap::MAIN_ID, "queued_sibling");
+    auto& uses = ((memory).lbMemory).canonicalUses;
     gl::CanonicalTemplateIndex* indexes[] = {
         &uses.algebraMatches, &uses.integrationMatches, &uses.integrationSetMatches,
         &uses.algebraParkMatches, &uses.integrationParkMatches, &uses.ordisParkMatches,
         &uses.ordis2ParkMatches, &uses.ordis2Matches, &uses.preparedMatches,
         &uses.preparedMarkerMatches, &uses.statementMatches, &uses.subproofParkMatches
     };
-    const auto original = memory.templateInterner.encode("(K[z,marker])");
+    const auto original = ((memory).templateInterner).encode("(K[z,marker])");
     const int64_t key = gl::packInt32Pair(original, child);
     for (auto* index : indexes) {
         index->forms.upsert(key, original);
@@ -4512,27 +4553,27 @@ TEST(canonical_classes, comparison_member_change_reaches_every_store_and_only_it
 }
 
 TEST(canonical_classes, comparison_queries_drain_only_changed_scope_and_keep_warm_results) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(root, "queued_child");
-    const auto sibling = memory.nameMap.encodePush(root, "queued_sibling");
+    const auto child = ((memory).nameMap).encodePush(root, "queued_child");
+    const auto sibling = ((memory).nameMap).encodePush(root, "queued_sibling");
     putClassesAt(memory, root, {{"a", "z"}});
-    analyzer.initializeCanonicalScope(memory, child);
-    analyzer.initializeCanonicalScope(memory, sibling);
+    analyzer.canonicalizer.initializeCanonicalScope(memory, child);
+    analyzer.canonicalizer.initializeCanonicalScope(memory, sibling);
     auto& arena = gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::TypedColdMap<int64_t, int32_t> records(&arena, &dirty);
-    const auto original = memory.templateInterner.encode("(K[z,marker])");
+    const auto original = ((memory).templateInterner).encode("(K[z,marker])");
     const int64_t owner = gl::packInt32Pair(original, root);
     records.upsert(owner, 1);
-    auto& index = memory.lbMemory.canonicalUses.algebraMatches;
+    auto& index = ((memory).lbMemory).canonicalUses.algebraMatches;
     gl::PagedVector<int64_t> result(&arena, &dirty);
     const auto query = [&](const char* text, gl::NameId scope) {
         result.clear();
-        analyzer.matchingCanonicalTemplates(memory, records, index, gl::StrSpan(text),
+        analyzer.canonicalTemplates.matchingCanonicalTemplates(memory, records, index, gl::StrSpan(text),
             root, scope, result, arena);
     };
     query("(K[a,marker])", child); ASSERT_EQ(result.size(), 1);
@@ -4553,7 +4594,7 @@ TEST(canonical_classes, comparison_queries_drain_only_changed_scope_and_keep_war
     ASSERT_FALSE(index.pending.containsKey(child));
     query("(K[a,marker])", child);
     ASSERT_EQ(result.size(), 1); ASSERT_EQ(index.rebuildCount, warm + 1);
-    const auto later = memory.templateInterner.encode("(Q[z,marker])");
+    const auto later = ((memory).templateInterner).encode("(Q[z,marker])");
     const int64_t laterOwner = gl::packInt32Pair(later, root);
     records.upsert(laterOwner, 1);
     query("(K[0,marker])", child); ASSERT_EQ(index.rebuildCount, warm + 1);
@@ -4568,7 +4609,7 @@ TEST(canonical_classes, comparison_queries_drain_only_changed_scope_and_keep_war
 }
 
 TEST(canonical_classes, comparison_new_class_invalidates_previously_unrelated_cached_token) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
@@ -4577,23 +4618,23 @@ TEST(canonical_classes, comparison_new_class_invalidates_previously_unrelated_ca
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::TypedColdMap<int64_t, int32_t> records(&arena, &dirty);
-    const auto original = memory.templateInterner.encode("(K[z,marker])");
+    const auto original = ((memory).templateInterner).encode("(K[z,marker])");
     const int64_t owner = gl::packInt32Pair(original, root);
     records.upsert(owner, 1);
-    auto& index = memory.lbMemory.canonicalUses.algebraMatches;
+    auto& index = ((memory).lbMemory).canonicalUses.algebraMatches;
     gl::PagedVector<int64_t> result(&arena, &dirty);
-    analyzer.matchingCanonicalTemplates(memory, records, index, gl::StrSpan("(K[m,marker])"),
+    analyzer.canonicalTemplates.matchingCanonicalTemplates(memory, records, index, gl::StrSpan("(K[m,marker])"),
         root, root, result, arena);
     ASSERT_EQ(result.size(), 0);
     ASSERT_EQ(index.rebuildCount, 1);
     addCanonicalFixtureEquality(analyzer, memory, root, "(=[a,z])", 1);
     ASSERT_TRUE(index.pending.containsKey(root));
-    analyzer.matchingCanonicalTemplates(memory, records, index, gl::StrSpan("(K[a,marker])"),
+    analyzer.canonicalTemplates.matchingCanonicalTemplates(memory, records, index, gl::StrSpan("(K[a,marker])"),
         root, root, result, arena);
     ASSERT_EQ(result.size(), 1); ASSERT_EQ(result[0], owner);
     ASSERT_EQ(index.rebuildCount, 2);
     index.clear(); result.clear();
-    analyzer.matchingCanonicalTemplates(memory, records, index, gl::StrSpan("(K[a,marker])"),
+    analyzer.canonicalTemplates.matchingCanonicalTemplates(memory, records, index, gl::StrSpan("(K[a,marker])"),
         root, root, result, arena);
     ASSERT_EQ(result.size(), 1); ASSERT_EQ(result[0], owner);
     ASSERT_EQ(index.rebuildCount, 1);
@@ -4601,7 +4642,7 @@ TEST(canonical_classes, comparison_new_class_invalidates_previously_unrelated_ca
 
 TEST(canonical_classes, posting_prefix_walk_stops_and_preserves_survivor_order) {
     gl::Memory mb;
-    gl::OrPostingIndex<int64_t> postings(&mb.lbMemory.manager);
+    gl::OrPostingIndex<int64_t> postings(&((mb).lbMemory).manager);
     for (int64_t value=1; value<=4; ++value) postings.insert(7,value);
     std::vector<int64_t> seen;
     postings.forEachWhile(7,[&](int64_t value) { seen.push_back(value); return seen.size()<2; });
@@ -4621,7 +4662,7 @@ TEST(canonical_classes, new_postings_do_not_reselect_old_dependents_of_unchanged
     gl::Memory mb;
     auto& arena=gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
-    gl::CanonicalUseIndex uses(&mb.lbMemory.manager);
+    gl::CanonicalUseIndex uses(&((mb).lbMemory).manager);
     const auto scope=gl::NameMap::MAIN_ID;
     for (int64_t record=1; record<=1000; ++record) uses.add(record,scope,gl::StrSpan("a",1));
     std::vector<int64_t> seen;
@@ -4652,64 +4693,102 @@ TEST(canonical_classes, new_postings_do_not_reselect_old_dependents_of_unchanged
 }
 
 TEST(canonical_classes, presence_exact_hits_avoid_projections_and_aliases_keep_scope_ownership) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     auto& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root,"presence_child");
-    const auto sibling = mb.nameMap.encodePush(root,"presence_sibling");
+    const auto child = ((mb).nameMap).encodePush(root,"presence_child");
+    const auto sibling = ((mb).nameMap).encodePush(root,"presence_sibling");
     putClassesAt(mb,root,{{"a","z"}});
     putClassesAt(mb,child,{{"b","z"}});
-    auto& records = mb.overallHashMemory.admissionStatusMap;
-    auto& index = mb.lbMemory.canonicalUses.algebraMatches;
-    const auto a = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,"(K[a,marker])","main");
-    const auto b = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,"(K[b,marker])","main");
+    auto& records = ((((mb).overallHashMemory)).admissionStatusMap);
+    auto& index = ((mb).lbMemory).canonicalUses.algebraMatches;
+    const auto a = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(K[a,marker])","main");
+    const auto b = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(K[b,marker])","main");
     records.upsert(a,uint8_t(1));
-    ASSERT_TRUE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),child));
-    ASSERT_TRUE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[b,marker])"),gl::StrSpan("main",4),child));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),child));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[b,marker])"),gl::StrSpan("main",4),child));
     ASSERT_EQ(index.rebuildCount,0);
     ASSERT_EQ(index.forms.count(),0);
     records.erase(a);
     records.upsert(b,uint8_t(1));
-    ASSERT_TRUE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[b,marker])"),gl::StrSpan("main",4),child));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[b,marker])"),gl::StrSpan("main",4),child));
     ASSERT_EQ(index.rebuildCount,0);
-    ASSERT_TRUE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),child));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),child));
     ASSERT_EQ(index.rebuildCount,1);
-    ASSERT_FALSE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),sibling));
-    ASSERT_FALSE(ana.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("missing_scope")));
+    ASSERT_FALSE(ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("main",4),sibling));
+    ASSERT_FALSE(ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,gl::StrSpan("(K[a,marker])"),gl::StrSpan("missing_scope")));
     ASSERT_EQ(records.count(),1);
     ASSERT_TRUE(records.lookup(b)!=0);
 }
 
+// The predicate overload counts a matching record only when it is accepted:
+// a rejected exact hit falls through to the canonical and class-aware forms,
+// which may name another record; accept-all equals the unfiltered test.
+TEST(canonical_classes, presence_if_counts_only_accepted_records) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    auto& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const auto child = ((mb).nameMap).encodePush(root,"presence_if_child");
+    putClassesAt(mb,root,{{"a","z"}});
+    putClassesAt(mb,child,{{"b","z"}});
+    auto& records = ((((mb).overallHashMemory)).admissionStatusMap);
+    auto& index = ((mb).lbMemory).canonicalUses.algebraMatches;
+    const auto a = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(K[a,marker])","main");
+    const auto b = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(K[b,marker])","main");
+    const auto all = [](int64_t) { return true; };
+    const auto notA = [a](int64_t key) { return key != a; };
+    const auto none = [](int64_t) { return false; };
+    const gl::StrSpan mainScope("main",4);
+    records.upsert(a,uint8_t(1));
+    // Only a: its exact hit and its class hit through b's spelling.
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[a,marker])"),mainScope,child,all));
+    ASSERT_FALSE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[a,marker])"),mainScope,child,notA));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[b,marker])"),mainScope,child,all));
+    ASSERT_FALSE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[b,marker])"),mainScope,child,notA));
+    // a and b: rejecting a leaves b; rejecting both leaves nothing.
+    records.upsert(b,uint8_t(1));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[a,marker])"),mainScope,child,notA));
+    ASSERT_TRUE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[b,marker])"),mainScope,child,notA));
+    ASSERT_FALSE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[a,marker])"),mainScope,child,none));
+    // Accept-all answers as the unfiltered test, including off the classes.
+    for (const char* query : {"(K[a,marker])","(K[b,marker])","(K[x,marker])"}) {
+        const gl::StrSpan q(query,static_cast<int32_t>(std::strlen(query)));
+        ASSERT_EQ(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,q,mainScope,child,all),
+            ana.canonicalTemplates.canonicalTemplatePresent(mb,records,index,q,mainScope,child));
+    }
+    ASSERT_FALSE(ana.canonicalTemplates.canonicalTemplatePresentIf(mb,records,index,gl::StrSpan("(K[x,marker])"),mainScope,child,all));
+}
+
 TEST(canonical_classes, algebra_probe_exact_budget_hit_is_cheap_and_ineligible_hit_checks_aliases) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.maxNumberSecondaryVariables = 2;
     auto& mb = ana.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = mb.nameMap.encodePush(root,"probe_child");
+    const auto child = ((mb).nameMap).encodePush(root,"probe_child");
     putClassesAt(mb,root,{{"a","z"}});
     putClassesAt(mb,child,{{"b","z"}});
     auto& arena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount()-1);
-    const auto a = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,"(in2[a,marker,3])","main");
-    const auto b = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,"(in2[b,marker,3])","main");
+    const auto a = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(in2[a,marker,3])","main");
+    const auto b = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),"(in2[b,marker,3])","main");
     gl::AdmissionMapValue value;
-    value.key = {mb.valueInterner.encode("(in2[a,1,3])")};
-    value.remainingArgs = {mb.valueInterner.encode("a"),mb.valueInterner.encode("3")};
+    value.key = {((mb).valueInterner).encode("(in2[a,1,3])")};
+    value.remainingArgs = {((mb).valueInterner).encode("a"),((mb).valueInterner).encode("3")};
     value.standardMaxAdmissionDepth = 0;
     value.standardMaxSecondaryNumber = 2;
-    gl::insertAdmissionValue(mb.overallHashMemory.admissionMap,a,value,mb.valueInterner,arena);
-    mb.overallHashMemory.admissionStatusMap.upsert(a,uint8_t(0));
+    gl::insertAdmissionValue(((((mb).overallHashMemory)).admissionMap),a,value,((mb).valueInterner),arena);
+    ((((mb).overallHashMemory)).admissionStatusMap).upsert(a,uint8_t(0));
     value.standardMaxAdmissionDepth = 3;
-    gl::insertAdmissionValue(mb.overallHashMemory.admissionMap,b,value,mb.valueInterner,arena);
-    mb.overallHashMemory.admissionStatusMap.upsert(b,uint8_t(0));
+    gl::insertAdmissionValue(((((mb).overallHashMemory)).admissionMap),b,value,((mb).valueInterner),arena);
+    ((((mb).overallHashMemory)).admissionStatusMap).upsert(b,uint8_t(0));
     const std::string expression = "(in2[b,temporary_witness,3])";
     const std::string marked = "(in2[b,marker,3])";
     const std::string witness = "temporary_witness";
     const auto probe = [&](int generation) {
         const gl::WitnessAdmissionMetrics metrics{generation,1};
-        return ana.isAdmitted(mb,gl::StrSpan(expression),gl::StrSpan(witness),gl::StrSpan(marked),
+        return gl::tests::AdmissionMemoryFixture::isAdmitted(ana.admissionMemory, mb,gl::StrSpan(expression),gl::StrSpan(witness),gl::StrSpan(marked),
             gl::StrSpan("main",4),&metrics,false,0,child);
     };
-    auto& index = mb.lbMemory.canonicalUses.algebraMatches;
+    auto& index = ((mb).lbMemory).canonicalUses.algebraMatches;
     ASSERT_TRUE(probe(0));
     ASSERT_EQ(index.rebuildCount,0);
     ASSERT_EQ(index.forms.count(),0);
@@ -4717,61 +4796,61 @@ TEST(canonical_classes, algebra_probe_exact_budget_hit_is_cheap_and_ineligible_h
     ASSERT_EQ(index.rebuildCount,2);
     ASSERT_FALSE(probe(4));
     ASSERT_EQ(index.rebuildCount,2);
-    ASSERT_EQ(mb.overallHashMemory.admissionMap.count(),2);
-    ASSERT_TRUE(mb.overallHashMemory.productsOfRecursionIds.empty());
-    ASSERT_TRUE(mb.sameIterationInternalMail.empty());
+    ASSERT_EQ(((((mb).overallHashMemory)).admissionMap).count(),2);
+    ASSERT_TRUE(((((mb).overallHashMemory)).productsOfRecursionIds).empty());
+    ASSERT_TRUE(((mb).sameIterationInternalMail).empty());
 }
 
 TEST(canonical_classes, integration_probe_uses_exact_canonical_key_without_applying_values) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     auto& mb = ana.body;
     putClassesAt(mb,gl::NameMap::MAIN_ID,{{"2","9"}});
     const std::string prefixed = "(in2[u_2,marker,u_3])";
-    const auto key = gl::mintTemplateKey(mb.templateInterner,mb.nameMap,prefixed,"main");
+    const auto key = gl::mintTemplateKey(((mb).templateInterner),((mb).nameMap),prefixed,"main");
     gl::Instruction instruction;
     instruction.data.push_back(gl::LogicalEntity("atomic",{},prefixed,3));
     instruction.markedGoal = prefixed;
     gl::IntegrationEntry entry;
-    entry.instruction = gl::encodeInstruction(instruction,mb.valueInterner);
-    auto& records = mb.overallHashMemory.admissionMapIntegration;
+    entry.instruction = gl::encodeInstruction(instruction,((mb).valueInterner));
+    auto& records = ((((mb).overallHashMemory)).admissionMapIntegration);
     records.assignRun(key,{entry});
     const auto before = gl::Codec<gl::IntegrationEntry>::serialize(records.recordAt(records.lookup(key),0));
     const std::string expression = "(in2[9,temporary_witness,3])";
     const std::string marked = "(in2[9,marker,3])";
     const std::string witness = "temporary_witness";
-    ASSERT_TRUE(ana.isAdmittedIntegration(mb,gl::StrSpan(expression),gl::StrSpan(witness),
+    ASSERT_TRUE(ana.admissionMemory.isAdmittedIntegration(mb,gl::StrSpan(expression),gl::StrSpan(witness),
         gl::StrSpan(marked),gl::StrSpan("main",4),false));
-    ASSERT_EQ(mb.lbMemory.canonicalUses.integrationMatches.rebuildCount,0);
-    ASSERT_EQ(mb.lbMemory.canonicalUses.integrationMatches.forms.count(),0);
+    ASSERT_EQ(((mb).lbMemory).canonicalUses.integrationMatches.rebuildCount,0);
+    ASSERT_EQ(((mb).lbMemory).canonicalUses.integrationMatches.forms.count(),0);
     ASSERT_TRUE(before==gl::Codec<gl::IntegrationEntry>::serialize(records.recordAt(records.lookup(key),0)));
-    ASSERT_EQ(mb.valueInterner.lookup(gl::StrSpan(witness)),0);
-    ASSERT_TRUE(mb.sameIterationInternalMail.empty());
+    ASSERT_EQ(((mb).valueInterner).lookup(gl::StrSpan(witness)),0);
+    ASSERT_TRUE(((mb).sameIterationInternalMail).empty());
 }
 
 TEST(canonical_classes, late_parent_bridge_removes_rules_owned_by_the_old_child_representative) {
     for(bool staged:{false,true}) {
-        gl::ExpressionAnalyzer ana(std::string("Peano"));
+        gl::tests::ProverFixture ana(std::string("Peano"));
         ana.parameters.trackHistory=true;
         auto& mb=ana.body;
         const auto root=gl::NameMap::MAIN_ID;
-        const auto child=mb.nameMap.encodePush(root,"compact_child");
-        const std::string validity=mb.nameMap.decode(child);
+        const auto child=((mb).nameMap).encodePush(root,"compact_child");
+        const std::string validity=((mb).nameMap).decode(child);
         addCanonicalFixtureEquality(ana,mb,child,"(=[b,z])",0);
         const std::vector<std::string> leaves={"(in[u_1,u_2])","(in2[u_1,u_3,u_2])"};
-        const std::string name=ana.findOrMintOrOperator(leaves,3);
-        ana.preMintReducedOrs();
-        const auto* entity=ana.compiledEntity(gl::StrSpan(name));
+        const std::string name=ana.orRuleCompiler.findOrMintOrOperator(leaves,3);
+        ana.orRuleCompiler.preMintReducedOrs();
+        const auto* entity=ana.definitions.compiledEntity(gl::StrSpan(name));
         ASSERT_TRUE(entity!=nullptr && !entity->implications.empty());
         const std::string carrier=ce::replaceKeysInString(entity->implications.front(),{{"u_1","b"},{"u_2","10"},{"u_3","b"}});
         const std::string replacement=ce::replaceKeysInString(carrier,{{"b","a"}});
         const int level=0;
         const gl::TransientOrigin origin{true,gl::OriginTag::taskFormulation,nullptr,0};
-        ana.addExprToMemoryBlock(gl::StrSpan(carrier),mb,0,0,&level,1,origin,-1,-1,gl::StrSpan(validity),false);
-        const int64_t oldKey=gl::packStatementKey(mb.nameMap.lookup(carrier),child);
-        const int32_t oldId=mb.compactExpansions.lookup(oldKey);
+        ana.statementMemory.addExprToMemoryBlock(gl::StrSpan(carrier),mb,0,0,&level,1,origin,-1,-1,gl::StrSpan(validity),false);
+        const int64_t oldKey=gl::packStatementKey(((mb).nameMap).lookup(carrier),child);
+        const int32_t oldId=((mb).compactExpansions).lookup(oldKey);
         ASSERT_TRUE(oldId!=0);
-        const auto oldRule=mb.compactExpansions.recordAt(oldId,0);
-        const int32_t ruleId=mb.ruleInterner.lookup(mb.lbStateInterner.decodeView(oldRule.implTextId));
+        const auto oldRule=((mb).compactExpansions).recordAt(oldId,0);
+        const int32_t ruleId=((mb).ruleInterner).lookup(((mb).lbStateInterner).decodeView(oldRule.implTextId));
         ASSERT_TRUE(ruleId!=0);
         const auto applicationBefore=mb.decodeClassesById(child);
         addCanonicalFixtureEquality(ana,mb,root,"(=[a,z])",1);
@@ -4786,235 +4865,516 @@ TEST(canonical_classes, late_parent_bridge_removes_rules_owned_by_the_old_child_
             gl::ColdHashSet<gl::BytesKeyStore> visited(&arena,&dirty);
             gl::ColdHashSet<gl::PodKeyStore<int64_t>> drops(&arena,&dirty),removed(&arena,&dirty);
             gl::TypedColdSet<int64_t> selected(&arena,&dirty),pending(&arena,&dirty);
+            gl::TypedColdMap<int64_t, uint8_t> pendingIntegration(&arena,&dirty);
             selected.mint(oldKey);
-            const auto cls=mb.canonicalEquivalenceClassesMap.recordAt(mb.canonicalEquivalenceClassesMap.lookup(child),0);
-            ASSERT_TRUE(ana.applyEquivalenceClassToCompactImplications(cls,mb,gl::StrSpan(validity),buckets,
-                compactKeys,visited,drops,removed,pending,&selected)>0);
+            const auto cls=((mb).canonicalEquivalenceClassesMap).recordAt(((mb).canonicalEquivalenceClassesMap).lookup(child),0);
+            ASSERT_TRUE(ana.compactRuleProcessor.applyEquivalenceClassToCompactImplications(cls,mb,gl::StrSpan(validity),buckets,
+                compactKeys,visited,drops,removed,pending,pendingIntegration,&selected)>0);
             ASSERT_TRUE(pending.contains(oldKey));
-            ASSERT_FALSE(ana.compactExpandedHere(mb,gl::StrSpan(replacement),gl::StrSpan(validity)));
-            ana.finishCompactRemovals(mb,drops,removed,arena);
-            ASSERT_EQ(mb.compactExpansions.lookup(oldKey),0);
-            ana.installCanonicalCompacts(mb,pending);
+            ASSERT_TRUE(pendingIntegration.empty());
+            ASSERT_FALSE(gl::tests::CompactRuleProcessorFixture::compactExpandedHere(mb,gl::StrSpan(replacement),gl::StrSpan(validity)));
+            ana.compactRuleProcessor.finishCompactRemovals(mb,drops,removed,arena);
+            ASSERT_EQ(((mb).compactExpansions).lookup(oldKey),0);
+            ana.compactRuleProcessor.installCanonicalCompacts(mb,pending,pendingIntegration);
             ASSERT_TRUE(pending.empty());
-            ana.installCanonicalCompacts(mb,pending);
+            ana.compactRuleProcessor.installCanonicalCompacts(mb,pending,pendingIntegration);
         }
-        ana.applyEquiClasses(mb);
-        ASSERT_EQ(mb.compactExpansions.lookup(oldKey),0);
-        ASSERT_TRUE(ana.compactExpandedHere(mb,gl::StrSpan(replacement),gl::StrSpan(validity)));
-        for (const auto* memory : {&mb.overallHashMemory,&mb.localHashMemory,&mb.localHashMemoryDelta,&mb.workingMemory}) {
-            for(int32_t i=1;i<=memory->encodedMap.count();++i)
-                for(int32_t j=0;j<memory->encodedMap.runLen(i);++j)
-                    ASSERT_TRUE(memory->encodedMap.recordAt(i,j).originalImplicationId!=ruleId);
-            ASSERT_FALSE(memory->ownerlessPending);
+        ana.equivalenceProcessor.applyEquiClasses(mb);
+        ASSERT_EQ(((mb).compactExpansions).lookup(oldKey),0);
+        ASSERT_TRUE(gl::tests::CompactRuleProcessorFixture::compactExpandedHere(mb,gl::StrSpan(replacement),gl::StrSpan(validity)));
+        for (const auto* memory : {&((mb).overallHashMemory),&((mb).localHashMemory),&((mb).localHashMemoryDelta),&((mb).workingMemory)}) {
+            for(int32_t i=1;i<=((*(memory)).encodedMap).count();++i)
+                for(int32_t j=0;j<((*(memory)).encodedMap).runLen(i);++j)
+                    ASSERT_TRUE(((*(memory)).encodedMap).recordAt(i,j).originalImplicationId!=ruleId);
+            ASSERT_FALSE(((*(memory)).ownerlessPending));
         }
     }
 }
 
+// An integration compact's rule is re-formed after a class merges two of its
+// arguments (D-503): the old rule and carrier
+// leave through the integration route, the canonical compact K* is installed
+// with `K* <- equality1 <- K + (=[from,to])`, and it is never a statement.
+TEST(canonical_classes, integration_carrier_reformed_after_a_merge) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    ana.parameters.trackHistory = true;
+    auto& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const std::string validity = ((mb).nameMap).decode(root);
+    // An entity whose one-level compact names two distinct owner tokens.
+    const gl::LogicalEntity* entity = nullptr;
+    for (const auto& entry : ana.definitions.entries()) {
+        const gl::LogicalEntity& candidate = entry.second;
+        if (candidate.integrationImplications.empty()) continue;
+        const std::vector<std::string> args = ce::getArgs(candidate.integrationImplications[0].compact);
+        if (std::set<std::string>(args.begin(), args.end()).size() >= 2) { entity = &candidate; break; }
+    }
+    ASSERT_TRUE(entity != nullptr);
+    const std::vector<std::string> tokens = ce::getArgs(entity->signature);
+    std::vector<std::string> ownerNames;
+    for (std::size_t i = 0; i < tokens.size(); ++i) ownerNames.push_back("u_" + std::string(1, static_cast<char>('a' + i)));
+    std::vector<gl::StrSpan> owners;
+    for (const std::string& name : ownerNames) owners.emplace_back(name);
+
+    gl::ScratchArena& arena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+    gl::ScratchScope frame(arena);
+    const gl::ScratchString compact = ana.integrationBuilder.fillIntegrationCompactScratch(arena,
+        gl::StrSpan(entity->integrationImplications[0].compact), owners.data(), static_cast<int32_t>(owners.size()));
+    const std::string carrier = gl::DefinitionExpansion::removeUPrefixFromArguments(gl::StrSpan(compact).toStdString());
+    {
+        gl::StrSpan premises[gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        int32_t premiseN = 0;
+        gl::StrSpan head;
+        ASSERT_TRUE(ana.compactRuleProcessor.installIntegrationCompact(mb, gl::StrSpan(compact), gl::StrSpan(validity),
+            gl::OriginTag::reformulationForIntegrationBound, nullptr, 0, arena, premises,
+            gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS, premiseN, head));
+    }
+    const int64_t oldKey = gl::packStatementKey(((mb).nameMap).lookup(carrier), root);
+    const auto oldRecord = ((mb).compactExpansions).recordAt(((mb).compactExpansions).lookup(oldKey), 0);
+    const int32_t oldRule = ((mb).ruleInterner).lookup(((mb).lbStateInterner).decodeView(oldRecord.implTextId));
+    ASSERT_TRUE(oldRule != 0);
+
+    // Merge the compact's first two distinct arguments.
+    const std::vector<std::string> args = ce::getArgs(carrier);
+    std::string x = args[0], y;
+    for (const std::string& a : args) if (a != x) { y = a; break; }
+    ASSERT_TRUE(!y.empty());
+    addCanonicalFixtureEquality(ana, mb, root, "(=[" + x + "," + y + "])", 1);
+    const std::string canonical = std::min(x, y);
+    const std::string merged = std::max(x, y);
+    const std::string kstar = ce::replaceKeysInString(carrier, {{merged, canonical}});
+
+    // The equality1 citations: K at its scope, then the fired pair where its row lives.
+    {
+        gl::ScratchString kstarOut;
+        gl::CompactCanonPair pairs[gl::ExecutionParameters::MAX_ARITY];
+        int32_t pairN = 0;
+        int levels[256];
+        int32_t levelN = 0;
+        gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+        ASSERT_TRUE(gl::tests::CompactRuleProcessorFixture::canonicalizeCompact(ana.compactRuleProcessor, mb,
+            gl::StrSpan(carrier), gl::StrSpan(validity), arena, gArena, kstarOut, pairs, pairN, levels, levelN, 256));
+        ASSERT_EQ(gl::StrSpan(kstarOut).toStdString(), kstar);
+        gl::OriginDep deps[1 + gl::ExecutionParameters::MAX_ARITY];
+        const int32_t depN = gl::tests::CompactRuleProcessorFixture::canonicalEqualityDeps(ana.compactRuleProcessor,
+            mb, gl::StrSpan(carrier), gl::StrSpan(validity), pairs, pairN, arena, deps);
+        ASSERT_EQ(depN, 2);
+        ASSERT_EQ(deps[0].original.toStdString(), carrier);
+        ASSERT_EQ(deps[1].original.toStdString(), "(=[" + merged + "," + canonical + "])");
+        ASSERT_EQ(deps[1].validity.toStdString(), validity);
+    }
+
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_EQ(((mb).compactExpansions).lookup(oldKey), 0);
+    const gl::CompactRuleProcessor::CarrierKinds kinds =
+        gl::CompactRuleProcessor::carrierKinds(mb, gl::StrSpan(kstar), gl::StrSpan(validity));
+    ASSERT_TRUE(kinds.integration && !kinds.statement);
+    ASSERT_TRUE(gl::lookupStatementFlags(((mb).intKnownStatements), ((mb).nameMap), gl::StrSpan(kstar),
+        gl::StrSpan(validity)) == nullptr);
+    bool citesCarrier = false;
+    int64_t pk = 0;
+    ASSERT_TRUE(gl::lookupOriginKey(((mb).originInterner), kstar, validity, pk));
+    for (const gl::IdOrigin& o : ((mb).exprOriginMap).recordsAt(((mb).exprOriginMap).lookup(pk))) {
+        const auto line = gl::decodeOrigin(o, ((mb).originInterner));
+        if (line.first != "equality1") continue;
+        for (const auto& dep : line.second) citesCarrier = citesCarrier || dep.original == carrier;
+    }
+    ASSERT_TRUE(citesCarrier);
+    for (const auto* memory : {&((mb).overallHashMemory),&((mb).localHashMemory),&((mb).localHashMemoryDelta)}) {
+        for (int32_t i = 1; i <= ((*(memory)).encodedMap).count(); ++i)
+            for (int32_t j = 0; j < ((*(memory)).encodedMap).runLen(i); ++j)
+                ASSERT_TRUE(((*(memory)).encodedMap).recordAt(i, j).originalImplicationId != oldRule);
+        ASSERT_FALSE(((*(memory)).ownerlessPending));
+    }
+}
+
 TEST(canonical_classes, inherited_watch_selection_uses_complete_members_and_stays_indexed) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory=false;
     auto& memory=analyzer.body;
     const auto root=gl::NameMap::MAIN_ID;
-    const auto child=memory.nameMap.encodePush(root,"watch_child");
+    const auto child=((memory).nameMap).encodePush(root,"watch_child");
     putClassesAt(memory,root,{{"b","z"}});
     putClassesAt(memory,child,{{"a","z"}});
-    analyzer.initializeCanonicalScope(memory,child);
-    const auto negative=gl::encodeExpression(gl::StrSpan("!(p[b])"),gl::StrSpan("main"),memory.nameMap);
-    analyzer.importNegationIntoDescendantClassScopes(memory,negative);
-    const auto key=analyzer.watchKey(child,negative.nameId);
-    auto run=memory.negationLedger.lookup(key);
+    analyzer.canonicalizer.initializeCanonicalScope(memory,child);
+    const auto negative=gl::encodeExpression(gl::StrSpan("!(p[b])"),gl::StrSpan("main"),((memory).nameMap));
+    gl::tests::WatchProcessorFixture::importNegationIntoDescendantClassScopes(analyzer.watchProcessor, memory,negative);
+    const auto key=gl::tests::WatchProcessorFixture::watchKey(child,negative.nameId);
+    auto run=((memory).negationLedger).lookup(key);
     ASSERT_TRUE(run!=0);
-    ASSERT_EQ(memory.negationLedger.runLen(run),1);
-    ASSERT_EQ(memory.nameMap.decode(static_cast<gl::NameId>(uint64_t(memory.negationLedger.valueAt(run,0))>>32)),std::string("!(p[a])"));
-    const auto pending=memory.pendingWatchRechecks.size();
-    analyzer.importNegationIntoDescendantClassScopes(memory,negative);
-    ASSERT_EQ(memory.pendingWatchRechecks.size(),pending);
-    analyzer.ensureCanonicalWatchUses(memory);
-    gl::EquivalenceClass enlarged; enlarged.setMembersFromNames({"0","b","z"},memory.nameMap);
+    ASSERT_EQ(((memory).negationLedger).runLen(run),1);
+    ASSERT_EQ(((memory).nameMap).decode(static_cast<gl::NameId>(uint64_t(((memory).negationLedger).valueAt(run,0))>>32)),std::string("!(p[a])"));
+    const auto pending=((memory).pendingWatchRechecks).size();
+    gl::tests::WatchProcessorFixture::importNegationIntoDescendantClassScopes(analyzer.watchProcessor, memory,negative);
+    ASSERT_EQ(((memory).pendingWatchRechecks).size(),pending);
+    gl::tests::WatchProcessorFixture::ensureCanonicalWatchUses(analyzer.watchProcessor, memory);
+    gl::EquivalenceClass enlarged; enlarged.setMembersFromNames({"0","b","z"},((memory).nameMap));
     memory.assignClassesById(root,{enlarged});
-    analyzer.refreshCanonicalClasses(memory,root);
-    run=memory.negationLedger.lookup(key);
-    ASSERT_EQ(memory.negationLedger.runLen(run),1);
-    ASSERT_EQ(memory.nameMap.decode(static_cast<gl::NameId>(uint64_t(memory.negationLedger.valueAt(run,0))>>32)),std::string("!(p[0])"));
+    analyzer.equivalenceProcessor.refreshCanonicalClasses(memory,root);
+    run=((memory).negationLedger).lookup(key);
+    ASSERT_EQ(((memory).negationLedger).runLen(run),1);
+    ASSERT_EQ(((memory).nameMap).decode(static_cast<gl::NameId>(uint64_t(((memory).negationLedger).valueAt(run,0))>>32)),std::string("!(p[0])"));
 }
 
 TEST(canonical_classes, identity_interfaces_track_markers_statements_and_pending_carriers) {
-    gl::ExpressionAnalyzer analyzer("Peano"); analyzer.parameters.trackHistory=false;
+    gl::tests::ProverFixture analyzer("Peano"); analyzer.parameters.trackHistory=false;
     auto& memory=analyzer.body;
     const auto root=gl::NameMap::MAIN_ID;
-    putClassesAt(memory,root,{{"a","b"}}); analyzer.initializeCanonicalScope(memory,root);
+    putClassesAt(memory,root,{{"a","b"}}); analyzer.canonicalizer.initializeCanonicalScope(memory,root);
     auto& arena=gl::genScratchArenas().forSlot(0);
-    auto& uses=memory.lbMemory.canonicalUses;
-    const auto raw=memory.nameMap.encode("(K[b])"),canonical=memory.nameMap.encode("(K[a])");
+    auto& uses=((memory).lbMemory).canonicalUses;
+    const auto raw=((memory).nameMap).encode("(K[b])"),canonical=((memory).nameMap).encode("(K[a])");
     const auto rawKey=gl::packStatementKey(raw,root),canonicalKey=gl::packStatementKey(canonical,root);
-    analyzer.indexCanonicalText(uses.goals,rawKey,root,gl::StrSpan("(K[u_b])"));
+    analyzer.canonicalTemplates.indexCanonicalText(uses.goals,rawKey,root,gl::StrSpan("(K[u_b])"));
     int hits=0; uses.goals.forEach(root,gl::StrSpan("b"),[&](int64_t key){ASSERT_EQ(key,rawKey);++hits;});
     ASSERT_EQ(hits,1);
-    memory.processedOrLedger.insertSorted(root,gl::packInt32Pair(canonical,raw),[](int64_t a,int64_t b){return a<b;});
-    analyzer.ensureCanonicalOrMarkerUses(memory,arena);
-    analyzer.indexCanonicalOrMarker(memory,raw,canonical,root,arena);
+    ((memory).processedOrLedger).insertSorted(root,gl::packInt32Pair(canonical,raw),[](int64_t a,int64_t b){return a<b;});
+    gl::tests::CaseLedgerFixture::ensureCanonicalOrMarkerUses(analyzer.caseLedger, memory,arena);
+    gl::tests::CaseLedgerFixture::indexCanonicalOrMarker(analyzer.caseLedger, memory,raw,canonical,root,arena);
     hits=0; uses.processedOr.forEach(root,gl::StrSpan("a"),[&](int64_t key){ASSERT_EQ(key,rawKey);++hits;});
     ASSERT_EQ(hits,1);
-    gl::upsertStatementKey(memory.intKnownStatements,rawKey,true);
-    const int level=0; memory.intStatementLevelsMap.assignSetRange(rawKey,&level,&level+1);
-    analyzer.ensureCanonicalStatementUses(memory,arena);
-    analyzer.indexCanonicalRecord(memory,memory.intKnownStatements,uses.statements,rawKey,5,arena);
-    analyzer.ensureCanonicalTemplateIndex(memory,memory.intKnownStatements,uses.statementMatches,arena,true);
-    const auto cls=memory.canonicalEquivalenceClassesMap.recordAt(memory.canonicalEquivalenceClassesMap.lookup(root),0);
+    gl::upsertStatementKey(((memory).intKnownStatements),rawKey,true);
+    const int level=0; ((memory).intStatementLevelsMap).assignSetRange(rawKey,&level,&level+1);
+    gl::tests::WatchProcessorFixture::ensureCanonicalStatementUses(analyzer.watchProcessor, memory,arena);
+    gl::tests::EquivalenceProcessorFixture::indexCanonicalRecord(analyzer.equivalenceProcessor, memory,((memory).intKnownStatements),uses.statements,rawKey,5,arena);
+    analyzer.canonicalTemplates.ensureCanonicalTemplateIndex(memory,((memory).intKnownStatements),uses.statementMatches,arena,true);
+    const auto cls=((memory).canonicalEquivalenceClassesMap).recordAt(((memory).canonicalEquivalenceClassesMap).lookup(root),0);
     gl::DirtyState dirty=gl::DirtyState::Clean; gl::TypedColdSet<int64_t> selected(&arena,&dirty);
-    analyzer.selectCanonicalRecords(memory,memory.intKnownStatements,uses.statements,cls,root,5,selected,arena);
+    gl::tests::EquivalenceProcessorFixture::selectCanonicalRecords(analyzer.equivalenceProcessor, memory,((memory).intKnownStatements),uses.statements,cls,root,5,selected,arena);
     ASSERT_EQ(selected.count(),1);
     selected.resetToFresh();
-    analyzer.selectCanonicalRecords(memory,memory.intKnownStatements,uses.statements,cls,root,5,selected,arena);
+    gl::tests::EquivalenceProcessorFixture::selectCanonicalRecords(analyzer.equivalenceProcessor, memory,((memory).intKnownStatements),uses.statements,cls,root,5,selected,arena);
     ASSERT_TRUE(selected.empty());
-    analyzer.writeExistenceState(memory,rawKey,28);
-    analyzer.ensureCanonicalReceiptUses(memory,arena);
-    analyzer.indexPendingExistence(memory,rawKey,28);
-    ASSERT_EQ(analyzer.existenceStateAt(memory,canonical,root),12);
-    analyzer.writeExistenceState(memory,canonicalKey,3);
-    ASSERT_EQ(analyzer.existenceStateAt(memory,canonical,root),15);
-    analyzer.eraseExistenceState(memory,canonicalKey,arena);
-    ASSERT_EQ(analyzer.existenceStateAt(memory,canonical,root),12);
-    analyzer.writeExistenceState(memory,rawKey,0);
-    analyzer.indexPendingExistence(memory,rawKey,0);
-    analyzer.eraseExistenceState(memory,rawKey,arena);
-    ASSERT_EQ(analyzer.existenceStateAt(memory,canonical,root),0);
+    analyzer.rejectedSources.writeExistenceState(memory,rawKey,28);
+    analyzer.rejectedSources.ensureCanonicalReceiptUses(memory,arena);
+    gl::tests::RejectedSourceMemoryFixture::indexPendingExistence(analyzer.rejectedSources, memory,rawKey,28);
+    ASSERT_EQ(analyzer.rejectedSources.existenceStateAt(memory,canonical,root),12);
+    analyzer.rejectedSources.writeExistenceState(memory,canonicalKey,3);
+    ASSERT_EQ(analyzer.rejectedSources.existenceStateAt(memory,canonical,root),15);
+    gl::tests::RejectedSourceMemoryFixture::eraseExistenceState(analyzer.rejectedSources, memory,canonicalKey,arena);
+    ASSERT_EQ(analyzer.rejectedSources.existenceStateAt(memory,canonical,root),12);
+    analyzer.rejectedSources.writeExistenceState(memory,rawKey,0);
+    gl::tests::RejectedSourceMemoryFixture::indexPendingExistence(analyzer.rejectedSources, memory,rawKey,0);
+    gl::tests::RejectedSourceMemoryFixture::eraseExistenceState(analyzer.rejectedSources, memory,rawKey,arena);
+    ASSERT_EQ(analyzer.rejectedSources.existenceStateAt(memory,canonical,root),0);
 }
 
 TEST(canonical_classes, compact_dependency_selection_preserves_carrier_shape_eligibility) {
-    gl::ExpressionAnalyzer analyzer("Peano"); analyzer.parameters.trackHistory=false;
+    gl::tests::ProverFixture analyzer("Peano"); analyzer.parameters.trackHistory=false;
     gl::Memory memory;
-    ASSERT_TRUE(memory.compactExpansions.empty());
+    ASSERT_TRUE(((memory).compactExpansions).empty());
     const auto root=gl::NameMap::MAIN_ID;
     putClassesAt(memory,root,{{"a","b"}});
     const std::string compactText="(implication77[b])",otherText="!(and77[b])",ruleText="(>[]!(in[b,N])(in[N,b]))";
     const gl::StrSpan compact(compactText),other(otherText),rule(ruleText);
-    analyzer.appendCompactExpansion(memory,compact,gl::StrSpan("main"),rule,gl::StrSpan("main"),gl::RuleInstallKind::Local);
-    analyzer.appendCompactExpansion(memory,other,gl::StrSpan("main"),rule,gl::StrSpan("main"),gl::RuleInstallKind::Local);
+    gl::tests::CompactRuleProcessorFixture::appendCompactExpansion(memory,compact,gl::StrSpan("main"),rule,gl::StrSpan("main"),gl::RuleInstallKind::Local);
+    gl::tests::CompactRuleProcessorFixture::appendCompactExpansion(memory,other,gl::StrSpan("main"),rule,gl::StrSpan("main"),gl::RuleInstallKind::Local);
     auto& arena=gl::genScratchArenas().forSlot(0);
     gl::DirtyState dirty=gl::DirtyState::Clean; gl::TypedColdSet<int64_t> selected(&arena,&dirty);
-    const auto cls=memory.canonicalEquivalenceClassesMap.recordAt(memory.canonicalEquivalenceClassesMap.lookup(root),0);
-    analyzer.selectCanonicalRecords(memory,memory.compactExpansions,memory.lbMemory.canonicalUses.compacts,
+    const auto cls=((memory).canonicalEquivalenceClassesMap).recordAt(((memory).canonicalEquivalenceClassesMap).lookup(root),0);
+    gl::tests::EquivalenceProcessorFixture::selectCanonicalRecords(analyzer.equivalenceProcessor, memory,((memory).compactExpansions),((memory).lbMemory).canonicalUses.compacts,
         cls,root,6,selected,arena);
     ASSERT_EQ(selected.count(),1);
-    ASSERT_TRUE(selected.contains(gl::packStatementKey(memory.nameMap.lookup(compact),root)));
-    ASSERT_FALSE(selected.contains(gl::packStatementKey(memory.nameMap.lookup(other),root)));
-    ASSERT_EQ(memory.compactExpansions.count(),2);
+    ASSERT_TRUE(selected.contains(gl::packStatementKey(((memory).nameMap).lookup(compact),root)));
+    ASSERT_FALSE(selected.contains(gl::packStatementKey(((memory).nameMap).lookup(other),root)));
+    ASSERT_EQ(((memory).compactExpansions).count(),2);
 }
 
 TEST(canonical_classes, completed_statement_identity_uses_full_components_and_exact_scope) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory=false;
     auto& mb=ana.body;
     const auto root=gl::NameMap::MAIN_ID;
-    const auto child=mb.nameMap.encodePush(root,"completed_child");
-    const auto sibling=mb.nameMap.encodePush(root,"completed_sibling");
+    const auto child=((mb).nameMap).encodePush(root,"completed_child");
+    const auto sibling=((mb).nameMap).encodePush(root,"completed_sibling");
     putClassesAt(mb,root,{{"a","b"}});
     putClassesAt(mb,child,{{"b","c"}});
-    const auto canonical=mb.nameMap.encode("(K[a,a,a,a,a,a])");
-    gl::upsertStatementKey(mb.intKnownStatements,gl::packStatementKey(canonical,root),true,true);
-    const std::string childName=mb.nameMap.decode(child),siblingName=mb.nameMap.decode(sibling);
-    ASSERT_FALSE(ana.checkForEquivalence("(K[c,c,c,c,c,c])",childName,mb));
-    const auto raw=mb.nameMap.encode("(K[c,c,c,c,c,c])");
-    gl::upsertStatementKey(mb.intKnownStatements,gl::packStatementKey(raw,child),true,false);
-    ASSERT_FALSE(ana.checkForEquivalence("(K[a,a,a,a,a,a])",childName,mb));
-    gl::upsertStatementKey(mb.intKnownStatements,gl::packStatementKey(raw,child),true,true);
-    ASSERT_TRUE(ana.checkForEquivalence("(K[a,a,a,a,a,a])",childName,mb));
-    ASSERT_FALSE(ana.checkForEquivalence("(K[a,a,a,a,a,a])",siblingName,mb));
-    const auto rebuilds=mb.lbMemory.canonicalUses.statementMatches.rebuildCount;
-    ASSERT_TRUE(ana.checkForEquivalence("(K[a,a,a,a,a,a])",childName,mb));
-    ASSERT_EQ(mb.lbMemory.canonicalUses.statementMatches.rebuildCount,rebuilds);
+    const auto canonical=((mb).nameMap).encode("(K[a,a,a,a,a,a])");
+    gl::upsertStatementKey(((mb).intKnownStatements),gl::packStatementKey(canonical,root),true,true);
+    const std::string childName=((mb).nameMap).decode(child),siblingName=((mb).nameMap).decode(sibling);
+    ASSERT_FALSE(ana.equivalenceQueries.checkForEquivalence("(K[c,c,c,c,c,c])",childName,mb));
+    const auto raw=((mb).nameMap).encode("(K[c,c,c,c,c,c])");
+    gl::upsertStatementKey(((mb).intKnownStatements),gl::packStatementKey(raw,child),true,false);
+    ASSERT_FALSE(ana.equivalenceQueries.checkForEquivalence("(K[a,a,a,a,a,a])",childName,mb));
+    gl::upsertStatementKey(((mb).intKnownStatements),gl::packStatementKey(raw,child),true,true);
+    ASSERT_TRUE(ana.equivalenceQueries.checkForEquivalence("(K[a,a,a,a,a,a])",childName,mb));
+    ASSERT_FALSE(ana.equivalenceQueries.checkForEquivalence("(K[a,a,a,a,a,a])",siblingName,mb));
+    const auto rebuilds=((mb).lbMemory).canonicalUses.statementMatches.rebuildCount;
+    ASSERT_TRUE(ana.equivalenceQueries.checkForEquivalence("(K[a,a,a,a,a,a])",childName,mb));
+    ASSERT_EQ(((mb).lbMemory).canonicalUses.statementMatches.rebuildCount,rebuilds);
 }
 
 TEST(canonical_classes, integration_applied_values_share_the_complete_argument_identity) {
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory=false;
     auto& mb=ana.body;
     const auto root=gl::NameMap::MAIN_ID;
-    const auto child=mb.nameMap.encodePush(root,"history_child");
+    const auto child=((mb).nameMap).encodePush(root,"history_child");
     putClassesAt(mb,root,{{"a","z"}});
     putClassesAt(mb,child,{{"b","z"}});
     gl::ScratchArena& arena=gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
-    gl::ArenaIntegrationMap entries(&arena,&mb.valueInterner);
+    gl::ArenaIntegrationMap entries(&arena,&((mb).valueInterner));
     gl::IntInstruction instruction;
-    instruction.markedGoal=mb.valueInterner.encode("(q[marker])");
+    instruction.markedGoal=((mb).valueInterner).encode("(q[marker])");
     const int32_t entry=entries.appendEntry(instruction);
-    entries.insertValue(entry,mb.valueInterner.encode("b"));
-    ASSERT_TRUE(ana.integrationValueSeenAtScope(mb,entries,entry,gl::StrSpan("a",1),child));
-    ASSERT_FALSE(ana.integrationValueSeenAtScope(mb,entries,entry,gl::StrSpan("a",1),root));
-    ASSERT_FALSE(ana.integrationValueSeenAtScope(mb,entries,entry,gl::StrSpan("missing",7),child));
-    ASSERT_EQ(ana.canonicalArgumentAtScope(mb,gl::StrSpan("b",1),child).toStdString(),std::string("a"));
-    ASSERT_EQ(ana.canonicalArgumentAtScope(mb,gl::StrSpan("missing",7),child).toStdString(),std::string("missing"));
+    entries.insertValue(entry,((mb).valueInterner).encode("b"));
+    ASSERT_TRUE(ana.canonicalTemplates.integrationValueSeenAtScope(mb,entries,entry,gl::StrSpan("a",1),child));
+    ASSERT_FALSE(ana.canonicalTemplates.integrationValueSeenAtScope(mb,entries,entry,gl::StrSpan("a",1),root));
+    ASSERT_FALSE(ana.canonicalTemplates.integrationValueSeenAtScope(mb,entries,entry,gl::StrSpan("missing",7),child));
+    ASSERT_EQ(ana.canonicalTemplates.canonicalArgumentAtScope(mb,gl::StrSpan("b",1),child).toStdString(),std::string("a"));
+    ASSERT_EQ(ana.canonicalTemplates.canonicalArgumentAtScope(mb,gl::StrSpan("missing",7),child).toStdString(),std::string("missing"));
+}
+
+// The one-way check skips a recorded witness and every name of its class at
+// the scope, and nothing else; the representative read is the id form of
+// `canonicalArgumentAtScope` (D-585).
+TEST(canonical_classes, one_way_witness_covers_its_class_at_the_scope) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    auto& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const auto child = ((mb).nameMap).encodePush(root, "one_way_child");
+    putClassesAt(mb, root, {{"a", "w"}});
+    putClassesAt(mb, child, {{"b", "w"}});
+    auto& gate = ana.admissionMemory;
+    ASSERT_FALSE(gate.oneWayWitnessAtScope(mb, gl::StrSpan("a", 1), root));
+    gate.recordOneWayWitness(mb, gl::StrSpan("w", 1));
+    ASSERT_TRUE(gate.oneWayWitnessAtScope(mb, gl::StrSpan("w", 1), root));
+    ASSERT_TRUE(gate.oneWayWitnessAtScope(mb, gl::StrSpan("a", 1), root));
+    ASSERT_FALSE(gate.oneWayWitnessAtScope(mb, gl::StrSpan("b", 1), root));
+    ASSERT_TRUE(gate.oneWayWitnessAtScope(mb, gl::StrSpan("b", 1), child));
+    ASSERT_FALSE(gate.oneWayWitnessAtScope(mb, gl::StrSpan("missing", 7), child));
+    const gl::NameId a = ((mb).nameMap).lookup(gl::StrSpan("a", 1));
+    const gl::NameId b = ((mb).nameMap).lookup(gl::StrSpan("b", 1));
+    const gl::NameId w = ((mb).nameMap).lookup(gl::StrSpan("w", 1));
+    ASSERT_EQ(ana.canonicalTemplates.canonicalMemberIdAtScope(mb, w, root), a);
+    ASSERT_EQ(ana.canonicalTemplates.canonicalMemberIdAtScope(mb, b, root), b);
+    ASSERT_EQ(ana.canonicalTemplates.canonicalMemberIdAtScope(mb, b, child), a);
+}
+
+// A premise version settles a marked integration goal whose marked position is
+// uniquely definable (in3's third argument in Peano) when every other argument
+// equals the premise's by class at the goal's scope; a negated goal, an
+// untagged position, another fixed argument, no or two changeable positions and
+// a core without a configuration do not (D-567).
+TEST(canonical_classes, premise_version_settles_a_uniquely_definable_marked_goal) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    auto& mb = ana.body;
+    gl::Memory root;
+    gl::Memory premise;
+    premise.setExprKey("(in3[a,b,c,op])");
+    premise.parentMemory = &root;
+    mb.setExprKey("(in2[x,y,s])");
+    mb.parentMemory = &premise;
+    const auto settles = [&](const std::string& goal, const std::vector<std::string>& unchangeable,
+                             const std::string& scope) {
+        std::vector<gl::StrSpan> run;
+        for (const std::string& name : unchangeable) run.emplace_back(name);
+        return ana.integrationProcessor.premiseVersionSettlesMarkedGoal(gl::StrSpan(goal), run.data(),
+            static_cast<int32_t>(run.size()), mb, gl::StrSpan(scope));
+    };
+    ASSERT_TRUE(settles("(in3[a,b,w,op])", {"a", "b", "op"}, "main"));
+    ASSERT_TRUE(settles("(in3[a,b,w,op])", {"a", "b", "op"}, "main_unregistered_scope"));
+    ASSERT_FALSE(settles("!(in3[a,b,w,op])", {"a", "b", "op"}, "main"));
+    ASSERT_FALSE(settles("(in3[w,b,c,op])", {"b", "c", "op"}, "main"));
+    ASSERT_FALSE(settles("(in3[a,d,w,op])", {"a", "d", "op"}, "main"));
+    ASSERT_FALSE(settles("(in3[a,b,w,op])", {"a", "b", "op", "w"}, "main"));
+    ASSERT_FALSE(settles("(in3[a,b,w,v])", {"a", "b"}, "main"));
+    ASSERT_FALSE(settles("(unconfigured[a,b,w])", {"a", "b"}, "main"));
+    ASSERT_FALSE(settles("(in3[z,b,w,op])", {"b", "op", "z"}, "main"));
+    putClassesAt(mb, gl::NameMap::MAIN_ID, {{"a", "z"}});
+    ASSERT_TRUE(settles("(in3[z,b,w,op])", {"b", "op", "z"}, "main"));
+    mb.parentMemory = nullptr;
+}
+
+// A statement known at the firing scope or an ancestor settles a queued
+// missing premise whose open position is uniquely definable (in3's third
+// argument in Peano) when every other argument equals the statement's by
+// class at the scope; a version known only at a child or in a sibling,
+// another fixed argument, a negated premise or statement, an untagged open
+// position, two open positions and a core without a configuration do not
+// (D-568).
+TEST(canonical_classes, known_version_settles_a_uniquely_definable_missing_premise) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    ana.parameters.trackHistory = false;
+    auto& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const auto child = mb.nameMap.encodePush(root, "known_child");
+    const auto sibling = mb.nameMap.encodePush(root, "known_sibling");
+    const std::string childName = mb.nameMap.decode(child), siblingName = mb.nameMap.decode(sibling);
+    const auto know = [&](const std::string& statement, gl::NameId scope) {
+        gl::upsertStatementKey(mb.intKnownStatements,
+            gl::packStatementKey(mb.nameMap.encode(statement), scope), true, false);
+    };
+    const auto settles = [&](const std::string& premise, const std::vector<std::string>& fixed,
+                             const std::string& scope) {
+        std::vector<gl::StrSpan> run;
+        for (const std::string& name : fixed) run.emplace_back(name);
+        return ana.integrationProcessor.knownVersionSettlesMarkedPremise(gl::StrSpan(premise), run.data(),
+            static_cast<int32_t>(run.size()), mb, gl::StrSpan(scope));
+    };
+    ASSERT_FALSE(settles("(in3[a,b,marker,op])", {"a", "b", "op"}, "main"));
+    know("(in3[a,b,c,op])", child);
+    ASSERT_FALSE(settles("(in3[a,b,marker,op])", {"a", "b", "op"}, "main"));
+    ASSERT_TRUE(settles("(in3[a,b,marker,op])", {"a", "b", "op"}, childName));
+    ASSERT_FALSE(settles("(in3[a,b,marker,op])", {"a", "b", "op"}, siblingName));
+    know("!(in3[a,d,c,op])", root);
+    ASSERT_FALSE(settles("(in3[a,d,marker,op])", {"a", "d", "op"}, childName));
+    know("(in3[a,d,c,op])", root);
+    ASSERT_TRUE(settles("(in3[a,d,marker,op])", {"a", "d", "op"}, childName));
+    ASSERT_TRUE(settles("(in3[a,d,marker,op])", {"a", "d", "op"}, "main"));
+    ASSERT_FALSE(settles("!(in3[a,d,marker,op])", {"a", "d", "op"}, "main"));
+    ASSERT_FALSE(settles("(in3[a,e,marker,op])", {"a", "e", "op"}, "main"));
+    ASSERT_FALSE(settles("(in3[marker,d,c,op])", {"c", "d", "op"}, "main"));
+    ASSERT_FALSE(settles("(in3[a,d,marker,v])", {"a", "d"}, "main"));
+    ASSERT_FALSE(settles("(unconfigured[a,d,marker])", {"a", "d"}, "main"));
+    putClassesAt(mb, root, {{"d", "z"}});
+    ASSERT_TRUE(settles("(in3[a,z,marker,op])", {"a", "op", "z"}, "main"));
+}
+
+// The vacuous-truth branch of an induction block closes the first main goal
+// itself, also when the block's classes respell the goal's arguments: it
+// reports the goal's induction tuple with every level of the block, erases
+// the goal, records the vacuous-truth history and deposits no goal statement
+// (D-573).
+TEST(equi_reshuffle, discharge_contradiction_vacuous_truth_closes_the_goal) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    ana.parameters.trackHistory = true;
+    gl::Memory& mb = ana.body;
+    enableFixtureCoreVariants(mb, "in");
+    enableFixtureCoreVariants(mb, "in2");
+    mb.setExprKey("(=[9,2])_induction_rec1_");
+    mb.isActive = true;
+    mb.isPartOfRecursion = true;
+    mb.primedForContradiction = false;
+    mb.contradictionIndex = -1;
+    mb.level = 2;
+    const gl::NameId main = gl::NameMap::MAIN_ID;
+    putClassesAt(mb, main, {{"2", "9"}});
+    const std::string P = "(in[7,N])";
+    mb.intEncodedStatements.push_back(
+        gl::encodeExpression(gl::EncodedExpression(P, std::string("main")), mb.nameMap));
+    const gl::NameId negId = mb.nameMap.encode(gl::DefinitionExpansion::negate(P));
+    mb.intKnownStatements.insert(gl::StatementKey{ negId, main }, gl::StatementFlags{ true, false });
+    const gl::NameId goalId = mb.nameMap.encode("(in2[9,a,s])");
+    const int64_t goalKey = gl::packStatementKey(goalId, main);
+    const int auxies[] = { 5 };
+    mb.intToBeProved.assignSet(goalKey, auxies, 1);
+    ana.updateGlobalTuples.clear();
+    ana.inductionMemoryBlocks.clear();
+
+    ana.goalProcessor.dischargeContradiction(mb, /*coreId=*/3);
+
+    ASSERT_FALSE(mb.isActive);
+    ASSERT_EQ(mb.intToBeProved.lookup(goalKey), 0);
+    ASSERT_EQ(ana.updateGlobalTuples.size(), std::size_t{1});
+    ASSERT_TRUE(ana.updateGlobalTuples[0] == std::make_tuple(5, uint64_t(0b111), 3));
+    ASSERT_TRUE(mb.intKnownStatements.find(gl::StatementKey{ goalId, main }) == nullptr);
+    ASSERT_TRUE(ana.inductionMemoryBlocks.empty());
+    int64_t originKey = 0;
+    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, "(in2[9,a,s])", "main", originKey));
+    ASSERT_TRUE(mb.exprOriginMap.lookup(originKey) != 0);
+    ASSERT_TRUE(mb.exprOriginMap.recordAt(mb.exprOriginMap.lookup(originKey), 0).first
+        == gl::OriginTag::vacuousTruth);
+}
+
+// The induction closure reports every auxy of the goal's run with the
+// closure's levels, erases the goal, switches the block off and queues a step
+// block for the step-win seam; a zero block is not queued
+// (D-573).
+TEST(equi_reshuffle, close_recursion_goal_reports_erases_and_queues_step_blocks) {
+    for (bool stepBlock : { true, false }) {
+        gl::tests::ProverFixture ana(std::string("Peano"));
+        gl::Memory& mb = ana.body;
+        mb.setExprKey(stepBlock ? "(in2[rec1,9,3])" : "(=[9,2])_induction_rec1_");
+        mb.isActive = true;
+        mb.isPartOfRecursion = true;
+        mb.level = 3;
+        const int64_t goalKey = gl::packStatementKey(mb.nameMap.encode("(in[9,N])"), gl::NameMap::MAIN_ID);
+        const int auxies[] = { 4, 7 };
+        mb.intToBeProved.assignSet(goalKey, auxies, 2);
+        ana.updateGlobalTuples.clear();
+        ana.inductionMemoryBlocks.clear();
+
+        ana.goalProcessor.closeRecursionGoal(mb, goalKey, uint64_t(0b1010), /*coreId=*/2);
+
+        ASSERT_FALSE(mb.isActive);
+        ASSERT_EQ(mb.intToBeProved.lookup(goalKey), 0);
+        ASSERT_EQ(ana.updateGlobalTuples.size(), std::size_t{2});
+        ASSERT_TRUE(ana.updateGlobalTuples[0] == std::make_tuple(4, uint64_t(0b1010), 2));
+        ASSERT_TRUE(ana.updateGlobalTuples[1] == std::make_tuple(7, uint64_t(0b1010), 2));
+        ASSERT_EQ(ana.inductionMemoryBlocks.size(), stepBlock ? std::size_t{1} : std::size_t{0});
+        if (stepBlock) ASSERT_TRUE(ana.inductionMemoryBlocks[0] == &mb);
+    }
 }
 
 TEST(canonical_classes, parked_demand_prefilter_preserves_scope_and_prefix_routes) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(root, "demand_child");
-    const auto sibling = memory.nameMap.encodePush(root, "demand_sibling");
+    const auto child = ((memory).nameMap).encodePush(root, "demand_child");
+    const auto sibling = ((memory).nameMap).encodePush(root, "demand_sibling");
     putClassesAt(memory, child, {{"a", "z"}});
-    analyzer.initializeCanonicalScope(memory, sibling);
-    const std::string childText = memory.nameMap.decode(child);
-    const std::string siblingText = memory.nameMap.decode(sibling);
+    analyzer.canonicalizer.initializeCanonicalScope(memory, sibling);
+    const std::string childText = ((memory).nameMap).decode(child);
+    const std::string siblingText = ((memory).nameMap).decode(sibling);
     const gl::StrSpan query("(K[z,marker])", 13);
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan(childText), false));
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan(childText), true));
-    const auto raw = memory.templateInterner.encode("(K[a,marker])");
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan(childText), false));
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan(childText), true));
+    const auto raw = ((memory).templateInterner).encode("(K[a,marker])");
     const auto algebra = gl::packInt32Pair(raw, root);
-    memory.overallHashMemory.admissionMap.inner().assignRun(algebra, nullptr, nullptr, 0);
-    ASSERT_EQ(memory.overallHashMemory.admissionMap.count(), 1);
-    ASSERT_TRUE(memory.overallHashMemory.admissionMap.lookup(algebra) != 0);
-    ASSERT_TRUE(memory.nameMap.isStrictAncestor(root, child));
-    ASSERT_EQ(analyzer.canonicalArgumentAtScope(memory, gl::StrSpan("z", 1), child).toStdString(), std::string("a"));
-    ASSERT_TRUE(analyzer.canonicalTemplatePresent(memory, memory.overallHashMemory.admissionMap,
-        memory.lbMemory.canonicalUses.algebraMatches, query, gl::StrSpan("main", 4), child));
-    ASSERT_TRUE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan(childText), false));
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan("main", 4), false));
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan(siblingText), false));
-    memory.overallHashMemory.admissionSetIntegration.mint(algebra);
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan(childText), true));
-    memory.overallHashMemory.admissionSetIntegration.mint(gl::packInt32Pair(raw, child));
-    ASSERT_TRUE(analyzer.hasPotentialParkedDemand(memory, query, gl::StrSpan(childText), true));
-    const auto instruction = gl::packInt32Pair(memory.templateInterner.encode("(Q[u_a,marker])"), child);
-    memory.overallHashMemory.admissionMapIntegration.inner().assignRun(instruction, nullptr, nullptr, 0);
-    ASSERT_TRUE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(Q[z,marker])"), gl::StrSpan(childText), true));
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(Q[z,marker])"), gl::StrSpan(siblingText), true));
+    ((((memory).overallHashMemory)).admissionMap).inner().assignRun(algebra, nullptr, nullptr, 0);
+    ASSERT_EQ(((((memory).overallHashMemory)).admissionMap).count(), 1);
+    ASSERT_TRUE(((((memory).overallHashMemory)).admissionMap).lookup(algebra) != 0);
+    ASSERT_TRUE(((memory).nameMap).isStrictAncestor(root, child));
+    ASSERT_EQ(analyzer.canonicalTemplates.canonicalArgumentAtScope(memory, gl::StrSpan("z", 1), child).toStdString(), std::string("a"));
+    ASSERT_TRUE(analyzer.canonicalTemplates.canonicalTemplatePresent(memory, ((((memory).overallHashMemory)).admissionMap),
+        ((memory).lbMemory).canonicalUses.algebraMatches, query, gl::StrSpan("main", 4), child));
+    ASSERT_TRUE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan(childText), false));
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan("main", 4), false));
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan(siblingText), false));
+    ((((memory).overallHashMemory)).admissionSetIntegration).mint(algebra);
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan(childText), true));
+    ((((memory).overallHashMemory)).admissionSetIntegration).mint(gl::packInt32Pair(raw, child));
+    ASSERT_TRUE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, query, gl::StrSpan(childText), true));
+    const auto instruction = gl::packInt32Pair(((memory).templateInterner).encode("(Q[u_a,marker])"), child);
+    ((((memory).overallHashMemory)).admissionMapIntegration).inner().assignRun(instruction, nullptr, nullptr, 0);
+    ASSERT_TRUE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(Q[z,marker])"), gl::StrSpan(childText), true));
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(Q[z,marker])"), gl::StrSpan(siblingText), true));
 }
 
 TEST(canonical_classes, parked_demand_prefilter_keeps_operator_input_and_deferred_wakes) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     auto& memory = analyzer.body;
-    analyzer.operators.clear(); analyzer.operators.insert("in2");
-    ASSERT_TRUE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(in2[marker,2,3])"), gl::StrSpan("main", 4), false));
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(in2[2,marker,3])"), gl::StrSpan("main", 4), false));
-    analyzer.operators.insert("in3");
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(in3[marker,2,3,4])"), gl::StrSpan("main", 4), false));
-    memory.lbMemory.canonicalUses.deferWakes = true;
-    analyzer.revisitRejected2(gl::StrSpan("(K[z,marker])"), memory, gl::StrSpan("main", 4));
-    analyzer.revisitRejectedIntegration2(gl::StrSpan("(K[z,marker])"), memory, gl::StrSpan("main", 4));
-    ASSERT_EQ(memory.lbMemory.canonicalUses.wakeKinds.count(), 1);
-    const auto key = gl::packInt32Pair(memory.templateInterner.lookup("(K[z,marker])"), gl::NameMap::MAIN_ID);
-    ASSERT_EQ(*memory.lbMemory.canonicalUses.wakeKinds.find(key), 3);
-    memory.lbMemory.canonicalUses.deferWakes = false;
-    memory.lbMemory.canonicalUses.wakeKinds.resetToFresh();
+    gl::CompiledDefinitionFixture::operators(analyzer.definitions).clear(); gl::CompiledDefinitionFixture::operators(analyzer.definitions).insert("in2");
+    ASSERT_TRUE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(in2[marker,2,3])"), gl::StrSpan("main", 4), false));
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(in2[2,marker,3])"), gl::StrSpan("main", 4), false));
+    gl::CompiledDefinitionFixture::operators(analyzer.definitions).insert("in3");
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(in3[marker,2,3,4])"), gl::StrSpan("main", 4), false));
+    ((memory).lbMemory).canonicalUses.deferWakes = true;
+    analyzer.rejectedSourceReplay.revisitRejected2(gl::StrSpan("(K[z,marker])"), memory, gl::StrSpan("main", 4));
+    analyzer.rejectedSourceReplay.revisitRejectedIntegration2(gl::StrSpan("(K[z,marker])"), memory, gl::StrSpan("main", 4));
+    ASSERT_EQ(((memory).lbMemory).canonicalUses.wakeKinds.count(), 1);
+    const auto key = gl::packInt32Pair(((memory).templateInterner).lookup("(K[z,marker])"), gl::NameMap::MAIN_ID);
+    ASSERT_EQ(*((memory).lbMemory).canonicalUses.wakeKinds.find(key), 3);
+    ((memory).lbMemory).canonicalUses.deferWakes = false;
+    ((memory).lbMemory).canonicalUses.wakeKinds.resetToFresh();
 }
 
 TEST(canonical_classes, parked_demand_prefilter_preserves_algebra_query_normalization) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     auto& memory = analyzer.body;
     putClassesAt(memory, gl::NameMap::MAIN_ID, {{"a", "u_z"}});
-    const auto owner = gl::packInt32Pair(memory.templateInterner.encode("(K[a,marker])"), gl::NameMap::MAIN_ID);
-    memory.overallHashMemory.admissionMap.inner().assignRun(owner, nullptr, nullptr, 0);
-    ASSERT_TRUE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(K[u_z,marker])"), gl::StrSpan("main", 4), false));
-    ASSERT_FALSE(analyzer.hasPotentialParkedDemand(memory, gl::StrSpan("(K[u_missing,marker])"), gl::StrSpan("main", 4), false));
+    const auto owner = gl::packInt32Pair(((memory).templateInterner).encode("(K[a,marker])"), gl::NameMap::MAIN_ID);
+    ((((memory).overallHashMemory)).admissionMap).inner().assignRun(owner, nullptr, nullptr, 0);
+    ASSERT_TRUE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(K[u_z,marker])"), gl::StrSpan("main", 4), false));
+    ASSERT_FALSE(gl::tests::RejectedSourceReplayFixture::hasPotentialParkedDemand(analyzer.rejectedSourceReplay, memory, gl::StrSpan("(K[u_missing,marker])"), gl::StrSpan("main", 4), false));
 }
 
 
 TEST(canonical_classes, selective_posting_retirement_preserves_order_and_reuse) {
     gl::Memory memory;
-    gl::OrPostingIndex<int64_t> postings(&memory.lbMemory.manager);
+    gl::OrPostingIndex<int64_t> postings(&((memory).lbMemory).manager);
     for (int64_t value = 1; value <= 5; ++value) postings.insert(7, value);
     postings.insert(8, 9);
     postings.eraseIf([](int64_t key, int64_t value) { return key == 8 || value == 3; });
@@ -5035,9 +5395,9 @@ TEST(canonical_classes, selective_posting_retirement_preserves_order_and_reuse) 
 
 TEST(canonical_classes, closed_scope_dependencies_retain_survivor_observation_versions) {
     gl::Memory memory;
-    gl::CanonicalUseIndex index(&memory.lbMemory.manager);
+    gl::CanonicalUseIndex index(&((memory).lbMemory).manager);
     const auto rootScope = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(rootScope, "closing_dependency");
+    const auto child = ((memory).nameMap).encodePush(rootScope, "closing_dependency");
     const int64_t kept = gl::packInt32Pair(11, rootScope);
     const int64_t removed = gl::packInt32Pair(12, child);
     index.add(kept, rootScope, gl::StrSpan("z",1));
@@ -5061,26 +5421,26 @@ TEST(canonical_classes, closed_scope_dependencies_retain_survivor_observation_ve
 }
 
 TEST(canonical_classes, scope_wipe_keeps_sibling_comparisons_warm_and_invalidatable) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto rootScope = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(rootScope, "closing_comparison");
-    const auto leaf = memory.nameMap.encodePush(child, "closing_leaf");
-    const auto sibling = memory.nameMap.encodePush(rootScope, "surviving_comparison");
+    const auto child = ((memory).nameMap).encodePush(rootScope, "closing_comparison");
+    const auto leaf = ((memory).nameMap).encodePush(child, "closing_leaf");
+    const auto sibling = ((memory).nameMap).encodePush(rootScope, "surviving_comparison");
     putClassesAt(memory, rootScope, {{"a", "z"}});
     auto& arena = gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::TypedColdMap<int64_t,int32_t> records(&arena, &dirty);
-    const auto original = memory.templateInterner.encode("(K[z,marker])");
+    const auto original = ((memory).templateInterner).encode("(K[z,marker])");
     const int64_t owner = gl::packInt32Pair(original, rootScope);
     records.upsert(owner, 1);
-    auto& index = memory.lbMemory.canonicalUses.algebraMatches;
+    auto& index = ((memory).lbMemory).canonicalUses.algebraMatches;
     gl::PagedVector<int64_t> result(&arena, &dirty);
     const auto query = [&](const char* text, gl::NameId scope) {
         result.clear();
-        analyzer.matchingCanonicalTemplates(memory, records, index, gl::StrSpan(text), rootScope, scope, result, arena);
+        analyzer.canonicalTemplates.matchingCanonicalTemplates(memory, records, index, gl::StrSpan(text), rootScope, scope, result, arena);
         ASSERT_EQ(result.size(), 1);
         ASSERT_EQ(result[0], owner);
     };
@@ -5109,13 +5469,13 @@ namespace {
 using namespace gl;
 // Recursive reference for the live-scope ordering contract. The statement door
 // stops at its expansion seam; this fixture supplies the recursive continuation.
-struct RecursiveNegationReference : ExpressionAnalyzer {
-    using ExpressionAnalyzer::ExpressionAnalyzer;
+struct RecursiveNegationReference : gl::tests::ProverFixture {
+    using gl::tests::ProverFixture::ProverFixture;
     void addStatement(StrSpan expression, Memory& memory, bool local,
         const int* levels, int32_t count, const TransientOrigin& origin,
         StrSpan scope, PagedVector<IntEncodedExpr>& output) {
         bool ready = false;
-        ExpressionAnalyzer::addStatement(expression,memory,local,levels,count,
+        statementMemory.addStatement(expression,memory,local,levels,count,
             origin,scope,output,false,nullptr,&ready);
         if (ready) applyEquivalenceClassToNegatedEquality(
             expression,memory,local,levels,count,output,scope);
@@ -5128,13 +5488,13 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
             PagedVector<IntEncodedExpr>& newStatements,
             StrSpan validityName)
         {
-            assert(isNegatedEquality(expr));
+            assert(canonicalizer.isNegatedEquality(expr));
             StrSpan argSpans[ExecutionParameters::MAX_ARITY];
             const int32_t argN = getArgsSpans(expr, argSpans,
                                               ExecutionParameters::MAX_ARITY);
             assert(argN == 2);
-            const unsigned emitStrSlot = (g_currentCoreId >= 0)
-                ? static_cast<unsigned>(g_currentCoreId)
+            const unsigned emitStrSlot = (gl::WorkerContext::coreId() >= 0)
+                ? static_cast<unsigned>(gl::WorkerContext::coreId())
                 : scratchArenas().slotCount() - 1;
             ScratchArena& emitStrArena = scratchArenas().forSlot(emitStrSlot);
             ScratchScope abScope(emitStrArena);
@@ -5143,15 +5503,15 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
             const ScratchString bCopy =
                 ScratchString::copyFrom(emitStrArena, argSpans[1].ptr, argSpans[1].len);
 
-            const unsigned negEmitSlot = (g_currentCoreId >= 0)
-                ? static_cast<unsigned>(g_currentCoreId)
+            const unsigned negEmitSlot = (gl::WorkerContext::coreId() >= 0)
+                ? static_cast<unsigned>(gl::WorkerContext::coreId())
                 : genScratchArenas().slotCount() - 1;
             DirtyState negEmitDirty = DirtyState::Clean;
             PagedVector<IntEncodedExpr> emitDiscard(
                 &genScratchArenas().forSlot(negEmitSlot), &negEmitDirty);
 
             StrSpan ancSpans[ExecutionParameters::MAX_SCOPE_DEPTH];
-            const int32_t ancN = memoryBlock.nameMap.strictAncestorSpans(
+            const int32_t ancN = ((memoryBlock).nameMap).strictAncestorSpans(
                 validityName, ancSpans, ExecutionParameters::MAX_SCOPE_DEPTH);
             ScratchScope ancScope(emitStrArena);
             StrSpan ancStable[ExecutionParameters::MAX_SCOPE_DEPTH];
@@ -5164,36 +5524,36 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
             auto emitNew = [&](StrSpan newExpr, StrSpan eqUsed, StrSpan classScope,
                                StrSpan depositScope,
                                const int* pairLv, int32_t pairLvN) {
-                if (lookupStatementLevels(memoryBlock.intStatementLevelsMap,
-                        memoryBlock.nameMap, newExpr, depositScope) != 0) return;
+                if (lookupStatementLevels(((memoryBlock).intStatementLevelsMap),
+                        ((memoryBlock).nameMap), newExpr, depositScope) != 0) return;
 
                 if (!parameters.compressor_mode) {
                     const NameId neOrigId =
-                        memoryBlock.nameMap.lookup(newExpr);
+                        ((memoryBlock).nameMap).lookup(newExpr);
                     const NameId neValId =
-                        memoryBlock.nameMap.lookup(depositScope);
+                        ((memoryBlock).nameMap).lookup(depositScope);
                     if (neOrigId != 0 && neValId != 0
-                        && ancestorKnown(memoryBlock, neOrigId, neValId,
+                        && gl::StatementKnowledge::ancestorKnown(memoryBlock, neOrigId, neValId,
                                          /*includeSelf=*/false)) {
-                        this->stageOrReleaseForRefusedDeposit(
+                        this->caseProcessor.stageOrReleaseForRefusedDeposit(
                             memoryBlock, neOrigId, neValId);
                         return;
                     }
                 }
 
-                const int mn = extractMaxIterationNumber(newExpr);
+                const int mn = admissionPolicy.extractMaxIterationNumber(newExpr);
                 if (mn != -1 && mn > parameters.maxIterationNumberVariable) return;
-                if (countPatternOccurrences(newExpr, memoryBlock.overallHashMemory, memoryBlock.nameMap)
+                if (admissionPolicy.countPatternOccurrences(newExpr, ((memoryBlock).overallHashMemory), ((memoryBlock).nameMap))
                     > parameters.maxNumberSecondaryVariables) return;
 
                 StrSpan citeScope = classScope;
                 if (parameters.trackHistory) {
                     const auto originRowAt = [&](StrSpan s) {
                         int64_t pk = 0;
-                        if (!lookupOriginKey(memoryBlock.originInterner,
+                        if (!lookupOriginKey(((memoryBlock).originInterner),
                                              eqUsed, s, pk)) return false;
-                        const int32_t oid = memoryBlock.exprOriginMap.lookup(pk);
-                        return oid != 0 && memoryBlock.exprOriginMap.runLen(oid) > 0;
+                        const int32_t oid = ((memoryBlock).exprOriginMap).lookup(pk);
+                        return oid != 0 && ((memoryBlock).exprOriginMap).runLen(oid) > 0;
                     };
                     bool citeFound = originRowAt(classScope);
                     if (!citeFound && validityName.len < classScope.len
@@ -5232,7 +5592,7 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
 
                 if (local) {
                     newStatements.push_back(encodeExpression(
-                        newExpr, depositScope, memoryBlock.nameMap));
+                        newExpr, depositScope, ((memoryBlock).nameMap)));
                 }
             };
 
@@ -5272,25 +5632,25 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
                         depositScope, pairLv, pairLvN);
             };
 
-            const unsigned negSlot = (g_currentCoreId >= 0)
-                ? static_cast<unsigned>(g_currentCoreId)
+            const unsigned negSlot = (gl::WorkerContext::coreId() >= 0)
+                ? static_cast<unsigned>(gl::WorkerContext::coreId())
                 : genScratchArenas().slotCount() - 1;
             ScratchArena& negArena = genScratchArenas().forSlot(negSlot);
             ScratchScope negFrame(negArena);
             auto emitFromClassesAt = [&](StrSpan scope, StrSpan depositScope) {
-                const NameId aId = memoryBlock.nameMap.lookup(StrSpan(aCopy));
-                const NameId bId = memoryBlock.nameMap.lookup(StrSpan(bCopy));
-                const NameId vId = memoryBlock.nameMap.lookup(scope);
+                const NameId aId = ((memoryBlock).nameMap).lookup(StrSpan(aCopy));
+                const NameId bId = ((memoryBlock).nameMap).lookup(StrSpan(bCopy));
+                const NameId vId = ((memoryBlock).nameMap).lookup(scope);
                 if (vId == 0) return;
-                const int32_t bucketId = memoryBlock.equivalenceClassesMap.lookup(vId);
+                const int32_t bucketId = ((memoryBlock).equivalenceClassesMap).lookup(vId);
                 if (bucketId == 0) return;
                 const std::size_t classCount = static_cast<std::size_t>(
-                    memoryBlock.equivalenceClassesMap.runLen(bucketId));
+                    ((memoryBlock).equivalenceClassesMap).runLen(bucketId));
                 for (std::size_t ci = 0; ci < classCount; ++ci) {
                     ScratchScope classFrame(negArena);
                     int32_t clsLen = 0;
                     const char* clsPtr =
-                        memoryBlock.equivalenceClassesMap.inner().peekBlobContiguous(
+                        ((memoryBlock).equivalenceClassesMap).inner().peekBlobContiguous(
                             bucketId, static_cast<int32_t>(ci), clsLen, negArena);
                     const EquivalenceClassView eqc{ clsPtr, clsLen };
                     const bool hasA = aId != 0 && classHasMember(eqc, aId);
@@ -5299,7 +5659,7 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
                         for (int32_t k = 0; k < eqc.memberCount(); ++k) {
                             const NameId mid = eqc.memberId(k);
                             if (mid == aId) continue;
-                            const StrSpan midView = memoryBlock.nameMap.decodeView(mid);
+                            const StrSpan midView = ((memoryBlock).nameMap).decodeView(mid);
                             const ScratchString member = ScratchString::copyFrom(
                                 emitStrArena, midView.ptr, midView.len);
                             int pairLv[64];
@@ -5320,7 +5680,7 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
                         for (int32_t k = 0; k < eqc.memberCount(); ++k) {
                             const NameId mid = eqc.memberId(k);
                             if (mid == bId) continue;
-                            const StrSpan midView = memoryBlock.nameMap.decodeView(mid);
+                            const StrSpan midView = ((memoryBlock).nameMap).decodeView(mid);
                             const ScratchString member = ScratchString::copyFrom(
                                 emitStrArena, midView.ptr, midView.len);
                             int pairLv[64];
@@ -5345,16 +5705,16 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
                 emitFromClassesAt(ancStable[i], validityName);
 
             {
-                const NameId selfVid = memoryBlock.nameMap.lookup(validityName);
+                const NameId selfVid = ((memoryBlock).nameMap).lookup(validityName);
                 if (selfVid != 0) {
                     DirtyState descDirty = DirtyState::Clean;
                     PagedVector<NameId> descVids(&negArena, &descDirty);
                     const int32_t eqKeyCount =
-                        memoryBlock.equivalenceClassesMap.count();
+                        ((memoryBlock).equivalenceClassesMap).count();
                     for (int32_t kid = 1; kid <= eqKeyCount; ++kid) {
                         const NameId vid =
-                            memoryBlock.equivalenceClassesMap.keyAt(kid);
-                        if (memoryBlock.nameMap.isStrictAncestor(selfVid, vid))
+                            ((memoryBlock).equivalenceClassesMap).keyAt(kid);
+                        if (((memoryBlock).nameMap).isStrictAncestor(selfVid, vid))
                             descVids.push_back(vid);
                     }
                     const int32_t dn = descVids.size();
@@ -5366,13 +5726,13 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
                         for (int32_t k = 0; k < dn; ++k) dIdx[k] = k;
                         std::sort(dIdx, dIdx + dn, [&](int32_t a, int32_t b) {
                             return compareSpans(
-                                memoryBlock.nameMap.decodeView(
+                                ((memoryBlock).nameMap).decodeView(
                                     descVids[static_cast<std::size_t>(a)]),
-                                memoryBlock.nameMap.decodeView(
+                                ((memoryBlock).nameMap).decodeView(
                                     descVids[static_cast<std::size_t>(b)])) < 0;
                         });
                         for (int32_t k = 0; k < dn; ++k) {
-                            const StrSpan dView = memoryBlock.nameMap.decodeView(
+                            const StrSpan dView = ((memoryBlock).nameMap).decodeView(
                                 descVids[static_cast<std::size_t>(dIdx[k])]);
                             const ScratchString descScope =
                                 ScratchString::copyFrom(emitStrArena,
@@ -5389,7 +5749,7 @@ struct RecursiveNegationReference : ExpressionAnalyzer {
 EquivalenceClass inequalityFixtureClass(Memory& memory,
     const std::set<std::string>& members, int level) {
     EquivalenceClass result;
-    result.setMembersFromNames(members,memory.nameMap);
+    result.setMembersFromNames(members,((memory).nameMap));
     for (auto a : result.memberIds) for (auto b : result.memberIds)
         if (a < b) result.intEqualityLevelsMap[packEqPairKey(a,b)] = {level};
     return result;
@@ -5397,7 +5757,7 @@ EquivalenceClass inequalityFixtureClass(Memory& memory,
 
 std::string inequalityHistorySnapshot(Memory& memory) {
     std::ostringstream out;
-    for (const auto& row : decodeOriginMapSorted(memory.exprOriginMap,memory.originInterner)) {
+    for (const auto& row : decodeOriginMapSorted(((memory).exprOriginMap),((memory).originInterner))) {
         out << row.first.first << '@' << row.first.second << '\n';
         for (const auto& origin : row.second) {
             out << origin.first << ':';
@@ -5411,8 +5771,8 @@ std::string inequalityHistorySnapshot(Memory& memory) {
 
 std::vector<std::vector<char>> inequalityClassSnapshot(Memory& memory,NameId scope) {
     std::vector<std::vector<char>> result;
-    const int bucket = memory.canonicalEquivalenceClassesMap.lookup(scope);
-    for (const auto& cls : memory.canonicalEquivalenceClassesMap.recordsAt(bucket))
+    const int bucket = ((memory).canonicalEquivalenceClassesMap).lookup(scope);
+    for (const auto& cls : ((memory).canonicalEquivalenceClassesMap).recordsAt(bucket))
         result.push_back(serializeEquivalenceClass(cls));
     return result;
 }
@@ -5422,13 +5782,13 @@ std::vector<std::string> inequalityOrderSnapshot(bool local,bool nested,bool non
     Analyzer analyzer(std::string("Peano"));
     analyzer.parameters.trackHistory = true;
     auto& memory = analyzer.body;
-    const NameId child = memory.nameMap.encodePush(NameMap::MAIN_ID,"hypo_(child[1])");
-    const NameId grandchild = memory.nameMap.encodePush(child,"hypo_(grandchild[1])");
-    const NameId sibling = memory.nameMap.encodePush(NameMap::MAIN_ID,"hypo_(sibling[1])");
+    const NameId child = ((memory).nameMap).encodePush(NameMap::MAIN_ID,"hypo_(child[1])");
+    const NameId grandchild = ((memory).nameMap).encodePush(child,"hypo_(grandchild[1])");
+    const NameId sibling = ((memory).nameMap).encodePush(NameMap::MAIN_ID,"hypo_(sibling[1])");
     const auto install = [&](NameId scope,const std::set<std::string>& members,int level) {
         const auto cls = inequalityFixtureClass(memory,members,level);
         memory.assignClassesById(scope,{cls});
-        const std::string validity = memory.nameMap.decode(scope);
+        const std::string validity = ((memory).nameMap).decode(scope);
         seedFixtureClassEvidence(memory,cls,StrSpan(validity));
     };
     install(NameMap::MAIN_ID,{"a0","a1","a2"},2);
@@ -5440,14 +5800,14 @@ std::vector<std::string> inequalityOrderSnapshot(bool local,bool nested,bool non
     ScratchScope frame(arena);
     DirtyState dirty = DirtyState::Clean;
     PagedVector<IntEncodedExpr> output(&arena,&dirty);
-    const std::string validity = memory.nameMap.decode(nested ? child : NameMap::MAIN_ID);
+    const std::string validity = ((memory).nameMap).decode(nested ? child : NameMap::MAIN_ID);
     const int levels[] = {1,3};
     const TransientOrigin origin{true,OriginTag::broadcast,nullptr,0};
-    analyzer.addStatement(StrSpan("!(=[a0,b0])"),memory,local,levels,
+    analyzer.statementMemory.addStatement(StrSpan("!(=[a0,b0])"),memory,local,levels,
         nonDerived ? 0 : 2,origin,StrSpan(validity),output);
     std::vector<std::string> result;
     std::string names;
-    for (int i=1;i<=memory.nameMap.nameCount();++i) names+=memory.nameMap.decode(i)+'\n';
+    for (int i=1;i<=((memory).nameMap).nameCount();++i) names+=((memory).nameMap).decode(i)+'\n';
     result.push_back(names);
     const auto rows = [&](const auto& statements) {
         std::string bytes;
@@ -5457,14 +5817,14 @@ std::vector<std::string> inequalityOrderSnapshot(bool local,bool nested,bool non
         }
         return bytes;
     };
-    result.push_back(rows(memory.intEncodedStatements));
+    result.push_back(rows(((memory).intEncodedStatements)));
     result.push_back(rows(output));
     std::ostringstream levelRows;
-    for (int i=1;i<=memory.intStatementLevelsMap.count();++i) {
-        const auto key = memory.intStatementLevelsMap.decodeKey(i);
+    for (int i=1;i<=((memory).intStatementLevelsMap).count();++i) {
+        const auto key = ((memory).intStatementLevelsMap).decodeKey(i);
         levelRows << key.orig << '@' << key.validity << ':';
-        for (int j=0;j<memory.intStatementLevelsMap.runLen(i);++j)
-            levelRows << memory.intStatementLevelsMap.valueAt(i,j) << ',';
+        for (int j=0;j<((memory).intStatementLevelsMap).runLen(i);++j)
+            levelRows << ((memory).intStatementLevelsMap).valueAt(i,j) << ',';
         levelRows << '\n';
     }
     result.push_back(levelRows.str());
@@ -5477,24 +5837,24 @@ TEST(equi_reshuffle, inequality_iterative_order_levels_history_match_recursive_r
     for (bool local : {false,true}) for (bool nested : {false,true})
         for (bool nonDerived : {false,true}) {
             const auto expected = inequalityOrderSnapshot<RecursiveNegationReference>(local,nested,nonDerived);
-            const auto actual = inequalityOrderSnapshot<gl::ExpressionAnalyzer>(local,nested,nonDerived);
+            const auto actual = inequalityOrderSnapshot<gl::tests::ProverFixture>(local,nested,nonDerived);
             ASSERT_EQ(actual.size(),expected.size());
             for (std::size_t i=0;i<actual.size();++i) ASSERT_TRUE(actual[i]==expected[i]);
         }
 }
 
 TEST(equi_reshuffle, inequality_and_canonical_refresh_exclude_refuted_subtree) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     analyzer.parameters.trackHistory = true;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto dead = memory.nameMap.encodePush(root,"ordis_(or90[u,v])_((=[u,v]))");
-    const auto child = memory.nameMap.encodePush(dead,"hypo_(child[1])");
-    const auto live = memory.nameMap.encodePush(root,"ordis_(or90[u,v])_((=[v,v]))");
+    const auto dead = ((memory).nameMap).encodePush(root,"ordis_(or90[u,v])_((=[u,v]))");
+    const auto child = ((memory).nameMap).encodePush(dead,"hypo_(child[1])");
+    const auto live = ((memory).nameMap).encodePush(root,"ordis_(or90[u,v])_((=[v,v]))");
     const auto install = [&](gl::NameId scope,const std::set<std::string>& members) {
         const auto cls = inequalityFixtureClass(memory,members,2);
         memory.assignClassesById(scope,{cls});
-        const auto validity = memory.nameMap.decode(scope);
+        const auto validity = ((memory).nameMap).decode(scope);
         seedFixtureClassEvidence(memory,cls,gl::StrSpan(validity));
     };
     install(dead,{"a","b"}); install(child,{"a","c"}); install(live,{"a","d"});
@@ -5503,49 +5863,49 @@ TEST(equi_reshuffle, inequality_and_canonical_refresh_exclude_refuted_subtree) {
     const auto beforeChild = inequalityClassSnapshot(memory,child);
     const auto beforeLive = inequalityClassSnapshot(memory,live);
     const auto historyBefore = inequalityHistorySnapshot(memory);
-    memory.pendingDeadOrBranches.mint(dead);
+    ((memory).pendingDeadOrBranches).mint(dead);
     auto& arena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount()-1);
     gl::ScratchScope frame(arena);
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> output(&arena,&dirty);
     const int levels[] = {1};
-    const std::string deadScope = memory.nameMap.decode(dead);
-    analyzer.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[a,outside])"),
+    const std::string deadScope = ((memory).nameMap).decode(dead);
+    analyzer.equalityPropagation.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[a,outside])"),
         memory,true,levels,1,output,gl::StrSpan(deadScope));
     ASSERT_TRUE(output.empty());
     ASSERT_TRUE(inequalityHistorySnapshot(memory)==historyBefore);
-    analyzer.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[a,outside])"),
+    analyzer.equalityPropagation.applyEquivalenceClassToNegatedEquality(gl::StrSpan("!(=[a,outside])"),
         memory,true,levels,1,output,gl::StrSpan("main"));
     const auto known = [&](const char* expression,gl::NameId scope) {
-        const std::string validity = memory.nameMap.decode(scope);
-        return gl::lookupStatementLevels(memory.intStatementLevelsMap,memory.nameMap,
+        const std::string validity = ((memory).nameMap).decode(scope);
+        return gl::lookupStatementLevels(((memory).intStatementLevelsMap),((memory).nameMap),
             gl::StrSpan(expression),gl::StrSpan(validity))!=0;
     };
     ASSERT_FALSE(known("!(=[b,outside])",dead));
     ASSERT_FALSE(known("!(=[c,outside])",child));
     ASSERT_TRUE(known("!(=[d,outside])",live));
     install(root,{"a","z"});
-    analyzer.refreshCanonicalClasses(memory,root);
-    analyzer.refreshCanonicalClasses(memory,dead);
+    analyzer.equivalenceProcessor.refreshCanonicalClasses(memory,root);
+    analyzer.equivalenceProcessor.refreshCanonicalClasses(memory,dead);
     ASSERT_TRUE(inequalityClassSnapshot(memory,dead)==beforeDead);
     ASSERT_TRUE(inequalityClassSnapshot(memory,child)==beforeChild);
     ASSERT_TRUE(inequalityClassSnapshot(memory,live)!=beforeLive);
-    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(dead)!=0);
-    ASSERT_TRUE(memory.equivalenceClassesMap.runLen(memory.equivalenceClassesMap.lookup(dead))!=0);
+    ASSERT_TRUE(((memory).pendingDeadOrBranches).lookup(dead)!=0);
+    ASSERT_TRUE(((memory).equivalenceClassesMap).runLen(((memory).equivalenceClassesMap).lookup(dead))!=0);
     for (gl::NameId scope : {dead,child}) {
-        const auto cls = memory.equivalenceClassesMap.recordAt(memory.equivalenceClassesMap.lookup(scope),0);
+        const auto cls = ((memory).equivalenceClassesMap).recordAt(((memory).equivalenceClassesMap).lookup(scope),0);
         for (auto a : cls.memberIds) for (auto b : cls.memberIds) if(a!=b) {
-            const std::string equality = "(=["+memory.nameMap.decode(a)+","+memory.nameMap.decode(b)+"])";
-            const std::string validity = memory.nameMap.decode(scope);
+            const std::string equality = "(=["+((memory).nameMap).decode(a)+","+((memory).nameMap).decode(b)+"])";
+            const std::string validity = ((memory).nameMap).decode(scope);
             int64_t key=0;
-            ASSERT_TRUE(gl::lookupOriginKey(memory.originInterner,equality,validity,key));
-            ASSERT_TRUE(memory.exprOriginMap.runLen(memory.exprOriginMap.lookup(key))!=0);
+            ASSERT_TRUE(gl::lookupOriginKey(((memory).originInterner),equality,validity,key));
+            ASSERT_TRUE(((memory).exprOriginMap).runLen(((memory).exprOriginMap).lookup(key))!=0);
         }
     }
 }
 
 TEST(equi_reshuffle, inequality_large_live_closure_uses_explicit_stack) {
-    gl::ExpressionAnalyzer analyzer(std::string("Peano"));
+    gl::tests::ProverFixture analyzer(std::string("Peano"));
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     std::set<std::string> left,right;
@@ -5561,29 +5921,29 @@ TEST(equi_reshuffle, inequality_large_live_closure_uses_explicit_stack) {
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::PagedVector<gl::IntEncodedExpr> output(&arena,&dirty);
     const int levels[] = {1};
-    analyzer.addStatement(gl::StrSpan("!(=[a0,b0])"),memory,true,levels,1,
+    analyzer.statementMemory.addStatement(gl::StrSpan("!(=[a0,b0])"),memory,true,levels,1,
         gl::TransientOrigin{},gl::StrSpan("main"),output);
     ASSERT_EQ(arena.cursor(),cursor);
     for (const auto& a : left) for (const auto& b : right) {
         const std::string expression = "!(=["+a+","+b+"])";
         const std::string mirror = "!(=["+b+","+a+"])";
-        ASSERT_TRUE(gl::lookupStatementLevels(memory.intStatementLevelsMap,memory.nameMap,
+        ASSERT_TRUE(gl::lookupStatementLevels(((memory).intStatementLevelsMap),((memory).nameMap),
             gl::StrSpan(expression),gl::StrSpan("main"))!=0);
-        ASSERT_TRUE(gl::lookupStatementLevels(memory.intStatementLevelsMap,memory.nameMap,
+        ASSERT_TRUE(gl::lookupStatementLevels(((memory).intStatementLevelsMap),((memory).nameMap),
             gl::StrSpan(mirror),gl::StrSpan("main"))!=0);
     }
 }
 
 
 TEST(canonical_classes, live_record_membership_survives_replacement_and_retires_by_scope) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     auto& memory = analyzer.body;
     auto& arena = gl::genScratchArenas().forSlot(0);
     gl::ScratchScope frame(arena);
-    gl::CanonicalUseIndex index(&memory.lbMemory.manager);
-    const auto child = memory.nameMap.encodePush(gl::NameMap::MAIN_ID, "membership_child");
-    const auto sibling = memory.nameMap.encodePush(gl::NameMap::MAIN_ID, "membership_sibling");
-    const auto original = memory.nameMap.encode("!(p[z])");
+    gl::CanonicalUseIndex index(&((memory).lbMemory).manager);
+    const auto child = ((memory).nameMap).encodePush(gl::NameMap::MAIN_ID, "membership_child");
+    const auto sibling = ((memory).nameMap).encodePush(gl::NameMap::MAIN_ID, "membership_sibling");
+    const auto original = ((memory).nameMap).encode("!(p[z])");
     const auto first = gl::packStatementKey(original, child);
     const auto second = gl::packStatementKey(original, sibling);
     ASSERT_FALSE(index.contains(first));
@@ -5603,124 +5963,124 @@ TEST(canonical_classes, live_record_membership_survives_replacement_and_retires_
 }
 
 TEST(canonical_classes, identifier_only_canonicalization_matches_full_proof_text) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = true;
     auto& memory = analyzer.body;
-    const auto child = memory.nameMap.encodePush(gl::NameMap::MAIN_ID, "identity_child");
+    const auto child = ((memory).nameMap).encodePush(gl::NameMap::MAIN_ID, "identity_child");
     putClassesAt(memory, gl::NameMap::MAIN_ID, {{"b", "z"}});
     putClassesAt(memory, child, {{"a", "b", "z"}});
     for (const auto scope : {gl::NameMap::MAIN_ID, child}) {
-        const std::string validity = memory.nameMap.decode(scope);
-        const auto bucket = memory.equivalenceClassesMap.lookup(scope);
-        for (int32_t i = 0; i < memory.equivalenceClassesMap.runLen(bucket); ++i)
-            seedFixtureClassEvidence(memory, memory.equivalenceClassesMap.recordAt(bucket, i), gl::StrSpan(validity));
+        const std::string validity = ((memory).nameMap).decode(scope);
+        const auto bucket = ((memory).equivalenceClassesMap).lookup(scope);
+        for (int32_t i = 0; i < ((memory).equivalenceClassesMap).runLen(bucket); ++i)
+            seedFixtureClassEvidence(memory, ((memory).equivalenceClassesMap).recordAt(bucket, i), gl::StrSpan(validity));
     }
-    const auto originCount = memory.exprOriginMap.count();
+    const auto originCount = ((memory).exprOriginMap).count();
     auto& strings = gl::scratchArenas().forSlot(0);
     for (const auto scope : {gl::NameMap::MAIN_ID, child}) {
         for (const std::string text : {"!(p[z,z])", "(q[b,z])", "(q[x])", "(=[b,z])", "!(=[b,z])", "(AnchorFixture[z])"}) {
-            const auto original = memory.nameMap.encode(text);
-            const std::string validity = memory.nameMap.decode(scope);
+            const auto original = ((memory).nameMap).encode(text);
+            const std::string validity = ((memory).nameMap).decode(scope);
             gl::ScratchScope frame(strings);
-            gl::ExpressionAnalyzer::WatchBridge proof;
+            gl::WatchBridge proof;
             int levels[256]; int32_t count = 0;
-            analyzer.canonicalWatchFormAt(memory, original, scope, strings, proof, levels, count, 256);
+            analyzer.watchProcessor.canonicalWatchFormAt(memory, original, scope, strings, proof, levels, count, 256);
             int32_t empty = 0;
-            const auto identity = analyzer.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan(validity),
+            const auto identity = analyzer.canonicalizer.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan(validity),
                 memory, strings, nullptr, empty, 0, false, false);
             ASSERT_TRUE(gl::equalSpans(identity.text, proof.text));
             ASSERT_EQ(identity.changed, proof.changed);
             ASSERT_EQ(identity.eqN, 0);
             ASSERT_EQ(empty, 0);
-            const auto canonical = analyzer.canonicalWatchIdAt(memory, original, scope);
-            ASSERT_TRUE(gl::equalSpans(memory.nameMap.decodeView(canonical), proof.text));
+            const auto canonical = gl::tests::WatchProcessorFixture::canonicalWatchIdAt(analyzer.watchProcessor, memory, original, scope);
+            ASSERT_TRUE(gl::equalSpans(((memory).nameMap).decodeView(canonical), proof.text));
             if (proof.changed) ASSERT_TRUE(proof.eqN > 0 && count > 0);
             else ASSERT_EQ(canonical, original);
         }
     }
-    ASSERT_EQ(memory.exprOriginMap.count(), originCount);
+    ASSERT_EQ(((memory).exprOriginMap).count(), originCount);
 }
 
 TEST(watch_ledger, indexed_selection_preserves_run_and_lexical_mint_order) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
-    const auto child = memory.nameMap.encodePush(root, "ordered_child");
+    const auto child = ((memory).nameMap).encodePush(root, "ordered_child");
     for (const auto scope : {child, root}) {
-        const std::string validity = memory.nameMap.decode(scope);
+        const std::string validity = ((memory).nameMap).decode(scope);
         for (const std::string text : {"!(q[z,2])", "!(q[z,1])", "!(p[z,3])", "!(p[z,0])"}) {
-            const auto row = gl::encodeExpression(gl::StrSpan(text), gl::StrSpan(validity), memory.nameMap);
-            analyzer.recordWatch(memory.negationLedger, memory, row.originalId, scope, row.nameId);
+            const auto row = gl::encodeExpression(gl::StrSpan(text), gl::StrSpan(validity), ((memory).nameMap));
+            gl::tests::WatchProcessorFixture::recordWatch(analyzer.watchProcessor, ((memory).negationLedger), memory, row.originalId, scope, row.nameId);
         }
     }
     putClassesAt(memory, root, {{"a", "z"}});
     putClassesAt(memory, child, {{"b", "z"}});
     std::vector<std::string> expected;
-    for (int32_t run = 1; run <= memory.negationLedger.count(); ++run) {
-        const auto scope = static_cast<gl::NameId>(uint64_t(memory.negationLedger.decodeKey(run)) >> 32);
+    for (int32_t run = 1; run <= ((memory).negationLedger).count(); ++run) {
+        const auto scope = static_cast<gl::NameId>(uint64_t(((memory).negationLedger).decodeKey(run)) >> 32);
         std::vector<std::string> originals;
-        for (int32_t j = 0; j < memory.negationLedger.runLen(run); ++j)
-            originals.push_back(memory.nameMap.decode(static_cast<gl::NameId>(uint64_t(memory.negationLedger.valueAt(run, j)))));
+        for (int32_t j = 0; j < ((memory).negationLedger).runLen(run); ++j)
+            originals.push_back(((memory).nameMap).decode(static_cast<gl::NameId>(uint64_t(((memory).negationLedger).valueAt(run, j)))));
         std::sort(originals.begin(), originals.end());
         for (auto text : originals) {
             // The child inherits a, so both scope views select the same representative.
             text.replace(text.find("z"), 1, "a");
             if (std::find(expected.begin(), expected.end(), text) == expected.end()) expected.push_back(text);
-            ASSERT_EQ(memory.nameMap.lookup(text), 0);
+            ASSERT_EQ(((memory).nameMap).lookup(text), 0);
         }
     }
     ASSERT_EQ(rekeyAt(analyzer, memory, root, {"a", "b", "z"}), 8);
     gl::NameId previous = 0;
     for (const auto& text : expected) {
-        const auto id = memory.nameMap.lookup(text);
+        const auto id = ((memory).nameMap).lookup(text);
         ASSERT_TRUE(id > previous);
         previous = id;
     }
     ASSERT_EQ(rekeyAt(analyzer, memory, root, {"a", "b", "z"}), 0);
     // Derived index loss rebuilds membership from the authoritative ledger.
-    memory.lbMemory.canonicalUses.watches.clear();
-    memory.lbMemory.canonicalUses.watchesBuilt = false;
-    analyzer.ensureCanonicalWatchUses(memory);
-    const auto original = memory.nameMap.lookup("!(q[z,2])");
-    ASSERT_TRUE(memory.lbMemory.canonicalUses.watches.contains(gl::packStatementKey(original, child)));
+    ((memory).lbMemory).canonicalUses.watches.clear();
+    ((memory).lbMemory).canonicalUses.watchesBuilt = false;
+    gl::tests::WatchProcessorFixture::ensureCanonicalWatchUses(analyzer.watchProcessor, memory);
+    const auto original = ((memory).nameMap).lookup("!(q[z,2])");
+    ASSERT_TRUE(((memory).lbMemory).canonicalUses.watches.contains(gl::packStatementKey(original, child)));
     memory.wipeSubtree(child);
-    ASSERT_FALSE(memory.lbMemory.canonicalUses.watches.contains(gl::packStatementKey(original, child)));
-    ASSERT_TRUE(memory.lbMemory.canonicalUses.watches.contains(gl::packStatementKey(original, root)));
+    ASSERT_FALSE(((memory).lbMemory).canonicalUses.watches.contains(gl::packStatementKey(original, child)));
+    ASSERT_TRUE(((memory).lbMemory).canonicalUses.watches.contains(gl::packStatementKey(original, root)));
 }
 
 TEST(canonical_classes, stable_representative_growth_updates_new_alias_without_invalidating_old_goal) {
-    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::tests::ProverFixture analyzer("Peano");
     analyzer.parameters.trackHistory = false;
     auto& memory = analyzer.body;
     const auto root = gl::NameMap::MAIN_ID;
     addCanonicalFixtureEquality(analyzer, memory, root, "(=[a,b])", 2);
-    const auto goal = gl::encodeExpression(gl::StrSpan("(p[b])", 6), gl::StrSpan("main", 4), memory.nameMap);
-    memory.intToBeProved.assignSet(gl::packStatementKey(goal.originalId, root), nullptr, 0);
-    analyzer.ensureGoalLedgerCurrent(memory);
+    const auto goal = gl::encodeExpression(gl::StrSpan("(p[b])", 6), gl::StrSpan("main", 4), ((memory).nameMap));
+    ((memory).intToBeProved).assignSet(gl::packStatementKey(goal.originalId, root), nullptr, 0);
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(analyzer.watchProcessor, memory);
     for (const std::string text : {"!(q[b])", "!(q[c])"}) {
-        const auto row = gl::encodeExpression(gl::StrSpan(text), gl::StrSpan("main", 4), memory.nameMap);
-        analyzer.recordWatch(memory.negationLedger, memory, row.originalId, root, row.nameId);
+        const auto row = gl::encodeExpression(gl::StrSpan(text), gl::StrSpan("main", 4), ((memory).nameMap));
+        gl::tests::WatchProcessorFixture::recordWatch(analyzer.watchProcessor, ((memory).negationLedger), memory, row.originalId, root, row.nameId);
     }
     addCanonicalFixtureEquality(analyzer, memory, root, "(=[b,c])", 7);
-    ASSERT_FALSE(memory.goalLedgerStale);
-    const auto run = memory.negationLedger.lookup(analyzer.watchKey(root, memory.nameMap.lookup("q")));
-    ASSERT_EQ(memory.negationLedger.runLen(run), 2);
+    ASSERT_FALSE(((memory).goalLedgerStale));
+    const auto run = ((memory).negationLedger).lookup(gl::tests::WatchProcessorFixture::watchKey(root, ((memory).nameMap).lookup("q")));
+    ASSERT_EQ(((memory).negationLedger).runLen(run), 2);
     for (int32_t j = 0; j < 2; ++j)
-        ASSERT_EQ(static_cast<gl::NameId>(uint64_t(memory.negationLedger.valueAt(run, j)) >> 32), memory.nameMap.lookup("!(q[a])"));
+        ASSERT_EQ(static_cast<gl::NameId>(uint64_t(((memory).negationLedger).valueAt(run, j)) >> 32), ((memory).nameMap).lookup("!(q[a])"));
     auto& strings = gl::scratchArenas().forSlot(0);
     gl::ScratchScope frame(strings);
     int levels[256]; int32_t count = 0;
-    const auto canonical = analyzer.canonicalFormAtScope(gl::StrSpan("(p[c])", 6), gl::StrSpan("main", 4),
+    const auto canonical = analyzer.canonicalizer.canonicalFormAtScope(gl::StrSpan("(p[c])", 6), gl::StrSpan("main", 4),
         memory, strings, levels, count, 256);
     ASSERT_TRUE(gl::equalSpans(canonical.text, gl::StrSpan("(p[a])", 6)));
     ASSERT_TRUE(std::find(levels, levels + count, 7) != levels + count);
     addCanonicalFixtureEquality(analyzer, memory, root, "(=[0,a])", 9);
-    ASSERT_TRUE(memory.goalLedgerStale);
-    analyzer.ensureGoalLedgerCurrent(memory);
+    ASSERT_TRUE(((memory).goalLedgerStale));
+    gl::tests::WatchProcessorFixture::ensureGoalLedgerCurrent(analyzer.watchProcessor, memory);
     gl::NameId original = 0;
-    ASSERT_TRUE(analyzer.watchRunHasCanonical(memory.goalLedger, root, goal.nameId,
-        memory.nameMap.lookup("(p[0])"), &original));
+    ASSERT_TRUE(gl::tests::WatchProcessorFixture::watchRunHasCanonical(((memory).goalLedger), root, goal.nameId,
+        ((memory).nameMap).lookup("(p[0])"), &original));
     ASSERT_EQ(original, goal.originalId);
 }
 
@@ -5978,16 +6338,21 @@ public:
 
 TEST(equi_reshuffle, shared_canonical_edges_recycle_and_compact_without_reordering) {
     gl::Memory memory;
-    gl::CanonicalDependencyEdges edges(&memory.lbMemory.manager);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::CanonicalDependencyEdges edges(&((memory).lbMemory).manager, &dirty);
     int32_t revision = 0;
     for (int64_t record = 1; record <= 200; ++record)
         ASSERT_TRUE(edges.insert(17, record, revision));
     ASSERT_EQ(revision, 200);
+    ASSERT_TRUE(dirty != gl::DirtyState::Clean);
     ASSERT_FALSE(edges.insert(17, 100, revision));
     ASSERT_EQ(revision, 200);
     for (int64_t record = 1; record <= 150; ++record)
         ASSERT_TRUE(edges.erase(17, record));
     ASSERT_FALSE(edges.erase(17, 1));
+    ASSERT_FALSE(edges.erase(99, 160));
+    ASSERT_FALSE(edges.erase(17, 999));
+    ASSERT_TRUE(edges.liveRecord(1));
     edges.maintain();
     ASSERT_EQ(edges.size(), 50);
     std::vector<int64_t> actual;
@@ -6023,20 +6388,231 @@ TEST(equi_reshuffle, shared_canonical_edges_recycle_and_compact_without_reorderi
     ASSERT_TRUE(held > 0);
     edges.eraseIf([](int64_t, int64_t) { return true; });
     ASSERT_EQ(edges.size(), 0);
-    ASSERT_EQ(edges.liveBytes(), int64_t(0));
+    // Records outlive their dependencies; slots and tokens are released.
+    ASSERT_EQ(edges.recordCount(), 200);
+    ASSERT_TRUE(edges.liveRecord(1) && edges.liveRecord(200));
+    ASSERT_TRUE(edges.liveBytes() > 0 && edges.liveBytes() < held);
     edges.forEachWhile<true>(17, [&](int64_t, int32_t) {
+        ASSERT_TRUE(false); return true;
+    });
+    edges.forEachWhile<false>(199, [&](int64_t, int32_t) {
         ASSERT_TRUE(false); return true;
     });
     edges.maintain();
     ASSERT_TRUE(edges.insert(8, 9, revision));
+    ASSERT_EQ(edges.recordCount(), 200);
     edges.clear();
     ASSERT_EQ(edges.liveBytes(), int64_t(0));
+    ASSERT_EQ(edges.recordCount(), 0);
+    ASSERT_FALSE(edges.liveRecord(9));
+}
+
+TEST(equi_reshuffle, canonical_dependency_registry_retires_and_renumbers_records) {
+    gl::Memory memory;
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::CanonicalDependencyEdges edges(&((memory).lbMemory).manager, &dirty);
+    const int64_t a = gl::packInt32Pair(10, 1), b = gl::packInt32Pair(11, 2);
+    const int64_t c = gl::packInt32Pair(12, 1), d = gl::packInt32Pair(13, 1);
+    const int64_t live = gl::packInt32Pair(5, 1), gone = gl::packInt32Pair(6, 2);
+    const int64_t other = gl::packInt32Pair(7, 1);
+    ASSERT_EQ(edges.markRecord(a), 1);
+    ASSERT_EQ(edges.markRecord(b), 2);
+    ASSERT_EQ(edges.markRecord(a), 1);
+    ASSERT_TRUE(edges.liveRecord(a) && !edges.liveRecord(c));
+    int32_t revision = 0;
+    ASSERT_TRUE(edges.insert(gone, b, revision));
+    ASSERT_TRUE(edges.insert(live, c, revision));
+    ASSERT_TRUE(edges.insert(other, d, revision));
+    ASSERT_TRUE(edges.insert(live, d, revision));
+    ASSERT_EQ(edges.recordCount(), 4);
+    ASSERT_EQ(edges.recordAt(3), c);
+    edges.retireRecord(a);
+    ASSERT_FALSE(edges.liveRecord(a));
+    ASSERT_FALSE(edges.liveRecordAt(1));
+    edges.retireRecord(a);
+    edges.retireRecord(gl::packInt32Pair(99, 1));
+    ASSERT_EQ(edges.recordCount(), 4);
+    ASSERT_EQ(edges.markRecord(a), 1);
+    ASSERT_TRUE(edges.liveRecord(a) && edges.liveRecordAt(1));
+    const auto dead = [](int64_t key) { return static_cast<gl::NameId>(uint64_t(key)) == 2; };
+    edges.eraseIf([&](int64_t token, int64_t record) { return dead(token) || dead(record); });
+    edges.eraseKeys(dead);
+    ASSERT_EQ(edges.recordCount(), 3);
+    ASSERT_EQ(edges.recordAt(1), a);
+    ASSERT_EQ(edges.recordAt(2), c);
+    ASSERT_EQ(edges.recordAt(3), d);
+    ASSERT_FALSE(edges.liveRecord(b));
+    std::vector<int64_t> seen;
+    std::vector<int32_t> revisions;
+    edges.forEachWhile<true>(live, [&](int64_t record, int32_t inserted) {
+        seen.push_back(record); revisions.push_back(inserted); return true;
+    });
+    ASSERT_TRUE(seen == std::vector<int64_t>({d, c}));
+    ASSERT_TRUE(revisions == std::vector<int32_t>({4, 2}));
+    seen.clear();
+    edges.forEachWhile<false>(d, [&](int64_t token, int32_t) { seen.push_back(token); return true; });
+    ASSERT_TRUE(seen == std::vector<int64_t>({live, other}));
+    seen.clear();
+    edges.forEachWhile<true>(gone, [&](int64_t record, int32_t) { seen.push_back(record); return true; });
+    ASSERT_TRUE(seen.empty());
+    ASSERT_FALSE(edges.insert(live, c, revision));
+    ASSERT_TRUE(edges.erase(live, c));
+    ASSERT_TRUE(edges.liveRecord(c));
+    edges.retireRecord(c);
+    ASSERT_FALSE(edges.liveRecord(c));
+    ASSERT_EQ(edges.size(), 2);
+    ASSERT_TRUE(edges.insert(gone, c, revision));
+    ASSERT_TRUE(edges.liveRecord(c));
+    ASSERT_EQ(revision, 5);
+}
+
+namespace {
+// Ordered reference model of CanonicalDependencyEdges for randomized churn.
+struct DependencyOracle {
+    std::vector<std::pair<int64_t, bool>> records;
+    std::map<int64_t, std::vector<std::pair<int64_t, int32_t>>> byMember, byRecord;
+    int32_t edges = 0;
+
+    int32_t indexOf(int64_t record) const {
+        for (int32_t i = 0; i < static_cast<int32_t>(records.size()); ++i)
+            if (records[i].first == record) return i;
+        return -1;
+    }
+    void mark(int64_t record) {
+        const int32_t at = indexOf(record);
+        if (at < 0) records.push_back({record, true});
+        else records[at].second = true;
+    }
+    bool live(int64_t record) const {
+        const int32_t at = indexOf(record);
+        return at >= 0 && records[at].second;
+    }
+    static void drop(std::vector<std::pair<int64_t, int32_t>>& list, int64_t key) {
+        for (std::size_t i = 0; i < list.size(); ++i)
+            if (list[i].first == key) { list.erase(list.begin() + i); return; }
+        ASSERT_TRUE(false);
+    }
+    bool has(int64_t token, int64_t record) const {
+        const auto found = byRecord.find(record);
+        if (found == byRecord.end()) return false;
+        for (const auto& entry : found->second) if (entry.first == token) return true;
+        return false;
+    }
+    bool insert(int64_t token, int64_t record, int32_t& revision) {
+        mark(record);
+        if (has(token, record)) return false;
+        ++revision;
+        byMember[token].insert(byMember[token].begin(), {record, revision});
+        byRecord[record].insert(byRecord[record].begin(), {token, revision});
+        ++edges;
+        return true;
+    }
+    bool erase(int64_t token, int64_t record) {
+        if (!has(token, record)) return false;
+        drop(byMember[token], record);
+        drop(byRecord[record], token);
+        --edges;
+        return true;
+    }
+};
+}
+
+TEST(equi_reshuffle, canonical_dependency_edges_match_ordered_oracle_under_churn) {
+    gl::Memory memory;
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::CanonicalDependencyEdges edges(&((memory).lbMemory).manager, &dirty);
+    DependencyOracle oracle;
+    int32_t revision = 0, expectedRevision = 0;
+    uint32_t state = 90173;
+    const auto token = [](uint32_t value) { return gl::packInt32Pair(1 + int32_t(value % 6), 1 + int32_t((value >> 3) % 3)); };
+    const auto record = [](uint32_t value) { return gl::packInt32Pair(20 + int32_t(value % 9), 1 + int32_t((value >> 4) % 3)); };
+    for (int step = 0; step < 6000; ++step) {
+        state = state * 1664525u + 1013904223u;
+        const int64_t t = token(state >> 7), r = record(state >> 13);
+        switch ((state >> 24) % 16) {
+        case 0: case 1: {
+            ASSERT_EQ(edges.erase(t, r), oracle.erase(t, r));
+            break;
+        }
+        case 2: {
+            edges.markRecord(r); oracle.mark(r);
+            break;
+        }
+        case 3: {
+            std::vector<std::pair<int64_t, int32_t>> tokens;
+            edges.forEachWhile<false>(r, [&](int64_t key, int32_t inserted) { tokens.push_back({key, inserted}); return true; });
+            for (const auto& entry : tokens) { ASSERT_TRUE(edges.erase(entry.first, r)); ASSERT_TRUE(oracle.erase(entry.first, r)); }
+            edges.maintain();
+            edges.retireRecord(r);
+            const int32_t at = oracle.indexOf(r);
+            if (at >= 0) oracle.records[at].second = false;
+            break;
+        }
+        case 4: {
+            const int32_t modulus = 2 + int32_t((state >> 3) % 5);
+            const auto remove = [&](int64_t key, int64_t owner) { return ((key >> 32) + (owner >> 32)) % modulus == 0; };
+            std::vector<std::pair<int64_t, int64_t>> doomed;
+            for (const auto& list : oracle.byRecord)
+                for (const auto& entry : list.second)
+                    if (remove(entry.first, list.first)) doomed.push_back({entry.first, list.first});
+            for (const auto& pair : doomed) ASSERT_TRUE(oracle.erase(pair.first, pair.second));
+            edges.eraseIf(remove);
+            break;
+        }
+        case 5: {
+            const gl::NameId scope = 1 + gl::NameId((state >> 5) % 3);
+            const auto dead = [&](int64_t key) { return static_cast<gl::NameId>(uint64_t(key)) == scope; };
+            edges.eraseIf([&](int64_t key, int64_t owner) { return dead(key) || dead(owner); });
+            edges.eraseKeys(dead);
+            std::vector<std::pair<int64_t, int64_t>> doomed;
+            for (const auto& list : oracle.byRecord)
+                for (const auto& entry : list.second)
+                    if (dead(entry.first) || dead(list.first)) doomed.push_back({entry.first, list.first});
+            for (const auto& pair : doomed) ASSERT_TRUE(oracle.erase(pair.first, pair.second));
+            std::vector<std::pair<int64_t, bool>> kept;
+            for (const auto& entry : oracle.records) if (!dead(entry.first)) kept.push_back(entry);
+            oracle.records = kept;
+            break;
+        }
+        case 6: {
+            if (step % 7 == 0) { edges.clear(); oracle = DependencyOracle(); }
+            else edges.maintain();
+            break;
+        }
+        default: {
+            ASSERT_EQ(edges.insert(t, r, revision), oracle.insert(t, r, expectedRevision));
+            ASSERT_EQ(revision, expectedRevision);
+            break;
+        }
+        }
+        ASSERT_EQ(edges.size(), oracle.edges);
+        ASSERT_EQ(edges.recordCount(), static_cast<int32_t>(oracle.records.size()));
+        for (int32_t i = 0; i < edges.recordCount(); ++i) {
+            ASSERT_EQ(edges.recordAt(i + 1), oracle.records[i].first);
+            ASSERT_EQ(edges.liveRecordAt(i + 1), oracle.records[i].second);
+        }
+        for (int32_t name = 1; name <= 18; ++name) {
+            const int64_t key = gl::packInt32Pair(1 + (name - 1) % 6, 1 + (name - 1) / 6);
+            std::vector<std::pair<int64_t, int32_t>> actual;
+            edges.forEachWhile<true>(key, [&](int64_t owner, int32_t inserted) { actual.push_back({owner, inserted}); return true; });
+            const auto found = oracle.byMember.find(key);
+            ASSERT_TRUE(actual == (found == oracle.byMember.end() ? std::vector<std::pair<int64_t, int32_t>>() : found->second));
+        }
+        for (int32_t owner = 1; owner <= 27; ++owner) {
+            const int64_t key = gl::packInt32Pair(20 + (owner - 1) % 9, 1 + (owner - 1) / 9);
+            std::vector<std::pair<int64_t, int32_t>> actual;
+            edges.forEachWhile<false>(key, [&](int64_t member, int32_t inserted) { actual.push_back({member, inserted}); return true; });
+            const auto found = oracle.byRecord.find(key);
+            ASSERT_TRUE(actual == (found == oracle.byRecord.end() ? std::vector<std::pair<int64_t, int32_t>>() : found->second));
+            ASSERT_EQ(edges.liveRecord(key), oracle.live(key));
+        }
+    }
 }
 
 TEST(equi_reshuffle, shared_canonical_dependencies_match_separate_ordered_oracle) {
     gl::Memory memory;
-    gl::CanonicalUseIndex index(&memory.lbMemory.manager);
-    gl::CanonicalUseReference reference(&memory.lbMemory.manager);
+    gl::CanonicalUseIndex index(&((memory).lbMemory).manager);
+    gl::CanonicalUseReference reference(&((memory).lbMemory).manager);
     gl::LbArena scratch(&gl::staticMemory());
     const std::string names[] = {"member0", "member1", "member2", "member3", "member4"};
     uint32_t state = 41917;
@@ -6081,20 +6657,235 @@ TEST(equi_reshuffle, shared_canonical_dependencies_match_separate_ordered_oracle
 }
 
 TEST(equi_reshuffle, shared_canonical_edge_revision_assertion_probe) {
-    bool probe = false;
+    std::string probe;
 #ifdef _WIN32
     char* mode = nullptr;
     size_t length = 0;
     ASSERT_EQ(_dupenv_s(&mode, &length, "GL_TEST_INVALID_CANONICAL_EDGE"), 0);
-    probe = mode != nullptr;
+    if (mode != nullptr) probe = mode;
     std::free(mode);
 #else
-    probe = std::getenv("GL_TEST_INVALID_CANONICAL_EDGE") != nullptr;
+    if (const char* mode = std::getenv("GL_TEST_INVALID_CANONICAL_EDGE")) probe = mode;
+#endif
+    if (probe.empty()) return;
+    gl::Memory memory;
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::CanonicalDependencyEdges edges(&((memory).lbMemory).manager, &dirty);
+    int32_t revision = 0;
+    if (probe == "retire") {
+        edges.insert(1, 2, revision);
+        edges.retireRecord(2);
+    } else if (probe == "dead-key") {
+        edges.insert(1, 2, revision);
+        edges.eraseKeys([](int64_t) { return true; });
+    } else {
+        revision = INT32_MAX;
+        edges.insert(1, 2, revision);
+    }
+    ASSERT_TRUE(false);
+}
+
+
+TEST(equi_reshuffle, fused_posting_storage_churn_matches_exact_pairs) {
+    gl::Memory memory;
+    gl::FusedPostingStorage<int64_t, 5> store(&((memory).lbMemory).manager);
+    std::map<std::pair<int64_t, int64_t>, int32_t> oracle;
+    ASSERT_EQ(store.find(1, 2), -1);
+    ASSERT_EQ(store.liveBytes(), int64_t(0));
+    uint32_t state = 71931;
+    for (int step = 0; step < 12000; ++step) {
+        state = state * 1664525u + 1013904223u;
+        const auto pair = std::make_pair(int64_t((state >> 5) % 113), int64_t((state >> 16) % 47));
+        const auto found = oracle.find(pair);
+        ASSERT_EQ(store.find(pair.first, pair.second), found == oracle.end() ? -1 : found->second);
+        if ((state & 3) == 0) {
+            if (found != oracle.end()) {
+                const int32_t slot = found->second;
+                store.retire(slot); ASSERT_FALSE(store.isLive(slot)); oracle.erase(found);
+                ASSERT_EQ(store.find(pair.first, pair.second), -1);
+            }
+        } else if (found == oracle.end()) {
+            const int32_t slot = store.insertAbsent(pair.first, pair.second);
+            ASSERT_TRUE(store.isLive(slot));
+            for (int word = 0; word < 5; ++word) ASSERT_EQ(store.word(slot, word), -1);
+            store.setWord(slot, 4, step + 1);
+            ASSERT_EQ(store.word(slot, 4), step + 1);
+            oracle.emplace(pair, slot);
+        }
+        ASSERT_EQ(store.size(), static_cast<int32_t>(oracle.size()));
+        if ((step % 67) == 0) for (const auto& row : oracle) {
+            ASSERT_EQ(store.find(row.first.first, row.first.second), row.second);
+            ASSERT_EQ(store.key(row.second), row.first.first);
+            ASSERT_EQ(store.value(row.second), row.first.second);
+        }
+    }
+    ASSERT_TRUE(store.liveBytes() > 0);
+    for (const auto& row : oracle) store.retire(row.second);
+    ASSERT_EQ(store.size(), 0);
+    const int32_t retained = store.slots();
+    const int32_t reused = store.insertAbsent(1, 2);
+    ASSERT_TRUE(reused < retained); ASSERT_EQ(store.slots(), retained);
+    store.clear(); ASSERT_EQ(store.slots(), 0); ASSERT_EQ(store.size(), 0);
+    ASSERT_EQ(store.liveBytes(), int64_t(0)); ASSERT_EQ(store.find(1, 2), -1);
+    ASSERT_TRUE(sizeof(gl::Memory) <= 262144);
+}
+
+TEST(equi_reshuffle, fused_posting_storage_duplicate_assertion_probe) {
+    bool probe = false;
+#ifdef _WIN32
+    char* mode = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&mode, &length, "GL_TEST_INVALID_FUSED_EDGE"), 0);
+    probe = mode != nullptr; std::free(mode);
+#else
+    probe = std::getenv("GL_TEST_INVALID_FUSED_EDGE") != nullptr;
 #endif
     if (!probe) return;
     gl::Memory memory;
-    gl::CanonicalDependencyEdges edges(&memory.lbMemory.manager);
-    int32_t revision = INT32_MAX;
-    edges.insert(1, 2, revision);
+    gl::FusedPostingStorage<int64_t, 2> store(&((memory).lbMemory).manager);
+    store.insertAbsent(1, 2); store.insertAbsent(1, 2);
     ASSERT_TRUE(false);
+}
+
+namespace {
+std::set<std::string> applicationClassNames(gl::Memory& mb, gl::NameId scope, int32_t index) {
+    const int32_t bucket = mb.equivalenceClassesMap.lookup(scope);
+    ASSERT_TRUE(bucket != 0 && index < mb.equivalenceClassesMap.runLen(bucket));
+    std::set<std::string> names;
+    for (auto id : mb.equivalenceClassesMap.recordAt(bucket, index).memberIds)
+        names.insert(mb.nameMap.decode(id));
+    return names;
+}
+}
+
+// Memory::applicationClassHoldsName — the scope and its strict ancestors are
+// searched; a child, a sibling, another name and an unknown scope are not.
+TEST(canonical_classes, application_class_holds_name_walks_scope_and_strict_ancestors) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    gl::Memory& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const auto child = mb.nameMap.encodePush(root, "holds_child");
+    const auto sibling = mb.nameMap.encodePush(root, "holds_sibling");
+    const auto grandchild = mb.nameMap.encodePush(child, "holds_grandchild");
+    addCanonicalFixtureEquality(ana, mb, child, "(=[a,b])", 1);
+    const auto a = mb.nameMap.lookup("a");
+    const auto c = mb.nameMap.encode(std::string("c"));
+    const std::string childName = mb.nameMap.decode(child);
+    const std::string grandchildName = mb.nameMap.decode(grandchild);
+    const std::string siblingName = mb.nameMap.decode(sibling);
+    ASSERT_TRUE(a != 0);
+    ASSERT_TRUE(mb.applicationClassHoldsName(gl::StrSpan(childName), a));
+    ASSERT_TRUE(mb.applicationClassHoldsName(gl::StrSpan(grandchildName), a));
+    ASSERT_FALSE(mb.applicationClassHoldsName(gl::StrSpan("main", 4), a));
+    ASSERT_FALSE(mb.applicationClassHoldsName(gl::StrSpan(siblingName), a));
+    ASSERT_FALSE(mb.applicationClassHoldsName(gl::StrSpan(childName), c));
+    ASSERT_FALSE(mb.applicationClassHoldsName(gl::StrSpan("never_interned_scope", 20), a));
+}
+
+// updateEquivalenceClasses — a reflexive equality whose name no class holds
+// keeps its statement row and history line but founds no one-member class.
+TEST(canonical_classes, reflexive_equality_founds_no_class_but_keeps_row_and_history) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    gl::Memory& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const auto deltas = mb.changedClassesThisStep.size();
+    addCanonicalFixtureEquality(ana, mb, root, "(=[a,a])", 1);
+    ASSERT_EQ(mb.equivalenceClassesMap.lookup(root), 0);
+    ASSERT_EQ(mb.changedClassesThisStep.size(), deltas);
+    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+        std::string("(=[a,a])"), std::string("main")) != 0);
+    int64_t key = 0;
+    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, std::string("(=[a,a])"), std::string("main"), key));
+    ASSERT_TRUE(mb.exprOriginMap.lookup(key) != 0);
+}
+
+// updateEquivalenceClasses — a reflexive equality whose name an existing class
+// holds merges as before: at the same scope the class is unchanged in members,
+// at a child scope the ancestor class is copied in.
+TEST(canonical_classes, reflexive_equality_joins_an_existing_class) {
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    gl::Memory& mb = ana.body;
+    const auto root = gl::NameMap::MAIN_ID;
+    const auto child = mb.nameMap.encodePush(root, "reflexive_child");
+    addCanonicalFixtureEquality(ana, mb, root, "(=[a,b])", 1);
+    addCanonicalFixtureEquality(ana, mb, root, "(=[b,b])", 2);
+    ASSERT_EQ(mb.equivalenceClassesMap.runLen(mb.equivalenceClassesMap.lookup(root)), 1);
+    const std::set<std::string> pair{"a", "b"};
+    ASSERT_TRUE(applicationClassNames(mb, root, 0) == pair);
+    addCanonicalFixtureEquality(ana, mb, child, "(=[a,a])", 3);
+    ASSERT_EQ(mb.equivalenceClassesMap.runLen(mb.equivalenceClassesMap.lookup(child)), 1);
+    ASSERT_TRUE(applicationClassNames(mb, child, 0) == pair);
+}
+
+// Every class write-back asserts two or more members. Run manually with
+// GL_TEST_ONE_MEMBER_CLASS set: storing a one-member class must abort.
+TEST(canonical_classes, one_member_class_write_back_assertion_probe) {
+    bool probe = false;
+#ifdef _WIN32
+    char* mode = nullptr; size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&mode, &length, "GL_TEST_ONE_MEMBER_CLASS"), 0);
+    probe = mode != nullptr; std::free(mode);
+#else
+    probe = std::getenv("GL_TEST_ONE_MEMBER_CLASS") != nullptr;
+#endif
+    if (!probe) return;
+    gl::tests::ProverFixture ana(std::string("Peano"));
+    gl::Memory& mb = ana.body;
+    gl::EquivalenceClass single;
+    single.setMembersFromNames({"a"}, mb.nameMap);
+    mb.assignClassesById(gl::NameMap::MAIN_ID, {single});
+    ASSERT_TRUE(false);
+}
+
+
+TEST(equi_reshuffle, subtree_wipe_repairs_only_erased_prefix_positions) {
+    gl::Memory mb;
+    const auto main = mb.nameMap.encode("main");
+    const auto left = mb.nameMap.encodePush(main, "hypo_(left[x])");
+    const auto right = mb.nameMap.encodePush(main, "hypo_(right[x])");
+    pushRow(mb, "(in[a,N])", main);  // 0, retained
+    pushRow(mb, "(in[b,N])", left);  // 1, erased
+    pushRow(mb, "(in[c,N])", main);  // 2, retained
+    pushRow(mb, "(in[d,N])", right); // 3, erased
+    pushRow(mb, "(in[e,N])", main);  // 4, retained
+    const std::vector<gl::NameId> before = {mb.nameMap.encode("beforeA"), mb.nameMap.encode("beforeB")};
+    const std::vector<gl::NameId> middle = {mb.nameMap.encode("middleA"), mb.nameMap.encode("middleB")};
+    const std::vector<gl::NameId> after = {mb.nameMap.encode("afterA"), mb.nameMap.encode("afterB")};
+    gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, main, before, 1);
+    gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, main, middle, 3);
+    gl::upsertEqClassIndex(mb.eqClassSttmntIndexMapMap, main, after, 5);
+    const gl::NameId closed[] = {left, right, left};
+    mb.wipeSubtrees(closed, 3);
+    ASSERT_EQ(mb.intEncodedStatements.size(), 3);
+    ASSERT_EQ(gl::lookupEqClassIndex(mb.eqClassSttmntIndexMapMap, main, before), 1);
+    ASSERT_EQ(gl::lookupEqClassIndex(mb.eqClassSttmntIndexMapMap, main, middle), 2);
+    ASSERT_EQ(gl::lookupEqClassIndex(mb.eqClassSttmntIndexMapMap, main, after), 3);
+    mb.wipeSubtrees(closed, 3);
+    ASSERT_EQ(gl::lookupEqClassIndex(mb.eqClassSttmntIndexMapMap, main, after), 3);
+}
+
+TEST(equi_reshuffle, subtree_wipe_keeps_late_repeated_argument_facts_due) {
+    gl::tests::ProverFixture ana("Peano");
+    ana.parameters.trackHistory = false;
+    gl::Memory& mb = ana.body;
+    mb.level = 0;
+    const auto main = mb.nameMap.encode("main");
+    const auto child = mb.nameMap.encodePush(main, "hypo_(closed[x])");
+    enableFixtureCoreVariants(mb, "in2");
+    putClassesAt(mb, main, {{"G", "P"}});
+    for (int i = 0; i < 6; ++i) {
+        const std::string text = "(in[closed" + std::to_string(i) + ",N])";
+        pushRow(mb, text.c_str(), child);
+    }
+    // Establish the old processed prefix and an already eligible premise core.
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_TRUE(mb.lbMemory.appliedPremiseCorePairs.lookup(
+        gl::packInt32Pair(mb.nameMap.lookup("in2"), 0)) != 0);
+    mb.wipeSubtree(child);
+    ASSERT_EQ(mb.intEncodedStatements.size(), 0);
+    const int levels[] = {0};
+    ana.watchProcessor.commitDerivedLocalRow(mb, gl::StrSpan("(in2[x,G,G])"), main, levels, 1);
+    ana.equivalenceProcessor.applyEquiClasses(mb);
+    ASSERT_TRUE(knownAt(mb, "(in2[x,P,G])", main));
+    ASSERT_TRUE(knownAt(mb, "(in2[x,G,P])", main));
+    ASSERT_TRUE(knownAt(mb, "(in2[x,P,P])", main));
 }

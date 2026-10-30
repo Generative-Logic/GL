@@ -1,0 +1,5 @@
+(=[9,10])	main	implication	(>[](preorder[u_1,u_4,u_9,u_10])(=[u_9,u_10]))	main	(preorder[1,4,9,10])	main
+(>[](preorder[u_1,u_4,u_9,u_10])(=[u_9,u_10]))	main	disintegration	!(&(preorder[1,4,9,10])!(=[9,10]))	main
+!(&(preorder[1,4,9,10])!(=[9,10]))	main	expansion	!(strictOrder[1,4,9,10])	main
+!(strictOrder[1,4,9,10])	main	task formulation
+(preorder[1,4,9,10])	main	task formulation

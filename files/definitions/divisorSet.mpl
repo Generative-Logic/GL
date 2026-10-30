@@ -1,0 +1,22 @@
+(&
+	(>[d]
+		(in[d,D])
+		(&
+			(&
+				(preorder[N,+,i2,d])
+				(preorder[N,+,d,k])
+			)
+			(preorder[N,*,d,k])
+		)
+	)
+	(>[d]
+		(&
+			(&
+				(preorder[N,+,i2,d])
+				(preorder[N,+,d,k])
+			)
+			(preorder[N,*,d,k])
+		)
+		(in[d,D])
+	)
+)

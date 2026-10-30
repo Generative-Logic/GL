@@ -36,7 +36,17 @@
 /// rest on these pins: a divergence here is a future byte-level pipeline
 /// regression caught at unit-test speed.
 
+#include "../logical_block/statement_registry_operations.hpp"
+#include "../compiler/definition_expansion.hpp"
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "disintegration_processor_fixture.hpp"
+#include "integration_processor_fixture.hpp"
+
+#include "integration_instruction_fixture.hpp"
 
 #include "../compiler.hpp"
 #include "../memory_infra/str_ops.hpp"
@@ -310,11 +320,14 @@ TEST(str_ops, starts_with_span_matches_string) {
         { "(in2[rec0,N])", 13 }, { "(in2[rec0,N])X", 14 }, { "", 0 },
     };
     for (const auto& c : cases) {
+        ASSERT_EQ(gl::startsWith(s, c.pfx, c.n), oracle(s, c.pfx, c.n));
         ASSERT_EQ(gl::startsWithSpan(gl::StrSpan(s), c.pfx, c.n),
                   oracle(s, c.pfx, c.n));
     }
     // Empty span: only the empty prefix matches.
     const std::string empty;
+    ASSERT_TRUE(gl::startsWith(empty, "", 0));
+    ASSERT_FALSE(gl::startsWith(empty, "(", 1));
     ASSERT_TRUE(gl::startsWithSpan(gl::StrSpan(empty), "", 0));
     ASSERT_FALSE(gl::startsWithSpan(gl::StrSpan(empty), "(", 1));
 }
@@ -701,7 +714,7 @@ TEST(str_ops, collected_arena) {
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
     a.bind(&m);
-    gl::ExpressionAnalyzer::CollectedArena collected(&a);
+    gl::CollectedArena collected(&a);
 
     const std::string s1 = "S1", s2 = "S2", s3 = "S3";
     const std::string i1 = "(impl1)", i2 = "(impl2)", i3 = "(impl3)";
@@ -750,8 +763,8 @@ TEST(str_ops, collected_arena) {
 TEST(str_ops, disintegrate_scratch_twins) {
     // The three string twins disintegrateExpr2 / disintegrateExprCore2 use to
     // keep their leaf calculation strings off the heap: each must be
-    // BYTE-IDENTICAL to its ExpressionAnalyzer member original.
-    gl::ExpressionAnalyzer ea("Peano");  // member originals + static pool
+    // BYTE-IDENTICAL to its gl::tests::ProverFixture member original.
+    gl::tests::ProverFixture ea("Peano");  // member originals + static pool
     gl::GlobalMemoryManager m;
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
@@ -767,10 +780,10 @@ TEST(str_ops, disintegrate_scratch_twins) {
         "no_brackets", "(p[])", "(>[u_x](a[u_x,y])(b[u_x]))",
     };
     for (const std::string& s : corpus) {
-        ASSERT_EQ(ea.removeUPrefixScratch(a, gl::StrSpan(s)).toStdString(),
-                  ea.removeUPrefixFromArguments(s));
-        ASSERT_EQ(ea.addMissingUScratch(a, gl::StrSpan(s)).toStdString(),
-                  ea.addMissingU(s));
+        ASSERT_EQ(gl::DefinitionExpansion::removeUPrefixScratch(a, gl::StrSpan(s)).toStdString(),
+                  gl::DefinitionExpansion::removeUPrefixFromArguments(s));
+        ASSERT_EQ(gl::DefinitionExpansion::addMissingUScratch(a, gl::StrSpan(s)).toStdString(),
+                  gl::DefinitionExpansion::addMissingU(s));
     }
 
     // reconstructImplicationFullBindScratch == reconstructImplicationFullBind:
@@ -788,8 +801,8 @@ TEST(str_ops, disintegrate_scratch_twins) {
         std::vector<gl::StrSpan> keySpans;
         keySpans.reserve(c.key.size());
         for (const std::string& k : c.key) keySpans.push_back(gl::StrSpan(k));
-        const std::string ref = ea.reconstructImplicationFullBind(c.key, c.value);
-        const gl::ScratchString out = ea.reconstructImplicationFullBindScratch(
+        const std::string ref = gl::ImplicationBuilder::reconstructImplicationFullBind(c.key, c.value);
+        const gl::ScratchString out = gl::ImplicationBuilder::reconstructImplicationFullBindScratch(
             a, keySpans.data(), static_cast<int>(keySpans.size()), gl::StrSpan(c.value));
         ASSERT_EQ(out.toStdString(), ref);
     }
@@ -802,8 +815,8 @@ TEST(str_ops, disintegrate_scratch_twins) {
         { "(p[x,y])", "z" },
     };
     for (const Mk& mk : marks) {
-        ASSERT_EQ(ea.makeMarkedExprScratch(a, gl::StrSpan(mk.expr), gl::StrSpan(mk.var)).toStdString(),
-                  ea.makeMarkedExpr(mk.expr, mk.var));
+        ASSERT_EQ(gl::DefinitionExpansion::makeMarkedExprScratch(a, gl::StrSpan(mk.expr), gl::StrSpan(mk.var)).toStdString(),
+                  gl::tests::DisintegrationProcessorFixture::makeMarkedExpr(ea.disintegrationProcessor, mk.expr, mk.var));
     }
 }
 
@@ -813,7 +826,7 @@ TEST(prover, renaming_chain2_scratch_matches_vector) {
     // u_-stripped slice; every other distinct arg mints a fresh
     // repl_lev_<level>_<startIntRepl> in first-seen order. Both forms run from an
     // identical (level, startIntRepl) start so their counter walks compare.
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::GlobalMemoryManager m;
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
@@ -829,29 +842,30 @@ TEST(prover, renaming_chain2_scratch_matches_vector) {
     };
 
     for (const Case& c : cases) {
-        gl::Memory memHeap; memHeap.level = 3; memHeap.startIntRepl = 5;
-        gl::Memory memScr;  memScr.level  = 3; memScr.startIntRepl  = 5;
+        gl::Memory memHeap; ((memHeap).level) = 3; ((memHeap).startIntRepl) = 5;
+        gl::Memory memScr;  ((memScr).level)  = 3; ((memScr).startIntRepl)  = 5;
 
-        const std::vector<std::string> ref = ea.renamingChain2(c.chain, memHeap);
+        const std::vector<std::string> ref = ea.integrationBuilder.renamingChain2(c.chain, memHeap);
 
         std::vector<gl::StrSpan> spans;
         spans.reserve(c.chain.size());
         for (const std::string& s : c.chain) spans.push_back(gl::StrSpan(s));
         gl::StrSpan out[gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
-        const int32_t n = ea.renamingChain2Scratch(
+        const int32_t n = ea.integrationBuilder.renamingChain2Scratch(
             a, spans.data(), static_cast<int32_t>(spans.size()), memScr,
             out, gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
 
         ASSERT_EQ(n, static_cast<int32_t>(ref.size()));
         for (int32_t i = 0; i < n; ++i)
             ASSERT_EQ(out[i].toStdString(), ref[static_cast<size_t>(i)]);
-        ASSERT_EQ(memScr.startIntRepl, memHeap.startIntRepl);
+        ASSERT_EQ(((memScr).startIntRepl), ((memHeap).startIntRepl));
     }
 }
 
 // S10 C3 builder twins: each == its retained heap oracle, byte-for-byte.
 TEST(prover, integration_builder_scratch_twins) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
+    gl::IntegrationInstructionBuilder builder(ea.definitions);
     gl::GlobalMemoryManager m;
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
@@ -864,7 +878,7 @@ TEST(prover, integration_builder_scratch_twins) {
     // (i) negateScratch == negate: bang-strip / bang-prefix / empty.
     const std::string negs[] = { "x", "!x", "", "!(=[a,b])", "(p[y])" };
     for (const std::string& s : negs)
-        ASSERT_EQ(sp2s(ea.negateScratch(a, gl::StrSpan(s))), ea.negate(s));
+        ASSERT_EQ(sp2s(gl::DefinitionExpansion::negateScratch(a, gl::StrSpan(s))), gl::DefinitionExpansion::negate(s));
 
     // (ii) stripUPrefixASTScratch == stripUPrefixAST: no-u_ / single / multiple /
     //      nested-compound / duplicate token.
@@ -873,8 +887,8 @@ TEST(prover, integration_builder_scratch_twins) {
         "(&(a[u_x,u_y])(>[u_z](b[u_z])(c[u_x,u_z])))", "(q[u_1,u_1,u_2])",
     };
     for (const std::string& s : strips)
-        ASSERT_EQ(ea.stripUPrefixASTScratch(a, gl::StrSpan(s)).toStdString(),
-                  ea.stripUPrefixAST(s));
+        ASSERT_EQ(gl::DefinitionExpansion::stripUPrefixASTScratch(a, gl::StrSpan(s)).toStdString(),
+                  gl::DefinitionExpansion::stripUPrefixAST(s));
 
     // (iii) reconstructImplicationForIntegrationScratch == oracle: pi_lev-bound
     //       (kept) / occupied-bound (collapsed) / non-(>[ shape.
@@ -887,10 +901,10 @@ TEST(prover, integration_builder_scratch_twins) {
     for (const RCase& c : rcases) {
         std::vector<gl::StrSpan> ks;
         for (const std::string& k : c.key) ks.push_back(gl::StrSpan(k));
-        ASSERT_EQ(ea.reconstructImplicationForIntegrationScratch(
+        ASSERT_EQ(gl::tests::IntegrationInstructionFixture::reconstructImplicationForIntegrationScratch(builder,
                       a, ks.data(), static_cast<int32_t>(ks.size()),
                       gl::StrSpan(c.value)).toStdString(),
-                  ea.reconstructImplicationForIntegration(c.key, c.value));
+                  gl::tests::IntegrationInstructionFixture::reconstructImplicationForIntegration(builder, c.key, c.value));
     }
 
     // (iv) expandSignatureForIntegrationScratch == expandSignatureForIntegration:
@@ -906,10 +920,10 @@ TEST(prover, integration_builder_scratch_twins) {
     for (const ECase& c : ecases) {
         bool hasPiRef = false, hasPiScr = false;
         const std::string ref =
-            ea.expandSignatureForIntegration(c.cat, c.chain, c.sig, &hasPiRef);
+            builder.expandSignatureForIntegration(c.cat, c.chain, c.sig, &hasPiRef);
         std::vector<gl::StrSpan> cs;
         for (const std::string& e : c.chain) cs.push_back(gl::StrSpan(e));
-        const std::string got = ea.expandSignatureForIntegrationScratch(
+        const std::string got = builder.expandSignatureForIntegrationScratch(
             a, gl::StrSpan(c.cat), cs.data(), static_cast<int32_t>(cs.size()),
             gl::StrSpan(c.sig), &hasPiScr).toStdString();
         ASSERT_EQ(got, ref);
@@ -926,11 +940,11 @@ TEST(prover, integration_builder_scratch_twins) {
     };
     for (const BCase& c : bcases) {
         const std::pair<std::string, std::string> ref =
-            ea.buildIntegrationInstruction(c.elems, c.sig);
+            builder.buildIntegrationInstruction(c.elems, c.sig);
         std::vector<gl::StrSpan> es;
         for (const std::string& e : c.elems) es.push_back(gl::StrSpan(e));
         gl::ScratchString hist, hash;
-        ea.buildIntegrationInstructionScratch(a, es.data(),
+        builder.buildIntegrationInstructionScratch(a, es.data(),
             static_cast<int32_t>(es.size()), gl::StrSpan(c.sig), hist, hash);
         ASSERT_EQ(hist.toStdString(), ref.first);
         ASSERT_EQ(hash.toStdString(), ref.second);
@@ -949,7 +963,7 @@ TEST(prover, integration_builder_scratch_twins) {
 // — a result born under prepareIntegrationCore2's igScope, consumed after it
 // closed — at the builder-twin level so the class stays unit-catchable.
 TEST(prover, integration_builder_result_survives_post_return_rewind) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::GlobalMemoryManager m;
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
@@ -971,11 +985,11 @@ TEST(prover, integration_builder_result_survives_post_return_rewind) {
         const std::string value = "(b[z])";
         std::vector<gl::StrSpan> ks;
         for (const std::string& k : key) ks.push_back(gl::StrSpan(k));
-        const gl::ScratchString r = ea.reconstructImplicationForIntegrationScratch(
+        const gl::ScratchString r = gl::tests::IntegrationInstructionFixture::reconstructImplicationForIntegrationScratch(ea.integrationBuilder,
             a, ks.data(), static_cast<int32_t>(ks.size()), gl::StrSpan(value));
         cycleRewind();
         ASSERT_EQ(r.toStdString(),
-                  ea.reconstructImplicationForIntegration(key, value));
+                  gl::tests::IntegrationInstructionFixture::reconstructImplicationForIntegration(ea.integrationBuilder, key, value));
     }
 
     // (ii) expandSignatureForIntegrationScratch.
@@ -985,10 +999,10 @@ TEST(prover, integration_builder_result_survives_post_return_rewind) {
         const std::string sig = "(sig[a])";
         bool hasPiRef = false, hasPiScr = false;
         const std::string ref =
-            ea.expandSignatureForIntegration(cat, chain, sig, &hasPiRef);
+            ea.integrationBuilder.expandSignatureForIntegration(cat, chain, sig, &hasPiRef);
         std::vector<gl::StrSpan> cs;
         for (const std::string& e : chain) cs.push_back(gl::StrSpan(e));
-        const gl::ScratchString r = ea.expandSignatureForIntegrationScratch(
+        const gl::ScratchString r = ea.integrationBuilder.expandSignatureForIntegrationScratch(
             a, gl::StrSpan(cat), cs.data(), static_cast<int32_t>(cs.size()),
             gl::StrSpan(sig), &hasPiScr);
         cycleRewind();
@@ -1003,11 +1017,11 @@ TEST(prover, integration_builder_result_survives_post_return_rewind) {
         const std::vector<std::string> elems = { "(a[z])" };
         const std::string sig = "(b[z])";
         const std::pair<std::string, std::string> ref =
-            ea.buildIntegrationInstruction(elems, sig);
+            ea.integrationBuilder.buildIntegrationInstruction(elems, sig);
         std::vector<gl::StrSpan> es;
         for (const std::string& e : elems) es.push_back(gl::StrSpan(e));
         gl::ScratchString hist, hash;
-        ea.buildIntegrationInstructionScratch(a, es.data(),
+        ea.integrationBuilder.buildIntegrationInstructionScratch(a, es.data(),
             static_cast<int32_t>(es.size()), gl::StrSpan(sig), hist, hash);
         cycleRewind();
         ASSERT_EQ(hist.toStdString(), ref.first);
@@ -1021,7 +1035,7 @@ TEST(prover, integration_builder_result_survives_post_return_rewind) {
 // reproduce the pre-statification snapshot's byte order and cost 35% of all
 // phase-1/3 runtime.
 TEST(prover, sort_original_chain_index_yields_id_order) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory mem;
 
     // Seed ruleInterner + originals with several DISTINCT chains, out of lex order.
@@ -1034,14 +1048,14 @@ TEST(prover, sort_original_chain_index_yields_id_order) {
     };
     for (const std::vector<std::string>& ch : chains) {
         gl::IdVecKey k;
-        for (const std::string& e : ch) k.ids.push_back(mem.ruleInterner.encode(e));
-        mem.overallHashMemory.originals.mint(k);
+        for (const std::string& e : ch) k.ids.push_back(((mem).ruleInterner).encode(e));
+        ((((mem).overallHashMemory)).originals).mint(k);
     }
-    const int32_t count = mem.overallHashMemory.originals.count();
+    const int32_t count = ((((mem).overallHashMemory)).originals).count();
     ASSERT_EQ(count, static_cast<int32_t>(chains.size()));
 
     std::vector<int32_t> out(static_cast<size_t>(count));
-    const int32_t n = ea.sortOriginalChainIndex(mem, out.data(), count);
+    const int32_t n = gl::tests::IntegrationProcessorFixture::sortOriginalChainIndex(ea.integrationProcessor, mem, out.data(), count);
     ASSERT_EQ(n, count);
     for (int32_t k = 0; k < n; ++k)
         ASSERT_EQ(out[static_cast<size_t>(k)], k + 1);
@@ -1050,7 +1064,7 @@ TEST(prover, sort_original_chain_index_yields_id_order) {
 // prefixArgumentsWithUScratch == prefixArgumentsWithU: u_-prefix EVERY arg
 // (no marker skip; an already-u_ arg is prefixed again — NOT special-cased).
 TEST(prover, prefix_arguments_with_u_scratch_matches_string) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::GlobalMemoryManager m;
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
@@ -1064,8 +1078,8 @@ TEST(prover, prefix_arguments_with_u_scratch_matches_string) {
         "(q[u_1,y,marker])",    // already-u_ prefixed again; marker also prefixed
     };
     for (const std::string& s : cases)
-        ASSERT_EQ(ea.prefixArgumentsWithUScratch(a, gl::StrSpan(s)).toStdString(),
-                  ea.prefixArgumentsWithU(s));
+        ASSERT_EQ(gl::DefinitionExpansion::prefixArgumentsWithUScratch(a, gl::StrSpan(s)).toStdString(),
+                  gl::DefinitionExpansion::prefixArgumentsWithU(s));
 }
 
 TEST(str_ops, addstatement_shape_helper_span_twins) {
@@ -1073,9 +1087,9 @@ TEST(str_ops, addstatement_shape_helper_span_twins) {
     // extractMaxIterationNumber / countPatternOccurrences) gain StrSpan
     // overloads so a span-holding caller needs no std::string. Each must be
     // BYTE-IDENTICAL to its std::string original. `ea("Peano")` initialises the
-    // process static pool (mirrors the other ExpressionAnalyzer-member twins);
+    // process static pool (mirrors the other gl::tests::ProverFixture-member twins);
     // `gl::Memory m` then default-binds a usable nameMap + overallHashMemory.
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
 
     // isEquality / isNegatedEquality — the `(=[` and `!(=[` prefixes plus the
@@ -1088,8 +1102,8 @@ TEST(str_ops, addstatement_shape_helper_span_twins) {
         "(=[u_x,it_0_lev_0_0])",
     };
     for (const std::string& s : shapes) {
-        ASSERT_EQ(ea.isEquality(gl::StrSpan(s)), ea.isEquality(s));
-        ASSERT_EQ(ea.isNegatedEquality(gl::StrSpan(s)), ea.isNegatedEquality(s));
+        ASSERT_EQ(ea.canonicalizer.isEquality(gl::StrSpan(s)), ea.canonicalizer.isEquality(s));
+        ASSERT_EQ(ea.canonicalizer.isNegatedEquality(gl::StrSpan(s)), ea.canonicalizer.isNegatedEquality(s));
     }
 
     // extractMaxIterationNumber — none (-1 sentinel), single, and multi-match
@@ -1101,8 +1115,8 @@ TEST(str_ops, addstatement_shape_helper_span_twins) {
         "it_10_lev_0_0", "no_iter_here", "",
     };
     for (const std::string& s : iters) {
-        ASSERT_EQ(ea.extractMaxIterationNumber(gl::StrSpan(s)),
-                  ea.extractMaxIterationNumber(s));
+        ASSERT_EQ(ea.admissionPolicy.extractMaxIterationNumber(gl::StrSpan(s)),
+                  ea.admissionPolicy.extractMaxIterationNumber(s));
     }
 
     // countPatternOccurrences — a fresh Memory's productsOfRecursionIds is
@@ -1117,9 +1131,9 @@ TEST(str_ops, addstatement_shape_helper_span_twins) {
         "",
     };
     for (const std::string& s : counts) {
-        ASSERT_EQ(ea.countPatternOccurrences(gl::StrSpan(s),
-                                             m.overallHashMemory, m.nameMap),
-                  ea.countPatternOccurrences(s, m.overallHashMemory, m.nameMap));
+        ASSERT_EQ(ea.admissionPolicy.countPatternOccurrences(gl::StrSpan(s),
+                                             ((m).overallHashMemory), ((m).nameMap)),
+                  ea.admissionPolicy.countPatternOccurrences(s, ((m).overallHashMemory), ((m).nameMap)));
     }
 }
 
@@ -1130,7 +1144,7 @@ TEST(str_ops, new_var_store) {
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
     a.bind(&m);
-    gl::ExpressionAnalyzer::NewVarStore nv(&a);
+    gl::NewVarStore nv(&a);
 
     // Insert keys out of lex order to prove forEachVarSorted re-sorts.
     const std::string vC = "it_0_lev_0_2", vA = "int_lev_0_0", vB = "it_0_lev_0_1";
@@ -1168,7 +1182,7 @@ TEST(str_ops, rejection_store) {
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
     a.bind(&m);
-    gl::ExpressionAnalyzer::RejectionStore rs(&a);
+    gl::RejectionStore rs(&a);
 
     // Algebra-style record: compactExpr + a sorted level set.
     const std::string vA = "it_0_lev_0_0", ru1 = "(in[c_x])", mk1 = "(in[marker])",
@@ -1183,7 +1197,7 @@ TEST(str_ops, rejection_store) {
                     gl::StrSpan(), nullptr, 0, nullptr, 0);
 
     ASSERT_EQ(rs.count(), 2);
-    const gl::ExpressionAnalyzer::RejRec& r0 = rs.recAt(0);
+    const gl::RejRec& r0 = rs.recAt(0);
     ASSERT_EQ(rs.decode(r0.varId).toStdString(), vA);
     ASSERT_EQ(rs.decode(r0.s1Id).toStdString(), ru1);
     ASSERT_EQ(rs.decode(r0.s2Id).toStdString(), mk1);
@@ -1195,7 +1209,7 @@ TEST(str_ops, rejection_store) {
     ASSERT_EQ(rs.levAt(r0, 0), 1);
     ASSERT_EQ(rs.levAt(r0, 2), 5);
 
-    const gl::ExpressionAnalyzer::RejRec& r1 = rs.recAt(1);
+    const gl::RejRec& r1 = rs.recAt(1);
     ASSERT_EQ(rs.decode(r1.varId).toStdString(), vB);
     ASSERT_EQ(r1.s3Id, 0);
     ASSERT_TRUE(rs.decode(r1.s3Id).empty());
@@ -1380,7 +1394,7 @@ TEST(str_ops, replace_u_substrings_twin) {
     m.init(kStrOpsTestCfg);
     gl::ScratchArena a;
     a.bind(&m);
-    gl::ExpressionAnalyzer analyzer{ "Peano" };
+    gl::tests::ProverFixture analyzer{ "Peano" };
     const std::string cases[] = {
         "(p[u_v1,a])",        // token-start strip
         "(p[a,u_v1])",
@@ -1398,7 +1412,7 @@ TEST(str_ops, replace_u_substrings_twin) {
     for (const std::string& s : cases) {
         const gl::ScratchString out =
             gl::replaceUSubstringsScratch(a, gl::StrSpan(s));
-        ASSERT_EQ(out.toStdString(), analyzer.replaceUSubstrings(s));
+        ASSERT_EQ(out.toStdString(), gl::DefinitionExpansion::replaceUSubstrings(s));
     }
 }
 
@@ -1431,7 +1445,7 @@ TEST(str_ops, remove_expression_span_door_twin) {
     // identical Memories, remove the same target through each overload, and
     // assert the surviving rows are identical (byte-twin). `ea("Peano")`
     // initialises the process static pool.
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
 
     const std::string TARGET = "(=[a,b])";
     const std::string TVAL = "main";
@@ -1441,10 +1455,10 @@ TEST(str_ops, remove_expression_span_door_twin) {
     auto build = [&](gl::Memory& m) {
         auto push = [&](const std::string& e, const std::string& v) {
             const gl::EncodedExpression enc(e, v);
-            const auto ie = gl::encodeExpression(enc, m.nameMap);
-            m.intEncodedStatements.push_back(ie);
-            m.intLocalEncodedStatements.push_back(ie);
-            m.intLocalEncodedStatementsDelta.push_back(ie);
+            const auto ie = gl::encodeExpression(enc, ((m).nameMap));
+            ((m).intEncodedStatements).push_back(ie);
+            ((m).intLocalEncodedStatements).push_back(ie);
+            ((m).intLocalEncodedStatementsDelta).push_back(ie);
         };
         push(TARGET, TVAL);
         push(OTHER, TVAL);
@@ -1455,27 +1469,27 @@ TEST(str_ops, remove_expression_span_door_twin) {
     gl::Memory mSpan;  build(mSpan);
     gl::Memory mEnc;   build(mEnc);
 
-    ea.removeExpressionFromMemoryBlock(gl::StrSpan(TARGET), gl::StrSpan(TVAL), mSpan, 0);
-    ea.removeExpressionFromMemoryBlock(gl::EncodedExpression(TARGET, TVAL), mEnc, 0);
+    gl::StatementRegistryOperations::removeExpressionFromMemoryBlock(gl::StrSpan(TARGET), gl::StrSpan(TVAL), mSpan, 0);
+    gl::StatementRegistryOperations::removeExpressionFromMemoryBlock(gl::EncodedExpression(TARGET, TVAL), mEnc, 0);
 
     // Positive: both (TARGET,main) rows gone from every vector; OTHER and the
     // TARGET-under-s1 row survive. Span door == EncodedExpression door.
-    ASSERT_EQ(mSpan.intEncodedStatements.size(), mEnc.intEncodedStatements.size());
-    ASSERT_EQ(mSpan.intEncodedStatements.size(), 2);
-    ASSERT_EQ(mSpan.intLocalEncodedStatements.size(), 2);
-    ASSERT_EQ(mSpan.intLocalEncodedStatementsDelta.size(), 2);
-    for (int32_t i = 0; i < mSpan.intEncodedStatements.size(); ++i) {
-        ASSERT_EQ(mSpan.intEncodedStatements[i].originalId,
-                  mEnc.intEncodedStatements[i].originalId);
-        ASSERT_EQ(mSpan.intEncodedStatements[i].validityId,
-                  mEnc.intEncodedStatements[i].validityId);
+    ASSERT_EQ(((mSpan).intEncodedStatements).size(), ((mEnc).intEncodedStatements).size());
+    ASSERT_EQ(((mSpan).intEncodedStatements).size(), 2);
+    ASSERT_EQ(((mSpan).intLocalEncodedStatements).size(), 2);
+    ASSERT_EQ(((mSpan).intLocalEncodedStatementsDelta).size(), 2);
+    for (int32_t i = 0; i < ((mSpan).intEncodedStatements).size(); ++i) {
+        ASSERT_EQ(((mSpan).intEncodedStatements)[i].originalId,
+                  ((mEnc).intEncodedStatements)[i].originalId);
+        ASSERT_EQ(((mSpan).intEncodedStatements)[i].validityId,
+                  ((mEnc).intEncodedStatements)[i].validityId);
     }
 
     // Negative: a never-interned target is a no-op (lookup miss), not a crash.
     const std::string NOPE = "(=[z,z])";
-    const int32_t before = mSpan.intEncodedStatements.size();
-    ea.removeExpressionFromMemoryBlock(gl::StrSpan(NOPE), gl::StrSpan(TVAL), mSpan, 0);
-    ASSERT_EQ(mSpan.intEncodedStatements.size(), before);
+    const int32_t before = ((mSpan).intEncodedStatements).size();
+    gl::StatementRegistryOperations::removeExpressionFromMemoryBlock(gl::StrSpan(NOPE), gl::StrSpan(TVAL), mSpan, 0);
+    ASSERT_EQ(((mSpan).intEncodedStatements).size(), before);
 }
 
 TEST(str_ops, classify_or_scope_view_twin) {
@@ -1484,9 +1498,9 @@ TEST(str_ops, classify_or_scope_view_twin) {
     // the owning overload materialises as std::strings. Covers Disintegration,
     // Integration, the root (empty stack), a non-or boundary, and a malformed
     // (no `_(` separator) payload.
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::Memory m;
-    using OSK = gl::ExpressionAnalyzer::OrScopeKind;
+    using OSK = gl::OrScopeKind;
 
     struct Case { std::string scope; OSK expect; };
     const Case cases[] = {
@@ -1505,11 +1519,11 @@ TEST(str_ops, classify_or_scope_view_twin) {
           OSK::NotOrScope },
     };
     for (const Case& c : cases) {
-        const int16_t vid = m.nameMap.encode(c.scope);
+        const int16_t vid = ((m).nameMap).encode(c.scope);
         std::string sig, body;
-        const OSK k1 = ea.classifyOrScope(m.nameMap, vid, sig, body);
+        const OSK k1 = gl::ScopeSyntax::classifyOrScope(((m).nameMap), vid, sig, body);
         gl::StrSpan sigV, bodyV;
-        const OSK k2 = ea.classifyOrScopeView(m.nameMap, vid, sigV, bodyV);
+        const OSK k2 = gl::ScopeSyntax::classifyOrScopeView(((m).nameMap), vid, sigV, bodyV);
         ASSERT_TRUE(k1 == c.expect);
         ASSERT_TRUE(k2 == k1);
         if (k1 != OSK::NotOrScope) {
@@ -1525,7 +1539,7 @@ TEST(str_ops, split_subproof_payload_grammar) {
     // non-empty bare half — and reject every legacy payload shape.
     // stripSubproofPrefixView returns the bare half on a match and the
     // payload unchanged otherwise.
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
 
     struct Ok { const char* payload; const char* goal; const char* bare; };
     const Ok oks[] = {
@@ -1540,12 +1554,12 @@ TEST(str_ops, split_subproof_payload_grammar) {
     };
     for (const Ok& c : oks) {
         gl::StrSpan g, b;
-        ASSERT_TRUE(ea.splitSubproofPayload(
+        ASSERT_TRUE(gl::ScopeSyntax::splitSubproofPayload(
             gl::StrSpan(c.payload, static_cast<int32_t>(std::strlen(c.payload))),
             g, b));
         ASSERT_EQ(g.toStdString(), std::string(c.goal));
         ASSERT_EQ(b.toStdString(), std::string(c.bare));
-        ASSERT_EQ(ea.stripSubproofPrefixView(
+        ASSERT_EQ(gl::ScopeSyntax::stripSubproofPrefixView(
                       gl::StrSpan(c.payload,
                                   static_cast<int32_t>(std::strlen(c.payload))))
                       .toStdString(),
@@ -1564,35 +1578,41 @@ TEST(str_ops, split_subproof_payload_grammar) {
     };
     for (const char* r : rejects) {
         gl::StrSpan g, b;
-        ASSERT_FALSE(ea.splitSubproofPayload(
+        ASSERT_FALSE(gl::ScopeSyntax::splitSubproofPayload(
             gl::StrSpan(r, static_cast<int32_t>(std::strlen(r))), g, b));
-        ASSERT_EQ(ea.stripSubproofPrefixView(
+        ASSERT_EQ(gl::ScopeSyntax::stripSubproofPrefixView(
                       gl::StrSpan(r, static_cast<int32_t>(std::strlen(r))))
                       .toStdString(),
                   std::string(r));
     }
 }
 
-// deduplicateBoundVarsScratch — the span twin of the former file-static heap
-// deduplicateBoundVars (deleted from prover.cpp). The oracle below is a
-// byte-identical copy of that heap form, kept TEST-LOCAL per the ce-twin
+// deduplicateBoundVarsScratch — the bound-variable cleanup after a variable
+// merge. The oracle below is its heap form, kept TEST-LOCAL per the ce-twin
 // survivorship discipline: a prover-only heap helper with a static twin is
 // deleted from production, its oracle lives in tests (never dead production
-// heap). The twin must match it byte-for-byte across duplicate vars, u_ strip,
-// multiple >[...] lists, no-list passthrough, empty list, and empty input.
+// heap). A name binds once per scope chain (I-29): a token already bound by an
+// enclosing open implication or earlier in the same list is dropped; sibling
+// implications keep their own binders. The twin must match it byte-for-byte
+// across duplicate vars, u_ strip, nested and sibling >[...] lists, no-list
+// passthrough, empty list, and empty input.
 static std::string deduplicateBoundVarsOracle(const std::string& impl) {
     std::string result;
     result.reserve(impl.size());
+    std::vector<std::string> bound;                       // names of the open implications
+    std::vector<std::pair<int, std::size_t>> scopes;      // (outer depth, bound size at open)
+    int depth = 0;
     std::size_t i = 0;
     while (i < impl.size()) {
         if (i + 2 < impl.size() && impl[i] == '(' && impl[i + 1] == '>' && impl[i + 2] == '[') {
+            scopes.emplace_back(depth, bound.size());
+            ++depth;
             result += "(>[";
             i += 3;
             std::size_t closeBracket = impl.find(']', i);
             if (closeBracket != std::string::npos) {
                 std::string varList = impl.substr(i, closeBracket - i);
-                std::vector<std::string> vars;
-                std::set<std::string> seen;
+                std::vector<std::string> kept;
                 std::size_t pos = 0;
                 while (pos <= varList.size()) {
                     std::size_t comma = varList.find(',', pos);
@@ -1604,19 +1624,28 @@ static std::string deduplicateBoundVarsOracle(const std::string& impl) {
                         var = varList.substr(pos, comma - pos);
                         pos = comma + 1;
                     }
-                    if (!var.empty() && seen.find(var) == seen.end()) {
-                        if (var.size() >= 2 && var[0] == 'u' && var[1] == '_') continue;
-                        seen.insert(var);
-                        vars.push_back(var);
-                    }
+                    if (var.empty()) continue;
+                    if (var.size() >= 2 && var[0] == 'u' && var[1] == '_') continue;
+                    if (std::find(bound.begin(), bound.end(), var) != bound.end()) continue;
+                    bound.push_back(var);
+                    kept.push_back(var);
                 }
-                for (std::size_t j = 0; j < vars.size(); ++j) {
+                for (std::size_t j = 0; j < kept.size(); ++j) {
                     if (j > 0) result += ',';
-                    result += vars[j];
+                    result += kept[j];
                 }
                 i = closeBracket;
             }
         } else {
+            if (impl[i] == '(') {
+                ++depth;
+            } else if (impl[i] == ')') {
+                --depth;
+                if (!scopes.empty() && depth == scopes.back().first) {
+                    bound.resize(scopes.back().second);
+                    scopes.pop_back();
+                }
+            }
             result += impl[i];
             ++i;
         }
@@ -1633,6 +1662,8 @@ TEST(str_ops, deduplicate_bound_vars_scratch_matches_heap) {
         "(>[v0,v1,v0](p[v0])(q[v0,v1]))",   // duplicate vars
         "(>[u_a,v0,u_a,v1,v0](p[v0]))",     // u_ strip + duplicate
         "(>[a,a,b](>[c,c](r[c])))",         // multiple >[...] lists
+        "(>[a](p[a])(>[a,b](q[a,b])))",     // inner list rebinds an outer name
+        "(&(>[k](p[k])(q[k]))(>[k](r[k])(s[k])))",   // sibling scopes
         "(p[x])(q[y])",                     // no bound-var list -> passthrough
         "(>[u_a,u_b](p[u_a]))",             // all-u_ list -> empty var run
         "(>[](p[x]))",                      // empty list
@@ -1645,6 +1676,39 @@ TEST(str_ops, deduplicate_bound_vars_scratch_matches_heap) {
         const std::string twin =
             gl::deduplicateBoundVarsScratch(gl::StrSpan(impl), a).toStdString();
         ASSERT_EQ(twin, deduplicateBoundVarsOracle(impl));
+    }
+}
+
+// A merged variable keeps its outermost binder: multiplyImplication's partition
+// {w1, w3} of s-injectivity, and {w2, w3, w4} of the chapter-1091 rule, leave
+// the merged name in an inner list, which the cleanup drops (positive), while a
+// name bound again in a sibling scope or after its scope closed stays bound
+// there (negative: those are independent variables).
+TEST(str_ops, deduplicate_bound_vars_drops_names_bound_by_an_enclosing_scope) {
+    gl::GlobalMemoryManager m;
+    m.init(kStrOpsTestCfg);
+    gl::ScratchArena a; a.bind(&m);
+
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"(>[w1](in[w1,N])(>[w2](in2[w2,w1,s])(>[w1](in2[w1,w1,s])(=[w2,w1]))))",
+         "(>[w1](in[w1,N])(>[w2](in2[w2,w1,s])(>[](in2[w1,w1,s])(=[w2,w1]))))"},
+        {"(>[w1](in[w1,N])(>[w2](in2[w1,w2,s])(>[w2,w2](in3[w2,w1,w2,+])"
+         "(>[w3](in2[w2,w3,s])(in3[w2,w2,w3,+])))))",
+         "(>[w1](in[w1,N])(>[w2](in2[w1,w2,s])(>[](in3[w2,w1,w2,+])"
+         "(>[w3](in2[w2,w3,s])(in3[w2,w2,w3,+])))))"},
+        {"(>[a](p[a])(>[b,a,c](q[a,b,c])(>[c,d](r[c,d])(s[a]))))",
+         "(>[a](p[a])(>[b,c](q[a,b,c])(>[d](r[c,d])(s[a]))))"},
+        {"(&(>[k](in[k,N])!(in3[g,k,a,*]))(>[k](in[k,N])!(in3[g,k,b,*])))",
+         "(&(>[k](in[k,N])!(in3[g,k,a,*]))(>[k](in[k,N])!(in3[g,k,b,*])))"},
+        {"(>[a](>[b](p[a,b])(q[b]))(>[b](r[a,b])(s[b])))",
+         "(>[a](>[b](p[a,b])(q[b]))(>[b](r[a,b])(s[b])))"},
+    };
+    for (const auto& [impl, expected] : cases) {
+        gl::ScratchScope scope(a);
+        const std::string got =
+            gl::deduplicateBoundVarsScratch(gl::StrSpan(impl), a).toStdString();
+        ASSERT_EQ(got, expected);
+        ASSERT_EQ(got, deduplicateBoundVarsOracle(impl));
     }
 }
 
@@ -1749,7 +1813,7 @@ TEST(str_ops, witness_name_fields_and_lexical_boundaries) {
     const std::string algebra = "it_2_lev_4_12";
     auto a = gl::classifyWitnessName(gl::StrSpan(forced));
     ASSERT_TRUE(a.kind == gl::WitnessNameKind::Forced);
-    ASSERT_EQ(a.level, 4); ASSERT_EQ(a.serial, 12);
+    ASSERT_EQ(((a).level), 4); ASSERT_EQ(a.serial, 12);
     a = gl::classifyWitnessName(gl::StrSpan(integration));
     ASSERT_TRUE(a.kind == gl::WitnessNameKind::Integration); ASSERT_EQ(a.depth, 10);
     a = gl::classifyWitnessName(gl::StrSpan(algebra));
@@ -1783,6 +1847,56 @@ TEST(str_ops, only_number_arguments_accept_decimals_and_rec) {
             "(sequence[1,4,x2,rec,11])", "(in2[repl_lev_2_3,9,3])", "(in2[rec0,9,3])",
             "(in2[9,1a,3])", "(in2[u_int_0_lev_1_2,9,3])", "(>[u_N,u_0](in[u_0,u_N]))"})
         ASSERT_FALSE(gl::hasOnlyNumberArguments(gl::StrSpan(dirty)));
+}
+
+// The strong step block's induction demand serves an original only when its
+// every argument is a decimal token outside the refused lemma digits; `rec`,
+// witnesses and anchor copies fail, sets and operators pass
+// (D-502). G3 refuses zero (2), one (6), two (7).
+TEST(str_ops, induction_digits_refuse_rec_witnesses_and_refused_digits) {
+    const int32_t refused[] = { 2, 6, 7 };
+    for (const std::string clean : {"(existence24[1,4,5,9,10])", "(preorder[1,4,10,9])",
+            "!(in2[u_9,10,3])", "(=[10,10])", "(p)", "(in3[u_9,10,u_10,4])"})
+        ASSERT_TRUE(gl::hasOnlyInductionDigits(gl::StrSpan(clean), refused, 3));
+    for (const std::string dirty : {"(existence24[1,4,5,2,10])", "(preorder[1,4,6,10])",
+            "(in3[9,7,10,4])", "(in2[rec,9,3])", "(in2[u_rec,9,3])", "(in2[rec0,9,3])",
+            "(existence24[1,4,5,int_0_lev_4_22,10])", "(in2[10_copy,9,3])",
+            "(in2[9,it_0_lev_1_0,10])", "(in2[u_2,9,3])"})
+        ASSERT_FALSE(gl::hasOnlyInductionDigits(gl::StrSpan(dirty), refused, 3));
+    // No refused digits: every decimal passes, `rec` still fails.
+    ASSERT_TRUE(gl::hasOnlyInductionDigits(gl::StrSpan("(in2[2,9,3])"), nullptr, 0));
+    ASSERT_FALSE(gl::hasOnlyInductionDigits(gl::StrSpan("(in2[rec,9,3])"), nullptr, 0));
+}
+
+// An original repeats an argument when two of its flat top-level arguments
+// are spelled alike once a `u_` prefix is stripped; an induction admission
+// refuses it (D-530).
+TEST(str_ops, repeated_argument_finds_two_equal_arguments) {
+    for (const std::string repeated : {"(preorder[1,4,10,10])", "(existence24[1,4,5,10,10])",
+            "!(=[u_9,u_9])", "(in2[u_9,9,3])", "(existence41[2,2,1,4])", "(fXY[3,1,1])"})
+        ASSERT_TRUE(gl::hasRepeatedArgument(gl::StrSpan(repeated)));
+    for (const std::string distinct : {"(existence24[1,4,5,9,10])", "(in3[9,10,11,4])",
+            "!(in2[u_9,10,3])", "(p)", "(in2[9,9_copy,3])", "(in2[rec,rec0,3])"})
+        ASSERT_FALSE(gl::hasRepeatedArgument(gl::StrSpan(distinct)));
+}
+
+// One argument is a number when it is a decimal token or `rec` after a `u_`
+// prefix is stripped (I-285, D-471).
+// A number is a decimal, `rec` or `rec2` (D-581);
+// the role form counts only its role name besides the decimals, so `rec2` is
+// no number for a gate with `rec` in `rec`'s role.
+TEST(str_ops, number_argument_accepts_decimals_rec_and_rec2_only) {
+    for (const std::string number : {"9", "10", "0", "u_9", "rec", "u_rec", "rec2", "u_rec2"})
+        ASSERT_TRUE(gl::isNumberArgument(gl::StrSpan(number)));
+    for (const std::string other : {"int_0_lev_6_4", "u_int_0_lev_1_2", "force_lev_4_1",
+            "it_1_lev_6_2", "x2", "10_copy", "rec0", "rec3", "rec21", "rec2_copy", "u_rec2_copy",
+            "repl_lev_2_3", "N", "1a", "u_N"})
+        ASSERT_FALSE(gl::isNumberArgument(gl::StrSpan(other)));
+    ASSERT_FALSE(gl::isNumberArgument(gl::StrSpan("rec2", 4), gl::StrSpan("rec", 3)));
+    ASSERT_TRUE(gl::isNumberArgument(gl::StrSpan("rec2", 4), gl::StrSpan("rec2", 4)));
+    ASSERT_TRUE(gl::hasOnlyNumberArguments(gl::StrSpan(std::string("(in2[rec2,12,3])"))));
+    ASSERT_FALSE(gl::hasOnlyNumberArguments(gl::StrSpan(std::string("(in2[it_0_lev_3_5,12,3])"))));
+    ASSERT_FALSE(gl::hasOnlyNumberFreeArguments(gl::StrSpan(std::string("(in2[rec2,12,3])"))));
 }
 
 TEST(str_ops, witness_name_canonical_preference_uses_numeric_depth) {
@@ -1822,7 +1936,7 @@ TEST(str_ops, witness_shape_can_skip_identity_decoding) {
     const auto value = gl::classifyWitnessName(gl::StrSpan("int_10_lev_999999999999999_1"), false);
     ASSERT_TRUE(value.kind == gl::WitnessNameKind::Integration);
     ASSERT_EQ(value.depth, 10);
-    ASSERT_EQ(value.level, 0);
+    ASSERT_EQ(((value).level), 0);
     ASSERT_TRUE(gl::classifyWitnessName(gl::StrSpan("int_999999999999999_bad"), false).kind
         == gl::WitnessNameKind::Ordinary);
     int count = 0;

@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.13.0 — 2026-10-30
+
+**FTA proof — the Fundamental Theorem of Arithmetic, proved from the Peano axioms and checked in Lean's kernel.**
+
+**The Fundamental Theorem of Arithmetic.** Every natural number n ≥ 2 is a product of primes written as a non-increasing sequence (existence), and two such factorizations of the same number are equal (uniqueness). GL proves both halves from the Peano axioms and its definitions in one FTA batch. It receives the batch's 103 statements — the two halves and the lemmas leading to them — as goals, with no hints for their proofs, and finds the order and the proofs itself. Every proof passes the external verifier, and the full run exports all of them, Peano and Gauss included, to one Lean 4 project that Lean's kernel checks inside the run.
+
+**The road there (FTA shortlist, parts F to I).** Finite sequences and their products: singletons, prefixes, appending, products carried across an append, prime sequences and when two sequences are equal. Euclid's lemma through Bézout's identity for coprime numbers: a prime that divides a product divides a factor, and a prime that divides the product of a sequence divides an entry, and is an entry when the sequence consists of primes. Ordered sequences: a singleton is ordered, a prefix of an ordered sequence stays ordered, its last entry is its least, and appending a value no larger than the last keeps it ordered. Least divisors: the divisors of k ≥ 2 that are at least 2 have a minimum, by well-ordering, and the least divisor of n ≥ 2 is prime, the step that builds the factorization.
+
+**Strong induction and other new proof steps.** Next to ordinary induction, GL now proves statements by strong induction, assuming the claim for every smaller number; rules keep it targeted to lemmas whose premises suit it and apply its hypothesis only where the inputs are the induction's own variables. A covering induction step switches off its conjecture's other proof attempts, and a contradiction inside a scope can request the facts it needs. The totality rules of addition and multiplication and typed rules with an OR head are built when a demand for them appears instead of being installed in advance.
+
+**Faster and leaner.** Runtime work kept the growing FTA batch fast: its prover time on the GPU route peaked at about six minutes in early October and is now about 75 s for the complete batch, both halves of the theorem included; a full run takes about five minutes with `--GPU`. The default processor route needs about 43 to 51 minutes, nearly all of it in the FTA batch, whose steps run with few active logic blocks. Several memory rounds lowered the peak memory; pending requests can now page to the SSD as well, and a run stops rather than write more than 50 GiB there. The native unit-test gate that starts every run takes seconds instead of three minutes, and on Windows the prover runs above normal priority without power throttling.
+
+**Proof books.** The HTML proof books number their chapters by theorem and order them by proof, so each part ends with its deepest theorem and the FTA book ends with the uniqueness theorem. Every named definition reads through its own notation, citations name their chapter, captions are easier to read, and the incubator's book is processed faster.
+
+**Four routes, one result.** The default processor route, which needs no GPU, and the `--GPU` route prove exactly the same theorems, in the incubators and in the main run, on Windows and on Linux (WSL). Each route reproduces its own proofs byte for byte from run to run and across the two systems; the two routes may choose different, equally valid proof steps, and the verifier and Lean's kernel accept both.
+
+**Proofs in the repository again.** The repository commit carries the release's proofs again — the HTML proof books, the Lean export and the theorem lists — at the paths a run writes them, and the release also attaches them as one zip, with a SHA-256 for the archive and for every file in it. `SHA256SUMS` now covers the proofs as well.
+
 ## v0.12.0 — 2026-10-02
 
 **D+E — division with remainder (part D) and primes (part E) of the FTA shortlist, with the first finite products, on a faster, leaner prover whose default processor route needs no GPU.**

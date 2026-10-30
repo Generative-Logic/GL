@@ -28,7 +28,9 @@
 
 #include "../parameters.hpp"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -151,9 +153,9 @@ namespace gl {
     /// operating-system-page-sized blocks can be registered for CUDA transfers.
     /// It is address space only: `grantLocked` commits each block when it is
     /// first carved (D-418), so the pool's commit charge
-    /// is its carve high-water, not `poolBytes`. Idempotent when
+    /// tracks currently backed blocks, not `poolBytes`. Idempotent when
     /// called again with a byte-identical config (run modes may construct
-    /// more than one `ExpressionAnalyzer` per process); asserts on a
+    /// more than one `Prover` per process); asserts on a
     /// mismatching re-init — two different sizings in one process is a
     /// configuration bug, not a request to re-shape.
     ///
@@ -169,6 +171,7 @@ namespace gl {
             assert(cfg.poolBytes == cfg_.poolBytes
                 && cfg.blockBytes == cfg_.blockBytes
                 && cfg.pageBytes == cfg_.pageBytes
+                && cfg.kind == cfg_.kind
                 && "GlobalMemoryManager re-init with a different sizing "
                    "triple — one process, one static-memory shape");
             return;
@@ -176,7 +179,101 @@ namespace gl {
         cfg_ = cfg;
         totalBlocks_ = cfg.poolBytes / cfg.blockBytes;
         pool_ = reserveAddressSpace(cfg.poolBytes);
-        granted_.assign(static_cast<std::size_t>(totalBlocks_), false);
+        if (cfg.kind == PoolKind::GpuHost) {
+            assert(totalBlocks_ <= INT32_MAX && cfg.blockBytes >= 4096);
+            const int64_t directoryBytes = totalBlocks_ * sizeof(GpuHostBlock);
+            gpuHostDirectoryBlocks_ = (directoryBytes + cfg.blockBytes - 1) / cfg.blockBytes;
+            assert(gpuHostDirectoryBlocks_ < totalBlocks_);
+            commitAddressSpace(pool_, gpuHostDirectoryBlocks_ * cfg.blockBytes);
+            gpuHostDirectory_ = reinterpret_cast<GpuHostBlock*>(pool_);
+            for (int64_t i = 0; i < totalBlocks_; ++i)
+                ::new (static_cast<void*>(gpuHostDirectory_ + i)) GpuHostBlock{};
+            for (int64_t i = 0; i < gpuHostDirectoryBlocks_; ++i) {
+                gpuHostDirectory_[i].run = -2;
+                gpuHostDirectory_[i].committed = 1;
+            }
+            gpuHostCommittedBlocks_ = gpuHostDirectoryBlocks_;
+            blocksInUse_ = peakBlocksInUse_ = gpuHostDirectoryBlocks_;
+            blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
+            noteGrantLocked(PoolPurpose::GpuHost, gpuHostDirectoryBlocks_);
+        } else {
+            recycled_.emplace();
+            deloadRegistry_.emplace();
+            extentSlabRegistry_.emplace();
+            granted_.assign(static_cast<std::size_t>(totalBlocks_), false);
+            committed_.assign(static_cast<std::size_t>(totalBlocks_), false);
+        }
+    }
+
+    /// @brief Return one synchronized commitment-counter snapshot.
+    ///
+    /// @details Current commitment includes both granted and retained free
+    /// blocks. The lifetime peak and cumulative release/recommit totals have
+    /// separate denominators and are never read to select inference work.
+    /// GPU-host commitment only grows, so current equals peak and its
+    /// decommit, recommit and trim totals remain zero.
+    ///
+    /// @return Current and lifetime commitment counters; all zero before init.
+    /// @see trimRecycledBlocks
+    PoolCommitment GlobalMemoryManager::commitment() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (cfg_.kind == PoolKind::GpuHost) {
+            const int64_t bytes = gpuHostCommittedBlocks_ * cfg_.blockBytes;
+            return { bytes, bytes, 0, 0, 0 };
+        }
+        return commitment_;
+    }
+
+    /// @brief Release excess returned blocks while preserving recycle order.
+    ///
+    /// @details
+    /// The first warmBytes/blockBytes entries of the existing recycle queue
+    /// are retained for reuse. Later committed entries are decommitted under
+    /// the pool mutex, coalescing adjacent addresses in queue order. Granted
+    /// blocks, virtual addresses, carve limits and grant accounting stay fixed.
+    /// Already decommitted entries remain reserved until their next grant.
+    /// This operation is restricted to the four original pools; GPU-host
+    /// backing stays committed for reuse.
+    ///
+    /// @param warmBytes Nonnegative whole-block reuse reserve in bytes.
+    /// @return Number of backing bytes decommitted by this call.
+    /// @invariant Only exclusively returned whole-page blocks are decommitted.
+    /// @see commitment, grantLocked
+    int64_t GlobalMemoryManager::trimRecycledBlocks(int64_t warmBytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(pool_ != nullptr && warmBytes >= 0 && warmBytes % cfg_.blockBytes == 0);
+        assert(cfg_.kind != PoolKind::GpuHost
+            && "GPU-host commitment is retained for reuse");
+        ++commitment_.trimCalls;
+        const int64_t retained = warmBytes / cfg_.blockBytes;
+        int64_t released = 0;
+        char* run = nullptr;
+        int64_t runBytes = 0;
+        const auto flush = [&] {
+            if (runBytes == 0) return;
+            decommitAddressSpace(run, runBytes);
+            commitment_.currentBytes -= runBytes;
+            commitment_.decommittedBytes += runBytes;
+            released += runBytes;
+            run = nullptr;
+            runBytes = 0;
+        };
+        for (int64_t i = retained; i < static_cast<int64_t>(recycled_->size()); ++i) {
+            char* const block = (*recycled_)[static_cast<std::size_t>(i)];
+            const auto index = static_cast<std::size_t>((block - pool_) / cfg_.blockBytes);
+            assert(!granted_[index]);
+            if (!committed_[index]) {
+                flush();
+                continue;
+            }
+            if (run != nullptr && block != run + runBytes) flush();
+            if (run == nullptr) run = block;
+            runBytes += cfg_.blockBytes;
+            committed_[index] = false;
+        }
+        flush();
+        assert(commitment_.currentBytes >= blocksInUse_ * cfg_.blockBytes);
+        return released;
     }
 
     /// @brief Whether `init` has run.
@@ -207,7 +304,7 @@ namespace gl {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             assert(pool_ != nullptr);
-            block = grantLocked();
+            block = grantLocked(purpose);
             ++blocksInUse_;
             blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
             if (blocksInUse_ > peakBlocksInUse_)
@@ -343,10 +440,11 @@ namespace gl {
         std::lock_guard<std::mutex> lock(mutex_);
         assert(ordinal >= 0 && ordinal < nextDeloadOrdinal_
             && "registerDeloadOrdinal with an unassigned ordinal");
-        const auto it = deloadRegistry_.find(ordinal);
-        assert((it == deloadRegistry_.end() || it->second == chain)
+        assert(deloadRegistry_.has_value());
+        const auto it = deloadRegistry_->find(ordinal);
+        assert((it == deloadRegistry_->end() || it->second == chain)
             && "deload ordinal bound to two different LB chains");
-        deloadRegistry_[ordinal] = chain;
+        (*deloadRegistry_)[ordinal] = chain;
     }
 
     /// @brief The accumulated `ordinal -> chain` map — the input to
@@ -361,7 +459,8 @@ namespace gl {
     /// @return The registry map (ascending ordinal).
     const std::map<int64_t, std::string>&
     GlobalMemoryManager::deloadRegistry() const {
-        return deloadRegistry_;
+        assert(deloadRegistry_.has_value());
+        return *deloadRegistry_;
     }
 
     /// @brief Clear the registry map at batch start so `registry.txt`
@@ -375,7 +474,8 @@ namespace gl {
     /// re-registers, so the cleared map refills completely.
     void GlobalMemoryManager::resetDeloadRegistry() {
         std::lock_guard<std::mutex> lock(mutex_);
-        deloadRegistry_.clear();
+        assert(deloadRegistry_.has_value());
+        deloadRegistry_->clear();
     }
 
     /// @brief Open the extent file and arm the raw-eviction datapath (see the
@@ -393,7 +493,8 @@ namespace gl {
         extentFile_.open(path);
         extentFile_.preallocate(initialBytes);
         extentAllocator_.init(blockBytes());   // offsets recycle from 0
-        extentSlabRegistry_.clear();
+        assert(extentSlabRegistry_.has_value());
+        extentSlabRegistry_->clear();
         extentLiveBytes_.store(0, std::memory_order_relaxed);
         ++extentEpoch_;                        // invalidate cross-batch slabs
         extentEnabled_.store(true, std::memory_order_relaxed);
@@ -425,7 +526,7 @@ namespace gl {
                 / kExtentGrowChunkBytes * kExtentGrowChunkBytes;
             extentFile_.grow(grown);
         }
-        extentSlabRegistry_[ordinal] = slab;
+        (*extentSlabRegistry_)[ordinal] = slab;
         return slab;
     }
 
@@ -438,12 +539,12 @@ namespace gl {
     void GlobalMemoryManager::freeExtentSlab(int64_t ordinal, int64_t offset,
                                              int64_t classBytes) {
         std::lock_guard<std::mutex> lock(extentMutex_);
-        const auto it = extentSlabRegistry_.find(ordinal);
-        assert(it != extentSlabRegistry_.end()
+        const auto it = extentSlabRegistry_->find(ordinal);
+        assert(it != extentSlabRegistry_->end()
             && it->second.offset == offset
             && it->second.classBytes == classBytes
             && "extent slab free does not match the registered slab");
-        extentSlabRegistry_.erase(it);
+        extentSlabRegistry_->erase(it);
         extentAllocator_.freeSlab(offset, classBytes);
     }
 
@@ -458,7 +559,7 @@ namespace gl {
     /// @param purpose The purpose the block was granted under.
     void GlobalMemoryManager::releaseBlock(char* block, PoolPurpose purpose) {
         std::lock_guard<std::mutex> lock(mutex_);
-        returnLocked(block);
+        returnLocked(block, purpose);
         --blocksInUse_;
         blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
         const int p = static_cast<int>(purpose);
@@ -490,7 +591,7 @@ namespace gl {
             std::lock_guard<std::mutex> lock(mutex_);
             assert(pool_ != nullptr);
             for (int32_t i = 0; i < count; ++i)
-                out[i] = grantLocked();
+                out[i] = grantLocked(purpose);
             blocksInUse_ += count;
             blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
             if (blocksInUse_ > peakBlocksInUse_)
@@ -524,7 +625,7 @@ namespace gl {
         assert(count >= 1);
         std::lock_guard<std::mutex> lock(mutex_);
         for (int32_t i = 0; i < count; ++i)
-            returnLocked(blocks[i]);
+            returnLocked(blocks[i], purpose);
         blocksInUse_ -= count;
         blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
         const int p = static_cast<int>(purpose);
@@ -688,19 +789,22 @@ namespace gl {
     /// @details
     /// Recycled blocks are re-granted before fresh ones so the carve cursor
     /// is a high-water mark of simultaneous demand across BOTH grant paths.
-    /// A fresh carve commits the block (`commitAddressSpace`); a recycled
-    /// block is already committed. Exhaustion — every block carved and none
+    /// A fresh carve or a decommitted recycled block commits before use.
+    /// Committed recycled blocks retain their existing backing. Exhaustion — every block carved and none
     /// recycled — is an assert
     /// naming the instance's pool sizing constant (`static_pool_bytes`,
     /// `static_persistent_pool_bytes`, or `static_mail_pool_bytes`, per
     /// `cfg_.kind`); there is no fallback path.
     ///
+    /// @param purpose Owning accounting category.
     /// @return The granted block.
-    char* GlobalMemoryManager::grantLocked() {
+    char* GlobalMemoryManager::grantLocked(PoolPurpose purpose) {
+        if (cfg_.kind == PoolKind::GpuHost) return grantGpuHostLocked(1, purpose);
         char* block = nullptr;
-        if (!recycled_.empty()) {
-            block = recycled_.front();
-            recycled_.pop_front();
+        const bool recycled = !recycled_->empty();
+        if (recycled) {
+            block = recycled_->front();
+            recycled_->pop_front();
         }
         else {
             if (carveCursor_ >= totalBlocks_) {
@@ -717,7 +821,7 @@ namespace gl {
                           << " totalBlocks=" << totalBlocks_
                           << " blocksInUse=" << blocksInUse_
                           << " carveCursor=" << carveCursor_
-                          << " recycled=" << recycled_.size()
+                          << " recycled=" << recycled_->size()
                           << " peak=" << peakBlocksInUse_
                           << " blockBytes=" << cfg_.blockBytes << std::endl;
                 if (exhaustionReporter_)
@@ -745,6 +849,9 @@ namespace gl {
                        "static_lb_pool_bytes (or lower "
                        "static_lb_block_bytes) in parameters.hpp");
                 break;
+            case PoolKind::GpuHost:
+                assert(false && "GPU-host grants use their own directory");
+                break;
             case PoolKind::Main:
                 assert(carveCursor_ < totalBlocks_
                     && "static-memory pool exhausted — raise static_pool_bytes "
@@ -752,13 +859,18 @@ namespace gl {
                 break;
             }
             block = pool_ + carveCursor_ * cfg_.blockBytes;
-            // Committed on first carve and never decommitted, so the pool's
-            // commit charge is its carve high-water (D-418).
-            commitAddressSpace(block, cfg_.blockBytes);
             ++carveCursor_;
         }
         const int64_t idx = (block - pool_) / cfg_.blockBytes;
         assert(!granted_[static_cast<std::size_t>(idx)]);
+        if (!committed_[static_cast<std::size_t>(idx)]) {
+            commitAddressSpace(block, cfg_.blockBytes);
+            committed_[static_cast<std::size_t>(idx)] = true;
+            commitment_.currentBytes += cfg_.blockBytes;
+            commitment_.peakBytes = std::max(commitment_.peakBytes, commitment_.currentBytes);
+            if (recycled)
+                commitment_.recommittedBytes += cfg_.blockBytes;
+        }
         granted_[static_cast<std::size_t>(idx)] = true;
         return block;
     }
@@ -768,7 +880,13 @@ namespace gl {
     ///        Caller holds `mutex_`.
     ///
     /// @param block The block being returned.
-    void GlobalMemoryManager::returnLocked(char* block) {
+    /// @param purpose Original accounting category.
+    /// @return Nothing.
+    void GlobalMemoryManager::returnLocked(char* block, PoolPurpose purpose) {
+        if (cfg_.kind == PoolKind::GpuHost) {
+            returnGpuHostLocked(block, 1, purpose);
+            return;
+        }
         assert(pool_ != nullptr);
         assert(block >= pool_ && block < pool_ + cfg_.poolBytes);
         const std::ptrdiff_t offset = block - pool_;
@@ -777,7 +895,7 @@ namespace gl {
         assert(granted_[static_cast<std::size_t>(idx)]
             && "block return on a block that is not currently granted");
         granted_[static_cast<std::size_t>(idx)] = false;
-        recycled_.push_back(block);
+        recycled_->push_back(block);
     }
 
     /// @brief Bytes per block (the grant unit).
@@ -886,7 +1004,7 @@ namespace gl {
     /// @details
     /// Thin forwarder to `staticMemory().init(cfg)`; carries the same
     /// idempotent-same-config / assert-on-mismatch contract. Called by the
-    /// `ExpressionAnalyzer` constructor right after the JSON parameter
+    /// `Prover` constructor right after the JSON parameter
     /// parse, and by the unit-test harness with a small test pool.
     ///
     /// @param cfg Pool / block / page sizing triple.
@@ -932,7 +1050,7 @@ namespace gl {
     /// A separate reservation from both `staticMemory()` and
     /// `persistentMemory()`, never deloaded; nothing reads its grant ledger, so
     /// it plays no role in any deload / throttle / steward decision. Production
-    /// binding for the `ExpressionAnalyzer`-owned `mailArena`. Unit tests build
+    /// binding for the `Prover`-owned `mailArena`. Unit tests build
     /// private instances and leave this one to the harness init.
     ///
     /// @return The singleton (constructed on first use; `init` it via
@@ -964,7 +1082,7 @@ namespace gl {
     /// A separate reservation from `staticMemory()`, `persistentMemory()`, and
     /// `mailMemory()`, never deloaded; nothing reads its grant ledger, so it
     /// plays no role in any deload / throttle / steward decision. Production
-    /// binding for the `ExpressionAnalyzer`-owned `LbStore`. Unit tests build
+    /// binding for the `Prover`-owned `LbStore`. Unit tests build
     /// private instances and leave this one to the harness init.
     ///
     /// @return The singleton (constructed on first use; `init` it via
@@ -987,6 +1105,180 @@ namespace gl {
         assert(cfg.kind == PoolKind::Lb
             && "initLbMemory needs a config with kind == Lb");
         lbMemory().init(cfg);
+    }
+
+    /// @brief Allocate a first-fit run while holding the pool mutex.
+    /// @details Shares the directory with ordinary arena block grants. Recycled
+    /// blocks retain commitment; a newly used range is committed before exposure.
+    /// @param count Positive block count.
+    /// @param purpose Owning accounting category.
+    /// @return Stable committed run; exhaustion asserts before any write.
+    char* GlobalMemoryManager::grantGpuHostLocked(int32_t count, PoolPurpose purpose) {
+        assert(cfg_.kind == PoolKind::GpuHost && gpuHostDirectory_ != nullptr);
+        assert(count > 0 && count <= totalBlocks_);
+        assert(static_cast<int>(purpose) >= 0 && static_cast<int>(purpose) < kPoolPurposeCount);
+        int64_t start = gpuHostDirectoryBlocks_, free = 0;
+        for (int64_t i = start; i < totalBlocks_; ++i) {
+            if (gpuHostDirectory_[i].run != 0) {
+                if (gpuHostDirectory_[i].run > 0) i += gpuHostDirectory_[i].run - 1;
+                start = i + 1;
+                free = 0;
+            } else if (++free == count) {
+                char* address = pool_ + start * cfg_.blockBytes;
+                bool needsCommit = false;
+                for (int32_t j = 0; j < count; ++j) needsCommit |= !gpuHostDirectory_[start + j].committed;
+                if (needsCommit) commitAddressSpace(address, static_cast<int64_t>(count) * cfg_.blockBytes);
+                for (int32_t j = 0; j < count; ++j) {
+                    auto& entry = gpuHostDirectory_[start + j];
+                    gpuHostCommittedBlocks_ += !entry.committed;
+                    entry.committed = 1;
+                    entry.run = j == 0 ? count : -1;
+                    entry.purpose = static_cast<uint8_t>(purpose);
+                    assert(!entry.pinned);
+                }
+                return address;
+            }
+        }
+        std::cerr << "[GPU-HOST-EXHAUSTION] budget_bytes=" << cfg_.poolBytes
+            << " requested_bytes=" << static_cast<int64_t>(count) * cfg_.blockBytes
+            << " live_bytes=" << blocksInUse_ * cfg_.blockBytes
+            << " committed_bytes=" << gpuHostCommittedBlocks_ * cfg_.blockBytes
+            << " pinned_bytes=" << gpuHostPinnedBlocks_ * cfg_.blockBytes << std::endl;
+        assert(false && "GPU-host pool exhausted: raise GL_GPU_HOST_BUDGET_MIB or static_gpu_host_pool_bytes");
+        std::abort();
+    }
+
+    /// @brief Validate and free one exact GPU-host lease under the mutex.
+    /// @details A partial release or a registered transfer is an ownership bug.
+    /// @param address Original lease head.
+    /// @param count Original length.
+    /// @param purpose Original accounting category.
+    /// @return Nothing.
+    void GlobalMemoryManager::returnGpuHostLocked(char* address, int32_t count, PoolPurpose purpose) {
+        assert(cfg_.kind == PoolKind::GpuHost && count > 0);
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(pool_);
+        assert(offset < static_cast<uint64_t>(cfg_.poolBytes) && offset % cfg_.blockBytes == 0);
+        const int64_t index = static_cast<int64_t>(offset / cfg_.blockBytes);
+        assert(index >= gpuHostDirectoryBlocks_ && count <= totalBlocks_ - index);
+        assert(gpuHostDirectory_[index].run == count);
+        for (int32_t i = 0; i < count; ++i) {
+            auto& entry = gpuHostDirectory_[index + i];
+            assert(entry.run == (i == 0 ? count : -1));
+            assert(entry.purpose == static_cast<uint8_t>(purpose) && !entry.pinned);
+        }
+        for (int32_t i = 0; i < count; ++i) gpuHostDirectory_[index + i].run = 0;
+    }
+
+    /// @brief Lease a contiguous GPU-host range of whole pool blocks.
+    /// @details Directory storage and all consumers share one hard budget.
+    /// @param count Positive contiguous block count.
+    /// @return Stable address; exhaustion asserts.
+    char* GlobalMemoryManager::acquireGpuHostRange(int32_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        char* address = grantGpuHostLocked(count, PoolPurpose::GpuHost);
+        blocksInUse_ += count;
+        blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
+        peakBlocksInUse_ = std::max(peakBlocksInUse_, blocksInUse_);
+        grantsSinceBarrier_ += count;
+        noteGrantLocked(PoolPurpose::GpuHost, count);
+        return address;
+    }
+
+    /// @brief Return an exact unregistered GPU-host range.
+    /// @details Returns capacity without decommitting or moving other consumers.
+    /// @param address Original range head.
+    /// @param count Original block count.
+    /// @return Nothing.
+    void GlobalMemoryManager::releaseGpuHostRange(char* address, int32_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        returnGpuHostLocked(address, count, PoolPurpose::GpuHost);
+        blocksInUse_ -= count;
+        blocksInUseHint_.store(blocksInUse_, std::memory_order_relaxed);
+        attribution_.inUse[static_cast<int>(PoolPurpose::GpuHost)] -= count;
+        assert(blocksInUse_ >= gpuHostDirectoryBlocks_);
+    }
+
+    /// @brief Account registration of an exclusive GPU-host range.
+    /// @details The exact live lease remains pinned through its transfer event.
+    /// @param address Lease head.
+    /// @param count Exact lease length.
+    /// @param pinned Registration state being entered.
+    /// @return Nothing.
+    void GlobalMemoryManager::setGpuHostPinned(char* address, int32_t count, bool pinned) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(cfg_.kind == PoolKind::GpuHost && count > 0);
+        const uintptr_t offset = reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(pool_);
+        assert(offset < static_cast<uint64_t>(cfg_.poolBytes) && offset % cfg_.blockBytes == 0);
+        const int64_t index = static_cast<int64_t>(offset / cfg_.blockBytes);
+        assert(index >= gpuHostDirectoryBlocks_ && count <= totalBlocks_ - index);
+        assert(gpuHostDirectory_[index].run == count);
+        for (int32_t i = 0; i < count; ++i) {
+            auto& entry = gpuHostDirectory_[index + i];
+            assert(entry.pinned != pinned);
+            entry.pinned = pinned;
+        }
+        gpuHostPinnedBlocks_ += pinned ? count : -count;
+        assert(gpuHostPinnedBlocks_ >= 0);
+        gpuHostPeakPinnedBlocks_ = std::max(gpuHostPeakPinnedBlocks_, gpuHostPinnedBlocks_);
+    }
+
+    /// @brief Measure the largest free GPU-host run without changing state.
+    /// @details The mutex makes the sizing snapshot internally consistent.
+    /// @return Largest contiguous free block count.
+    int64_t GlobalMemoryManager::largestGpuHostRun() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(cfg_.kind == PoolKind::GpuHost && gpuHostDirectory_ != nullptr);
+        int64_t largest = 0, current = 0;
+        for (int64_t i = gpuHostDirectoryBlocks_; i < totalBlocks_; ++i) {
+            current = gpuHostDirectory_[i].run == 0 ? current + 1 : 0;
+            largest = std::max(largest, current);
+        }
+        return largest;
+    }
+
+    /// @brief Measure committed GPU-host bytes, including recycled blocks.
+    /// @details The ownership directory is committed and counted at initialization.
+    /// @return Committed bytes under the mutex.
+    int64_t GlobalMemoryManager::gpuHostCommittedBytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(cfg_.kind == PoolKind::GpuHost);
+        return gpuHostCommittedBlocks_ * cfg_.blockBytes;
+    }
+
+    /// @brief Measure live GPU-host registration bytes.
+    /// @details Only explicitly registered whole leases contribute.
+    /// @return Pinned bytes under the mutex.
+    int64_t GlobalMemoryManager::gpuHostPinnedBytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(cfg_.kind == PoolKind::GpuHost);
+        return gpuHostPinnedBlocks_ * cfg_.blockBytes;
+    }
+
+    /// @brief Return the peak registered GPU-host storage.
+    /// @details Reads the block high-water under the ownership mutex.
+    /// @return Lifetime maximum pinned bytes.
+    int64_t GlobalMemoryManager::gpuHostPeakPinnedBytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(pool_ != nullptr && cfg_.kind == PoolKind::GpuHost);
+        return gpuHostPeakPinnedBlocks_ * cfg_.blockBytes;
+    }
+
+
+    /// @brief Access the separately initialized GPU-host pool.
+    /// @details Access alone allocates no backing reservation.
+    /// @return Fifth process-wide memory manager.
+    GlobalMemoryManager& gpuHostMemory() {
+        static GlobalMemoryManager manager;
+        return manager;
+    }
+
+    /// @brief Initialize the GPU-host manager with immutable geometry.
+    /// @details Reinitialization must name the same pool and geometry.
+    /// @param cfg Valid positive GPU-host configuration.
+    /// @return Nothing.
+    void initGpuHostMemory(const StaticMemoryConfig& cfg) {
+        assert(cfg.kind == PoolKind::GpuHost);
+        gpuHostMemory().init(cfg);
     }
 
 }

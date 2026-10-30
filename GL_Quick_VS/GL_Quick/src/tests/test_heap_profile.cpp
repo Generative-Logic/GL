@@ -120,7 +120,7 @@ TEST(heap_profile, hooks_count_allocations_and_frees) {
 }
 
 TEST(heap_profile, replaced_operators_count_live_bytes) {
-#if MEM_MEASUREMENT && defined(USE_MIMALLOC)
+#if HEAP_MEASUREMENT && defined(USE_MIMALLOC)
     ASSERT_TRUE(gl::heap_profile::countsNewDelete());
     const int64_t before = gl::heap_profile::liveBytes();
     char* volatile block = new char[1 << 20];
@@ -189,12 +189,12 @@ TEST(heap_profile, site_label_skips_allocator_frames_and_names_container) {
         "gl::heap_profile::onAllocate", "operator new", "mi_new",
         "std::_Default_allocate_traits::_Allocate",
         "std::vector<int,std::allocator<int> >::_Emplace_reallocate<int const &>",
-        "gl::Memory::addStatement", "gl::ExpressionAnalyzer::performElemPhase1",
-        "gl::ExpressionAnalyzer::proveKernel", "gl::ExpressionAnalyzer::prove",
+        "gl::Memory::addStatement", "gl::Prover::performElemPhase1",
+        "gl::Prover::proveKernel", "gl::Prover::prove",
         "gl::run_modes::fullRun", "main" };
     ASSERT_EQ(gl::heap_profile::siteLabel(names),
-        std::string("gl::Memory::addStatement < gl::ExpressionAnalyzer::performElemPhase1"
-                    " < gl::ExpressionAnalyzer::proveKernel < gl::ExpressionAnalyzer::prove"
+        std::string("gl::Memory::addStatement < gl::Prover::performElemPhase1"
+                    " < gl::Prover::proveKernel < gl::Prover::prove"
                     " < gl::run_modes::fullRun"
                     " [std::vector<int,std::allocator<int> >::_Emplace_reallocate<int const &>]"));
     const std::vector<std::string> bare = { "operator new", "gl::f" };
@@ -226,7 +226,7 @@ TEST(heap_profile, symbol_name_never_lends_another_functions_name) {
 }
 
 TEST(heap_profile, sampling_names_the_allocating_function) {
-#if MEM_MEASUREMENT && defined(USE_MIMALLOC)
+#if HEAP_MEASUREMENT && defined(USE_MIMALLOC)
     if (!gl::heap_profile::enabled()) gl::heap_profile::enable(64 * 1024);
     char* block = heapProfileAllocationProbe(std::size_t(256) << 20);
     gl::heap_profile::noteCensusSample(gl::heap_profile::liveBytes(), true);

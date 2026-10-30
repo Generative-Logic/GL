@@ -41,12 +41,24 @@
 #include "test_harness.hpp"
 
 #include "../compiler.hpp"
+#include "../compiler/expression_parser.hpp"
+#include "../compiler/compilation_normalizer.hpp"
+#include "../compiler/compilation_reuse.hpp"
+#include "../compiler/definition_expansion.hpp"
+#include "../proof/worker_context.hpp"
+#include <thread>
 
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include "../project_paths.hpp"
 #include <utility>
+#include <algorithm>
+#include <map>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
 namespace {
     // 1 MiB pool / 256 KiB block for the scratch-arena twin tests.
@@ -480,4 +492,400 @@ TEST(project_paths, invalid_layout_assertion_probe) {
     } else {
         ASSERT_TRUE(mode.empty());
     }
+}
+
+TEST(expression_parser, parses_tree_and_preserves_argument_sets) {
+    auto* tree = gl::ExpressionParser::parse(" (>[x] (p[x]) (q[x])) ");
+    ASSERT_TRUE(tree != nullptr);
+    ASSERT_EQ(ce::treeToExpr(tree), std::string("(>[x](p[x])(q[x]))"));
+    ASSERT_TRUE(tree->left->arguments.count("x") == 1);
+    ASSERT_TRUE(tree->right->arguments.count("x") == 1);
+    ce::deleteTree(tree);
+}
+
+TEST(expression_parser, rejects_empty_input) {
+    bool rejected = false;
+    try { auto* tree = gl::ExpressionParser::parse(""); ce::deleteTree(tree); }
+    catch (const std::runtime_error&) { rejected = true; }
+    ASSERT_TRUE(rejected);
+}
+
+TEST(expression_parser, normalizes_premises_and_splits_only_positive_heads) {
+    const std::string input = "(>[x](&(p[x])(q[x]))(r[x]))";
+    ASSERT_EQ(gl::ExpressionParser::smoothenExpr(input),
+              std::string("(>[x](p[x])(>[](q[x])(r[x])))"));
+    const auto heads = gl::ExpressionParser::groomExpr("(>[x](p[x])(&(q[x])(r[x])))");
+    ASSERT_EQ(heads.size(), std::size_t(2));
+    ASSERT_EQ(heads[0], std::string("(>[x](p[x])(q[x]))"));
+    ASSERT_EQ(heads[1], std::string("(>[x](p[x])(r[x]))"));
+    const auto negative = gl::ExpressionParser::groomExpr("!(&(p[x])(q[x]))");
+    ASSERT_EQ(negative.size(), std::size_t(1));
+    ASSERT_EQ(negative[0], std::string("!(&(p[x])(q[x]))"));
+}
+
+TEST(expression_parser, reads_and_renames_outer_binders) {
+    const auto args = gl::ExpressionParser::listLastRemovedArgs("(>[x,y](p[x])(q[y]))");
+    ASSERT_EQ(args.size(), std::size_t(2));
+    ASSERT_EQ(args[0], std::string("x"));
+    ASSERT_EQ(args[1], std::string("y"));
+    ASSERT_TRUE(gl::ExpressionParser::listLastRemovedArgs("(p[x])").empty());
+    const auto renamed = gl::ExpressionParser::renameLastRemoved("!(>[x](p[x])!(q[x]))", 7);
+    ASSERT_EQ(std::get<0>(renamed), std::string("!(>[comp_7](p[comp_7])!(q[comp_7]))"));
+    ASSERT_EQ(std::get<1>(renamed), 8);
+    ASSERT_EQ(std::get<2>(renamed), std::string("comp_7"));
+}
+
+TEST(compilation_normalizer, preserves_signed_keys_and_argument_modes) {
+    const std::vector<gl::EncodedExpression> input{
+        gl::EncodedExpression("(p[x,u_y])", "main"),
+        gl::EncodedExpression("!(q[x,z])", "main")};
+    const auto literal = gl::CompilationNormalizer::makeNormalizedEncodedKey(input, 1);
+    ASSERT_EQ(literal.first.numberExpressions, 2);
+    ASSERT_TRUE((literal.first.data == std::vector<std::string>{"p","False","1","u_y","q","True","1","2"}));
+    ASSERT_EQ(literal.second.at("x"), std::string("1"));
+    ASSERT_EQ(literal.second.at("z"), std::string("2"));
+    const auto separate = gl::CompilationNormalizer::makeNormalizedEncodedKey(input, 2);
+    ASSERT_EQ(separate.first.data[3], std::string("u_1"));
+    ASSERT_EQ(separate.second.at("u_y"), std::string("u_1"));
+    const auto together = gl::CompilationNormalizer::makeNormalizedEncodedKey(input, 0);
+    ASSERT_EQ(together.first.data[3], std::string("2"));
+    ASSERT_EQ(together.first.data[7], std::string("3"));
+    ASSERT_TRUE(gl::CompilationNormalizer::makeNormalizedEncodedKey({}).first.data.empty());
+}
+
+TEST(compilation_normalizer, composes_mappings_and_orders_retained_arguments) {
+    const auto composed = gl::CompilationNormalizer::combineUnchangeablePaths(
+        {{"x","u_2"},{"y","7"}}, {{"u_2","u_1"}});
+    ASSERT_EQ(composed.at("x"), std::string("u_1"));
+    ASSERT_EQ(composed.at("y"), std::string("7"));
+    const auto reverse = gl::CompilationNormalizer::createReverseUnchangeableMap(
+        {{"x","u_3"},{"y","8"}}, {{"x","u_1"},{"y","2"}});
+    ASSERT_EQ(reverse.size(), std::size_t(1));
+    ASSERT_EQ(reverse.at("u_1"), std::string("u_3"));
+    ASSERT_EQ(gl::CompilationNormalizer::createArgList(
+        {{"u_alpha","u_2"},{"u_beta","u_1"},{"unused","3"}}),
+        std::string("[beta,alpha]"));
+    ASSERT_EQ(gl::CompilationNormalizer::createArgList({}), std::string("[]"));
+}
+
+namespace {
+// A random body over three operators (fixed arities) and six variables, three
+// bound and three u_, kept as indices so that it can be renamed exactly.
+struct CanonicalTestElement { int name; bool negation; std::vector<int> variables; };
+
+const char* const kCanonicalTestNames[4] = {"p", "q", "r", "s"};
+const int kCanonicalTestArity[4] = {2, 3, 1, 2};
+
+std::vector<CanonicalTestElement> canonicalTestBody(std::mt19937& rng, int premises, bool withHead) {
+    std::vector<CanonicalTestElement> body;
+    for (int i = 0; i < premises + (withHead ? 1 : 0); ++i) {
+        CanonicalTestElement element;
+        element.name = i < premises ? static_cast<int>(rng() % 3u) : 3;
+        element.negation = i < premises && rng() % 4u == 0;
+        for (int a = 0; a < kCanonicalTestArity[element.name]; ++a)
+            element.variables.push_back(static_cast<int>(rng() % 6u));
+        body.push_back(element);
+    }
+    return body;
+}
+
+// The body spelled with the given variable names (0..2 bound, 3..5 u_).
+std::vector<gl::EncodedExpression> canonicalTestSpell(const std::vector<CanonicalTestElement>& body,
+                                                     const std::vector<std::string>& names) {
+    std::vector<gl::EncodedExpression> out;
+    for (const auto& element : body) {
+        std::string text = std::string(element.negation ? "!(" : "(") + kCanonicalTestNames[element.name] + "[";
+        for (std::size_t a = 0; a < element.variables.size(); ++a) {
+            if (a) text += ',';
+            text += names[static_cast<std::size_t>(element.variables[a])];
+        }
+        out.emplace_back(text + "])", "main");
+    }
+    return out;
+}
+
+// The comparison sequence of a list in the given order: per element its
+// polarity, then per argument its kind (bound 0, u_ 1) and number, read from
+// the mode-2 normalized key.
+std::vector<std::vector<int>> canonicalTestTokens(const std::vector<gl::EncodedExpression>& list) {
+    const auto normalized = gl::CompilationNormalizer::makeNormalizedEncodedKey(list, 2);
+    std::vector<std::vector<int>> out;
+    std::size_t position = 0;
+    for (const auto& expression : list) {
+        ++position;   // the operator name
+        std::vector<int> token{normalized.first.data[position++] == "True" ? 1 : 0};
+        for (std::size_t a = 0; a < expression.arguments.size(); ++a) {
+            const std::string& t = normalized.first.data[position++];
+            const bool isU = t.rfind("u_", 0) == 0;
+            token.push_back(isU ? 1 : 0);
+            token.push_back(std::stoi(isU ? t.substr(2) : t));
+        }
+        out.push_back(token);
+    }
+    return out;
+}
+
+// The oracle: the smallest sequence over every order that keeps the operator
+// groups in name order, each group in every one of its permutations.
+std::vector<std::vector<int>> canonicalTestBruteForce(const std::vector<gl::EncodedExpression>& tail,
+                                                      const std::vector<gl::EncodedExpression>& head) {
+    std::map<std::string, std::vector<int>> groups;
+    for (std::size_t i = 0; i < tail.size(); ++i) groups[tail[i].name].push_back(static_cast<int>(i));
+    std::vector<std::vector<int>> members;
+    for (const auto& group : groups) members.push_back(group.second);
+    std::vector<std::vector<int>> best;
+    std::vector<int> order;
+    const auto walk = [&](const auto& self, std::size_t g) -> void {
+        if (g == members.size()) {
+            std::vector<gl::EncodedExpression> list;
+            for (const int index : order) list.push_back(tail[static_cast<std::size_t>(index)]);
+            list.insert(list.end(), head.begin(), head.end());
+            const auto tokens = canonicalTestTokens(list);
+            if (best.empty() || tokens < best) best = tokens;
+            return;
+        }
+        std::vector<int> permutation = members[g];
+        std::sort(permutation.begin(), permutation.end());
+        do {
+            order.insert(order.end(), permutation.begin(), permutation.end());
+            self(self, g + 1);
+            order.resize(order.size() - permutation.size());
+        } while (std::next_permutation(permutation.begin(), permutation.end()));
+    };
+    walk(walk, 0);
+    return best;
+}
+
+const std::vector<std::string> kCanonicalTestVariables{"a", "b", "c", "u_x", "u_y", "u_z"};
+} // namespace
+
+// The canonical order is the smallest normalized order of the body: compared
+// with an exhaustive search over every in-group permutation, with and without
+// a head, polarity and repeated variables included.
+TEST(compilation_normalizer, canonical_order_is_the_smallest_normalized_ordering) {
+    std::mt19937 rng(20261016u);
+    int checked = 0;
+    for (int trial = 0; trial < 400; ++trial) {
+        const auto body = canonicalTestBody(rng, 1 + static_cast<int>(rng() % 6u), trial % 2 == 0);
+        const auto spelled = canonicalTestSpell(body, kCanonicalTestVariables);
+        const bool withHead = trial % 2 == 0;
+        const std::vector<gl::EncodedExpression> tail(spelled.begin(), spelled.end() - (withHead ? 1 : 0));
+        const std::vector<gl::EncodedExpression> head(spelled.end() - (withHead ? 1 : 0), spelled.end());
+        auto canonical = gl::CompilationNormalizer::canonicalCombination(tail, head);
+        ASSERT_EQ(canonical.size(), tail.size());
+        std::multiset<std::string> before, after;
+        for (const auto& e : tail) before.insert(e.original);
+        for (const auto& e : canonical) after.insert(e.original);
+        ASSERT_TRUE(before == after);
+        canonical.insert(canonical.end(), head.begin(), head.end());
+        ASSERT_TRUE(canonicalTestTokens(canonical) == canonicalTestBruteForce(tail, head));
+        ++checked;
+    }
+    ASSERT_EQ(checked, 400);
+    ASSERT_TRUE(gl::CompilationNormalizer::canonicalCombination({}, {}).empty());
+}
+
+// The repetition-map key of a body does not depend on the order of its
+// premises or the names of its variables, and a body already in canonical
+// order keeps its order.
+TEST(compilation_normalizer, canonical_key_ignores_premise_order_and_variable_names) {
+    std::mt19937 rng(20261017u);
+    for (int trial = 0; trial < 300; ++trial) {
+        const bool withHead = trial % 3 != 0;
+        auto body = canonicalTestBody(rng, 1 + static_cast<int>(rng() % 7u), withHead);
+        const auto spelled = canonicalTestSpell(body, kCanonicalTestVariables);
+        const std::vector<gl::EncodedExpression> tail(spelled.begin(), spelled.end() - (withHead ? 1 : 0));
+        const std::vector<gl::EncodedExpression> head(spelled.end() - (withHead ? 1 : 0), spelled.end());
+        const auto key = gl::CompilationReuse::canonicalReuseKey(tail, head);
+
+        // Shuffle the premises, rename the bound and the u_ variables among
+        // fresh names of their own kind.
+        std::vector<int> premiseOrder(tail.size());
+        for (std::size_t i = 0; i < premiseOrder.size(); ++i) premiseOrder[i] = static_cast<int>(i);
+        std::shuffle(premiseOrder.begin(), premiseOrder.end(), rng);
+        std::vector<CanonicalTestElement> shuffled;
+        for (const int index : premiseOrder) shuffled.push_back(body[static_cast<std::size_t>(index)]);
+        if (withHead) shuffled.push_back(body.back());
+        std::vector<std::string> renamed{"d", "e", "f", "u_v", "u_w", "u_t"};
+        std::shuffle(renamed.begin(), renamed.begin() + 3, rng);
+        std::shuffle(renamed.begin() + 3, renamed.end(), rng);
+        const auto respelled = canonicalTestSpell(shuffled, renamed);
+        const std::vector<gl::EncodedExpression> tail2(respelled.begin(), respelled.end() - (withHead ? 1 : 0));
+        const std::vector<gl::EncodedExpression> head2(respelled.end() - (withHead ? 1 : 0), respelled.end());
+        ASSERT_TRUE(gl::CompilationReuse::canonicalReuseKey(tail2, head2).first == key.first);
+
+        // A canonical list comes back in the same order.
+        const auto canonical = gl::CompilationNormalizer::canonicalCombination(tail, head);
+        const auto again = gl::CompilationNormalizer::canonicalCombination(canonical, head);
+        for (std::size_t i = 0; i < canonical.size(); ++i)
+            ASSERT_EQ(again[i].original, canonical[i].original);
+    }
+    // Different structures keep different keys: a chain a-b, b-c against two
+    // edges that meet in b.
+    const std::vector<gl::EncodedExpression> chain{gl::EncodedExpression("(p[a,b])", "main"),
+                                                    gl::EncodedExpression("(p[b,c])", "main")};
+    const std::vector<gl::EncodedExpression> meet{gl::EncodedExpression("(p[a,b])", "main"),
+                                                   gl::EncodedExpression("(p[c,b])", "main")};
+    ASSERT_FALSE(gl::CompilationReuse::canonicalReuseKey(chain, {}).first
+        == gl::CompilationReuse::canonicalReuseKey(meet, {}).first);
+}
+
+// The head decides between premise orders the premises leave tied; premises
+// that stay interchangeable are taken in input order; a same-name group of
+// nine premises (above the former seven-premise cap) keys exactly.
+TEST(compilation_normalizer, canonical_order_head_ties_and_large_groups) {
+    const std::vector<gl::EncodedExpression> premises{gl::EncodedExpression("(in[u_a,u_N])", "main"),
+                                                       gl::EncodedExpression("(in[u_b,u_N])", "main")};
+    const std::vector<gl::EncodedExpression> head{gl::EncodedExpression("(in3[u_b,u_a,u_c,u_plus])", "main")};
+    const auto ordered = gl::CompilationNormalizer::canonicalCombination(premises, head);
+    ASSERT_EQ(ordered[0].original, std::string("(in[u_b,u_N])"));
+    ASSERT_EQ(ordered[1].original, std::string("(in[u_a,u_N])"));
+    const auto key = gl::CompilationReuse::canonicalReuseKey(premises, head);
+    ASSERT_TRUE(key.first == std::vector<std::string>({"(in[u_1,u_2])", "(in[u_3,u_2])", "(in3[u_1,u_3,u_4,u_5])"}));
+    ASSERT_EQ(key.second.at("u_b"), std::string("u_1"));
+    ASSERT_EQ(key.second.at("u_a"), std::string("u_3"));
+
+    // Private variables: either premise may come first; the first is kept.
+    const auto alone = gl::CompilationNormalizer::canonicalCombination(premises, {});
+    ASSERT_EQ(alone[0].original, std::string("(in[u_a,u_N])"));
+
+    std::vector<gl::EncodedExpression> large;
+    std::vector<gl::EncodedExpression> reversed;
+    for (int i = 1; i <= 9; ++i)
+        large.emplace_back("(in[u_x" + std::to_string(i) + ",u_N])", "main");
+    large.emplace_back("(in3[u_x1,u_x2,u_x3,u_plus])", "main");
+    for (auto it = large.rbegin(); it != large.rend(); ++it) reversed.push_back(*it);
+    const std::vector<gl::EncodedExpression> conclusion{gl::EncodedExpression("(in[u_x3,u_N])", "main")};
+    ASSERT_TRUE(gl::CompilationReuse::canonicalReuseKey(large, conclusion).first
+        == gl::CompilationReuse::canonicalReuseKey(reversed, conclusion).first);
+}
+
+TEST(worker_context, keeps_worker_identity_local_to_each_thread) {
+    const int saved = gl::WorkerContext::coreId();
+    gl::WorkerContext::setCoreId(9);
+    int initial = 0, selected = 0;
+    std::thread worker([&] {
+        initial = gl::WorkerContext::coreId();
+        gl::WorkerContext::setCoreId(17);
+        selected = gl::WorkerContext::coreId();
+    });
+    worker.join();
+    ASSERT_EQ(initial, -1);
+    ASSERT_EQ(selected, 17);
+    ASSERT_EQ(gl::WorkerContext::coreId(), 9);
+    gl::WorkerContext::setCoreId(saved);
+}
+
+TEST(definition_expansion, reads_definitions_without_prover_state) {
+    ce::CoreExpressionMap configurations;
+    ce::CoreExpressionConfig predicate;
+    predicate.signature = "(R[x])";
+    predicate.definition = std::string("(p[x])");
+    configurations["R"] = predicate;
+    gl::CompiledExpressionMap definitions;
+    definitions["and7"] = gl::LogicalEntity("and", {"(p[u_1])", "(q[u_1])"}, "(and7[u_1])", 1);
+    gl::DefinitionExpansion expansion(configurations, definitions);
+    ASSERT_EQ(expansion.expandExpr("(R[a])"), std::string("(p[a])"));
+    ASSERT_EQ(expansion.expandExpr("(unknown[a])"), std::string("(unknown[a])"));
+    ASSERT_EQ(expansion.expandToBaseForm("(and7[a])"), std::string("(&(p[a])(q[a]))"));
+    ASSERT_EQ(configurations.size(), std::size_t(1));
+    ASSERT_EQ(definitions.size(), std::size_t(1));
+}
+
+// A conjunction has exactly two children: a compiled and or or with three
+// elements expands to two-child conjunctions nested to the left, each or
+// disjunct negated with double-negation cancellation; two elements keep
+// the single conjunction.
+TEST(definition_expansion, base_form_nests_two_child_conjunctions_to_the_left) {
+    ce::CoreExpressionMap configurations;
+    gl::CompiledExpressionMap definitions;
+    definitions["and8"] = gl::LogicalEntity("and", {"(p[u_1])", "(q[u_1])", "(r[u_1])"}, "(and8[u_1])", 1);
+    definitions["or5"] = gl::LogicalEntity("or", {"(p[u_1])", "!(q[u_1])", "(r[u_1])"}, "(or5[u_1])", 1);
+    definitions["or6"] = gl::LogicalEntity("or", {"(p[u_1])", "(q[u_1])"}, "(or6[u_1])", 1);
+    gl::DefinitionExpansion expansion(configurations, definitions);
+    ASSERT_EQ(expansion.expandToBaseForm("(and8[a])"), std::string("(&(&(p[a])(q[a]))(r[a]))"));
+    ASSERT_EQ(expansion.expandToBaseForm("(or5[a])"), std::string("!(&(&!(p[a])(q[a]))!(r[a]))"));
+    ASSERT_EQ(expansion.expandToBaseForm("!(or5[a])"), std::string("(&(&!(p[a])(q[a]))!(r[a]))"));
+    ASSERT_EQ(expansion.expandToBaseForm("(or6[a])"), std::string("!(&!(p[a])!(q[a]))"));
+}
+
+// Both nestings of a conjunction chain yield the same ordered conjuncts; a
+// negated conjunction is one conjunct and a non-conjunction is itself.
+TEST(definition_expansion, collects_conjuncts_of_either_nesting) {
+    ce::CoreExpressionMap configurations;
+    const auto collect = [&](const std::string& expression) {
+        std::vector<std::string> conjuncts;
+        gl::DefinitionExpansion::collectConjuncts(expression, configurations, conjuncts);
+        return conjuncts;
+    };
+    const std::vector<std::string> three = {"(p[a])", "!(q[a])", "(r[a])"};
+    ASSERT_TRUE(collect("(&(&(p[a])!(q[a]))(r[a]))") == three);
+    ASSERT_TRUE(collect("(&(p[a])(&!(q[a])(r[a])))") == three);
+    ASSERT_TRUE(collect("(&(&(p[a])!(q[a]))(&(r[a])(s[a])))")
+        == std::vector<std::string>({"(p[a])", "!(q[a])", "(r[a])", "(s[a])"}));
+    ASSERT_TRUE(collect("(&(p[a])!(&(q[a])(r[a])))")
+        == std::vector<std::string>({"(p[a])", "!(&(q[a])(r[a]))"}));
+    ASSERT_TRUE(collect("(&(p[a])(>[x](q[x])(r[x])))")
+        == std::vector<std::string>({"(p[a])", "(>[x](q[x])(r[x]))"}));
+    ASSERT_TRUE(collect("(p[a])") == std::vector<std::string>({"(p[a])"}));
+}
+
+// The parser reads exactly two children per conjunction, in either nesting.
+TEST(expression_parser, reads_two_child_conjunctions_of_either_nesting) {
+    for (const std::string& text : {std::string("(&(&(p[a])(q[a]))(r[a]))"),
+                                    std::string("(&(p[a])(&(q[a])(r[a])))"),
+                                    std::string("!(&(&!(p[a])!(q[a]))!(r[a]))")}) {
+        ce::TreeNode1* root = ce::parseExpr(text);
+        ASSERT_TRUE(root != NULL && root->left != NULL && root->right != NULL);
+        ASSERT_EQ(ce::treeToExpr(root), text);
+        ce::deleteTree(root);
+    }
+}
+
+TEST(definition_expansion, preserves_argument_prefix_and_negation_operations) {
+    ASSERT_EQ(gl::DefinitionExpansion::removeUPrefixFromArguments("(p[u_a,b])"), std::string("(p[a,b])"));
+    ASSERT_EQ(gl::DefinitionExpansion::addMissingU("(p[a,u_b,marker])"), std::string("(p[u_a,u_b,marker])"));
+    ASSERT_EQ(gl::DefinitionExpansion::replaceUSubstrings("(p[u_u_a,u_b])"), std::string("(p[a,b])"));
+    ASSERT_EQ(gl::DefinitionExpansion::stripUPrefixAST("(>[x](p[u_a])(q[x]))"), std::string("(>[x](p[a])(q[x]))"));
+    const auto values = gl::DefinitionExpansion::extractValues("(>[x](p[x])(q[x]))", {});
+    ASSERT_EQ(values.first, std::string("(p[x])"));
+    ASSERT_EQ(values.second, std::string("(q[x])"));
+    ASSERT_EQ(gl::DefinitionExpansion::negate("!(p[a])"), std::string("(p[a])"));
+}
+
+TEST(definition_expansion, scratch_negation_preserves_input_and_arena_lifetimes) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{16 << 20, 1 << 18});
+    gl::ScratchArena arena(&manager);
+    const std::string negative = "!(p[a])";
+    const auto before = arena.cursor();
+    const gl::StrSpan positive = gl::DefinitionExpansion::negateScratch(arena, gl::StrSpan(negative));
+    ASSERT_EQ(positive.toStdString(), std::string("(p[a])"));
+    ASSERT_TRUE(positive.ptr == negative.data() + 1);
+    ASSERT_TRUE(arena.cursor() == before);
+    const gl::StrSpan prefixed = gl::DefinitionExpansion::negateScratch(arena, positive);
+    ASSERT_EQ(prefixed.toStdString(), negative);
+    ASSERT_EQ(gl::DefinitionExpansion::negateScratch(arena, gl::StrSpan()).toStdString(), std::string("!"));
+    ASSERT_EQ(negative, std::string("!(p[a])"));
+}
+
+TEST(worker_context, parallel_mutation_flag_is_thread_local) {
+    const bool saved = gl::WorkerContext::inParallelWorkerPhase();
+    gl::WorkerContext::setParallelWorkerPhase(true);
+    ASSERT_TRUE(gl::WorkerContext::inParallelWorkerPhase());
+    bool workerStartedOutside = false;
+    bool workerEntered = false;
+    std::thread worker([&]() {
+        workerStartedOutside = !gl::WorkerContext::inParallelWorkerPhase();
+        gl::WorkerContext::setParallelWorkerPhase(true);
+        workerEntered = gl::WorkerContext::inParallelWorkerPhase();
+        gl::WorkerContext::setParallelWorkerPhase(false);
+    });
+    worker.join();
+    ASSERT_TRUE(workerStartedOutside);
+    ASSERT_TRUE(workerEntered);
+    ASSERT_TRUE(gl::WorkerContext::inParallelWorkerPhase());
+    gl::WorkerContext::setParallelWorkerPhase(false);
+    ASSERT_FALSE(gl::WorkerContext::inParallelWorkerPhase());
+    gl::WorkerContext::setParallelWorkerPhase(saved);
 }

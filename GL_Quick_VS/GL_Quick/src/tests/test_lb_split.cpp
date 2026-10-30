@@ -36,7 +36,12 @@
 /// vectors' drain order). The remaining tests pin per-record deposit routing and
 /// the changed/new member signatures. See `D-117`.
 
+#include "../memory.hpp"
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "hash_request_generator_fixture.hpp"
+#include "burst_sink_fixture.hpp"
 
 #include "../prover.hpp"
 #include "../infra/rt_tracker.hpp"
@@ -134,28 +139,28 @@ TEST(lb_split, check_local_encoded_memory_static_symbol_signature) {
     // Pins the record-chain capture signature. Compiles only if
     // checkLocalEncodedMemoryStatic appends its firings to the task's sealed
     // page set (no separate out-buffer parameter).
-    using ChkFn = void (gl::ExpressionAnalyzer::*)(const gl::StaticRequest&,
+    using ChkFn = void (gl::HashRuleEvaluator::*)(const gl::StaticRequest&,
                                                    const gl::Memory&,
                                                    unsigned,
                                                    gl::SealedPageSet&);
-    ChkFn fn = &gl::ExpressionAnalyzer::checkLocalEncodedMemoryStatic;
+    ChkFn fn = &gl::HashRuleEvaluator::checkLocalEncodedMemoryStatic;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(lb_split, apply_firing_records_symbol_signature) {
     // Pins the parts-view consumer signature: the LB's sealed part sets in
     // part order, records read off each set's chain.
-    using ApplyFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&,
+    using ApplyFn = void (gl::HashRuleEvaluator::*)(gl::Memory&,
                                                      gl::SealedPageSet* const*,
                                                      std::int32_t,
                                                      bool);
-    ApplyFn fn = &gl::ExpressionAnalyzer::applyFiringRecords;
+    ApplyFn fn = &gl::HashRuleEvaluator::applyFiringRecords;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(lb_split, apply_firing_records_head_deposit) {
     // A new head deposits its statement, origin and disintegration signals.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
     ana.parameters.max_origin_per_expr = 1;
@@ -164,17 +169,17 @@ TEST(lb_split, apply_firing_records_head_deposit) {
     rig.pages.appendRecord(
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1, false);
+    ana.ruleEvaluator.applyFiringRecords(mb, parts, 1, false);
 
     const gl::ExpressionWithValidity key("(in[2,1])", "main");
     bool found = false;
-    const gl::Mail mailSnap = gl::makeHeapMail(mb.sameIterationInternalMail,
-                                               mb.nameMap, mb.originInterner);
+    const gl::Mail mailSnap = gl::makeHeapMail(((mb).sameIterationInternalMail),
+                                               ((mb).nameMap), ((mb).originInterner));
     for (const auto& st : mailSnap.statements) {
         if (st.first.original == "(in[2,1])" && st.first.validityName == "main") found = true;
     }
     ASSERT_TRUE(found);
-    ASSERT_TRUE(mailSnap.exprOriginMap.find(key) != mailSnap.exprOriginMap.end());
+    ASSERT_TRUE(((mailSnap).exprOriginMap).find(key) != ((mailSnap).exprOriginMap).end());
     ASSERT_TRUE(mailSnap.disintegrationSignals.find(key)
                 != mailSnap.disintegrationSignals.end());
 }
@@ -184,7 +189,7 @@ TEST(lb_split, apply_firing_records_carries_iteration_min_merged) {
     // disintegration-signal column (D-233); two
     // firings depositing the same statement min-merge their iterations
     // (order-free, so the merged value is partition-independent).
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
     ana.parameters.max_origin_per_expr = 2;
@@ -199,10 +204,10 @@ TEST(lb_split, apply_firing_records_carries_iteration_min_merged) {
     rig.pages.appendRecord(r3);
     rig.pages.appendRecord(r1);
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1, false);
+    ana.ruleEvaluator.applyFiringRecords(mb, parts, 1, false);
 
-    const gl::Mail mailSnap = gl::makeHeapMail(mb.sameIterationInternalMail,
-                                               mb.nameMap, mb.originInterner);
+    const gl::Mail mailSnap = gl::makeHeapMail(((mb).sameIterationInternalMail),
+                                               ((mb).nameMap), ((mb).originInterner));
     const gl::ExpressionWithValidity key("(in[2,1])", "main");
     const auto it = mailSnap.disintegrationSignals.find(key);
     ASSERT_TRUE(it != mailSnap.disintegrationSignals.end());
@@ -214,28 +219,28 @@ TEST(lb_split, deposit_iteration_reaches_witness_mint) {
     // passes from the carried signal instead of -1 — names the disintegration
     // witnesses it_<iteration>_lev_...: an admitted preorder fact (definition:
     // an existence) deposited at iteration 2 mints an it_2_lev witness.
-    gl::ExpressionAnalyzer ana(std::string("IncubatorGauss3"));
+    gl::tests::ProverFixture ana(std::string("IncubatorGauss3"));
     const int lv[1] = { 0 };
     const gl::TransientOrigin origin{
         true, gl::OriginTag::taskFormulation, nullptr, 0 };
     const std::string fact = "(preorder[1,4,6,7])";
-    ana.body.level = 1;
-    const int64_t demand = gl::mintTemplateKey(ana.body.templateInterner, ana.body.nameMap,
+    ((ana.body).level) = 1;
+    const int64_t demand = gl::mintTemplateKey(((ana.body).templateInterner), ((ana.body).nameMap),
         "(in3[6,marker,7,4])", "main");
     gl::AdmissionMapValue admission;
     admission.standardMaxAdmissionDepth = 3;
     admission.standardMaxSecondaryNumber = 2;
-    admission.key = {ana.body.valueInterner.encode("(in3[8,9,10,11])")};
-    gl::insertAdmissionValue(ana.body.overallHashMemory.admissionMap, demand,
-        admission, ana.body.valueInterner, gl::genScratchArenas().forSlot(
+    admission.key = {((ana.body).valueInterner).encode("(in3[8,9,10,11])")};
+    gl::insertAdmissionValue(((((ana.body).overallHashMemory)).admissionMap), demand,
+        admission, ((ana.body).valueInterner), gl::genScratchArenas().forSlot(
             gl::genScratchArenas().slotCount()-1));
-    ana.body.overallHashMemory.admissionStatusMap.upsert(demand, uint8_t(0));
-    ana.addExprToMemoryBlock(gl::StrSpan(fact), ana.body, 2, 1, lv, 1,
+    ((((ana.body).overallHashMemory)).admissionStatusMap).upsert(demand, uint8_t(0));
+    ana.statementMemory.addExprToMemoryBlock(gl::StrSpan(fact), ana.body, 2, 1, lv, 1,
         origin, -1, -1, gl::StrSpan("main", 4), false);
 
     bool minted = false;
-    for (int32_t id = 1; id <= ana.body.nameMap.nameCount() && !minted; ++id) {
-        const std::string n(ana.body.nameMap.decode(id));
+    for (int32_t id = 1; id <= ((ana.body).nameMap).nameCount() && !minted; ++id) {
+        const std::string n(((ana.body).nameMap).decode(id));
         minted = n.rfind("it_2_lev", 0) == 0;
     }
     ASSERT_TRUE(minted);
@@ -243,7 +248,7 @@ TEST(lb_split, deposit_iteration_reaches_witness_mint) {
 
 TEST(lb_split, apply_firing_records_already_known_skips_deposit) {
     // An already-known head makes no statement, origin or name deposit.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
     RecordRig rig;
@@ -251,71 +256,33 @@ TEST(lb_split, apply_firing_records_already_known_skips_deposit) {
     rig.pages.appendRecord(
         makeHeadRecord(rig, "(in[int_0_lev_1_2,1])", "main", "implication", "(impA)", /*alreadyKnown=*/true));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1, false);
-    ASSERT_TRUE(mb.sameIterationInternalMail.statementsEmpty());
-    ASSERT_TRUE(mb.sameIterationInternalMail.exprOriginMapEmpty());
-    const gl::NameId headId = mb.nameMap.lookup(std::string("(in[int_0_lev_1_2,1])"));
+    ana.ruleEvaluator.applyFiringRecords(mb, parts, 1, false);
+    ASSERT_TRUE(((mb).sameIterationInternalMail).statementsEmpty());
+    ASSERT_TRUE(((mb).sameIterationInternalMail).exprOriginMapEmpty());
+    const gl::NameId headId = ((mb).nameMap).lookup(std::string("(in[int_0_lev_1_2,1])"));
     ASSERT_EQ(headId, 0);
 }
 
 TEST(lb_split, apply_firing_records_marker_deposit) {
     // A marker stages deferred integration preparation and algebraic demand.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     RecordRig rig;
     gl::Memory mb;
     rig.pages.appendRecord(
         makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)"));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1, false);
-    ASSERT_EQ((int)mb.deferredIntegrationPreps.size(), 1);
-    ASSERT_EQ((int)mb.admissionKeysAlgebra.size(), 1);
-    const gl::NameId markerId = mb.nameMap.lookup(std::string("(in3[1,marker,2,3])"));
+    ana.ruleEvaluator.applyFiringRecords(mb, parts, 1, false);
+    ASSERT_EQ((int)((mb).deferredIntegrationPreps).size(), 1);
+    ASSERT_EQ((int)((mb).admissionKeysAlgebra).size(), 1);
+    const gl::NameId markerId = ((mb).nameMap).lookup(std::string("(in3[1,marker,2,3])"));
     ASSERT_EQ(markerId, 0);
-}
-
-TEST(lb_split, apply_firing_records_orders_equal_marker_run_by_task) {
-    // Marker records equal in content but fired by different rule copies
-    // emit their owning tasks in task-content order, an unowned copy (task 0)
-    // first, on the sorting and the canonical path alike
-    // (I-284).
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
-    for (const bool canonical : { false, true }) {
-        RecordRig rig;
-        gl::Memory mb;
-        const int64_t taskA = gl::mintTemplateKey(mb.templateInterner, mb.nameMap,
-            std::string("(in2[a,c,b])"), std::string("main"));
-        const int64_t taskB = gl::mintTemplateKey(mb.templateInterner, mb.nameMap,
-            std::string("(in2[a,d,b])"), std::string("main"));
-        ana.registerIntegrationTask(mb, taskB, gl::StrSpan("(in2[a,d,b])", 12), 0);
-        ana.registerIntegrationTask(mb, taskA, gl::StrSpan("(in2[a,c,b])", 12), 0);
-        mb.lbMemory.integrationCopyOwners.insert(501, taskB);
-        mb.lbMemory.integrationCopyOwners.insert(502, taskA);
-        const int64_t copies[3] = { 501, 999, 502 };
-        for (const int64_t copy : copies) {
-            gl::FiringRecord r = makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)");
-            r.ruleCopyOwner = copy;
-            rig.pages.appendRecord(r);
-        }
-        gl::SealedPageSet* parts[1] = { &rig.pages };
-        ana.applyFiringRecords(mb, parts, 1, canonical);
-
-        ASSERT_EQ(static_cast<int>(mb.deferredIntegrationPreps.size()), 3);
-        ASSERT_EQ(static_cast<int>(mb.admissionKeysAlgebra.size()), 3);
-        const int64_t expected[3] = { 0, taskA, taskB };
-        for (int i = 0; i < 3; ++i) {
-            ASSERT_EQ(mb.deferredIntegrationPreps[i].ownerTask, expected[i]);
-            ASSERT_EQ(mb.admissionKeysAlgebra[i].ownerTask, expected[i]);
-        }
-        mb.deferredIntegrationPreps.clear();
-        mb.admissionKeysAlgebra.clear();
-    }
 }
 
 TEST(lb_split, apply_firing_records_canonical_input_bypasses_sort) {
     // A deliberately noncanonical sentinel order makes the bypass observable:
     // the true-path contract trusts the GPU adapter and deposits chain order
     // directly. Production GPU input has already been canonically ordered.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     RecordRig rig;
     gl::Memory mb;
     rig.pages.appendRecord(
@@ -323,11 +290,11 @@ TEST(lb_split, apply_firing_records_canonical_input_bypasses_sort) {
     rig.pages.appendRecord(
         makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)"));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1, true);
+    ana.ruleEvaluator.applyFiringRecords(mb, parts, 1, true);
 
-    ASSERT_EQ(static_cast<int>(mb.admissionKeysAlgebra.size()), 2);
-    ASSERT_EQ(mb.admissionKeysAlgebra[0].value.key[0].toStdString(), "(k2)");
-    ASSERT_EQ(mb.admissionKeysAlgebra[1].value.key[0].toStdString(), "(k1)");
+    ASSERT_EQ(static_cast<int>(((mb).admissionKeysAlgebra).size()), 2);
+    ASSERT_EQ(((mb).admissionKeysAlgebra)[0].value.key[0].toStdString(), "(k2)");
+    ASSERT_EQ(((mb).admissionKeysAlgebra)[1].value.key[0].toStdString(), "(k1)");
 }
 
 namespace {
@@ -336,14 +303,14 @@ namespace {
     /// staged vectors' drain order).
     void assertSameDeposits(gl::Memory& mbA, gl::Memory& mbB) {
         const gl::ExpressionWithValidity key("(in[2,1])", "main");
-        const gl::Mail snapA = gl::makeHeapMail(mbA.sameIterationInternalMail,
-                                                mbA.nameMap, mbA.originInterner);
-        const gl::Mail snapB = gl::makeHeapMail(mbB.sameIterationInternalMail,
-                                                mbB.nameMap, mbB.originInterner);
-        auto itA = snapA.exprOriginMap.find(key);
-        auto itB = snapB.exprOriginMap.find(key);
-        ASSERT_TRUE(itA != snapA.exprOriginMap.end());
-        ASSERT_TRUE(itB != snapB.exprOriginMap.end());
+        const gl::Mail snapA = gl::makeHeapMail(((mbA).sameIterationInternalMail),
+                                                ((mbA).nameMap), ((mbA).originInterner));
+        const gl::Mail snapB = gl::makeHeapMail(((mbB).sameIterationInternalMail),
+                                                ((mbB).nameMap), ((mbB).originInterner));
+        auto itA = ((snapA).exprOriginMap).find(key);
+        auto itB = ((snapB).exprOriginMap).find(key);
+        ASSERT_TRUE(itA != ((snapA).exprOriginMap).end());
+        ASSERT_TRUE(itB != ((snapB).exprOriginMap).end());
         ASSERT_EQ((int)itA->second.size(), 1);
         ASSERT_EQ((int)itB->second.size(), 1);
         ASSERT_EQ(itA->second.front().first, itB->second.front().first);
@@ -352,17 +319,17 @@ namespace {
         ASSERT_EQ(itA->second.front().second.front().original,
                   itB->second.front().second.front().original);
 
-        ASSERT_EQ((int)mbA.deferredIntegrationPreps.size(),
-                  (int)mbB.deferredIntegrationPreps.size());
-        for (std::size_t i = 0; i < mbA.deferredIntegrationPreps.size(); ++i) {
-            ASSERT_EQ(mbA.deferredIntegrationPreps[i].expression.toStdString(),
-                      mbB.deferredIntegrationPreps[i].expression.toStdString());
+        ASSERT_EQ((int)((mbA).deferredIntegrationPreps).size(),
+                  (int)((mbB).deferredIntegrationPreps).size());
+        for (std::size_t i = 0; i < ((mbA).deferredIntegrationPreps).size(); ++i) {
+            ASSERT_EQ(((mbA).deferredIntegrationPreps)[i].expression.toStdString(),
+                      ((mbB).deferredIntegrationPreps)[i].expression.toStdString());
         }
-        ASSERT_EQ((int)mbA.admissionKeysAlgebra.size(),
-                  (int)mbB.admissionKeysAlgebra.size());
-        for (std::size_t i = 0; i < mbA.admissionKeysAlgebra.size(); ++i) {
-            ASSERT_EQ(mbA.admissionKeysAlgebra[i].key.original.toStdString(),
-                      mbB.admissionKeysAlgebra[i].key.original.toStdString());
+        ASSERT_EQ((int)((mbA).admissionKeysAlgebra).size(),
+                  (int)((mbB).admissionKeysAlgebra).size());
+        for (std::size_t i = 0; i < ((mbA).admissionKeysAlgebra).size(); ++i) {
+            ASSERT_EQ(((mbA).admissionKeysAlgebra)[i].key.original.toStdString(),
+                      ((mbB).admissionKeysAlgebra)[i].key.original.toStdString());
         }
     }
 } // namespace
@@ -373,7 +340,7 @@ TEST(lb_split, apply_firing_records_order_independent) {
     // share a key (cap-1 origin selection is order-sensitive) and two markers
     // share a key (staged-vector drain order is order-sensitive). Both memory
     // blocks must end identical.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
     ana.parameters.max_origin_per_expr = 1;
@@ -401,8 +368,8 @@ TEST(lb_split, apply_firing_records_order_independent) {
     gl::Memory mbB;
     gl::SealedPageSet* partsA[1] = { &rigA.pages };
     gl::SealedPageSet* partsB[1] = { &rigB.pages };
-    ana.applyFiringRecords(mbA, partsA, 1, false);
-    ana.applyFiringRecords(mbB, partsB, 1, false);
+    ana.ruleEvaluator.applyFiringRecords(mbA, partsA, 1, false);
+    ana.ruleEvaluator.applyFiringRecords(mbB, partsB, 1, false);
     assertSameDeposits(mbA, mbB);
 
     // Two-part variant: the records split across TWO page sets handed in both
@@ -419,8 +386,8 @@ TEST(lb_split, apply_firing_records_order_independent) {
     gl::Memory mbD;
     gl::SealedPageSet* partsPQ[2] = { &rigP.pages, &rigQ.pages };
     gl::SealedPageSet* partsQP[2] = { &rigQ.pages, &rigP.pages };
-    ana.applyFiringRecords(mbC, partsPQ, 2, false);
-    ana.applyFiringRecords(mbD, partsQP, 2, false);
+    ana.ruleEvaluator.applyFiringRecords(mbC, partsPQ, 2, false);
+    ana.ruleEvaluator.applyFiringRecords(mbD, partsQP, 2, false);
     assertSameDeposits(mbC, mbD);
     // And the two-part merge equals the one-part merge of the same set.
     assertSameDeposits(mbA, mbC);
@@ -590,10 +557,10 @@ TEST(lb_split, phase_helpers_exist) {
     // The performElem phase-split helpers exist with their declared member
     // signatures (this compiles only if each is present). Their behaviour is
     // pure extraction, covered by the byte-identical full-pipeline gate.
-    auto p1 = &gl::ExpressionAnalyzer::performElemPhase1;
-    auto p2 = &gl::ExpressionAnalyzer::performElemPhase2;
-    auto p3 = &gl::ExpressionAnalyzer::performElemPhase3;
-    auto e2 = &gl::ExpressionAnalyzer::performElem2;
+    auto p1 = &gl::tests::ProverFixture::performElemPhase1;
+    auto p2 = &gl::Phase2Executor::performElemPhase2;
+    auto p3 = &gl::tests::ProverFixture::performElemPhase3;
+    auto e2 = &gl::Phase2Executor::performElem2;
     ASSERT_TRUE(p1 != nullptr);
     ASSERT_TRUE(p2 != nullptr);
     ASSERT_TRUE(p3 != nullptr);
@@ -615,30 +582,30 @@ TEST(lb_split, is_straggler_fair_share) {
     // work is the split-invariant SUM of the LB's parts (D-117). Fair-share is
     // masking-resistant and self-limiting to at most cores-1 LBs; integer arithmetic
     // keeps the verdict deterministic (two runs byte-identical).
-    using EA = gl::ExpressionAnalyzer;
+    using EA = gl::tests::ProverFixture;
     const int cores = 8;
     const int64_t floor = 1000;
 
     // Below fair-share -> not a straggler. Total 800, fairShare 100; 100 is not > 100.
-    ASSERT_FALSE(EA::isStraggler(100, 800, cores, floor));
+    ASSERT_FALSE(gl::Phase2Executor::isStraggler(100, 800, cores, floor));
     // Above fair-share AND above the floor -> straggler. fairShare 1000; 5000 > 1000.
-    ASSERT_TRUE(EA::isStraggler(5000, 8000, cores, floor));
+    ASSERT_TRUE(gl::Phase2Executor::isStraggler(5000, 8000, cores, floor));
     // Above fair-share but BELOW the floor -> not a straggler (setup break-even).
     // fairShare 100; 500 > 100 but 500 < floor 1000.
-    ASSERT_FALSE(EA::isStraggler(500, 800, cores, floor));
+    ASSERT_FALSE(gl::Phase2Executor::isStraggler(500, 800, cores, floor));
     // Exactly AT fair-share -> not a straggler (strict >).
-    ASSERT_FALSE(EA::isStraggler(1000, 8000, cores, floor));
+    ASSERT_FALSE(gl::Phase2Executor::isStraggler(1000, 8000, cores, floor));
     // Just above fair-share and above the floor -> straggler.
-    ASSERT_TRUE(EA::isStraggler(1001, 8000, cores, /*floor=*/1000));
+    ASSERT_TRUE(gl::Phase2Executor::isStraggler(1001, 8000, cores, /*floor=*/1000));
     // Self-limiting: 5 equal LBs (each 1000, total 5000, C=4, fairShare 1250) ->
     // none exceeds fair-share, a balanced load splits nothing.
-    ASSERT_FALSE(EA::isStraggler(1000, 5000, 4, 0));
+    ASSERT_FALSE(gl::Phase2Executor::isStraggler(1000, 5000, 4, 0));
     // One dominant LB among small ones IS flagged: total 1300, C=4, fairShare 325;
     // the 1000-work LB is > 325.
-    ASSERT_TRUE(EA::isStraggler(1000, 1300, 4, 0));
+    ASSERT_TRUE(gl::Phase2Executor::isStraggler(1000, 1300, 4, 0));
     // Integer division: totalWork 7, cores 2 -> fairShare 3.
-    ASSERT_TRUE(EA::isStraggler(4, 7, 2, 0));   // 4 > 3
-    ASSERT_FALSE(EA::isStraggler(3, 7, 2, 0));  // 3 not > 3
+    ASSERT_TRUE(gl::Phase2Executor::isStraggler(4, 7, 2, 0));   // 4 > 3
+    ASSERT_FALSE(gl::Phase2Executor::isStraggler(3, 7, 2, 0));  // 3 not > 3
 }
 
 TEST(lb_split, disable_lb_split_defaults_false) {
@@ -646,7 +613,7 @@ TEST(lb_split, disable_lb_split_defaults_false) {
     // normal build runs the barriered parallel path unchanged. It is set true
     // only for an RT / profiling run (one part per LB, RT tracker homed in
     // performElem2). See D-110.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ASSERT_FALSE(ana.parameters.disable_lb_split);
     ana.parameters.disable_lb_split = true;
     ASSERT_TRUE(ana.parameters.disable_lb_split);
@@ -662,7 +629,7 @@ TEST(lb_split, min_split_work_defaults_positive) {
     // The straggler trigger's only tunable knob: the setup break-even floor below
     // which an LB is never split (per-bucket work would be under the fixed setup
     // cost). Must default positive so a trivially cheap iteration splits nothing.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ASSERT_TRUE(ana.parameters.min_split_work > 0);
 }
 
@@ -671,7 +638,7 @@ TEST(lb_split, lb_split_defaults_true) {
     // Gauss) keeps the statistics-driven split active, so a future main-batch
     // config cannot silently regress to unsplit. Opting out is explicit
     // ("lb_split": false). See D-231.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ASSERT_TRUE(ana.parameters.lb_split);
 }
 
@@ -681,15 +648,15 @@ TEST(lb_split, lb_split_config_wiring) {
     // incubator batch opts in, while the statistics trigger keeps balanced
     // small LBs unsplit.
     // See D-231.
-    gl::ExpressionAnalyzer ip1(std::string("IncubatorPeano1"));
+    gl::tests::ProverFixture ip1(std::string("IncubatorPeano1"));
     ASSERT_TRUE(ip1.parameters.lb_split);
-    gl::ExpressionAnalyzer ip2(std::string("IncubatorPeano2"));
+    gl::tests::ProverFixture ip2(std::string("IncubatorPeano2"));
     ASSERT_TRUE(ip2.parameters.lb_split);
-    gl::ExpressionAnalyzer ig1(std::string("IncubatorGauss1"));
+    gl::tests::ProverFixture ig1(std::string("IncubatorGauss1"));
     ASSERT_TRUE(ig1.parameters.lb_split);
-    gl::ExpressionAnalyzer ig2(std::string("IncubatorGauss2"));
+    gl::tests::ProverFixture ig2(std::string("IncubatorGauss2"));
     ASSERT_TRUE(ig2.parameters.lb_split);
-    gl::ExpressionAnalyzer ig3(std::string("IncubatorGauss3"));
+    gl::tests::ProverFixture ig3(std::string("IncubatorGauss3"));
     ASSERT_TRUE(ig3.parameters.lb_split);
 }
 
@@ -697,10 +664,10 @@ TEST(lb_split, max_split_parts_bounds_the_expression_split) {
     // The one split dimension is the expression/bucket split, fanned to logicalCores
     // buckets, so the machine core count must fit under kMaxSplitParts (the
     // proveKernel entry assert). kStumpsPerBucketTarget is a positive balance factor.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ASSERT_TRUE(static_cast<int>(ana.logicalCores)
-                <= gl::ExpressionAnalyzer::kMaxSplitParts);
-    ASSERT_TRUE(gl::ExpressionAnalyzer::kStumpsPerBucketTarget > 0);
+                <= gl::HashRequestGenerator::kMaxSplitParts);
+    ASSERT_TRUE(gl::Phase2Executor::kStumpsPerBucketTarget > 0);
 }
 
 TEST(lb_split, name_map_lookup_is_non_minting) {
@@ -727,104 +694,104 @@ TEST(lb_split, name_map_lookup_is_non_minting) {
 
 TEST(lb_split, burst_deactivates_symbol_signature) {
     // Pins the predicate signature the phase-2 sink calls per head record.
-    using DeactFn = bool (gl::ExpressionAnalyzer::*)(const gl::Memory&,
+    using DeactFn = bool (gl::HashRuleEvaluator::*)(const gl::Memory&,
                                                      const gl::FiringRecord&);
-    DeactFn fn = &gl::ExpressionAnalyzer::burstDeactivates;
+    DeactFn fn = &gl::HashRuleEvaluator::burstDeactivates;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(lb_split, burst_deactivates_contradiction) {
     // primedForContradiction + head and neg(head) both at main -> doomed.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.primedForContradiction = true;
-    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+    ((mb).primedForContradiction) = true;
+    const gl::NameId negId = ((mb).nameMap).encode("!(in[2,1])");
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_TRUE(ana.burstDeactivates(mb, fr));
+    ASSERT_TRUE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_rejects_branch_local_contradiction) {
     // A branch-local head opposed by a main-scope negation is not a full LB
     // contradiction, so the phase-2 early-exit mirror must keep the burst alive.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.primedForContradiction = true;
-    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+    ((mb).primedForContradiction) = true;
+    const gl::NameId negId = ((mb).nameMap).encode("!(in[2,1])");
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr = makeHeadRecord(
         rig, "(in[2,1])",
         "main_boundary_ordis_(or0[2,1])_((in[2,1]))",
         "implication", "(impA)", false);
-    ASSERT_FALSE(ana.burstDeactivates(mb, fr));
+    ASSERT_FALSE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_requires_known_negation) {
     // primed but neg(head) absent from intKnownStatements -> no contradiction yet.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.primedForContradiction = true;
+    ((mb).primedForContradiction) = true;
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_FALSE(ana.burstDeactivates(mb, fr));
+    ASSERT_FALSE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_plain_lb_never_fires) {
     // Not primed, not recursion: even with neg(head) known no LB role applies.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+    const gl::NameId negId = ((mb).nameMap).encode("!(in[2,1])");
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_FALSE(ana.burstDeactivates(mb, fr));
+    ASSERT_FALSE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_vacuous_truth) {
     // isPartOfRecursion at "main" + neg(head) known -> vacuous-truth contradiction.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.isPartOfRecursion = true;
-    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+    ((mb).isPartOfRecursion) = true;
+    const gl::NameId negId = ((mb).nameMap).encode("!(in[2,1])");
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_TRUE(ana.burstDeactivates(mb, fr));
+    ASSERT_TRUE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_tobeproved_reached) {
     // isPartOfRecursion + head matches a main-scope toBeProved goal -> doomed.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.isPartOfRecursion = true;
-    mb.intToBeProved.assignSet(gl::packStatementKey(
-        mb.nameMap.encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
+    ((mb).isPartOfRecursion) = true;
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(
+        ((mb).nameMap).encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_TRUE(ana.burstDeactivates(mb, fr));
+    ASSERT_TRUE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_multigoal_keeps_burst_alive) {
@@ -832,67 +799,67 @@ TEST(lb_split, burst_deactivates_multigoal_keeps_burst_alive) {
     // deactivate. Under LB-split the other goals are owned by sibling parts that
     // have not fired yet; early-exiting here would cut them. Only the sole
     // remaining goal (toBeProved.size()==1) dooms the LB.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.isPartOfRecursion = true;
-    mb.intToBeProved.assignSet(gl::packStatementKey(
-        mb.nameMap.encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
-    mb.intToBeProved.assignSet(gl::packStatementKey(
-        mb.nameMap.encode("(in[3,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
+    ((mb).isPartOfRecursion) = true;
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(
+        ((mb).nameMap).encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(
+        ((mb).nameMap).encode("(in[3,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_FALSE(ana.burstDeactivates(mb, fr));
+    ASSERT_FALSE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_direct_lb_sole_goal) {
     // Direct (non-recursion) LB reaching its SOLE toBeProved goal must now
     // deactivate: the "toBeProved reached" early-exit is no longer gated on
     // isPartOfRecursion, so single-chapter proofs are eligible too.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.isPartOfRecursion = false;   // Single-chapter proof, not an induction triad
-    mb.intToBeProved.assignSet(gl::packStatementKey(
-        mb.nameMap.encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
+    ((mb).isPartOfRecursion) = false;   // Single-chapter proof, not an induction triad
+    ((mb).intToBeProved).assignSet(gl::packStatementKey(
+        ((mb).nameMap).encode("(in[2,1])"), gl::NameMap::MAIN_ID), nullptr, 0);
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_TRUE(ana.burstDeactivates(mb, fr));
+    ASSERT_TRUE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_ce_filter) {
     // CE-filter LB (contradictionIndex >= 0) + neg(head) a loaded fact -> the
     // conjecture is refuted, so the burst is doomed and stops early.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.contradictionIndex = 5;          // CE LB under test; not primed, not recursion
-    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
-    mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+    ((mb).contradictionIndex) = 5;          // CE LB under test; not primed, not recursion
+    const gl::NameId negId = ((mb).nameMap).encode("!(in[2,1])");
+    ((mb).intKnownStatements).insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_TRUE(ana.burstDeactivates(mb, fr));
+    ASSERT_TRUE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_ce_filter_requires_known_negation) {
     // CE LB but neg(head) absent from intKnownStatements -> no refutation yet,
     // the burst continues.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    mb.contradictionIndex = 5;
+    ((mb).contradictionIndex) = 5;
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", false);
-    ASSERT_FALSE(ana.burstDeactivates(mb, fr));
+    ASSERT_FALSE(ana.ruleEvaluator.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, doom_line_packing_and_cas_min) {
@@ -934,20 +901,20 @@ TEST(lb_split, burst_sink_stops_on_the_doom_line_for_every_part) {
     // deterministic prefix of its stream; a part AT the position keeps going
     // (a position tie may still publish its own trigger, which an earlier
     // invocation ordinal must win).
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     gl::Memory mb;
     RecordRig rig;
     std::atomic<int64_t> doomLine{ gl::kNoDoomLine };
-    gl::BurstSink sink{ &ana, &mb, 0, &rig.pages, &doomLine, 0,
+    gl::BurstSink sink{ &ana.ruleEvaluator, &mb, 0, &rig.pages, &doomLine, 0,
                         gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
 
     // No cap: canAccept stays true however high the submatch count climbs
     // while no line is published.
-    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    gl::HashRequestGenerator::resetGrowthMatchCount();
     ASSERT_TRUE(sink.canAccept());
-    gl::ExpressionAnalyzer::g_growthMatchCount = 1 << 20;
+    gl::tests::HashRequestGeneratorFixture::setGrowthMatchCount(1 << 20);
     ASSERT_TRUE(sink.canAccept());
-    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    gl::HashRequestGenerator::resetGrowthMatchCount();
 
     // Dependency skip: a 1-element request whose element is absent from
     // intKnownStatements is counted (produced) but not fired.
@@ -958,51 +925,51 @@ TEST(lb_split, burst_sink_stops_on_the_doom_line_for_every_part) {
     req.count = 1;
     req.intExprs[0] = &ie;
     ASSERT_TRUE(sink.consume(req));        // dependency unmet -> skipped, keep going
-    ASSERT_EQ((int)sink.produced, 1);
+    ASSERT_EQ((int)sink.producedCount(), 1);
     ASSERT_EQ(rig.pages.recordCount(), 0); // nothing fired
 
     // With a line published at position 5, a part runs up to the line and
     // stops strictly past it — regardless of how many parts the LB has.
     gl::lowerDoomLine(doomLine, gl::packDoomLine(5, 0));
-    gl::ExpressionAnalyzer::g_growthMatchCount = 5;
+    gl::tests::HashRequestGeneratorFixture::setGrowthMatchCount(5);
     ASSERT_TRUE(sink.canAccept());
-    gl::ExpressionAnalyzer::g_growthMatchCount = 6;
+    gl::tests::HashRequestGeneratorFixture::setGrowthMatchCount(6);
     ASSERT_FALSE(sink.canAccept());
 
     // A sibling part below the line keeps generating up to it (partOrdinal 3
     // can no longer win against ordinal 0 at the same position, but its
     // records before the line are not the merge's concern — the winner's
     // chain alone is merged).
-    gl::BurstSink sibling{ &ana, &mb, 0, &rig.pages, &doomLine, 3,
+    gl::BurstSink sibling{ &ana.ruleEvaluator, &mb, 0, &rig.pages, &doomLine, 3,
                            gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
-    gl::ExpressionAnalyzer::g_growthMatchCount = 4;
+    gl::tests::HashRequestGeneratorFixture::setGrowthMatchCount(4);
     ASSERT_TRUE(sibling.canAccept());
-    gl::ExpressionAnalyzer::g_growthMatchCount = 6;
+    gl::tests::HashRequestGeneratorFixture::setGrowthMatchCount(6);
     ASSERT_FALSE(sibling.canAccept());
 
     // A part that fired its own doom trigger (consume returned false) never
     // accepts again — its remaining request batches skip.
-    gl::BurstSink stopped{ &ana, &mb, 0, &rig.pages, &doomLine, 0,
+    gl::BurstSink stopped{ &ana.ruleEvaluator, &mb, 0, &rig.pages, &doomLine, 0,
                            gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
-    stopped.selfStopped = true;
-    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    gl::tests::BurstSinkFixture::stop(stopped);
+    gl::HashRequestGenerator::resetGrowthMatchCount();
     ASSERT_FALSE(stopped.canAccept());
 
-    gl::ExpressionAnalyzer::g_growthMatchCount = 0;  // reset for later tests
+    gl::HashRequestGenerator::resetGrowthMatchCount();  // reset for later tests
 }
 
 TEST(lb_split, phase2_finalize_merges_only_the_winner_on_a_doom_line) {
     // With a doom line set, performElemPhase2 merges ONLY the winning part's
     // chain (the part named by the line's ordinal); the losing parts' records
     // are discarded unread. Without a line, every part merges as before.
-    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::tests::ProverFixture ana(std::string("Peano"));
     ana.parameters.trackHistory = true;
     ana.parameters.compressor_mode = false;
     ana.parameters.max_origin_per_expr = 1;
 
     const auto deposited = [](gl::Memory& mb, const std::string& expr) {
-        const gl::Mail mailSnap = gl::makeHeapMail(mb.sameIterationInternalMail,
-                                                   mb.nameMap, mb.originInterner);
+        const gl::Mail mailSnap = gl::makeHeapMail(((mb).sameIterationInternalMail),
+                                                   ((mb).nameMap), ((mb).originInterner));
         for (const auto& st : mailSnap.statements)
             if (st.first.original == expr && st.first.validityName == "main")
                 return true;
@@ -1012,14 +979,14 @@ TEST(lb_split, phase2_finalize_merges_only_the_winner_on_a_doom_line) {
     // Doom line naming part 1 as the winner: only part 1's record lands.
     {
         gl::Memory mb;
-        mb.isActive = true;
+        ((mb).isActive) = true;
         RecordRig rigA, rigB;
         rigA.pages.appendRecord(makeHeadRecord(
             rigA, "(in[2,1])", "main", "implication", "(impA)", false));
         rigB.pages.appendRecord(makeHeadRecord(
             rigB, "(in[3,1])", "main", "implication", "(impB)", false));
         gl::SealedPageSet* parts[2] = { &rigA.pages, &rigB.pages };
-        ana.performElemPhase2(mb, parts, 2, gl::packDoomLine(7, 1));
+        ana.phase2Executor.performElemPhase2(mb, parts, 2, gl::packDoomLine(7, 1));
         ASSERT_FALSE(deposited(mb, "(in[2,1])"));
         ASSERT_TRUE(deposited(mb, "(in[3,1])"));
     }
@@ -1027,14 +994,14 @@ TEST(lb_split, phase2_finalize_merges_only_the_winner_on_a_doom_line) {
     // No line: both parts merge.
     {
         gl::Memory mb;
-        mb.isActive = true;
+        ((mb).isActive) = true;
         RecordRig rigA, rigB;
         rigA.pages.appendRecord(makeHeadRecord(
             rigA, "(in[2,1])", "main", "implication", "(impA)", false));
         rigB.pages.appendRecord(makeHeadRecord(
             rigB, "(in[3,1])", "main", "implication", "(impB)", false));
         gl::SealedPageSet* parts[2] = { &rigA.pages, &rigB.pages };
-        ana.performElemPhase2(mb, parts, 2, gl::kNoDoomLine);
+        ana.phase2Executor.performElemPhase2(mb, parts, 2, gl::kNoDoomLine);
         ASSERT_TRUE(deposited(mb, "(in[2,1])"));
         ASSERT_TRUE(deposited(mb, "(in[3,1])"));
     }

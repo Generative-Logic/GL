@@ -22,6 +22,9 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
 #include "../mail_log.hpp"
 
@@ -264,17 +267,17 @@ TEST(mail_log, origin_dedup_union) {
         gl::ExpressionWithValidity("(NaturalNumbers[1,2,3,4,5])", "main") };
 
     gl::Mail b1;
-    b1.exprOriginMap[key].push_back(std::make_pair(std::string("disintegration"), dep));
+    ((b1).exprOriginMap)[key].push_back(std::make_pair(std::string("disintegration"), dep));
     log.commit(root, b1);
 
     gl::Mail b2;
-    b2.exprOriginMap[key].push_back(std::make_pair(std::string("disintegration"), dep));
-    b2.exprOriginMap[key].push_back(std::make_pair(std::string("expansion"), dep));
+    ((b2).exprOriginMap)[key].push_back(std::make_pair(std::string("disintegration"), dep));
+    ((b2).exprOriginMap)[key].push_back(std::make_pair(std::string("expansion"), dep));
     log.commit(root, b2);
 
     gl::Mail inbox;
     log.pull(child, inbox);
-    ASSERT_EQ(inbox.exprOriginMap[key].size(), static_cast<std::size_t>(2));
+    ASSERT_EQ(((inbox).exprOriginMap)[key].size(), static_cast<std::size_t>(2));
 }
 
 // The PRODUCTION pull overload pull(const Memory*, RoutingColdMail&) delivers
@@ -304,7 +307,7 @@ TEST(mail_log, pull_routing_cold_mail_matches_heap) {
         gl::ExpressionWithValidity("(=[3,4])", "main"), std::set<int>{ 1, 5 }));
     b1.statements.insert(std::make_pair(
         gl::ExpressionWithValidity("(in[5,1])", "main"), std::set<int>()));
-    b1.exprOriginMap[keyA].push_back(std::make_pair(
+    ((b1).exprOriginMap)[keyA].push_back(std::make_pair(
         std::string("expansion"),
         std::vector<gl::ExpressionWithValidity>{
             gl::ExpressionWithValidity("(a)", "main"),
@@ -316,7 +319,7 @@ TEST(mail_log, pull_routing_cold_mail_matches_heap) {
     // ensureArena path in a fresh RoutingColdMail.
     gl::ExpressionWithValidity keyB("(in[2,1])", "main");
     gl::Mail b2;
-    b2.exprOriginMap[keyB].push_back(std::make_pair(
+    ((b2).exprOriginMap)[keyB].push_back(std::make_pair(
         std::string("disintegration"),
         std::vector<gl::ExpressionWithValidity>{
             gl::ExpressionWithValidity("(NaturalNumbers[1,2,3])", "main") }));
@@ -333,10 +336,10 @@ TEST(mail_log, pull_routing_cold_mail_matches_heap) {
     log.pull(child2, heapInbox);
 
     ASSERT_TRUE(routingHeap.statements == heapInbox.statements);
-    ASSERT_TRUE(routingHeap.exprOriginMap == heapInbox.exprOriginMap);
+    ASSERT_TRUE(((routingHeap).exprOriginMap) == ((heapInbox).exprOriginMap));
     // Sanity: both keys and both statements actually arrived.
     ASSERT_EQ(routingHeap.statements.size(), static_cast<std::size_t>(2));
-    ASSERT_EQ(routingHeap.exprOriginMap.size(), static_cast<std::size_t>(2));
+    ASSERT_EQ(((routingHeap).exprOriginMap).size(), static_cast<std::size_t>(2));
 }
 
 // An LB with no registered ancestors pulls nothing — "no ancestors" is a
@@ -386,11 +389,11 @@ TEST(mail_log, codec_mail_round_trip) {
     // One origin key with two origin lines, the second carrying two deps at
     // distinct validities.
     gl::ExpressionWithValidity key("(in[2,1])", "main");
-    m.exprOriginMap[key].push_back(std::make_pair(
+    ((m).exprOriginMap)[key].push_back(std::make_pair(
         std::string("disintegration"),
         std::vector<gl::ExpressionWithValidity>{
             gl::ExpressionWithValidity("(NaturalNumbers[1,2,3])", "main") }));
-    m.exprOriginMap[key].push_back(std::make_pair(
+    ((m).exprOriginMap)[key].push_back(std::make_pair(
         std::string("expansion"),
         std::vector<gl::ExpressionWithValidity>{
             gl::ExpressionWithValidity("(a)", "main"),
@@ -400,7 +403,7 @@ TEST(mail_log, codec_mail_round_trip) {
         blob.data(), static_cast<std::int32_t>(blob.size()));
 
     ASSERT_TRUE(r.statements == m.statements);
-    ASSERT_TRUE(r.exprOriginMap == m.exprOriginMap);
+    ASSERT_TRUE(((r).exprOriginMap) == ((m).exprOriginMap));
     ASSERT_TRUE(r.disintegrationSignals.empty());  // dropped by the log
     // serialize is the exact inverse: re-serializing the decode reproduces the blob.
     ASSERT_TRUE(gl::Codec<gl::Mail>::serialize(r) == blob);
@@ -413,7 +416,7 @@ TEST(mail_log, codec_mail_empty_round_trip) {
     const gl::Mail r = gl::Codec<gl::Mail>::deserialize(
         blob.data(), static_cast<std::int32_t>(blob.size()));
     ASSERT_TRUE(r.statements.empty());
-    ASSERT_TRUE(r.exprOriginMap.empty());
+    ASSERT_TRUE(((r).exprOriginMap).empty());
 }
 
 // Codec<CursorKey> is the identity over the 16-byte POD key; the two endpoints
@@ -522,28 +525,28 @@ namespace {
 
 TEST(deloadable_mail_out, insert_and_toheapmail) {
     gl::Memory mem;
-    ASSERT_TRUE(mem.mailOut.empty());
-    ASSERT_FALSE(mem.mailOutPending);
+    ASSERT_TRUE(((mem).mailOut).empty());
+    ASSERT_FALSE(((mem).mailOutPending));
     mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{});
     mem.insertMailOutStatement(ev("(in[b,N])"), std::set<int>{ 2, 5 });
     mem.addMailOutOrigin(ev("(in[a,N])"),
         std::make_pair("theorem", std::vector<gl::ExpressionWithValidity>()), 4);
-    ASSERT_FALSE(mem.mailOut.empty());
-    ASSERT_TRUE(mem.mailOutPending);
+    ASSERT_FALSE(((mem).mailOut).empty());
+    ASSERT_TRUE(((mem).mailOutPending));
 
     const gl::Mail m = gl::routingMailOutToHeap(
-        mem.mailOut, mem.mailOutInterner);
+        ((mem).mailOut), ((mem).mailOutInterner));
     ASSERT_EQ(m.statements.size(), static_cast<std::size_t>(2));
-    ASSERT_EQ(m.exprOriginMap.size(), static_cast<std::size_t>(1));
-    ASSERT_EQ(m.exprOriginMap.at(ev("(in[a,N])")).size(),
+    ASSERT_EQ(((m).exprOriginMap).size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(((m).exprOriginMap).at(ev("(in[a,N])")).size(),
               static_cast<std::size_t>(1));
-    ASSERT_TRUE(m.exprOriginMap.at(ev("(in[a,N])"))[0].first == "theorem");
-    ASSERT_TRUE(mem.mailOutLiveBytes > 0);
+    ASSERT_TRUE(((m).exprOriginMap).at(ev("(in[a,N])"))[0].first == "theorem");
+    ASSERT_TRUE(((mem).mailOutLiveBytes) > 0);
     mem.clearMailOut();
-    ASSERT_TRUE(mem.mailOut.empty());
-    ASSERT_FALSE(mem.mailOutPending);
-    ASSERT_EQ(mem.mailOutLiveBytes, 0);
-    ASSERT_EQ(mem.mailOutInterner.internedCount(), 0);
+    ASSERT_TRUE(((mem).mailOut).empty());
+    ASSERT_FALSE(((mem).mailOutPending));
+    ASSERT_EQ(((mem).mailOutLiveBytes), 0);
+    ASSERT_EQ(((mem).mailOutInterner).internedCount(), 0);
 }
 
 // Codec<Mail>::serialize(DeloadableMailOut) over randomized mailboxes — shared
@@ -624,9 +627,9 @@ TEST(deloadable_mail_out, serialize_matches_decoded_string_oracle_randomized) {
         }
         const int32_t before = gl::mailInterner().count();
         const std::vector<char> direct =
-            gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+            gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
         const int32_t minted = gl::mailInterner().count();
-        const std::vector<char> expected = oracle(mem.mailOut, mem.mailOutInterner);
+        const std::vector<char> expected = oracle(((mem).mailOut), ((mem).mailOutInterner));
         ASSERT_TRUE(direct == expected);
         ASSERT_TRUE(minted > before);                         // fresh names minted
         ASSERT_EQ(gl::mailInterner().count(), minted);        // oracle mints nothing new
@@ -641,13 +644,13 @@ TEST(deloadable_mail_out, statement_multiplicity) {
     mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{ 2 });
     mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{ 1 });
     const gl::Mail m = gl::routingMailOutToHeap(
-        mem.mailOut, mem.mailOutInterner);
+        ((mem).mailOut), ((mem).mailOutInterner));
     ASSERT_EQ(m.statements.size(), static_cast<std::size_t>(2));  // {1} and {2}
 }
 
 TEST(deloadable_mail_out, origin_cap_existing_rows_win) {
     // At cap=1 the existing row wins: a later foundational origin is dropped;
-    // mirrors ExpressionAnalyzer::addOrigin's string policy.
+    // mirrors ProofHistory::addOrigin's string policy.
     gl::Memory mem;
     mem.addMailOutOrigin(ev("(=[a,b])"),
         std::make_pair("equality1", std::vector<gl::ExpressionWithValidity>()), 1);
@@ -655,10 +658,10 @@ TEST(deloadable_mail_out, origin_cap_existing_rows_win) {
         std::make_pair("implication",
             std::vector<gl::ExpressionWithValidity>{ ev("(>[v1]...)") }), 1);
     const gl::Mail m = gl::routingMailOutToHeap(
-        mem.mailOut, mem.mailOutInterner);
-    ASSERT_EQ(m.exprOriginMap.at(ev("(=[a,b])")).size(),
+        ((mem).mailOut), ((mem).mailOutInterner));
+    ASSERT_EQ(((m).exprOriginMap).at(ev("(=[a,b])")).size(),
               static_cast<std::size_t>(1));
-    ASSERT_TRUE(m.exprOriginMap.at(ev("(=[a,b])"))[0].first == "equality1");
+    ASSERT_TRUE(((m).exprOriginMap).at(ev("(=[a,b])"))[0].first == "equality1");
 }
 
 // Run-door byte-twin: depositing the same statements through the
@@ -686,28 +689,28 @@ TEST(deloadable_mail_out, statement_levels_run_door_twin) {
     viaRun.insertMailOutStatement(gl::StrSpan("(in[b,N])"), gl::StrSpan("main"), two, 1);
 
     const gl::Mail hs =
-        gl::routingMailOutToHeap(viaSet.mailOut, viaSet.mailOutInterner);
+        gl::routingMailOutToHeap(((viaSet).mailOut), ((viaSet).mailOutInterner));
     const gl::Mail hr =
-        gl::routingMailOutToHeap(viaRun.mailOut, viaRun.mailOutInterner);
+        gl::routingMailOutToHeap(((viaRun).mailOut), ((viaRun).mailOutInterner));
     ASSERT_EQ(hs.statements.size(), static_cast<std::size_t>(4));
     ASSERT_TRUE(hs.statements == hr.statements);
 
     const std::vector<char> bs =
-        gl::Codec<gl::Mail>::serialize(viaSet.mailOut, viaSet.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((viaSet).mailOut), ((viaSet).mailOutInterner));
     const std::vector<char> br =
-        gl::Codec<gl::Mail>::serialize(viaRun.mailOut, viaRun.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((viaRun).mailOut), ((viaRun).mailOutInterner));
     ASSERT_TRUE(bs == br);   // byte-for-byte
 }
 
 TEST(deloadable_mail_out, clear_then_reuse) {
     gl::Memory mem;
     mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{ 3 });
-    ASSERT_FALSE(mem.mailOut.statementsEmpty());
+    ASSERT_FALSE(((mem).mailOut).statementsEmpty());
     mem.clearMailOut();
-    ASSERT_TRUE(mem.mailOut.empty());
+    ASSERT_TRUE(((mem).mailOut).empty());
     mem.insertMailOutStatement(ev("(in[c,N])"), std::set<int>{});
     ASSERT_EQ(gl::routingMailOutToHeap(
-        mem.mailOut, mem.mailOutInterner).statements.size(),
+        ((mem).mailOut), ((mem).mailOutInterner)).statements.size(),
               static_cast<std::size_t>(1));
 }
 
@@ -729,10 +732,10 @@ TEST(routing_cold_mail_codec, serialize_matches_toheapmail_bytes) {
         std::make_pair("equality1", std::vector<gl::ExpressionWithValidity>()), 8);
 
     const std::vector<char> direct =
-        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
     const std::vector<char> viaHeap =
         gl::Codec<gl::Mail>::serialize(gl::routingMailOutToHeap(
-            mem.mailOut, mem.mailOutInterner));
+            ((mem).mailOut), ((mem).mailOutInterner)));
     ASSERT_TRUE(direct == viaHeap);   // byte-for-byte
 
     // ...and the blob decodes back to a Mail that re-serializes identically.
@@ -774,12 +777,12 @@ TEST(routing_cold_mail_codec, statement_flag_round_trip) {
         gl::StrSpan("main"), gl::kMailStatementFlagExternalDisintegrate, 2);
     mem.setMailOutStatementFlag(gl::StrSpan("(existence1[1,x,y,4])"),
         gl::StrSpan("main"), gl::kMailStatementFlagExternalDisintegrate, 6);
-    ASSERT_TRUE(mem.mailOutPending);
-    ASSERT_EQ(mem.mailOut.statementFlags_.count(), 1);
+    ASSERT_TRUE(((mem).mailOutPending));
+    ASSERT_EQ(((mem).mailOut).statementFlags_.count(), 1);
 
     // Wire: serialize -> deserializeInto; probe by GLOBAL ids.
     const std::vector<char> blob =
-        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
     gl::RoutingColdMail inbox;
     gl::Codec<gl::Mail>::deserializeInto(
         blob.data(), static_cast<int32_t>(blob.size()), inbox);
@@ -804,48 +807,92 @@ TEST(routing_cold_mail_codec, statement_flag_round_trip) {
     ASSERT_EQ(heap.statements.size(), static_cast<std::size_t>(2));
 }
 
-// The integrated mark of the statement flag (D-444):
-// bit 3 packs beside the code without disturbing the iteration, OR-merges with
-// flag 5 in either order, crosses the wire from the sender door, and the
-// receiver probe reports it (false for an unmarked or absent statement).
-TEST(routing_cold_mail_codec, statement_flag_integrated_mark_round_trip) {
-    const int32_t marked = gl::packMailStatementFlag(gl::kMailStatementFlagNone, -1, true);
-    ASSERT_TRUE(gl::unpackMailStatementFlagIntegrated(marked));
-    ASSERT_EQ(gl::unpackMailStatementFlagCode(marked), gl::kMailStatementFlagNone);
-    ASSERT_EQ(gl::unpackMailStatementFlagIteration(marked), -1);
-    const int32_t relay = gl::packMailStatementFlag(
-        gl::kMailStatementFlagExternalDisintegrate, 4);
-    ASSERT_FALSE(gl::unpackMailStatementFlagIntegrated(relay));
-    for (const int32_t merged : { gl::mergeMailStatementFlag(marked, relay),
-                                  gl::mergeMailStatementFlag(relay, marked) }) {
-        ASSERT_TRUE(gl::unpackMailStatementFlagIntegrated(merged));
-        ASSERT_EQ(gl::unpackMailStatementFlagCode(merged),
-                  gl::kMailStatementFlagExternalDisintegrate);
-        ASSERT_EQ(gl::unpackMailStatementFlagIteration(merged), 4);
-    }
+// Flag 6 (D-528): the unconditional-ordis code
+// packs, merges (a real flag wins over none) and crosses the wire like flag 5,
+// carrying no generation stamp.
+TEST(routing_cold_mail_codec, statement_flag_unconditional_ordis_round_trip) {
+    const int32_t p6 = gl::packMailStatementFlag(
+        gl::kMailStatementFlagUnconditionalOrdis, -1);
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(p6),
+              gl::kMailStatementFlagUnconditionalOrdis);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(p6), -1);
+    const int32_t none = gl::packMailStatementFlag(
+        gl::kMailStatementFlagNone, -1);
+    ASSERT_EQ(gl::mergeMailStatementFlag(none, p6), p6);   // 6 wins over none
+    ASSERT_EQ(gl::mergeMailStatementFlag(p6, none), p6);
+    ASSERT_EQ(gl::mergeMailStatementFlag(p6, p6), p6);     // repeated marking
 
     gl::Memory mem;
-    mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{ 1 });
-    mem.insertMailOutStatement(ev("(in[b,N])"), std::set<int>{ 1 });
-    mem.setMailOutStatementFlag(gl::StrSpan("(in[a,N])"), gl::StrSpan("main"),
-        gl::kMailStatementFlagNone, -1, true);
+    mem.insertMailOutStatement(ev("(or8[1,4,5,6,9,x,10,y])"), std::set<int>{ 1 });
+    mem.insertMailOutStatement(ev("(in[x,N])"), std::set<int>{ 1 });
+    mem.setMailOutStatementFlag(gl::StrSpan("(or8[1,4,5,6,9,x,10,y])"),
+        gl::StrSpan("main"), gl::kMailStatementFlagUnconditionalOrdis, -1);
+    ASSERT_EQ(((mem).mailOut).statementFlags_.count(), 1);
+
     const std::vector<char> blob =
-        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
     gl::RoutingColdMail inbox;
     gl::Codec<gl::Mail>::deserializeInto(
         blob.data(), static_cast<int32_t>(blob.size()), inbox);
     int32_t code = 0, iter = 0;
-    bool integrated = false;
     inbox.getStatementFlag(gl::packOriginKey(
-        gl::mailInterner().intern(gl::StrSpan("(in[a,N])")),
-        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter, &integrated);
-    ASSERT_TRUE(integrated);
+        gl::mailInterner().intern(gl::StrSpan("(or8[1,4,5,6,9,x,10,y])")),
+        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter);
+    ASSERT_EQ(code, gl::kMailStatementFlagUnconditionalOrdis);
+    ASSERT_EQ(iter, -1);
+    inbox.getStatementFlag(gl::packOriginKey(
+        gl::mailInterner().intern(gl::StrSpan("(in[x,N])")),
+        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter);
+    ASSERT_EQ(code, gl::kMailStatementFlagNone);
+}
+
+// From premise (D-522): the bit packs beside any flag
+// code and iteration, stays set through a merge from either side, and crosses
+// the wire.
+TEST(routing_cold_mail_codec, statement_flag_from_premise_round_trip) {
+    const int32_t premise = gl::packMailStatementFlag(gl::kMailStatementFlagNone, -1, true);
+    ASSERT_TRUE(gl::unpackMailStatementFromPremise(premise));
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(premise), gl::kMailStatementFlagNone);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(premise), -1);
+    const int32_t relay = gl::packMailStatementFlag(gl::kMailStatementFlagExternalDisintegrate, 7, true);
+    ASSERT_TRUE(gl::unpackMailStatementFromPremise(relay));
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(relay), gl::kMailStatementFlagExternalDisintegrate);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(relay), 7);
+    const int32_t top = gl::packMailStatementFlag(gl::kMailStatementFlagNone, (int32_t{1} << 27) - 2, true);
+    ASSERT_TRUE(gl::unpackMailStatementFromPremise(top));
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(top), (int32_t{1} << 27) - 2);
+    const int32_t plain = gl::packMailStatementFlag(gl::kMailStatementFlagExternalDisintegrate, 4);
+    ASSERT_FALSE(gl::unpackMailStatementFromPremise(plain));
+    const int32_t merged = gl::mergeMailStatementFlag(plain, premise);
+    ASSERT_TRUE(gl::unpackMailStatementFromPremise(merged));
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(merged), gl::kMailStatementFlagExternalDisintegrate);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(merged), 4);
+    ASSERT_EQ(gl::mergeMailStatementFlag(premise, plain), merged);
+    ASSERT_FALSE(gl::unpackMailStatementFromPremise(gl::mergeMailStatementFlag(plain, plain)));
+
+    gl::Memory mem;
+    mem.insertMailOutStatement(ev("(in[x,N])"), std::set<int>{ 1 });
+    mem.insertMailOutStatement(ev("(in[y,N])"), std::set<int>{ 1 });
+    mem.setMailOutStatementFlag(gl::StrSpan("(in[x,N])"), gl::StrSpan("main"),
+        gl::kMailStatementFlagNone, -1, true);
+    ASSERT_EQ(((mem).mailOut).statementFlags_.count(), 1);
+    const std::vector<char> blob =
+        gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
+    gl::RoutingColdMail inbox;
+    gl::Codec<gl::Mail>::deserializeInto(
+        blob.data(), static_cast<int32_t>(blob.size()), inbox);
+    int32_t code = 0, iter = 0;
+    bool fromPremise = false;
+    inbox.getStatementFlag(gl::packOriginKey(
+        gl::mailInterner().intern(gl::StrSpan("(in[x,N])")),
+        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter, &fromPremise);
+    ASSERT_TRUE(fromPremise);
     ASSERT_EQ(code, gl::kMailStatementFlagNone);
     ASSERT_EQ(iter, -1);
     inbox.getStatementFlag(gl::packOriginKey(
-        gl::mailInterner().intern(gl::StrSpan("(in[b,N])")),
-        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter, &integrated);
-    ASSERT_FALSE(integrated);
+        gl::mailInterner().intern(gl::StrSpan("(in[y,N])")),
+        gl::mailInterner().intern(gl::StrSpan("main"))), code, iter, &fromPremise);
+    ASSERT_FALSE(fromPremise);
 }
 
 // Codec<Mail>::deserializeInto folds a blob STRAIGHT into a routing mailIn (GLOBAL
@@ -862,17 +909,17 @@ TEST(routing_cold_mail_codec, deserialize_into_round_trips) {
         std::make_pair("disintegration",
             std::vector<gl::ExpressionWithValidity>{ ev("(&[x,y])") }), 8);
     const std::vector<char> blob =
-        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
 
     // Direct decode into a fresh mailIn (global ids).
     gl::RoutingColdMail inbox;
     gl::Codec<gl::Mail>::deserializeInto(
         blob.data(), static_cast<int32_t>(blob.size()), inbox);
     const gl::Mail srcHeap =
-        gl::routingMailOutToHeap(mem.mailOut, mem.mailOutInterner);
+        gl::routingMailOutToHeap(((mem).mailOut), ((mem).mailOutInterner));
     const gl::Mail inboxHeap = gl::routingMailInToHeap(inbox);
     ASSERT_TRUE(srcHeap.statements == inboxHeap.statements);
-    ASSERT_TRUE(srcHeap.exprOriginMap == inboxHeap.exprOriginMap);
+    ASSERT_TRUE(((srcHeap).exprOriginMap) == ((inboxHeap).exprOriginMap));
 
     // ...and equals the heap reference path deserialize -> mergeBatchIntoMailIn.
     gl::RoutingColdMail refInbox;
@@ -881,7 +928,7 @@ TEST(routing_cold_mail_codec, deserialize_into_round_trips) {
     gl::mergeBatchIntoMailIn(batch, refInbox);
     const gl::Mail refHeap = gl::routingMailInToHeap(refInbox);
     ASSERT_TRUE(refHeap.statements == inboxHeap.statements);
-    ASSERT_TRUE(refHeap.exprOriginMap == inboxHeap.exprOriginMap);
+    ASSERT_TRUE(((refHeap).exprOriginMap) == ((inboxHeap).exprOriginMap));
 }
 
 // Codec<Mail>::deserializeInto(pool, start, len, inbox) — the production
@@ -907,7 +954,7 @@ TEST(routing_cold_mail_codec, deserialize_into_pool_matches_char) {
             std::vector<gl::ExpressionWithValidity>{
                 ev("(&[x,y])"), ev("(=[p,q])"), ev("(in[c,N])") }), 8);  // multi-dep
     const std::vector<char> blob =
-        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+        gl::Codec<gl::Mail>::serialize(((mem).mailOut), ((mem).mailOutInterner));
 
     // The char* overload — the oracle both pool decodes are compared against.
     gl::RoutingColdMail charInbox;
@@ -932,7 +979,7 @@ TEST(routing_cold_mail_codec, deserialize_into_pool_matches_char) {
             static_cast<std::uint32_t>(blob.size()), poolInbox);
         const gl::Mail poolHeap = gl::routingMailInToHeap(poolInbox);
         ASSERT_TRUE(poolHeap.statements == charHeap.statements);
-        ASSERT_TRUE(poolHeap.exprOriginMap == charHeap.exprOriginMap);
+        ASSERT_TRUE(((poolHeap).exprOriginMap) == ((charHeap).exprOriginMap));
     };
 
     poolDecodeEquals(1 << 13, 0);   // default 8 KiB page, aligned — contiguous

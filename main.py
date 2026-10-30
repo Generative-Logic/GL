@@ -63,6 +63,27 @@ _GL_QUICK_EXE = os.path.join(
 )
 
 
+def _configure_peak_snapshot() -> None:
+    """
+    @brief Configure the optional two-pass resident snapshot mode.
+
+    @details
+    An unset or empty mode leaves ordinary process measurements unchanged.
+    Scan and capture are explicit, mutually exclusive modes; only capture
+    needs the external collector, using this pipeline's interpreter unless
+    the caller supplied a nonempty interpreter path.
+
+    @return None. Capture mode supplies GL_PEAK_PYTHON in the child environment.
+    @invariant Invalid modes and empty explicit collector paths assert.
+    """
+    mode = os.environ.get("GL_PEAK_MODE", "")
+    assert mode in ("", "scan", "capture"), "GL_PEAK_MODE must be scan or capture"
+    if mode == "capture":
+        interpreter = os.environ.get("GL_PEAK_PYTHON", sys.executable)
+        assert interpreter, "GL_PEAK_PYTHON must name a Python interpreter"
+        os.environ["GL_PEAK_PYTHON"] = interpreter
+
+
 def _run_unit_test_gate(phase2_backend):
     """Run the in-tree C++ unit-test harness for the run's route; abort on any failure.
 
@@ -185,6 +206,14 @@ def main():
     # replay output lives under files/shortcut/.
     shortcut_mode = "--shortcut" in sys.argv[1:]
 
+    # --fresh-lean removes Lake's build folder before the Lean kernel check, so
+    # every module is rebuilt; by default Lake rebuilds only the modules whose
+    # sources or imports changed since the last run (its own content hashes).
+    # The shortcut exports no Lean, so the flag belongs to full runs only.
+    fresh_lean = "--fresh-lean" in sys.argv[1:]
+    assert not (fresh_lean and shortcut_mode), \
+        "--fresh-lean applies to full runs; the shortcut exports no Lean"
+
     # --GPU: run every batch of this run on the CUDA Phase 2 route. The
     # processor route is the default for every run (a customer PC needs no
     # GPU); --GPU is the one switch users and agents pass for a GPU run, and
@@ -295,6 +324,7 @@ def main():
     # proof work. A run without an explicit CUDA selection runs on the
     # processor (no shipped configuration pins a batch to CUDA), so its gate
     # leaves out the CUDA-route tests and needs no GPU.
+    _configure_peak_snapshot()
     with StageTimer("python.unit_tests.cpp", parent="run.total"):
         _run_unit_test_gate(phase2_backend or "cpu")
 
@@ -342,7 +372,8 @@ def main():
             verifier_failures = run_modes.shortcut_run(
                 phase2_backend=phase2_backend or "cpu")
         else:
-            verifier_failures = run_modes.full_run(phase2_backend=phase2_backend)
+            verifier_failures = run_modes.full_run(phase2_backend=phase2_backend,
+                                                   fresh_lean=fresh_lean)
 
     end_time = time.time()
     record_frame_timing(

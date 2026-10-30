@@ -1,0 +1,27 @@
+(=[v1,v2])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2](preorder[N,+,w1,w2])(>[](preorder[N,+,w2,w1])(=[w1,w2]))))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(preorder[N,+,v2,v1])	main	(preorder[N,+,v1,v2])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	(NaturalNumbers[N,i0,s,+,*])	main	(in2[i0,i1,s])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	expansion	(implication76[N,i0,s,+,*,i1])	main
+(implication76[N,i0,s,+,*,i1])	main	reformulation for integration and	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main	expansion for integration	(AnchorPeano[N,i0,s,+,*,i1])_integration_goal	main
+(preorder[N,+,v2,v1])	main	implication	(>[w1](in[w1,V1])(preorder[N,+,w1,v1]))	main	(in[v2,V1])	main
+(in[v2,V1])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[w1,W1](interval[N,+,i0,w1,W1])(in[w1,W1])))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(interval[N,+,i0,v2,V1])	main
+(preorder[N,+,v1,v2])	main	implication	(>[w1](in[w1,V1])(preorder[N,+,w1,v2]))	main	(in[v1,V1])	main
+(in[v1,V1])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[w1,W1](interval[N,+,i0,w1,W1])(in[w1,W1])))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(interval[N,+,i0,v1,V1])	main
+(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(>[](in2[i1,i2,s])(>[](identity[N,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id])))))	main	(NaturalNumbers[N,i0,s,+,*])	main	(identity[N,id])	main	(in2[i0,i1,s])	main	(in2[i1,i2,s])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(>[](in2[i1,i2,s])(>[](identity[N,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id])))))	main	expansion	(implication40[N,i0,s,+,*,i1,i2,id])	main
+(implication40[N,i0,s,+,*,i1,i2,id])	main	reformulation for integration and	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))_integration_goal	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))_integration_goal	main	expansion for integration	(AnchorGauss[N,i0,s,+,*,i1,i2,id])_integration_goal	main
+(identity[N,id])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[i1,i2,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(>[w1](in[w1,V1])(preorder[N,+,w1,v1]))	main	expansion	(implication90[V1,N,+,v1])	main
+(implication90[V1,N,+,v1])	main	disintegration	(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v1]))(implication91[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v1]))(implication91[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V1])	main
+(interval[N,+,i0,v1,V1])	main	task formulation
+(>[w1](in[w1,V1])(preorder[N,+,w1,v2]))	main	expansion	(implication90[V1,N,+,v2])	main
+(implication90[V1,N,+,v2])	main	disintegration	(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v2]))(implication91[N,+,i0,v2,V1]))(in[i0,N]))(in[v2,N]))	main
+(&(&(&(&(implication89[V1,N,+,i0])(implication90[V1,N,+,v2]))(implication91[N,+,i0,v2,V1]))(in[i0,N]))(in[v2,N]))	main	expansion	(interval[N,+,i0,v2,V1])	main
+(interval[N,+,i0,v2,V1])	main	task formulation

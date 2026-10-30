@@ -43,7 +43,10 @@ class NatExportTests(unittest.TestCase):
             self.assertNotIn("external_", source)
             self.assertNotIn("(relationalInduction :", source)
             self.assertIn("exact GLExport.FTA.fta_zero", source)
-            self.assertIn("NatModel.anchorFTA NatModel.induction", source)
+            self.assertIn("NatModel.anchorFTA NatModel.induction NatModel.strongInduction", source)
+            model = (project / "GLExport/NatModel.lean").read_text(encoding="utf-8")
+            self.assertIn("theorem strongInduction : StrongRelationalInduction domain 0 successor addition", model)
+            self.assertIn("Nat.strongRecOn", model)
             self.assertIn("import GLExport.NatResults", (project / "GLExport.lean").read_text())
 
     def test_concrete_nullary_fact_keeps_the_polymorphic_parameter_name(self):
@@ -77,7 +80,7 @@ class NatExportTests(unittest.TestCase):
     def test_global_anchor_quantification_keeps_induction_inside_its_scope(self):
         theorem = self.certificates()[-1]["theorems"][0]
         rendered = render_expression(parse_mpl(theorem["theorem"]["mpl"]), theorem["variable_types"])
-        self.assertIn("→ (RelationalInduction N zero succ →", rendered)
+        self.assertIn("→ (RelationalInduction N zero succ → StrongRelationalInduction N zero succ add →", rendered)
         context = "\n".join(_context_signature("AnchorFTA"))
         self.assertNotIn("induction_N", context)
         self.assertIn("P zero", context)

@@ -182,7 +182,7 @@ contradiction) follow on this branch; Parts 1+2 are jointly the closing set.
 **Takeover.** The three Part-1 commits were cherry-picked verbatim
 onto the fresh (tree byte-identical to the _3X Part-1 state;
 unit tests 1395/1395). Parts 2 and 3 are NOT in this tree. The first shortcut run
-() crashed at burst 16 at `prover.hpp::ordisMerge`'s
+() crashed at burst 16 at `logical_block/case_processor.hpp::ordisMerge`'s
 known-ambient-negation-without-level-row assert — proving the _3X post-mortem's anomaly #2 is
 reachable with Part 1 alone.
 
@@ -231,8 +231,8 @@ product, and the marker processed it anyway. The assert is untouched throughout 
  `registered`/`fullyDisintegrated` for these rows) — an I-85 bit-semantics restructuring.
 
 **Temporary instrumentation report (Rule 30).** Two traps live in tree, both committed on
-: the run-A identity print at the ordisMerge assert (prover.hpp) and the
-run-B writer traps (prover.hpp `addStatement` + equi-class commit, prover.cpp marker upsert).
+: the run-A identity print at the ordisMerge assert (logical_block/case_processor.hpp) and the
+run-B writer traps (logical_block/statement_memory.hpp `addStatement` + equi-class commit, logical_block/statement_memory.hpp marker upsert).
 They are removed once the maintainer's chosen fix is implemented and verified; if the fix is
 deferred, they stay reported here.
 
@@ -344,7 +344,7 @@ VALUE-side wake per the _3X post-mortem), Part 3 (X≠X direct contradiction).
 
 **THE ONE OPEN QUESTION (why B8 is still 41/42).** In the REDUCTIO twin `__contradiction__!(=[10,12])` the needed positive demand `(strictOrder[1,4,10,12])` never mints. The QUAL ground truth (`[O2TRAP-QUAL]` prints every strictOrder slot entering the demand pass with full key + verdict): B5's CLEAN full form `{(strictOrder[u_1,u_4,u_9,u_10]), (preorder[u_1,u_4,u_6,u_11]), (in3[u_9,u_11,u_12,u_5]), (in3[u_10,u_11,u_13,u_5])}` enters the demand pass ZERO times anywhere in the run — only recursion/literal-contaminated derived forms install variants (verdict=1 at keyN=4/5 with `u_rec` tokens or pre-bound result slots `12`/`13`, e.g. `(in3[u_9,u_rec,12,u_5])`), and none of their keys match the twin's three clean facts. The only pipeline mints of the text are `!(strictOrder[1,4,10,12])` in the wrong-direction disproof twin. So the question for the next session: **why does B5's clean full form never reach makeNormalizedKeysForAdmission's demand pass** (candidates: the broadcast-compact reconstruction pre-instantiates result slots before install; the clean-form install runs on a path that bypasses the pass; or the clean form installs only at LBs the QUAL filter didn't catch — note QUAL has no LB field, correlate via `[O2TRAP-UAM]`, which prints keyN/remN/validity/lb/full key for every strictOrder key entering updateAdmissionMap — 49222 lines, 7994 in contradiction twins, unmined). The maintainer's standing instrument rule applies: retarget the hashburst dump at the LB under scrutiny FIRST (the project conventions as amended today — the target is not sacred; the dump currently targets this reductio twin and both new map sections are wired into it).
 
-**Rule-30 trap inventory left in tree (report, not removed — diagnosis handoff):** header helper `gl::o2trapf` (prover.hpp, writes ); `[O2TRAP-ORARM]` + `[O2TRAP-PARK2]` + `[O2TRAP-ROUTEC]` (prover.cpp consumeOrLeavesCohort), `[O2TRAP-WAKE]`/`[O2TRAP-WAKE2]` (prover.cpp revisitRejectedOrdis2), `[O2TRAP-TWIN]` (prover.cpp addTheoremToMemory priming), `[O2TRAP-DEMAND]` (memory.cpp drainAdmissionKeysOrdis2), `[O2TRAP-MINGATE]` + `[O2TRAP-QUAL]` (memory.cpp demand filter/pass), `[O2TRAP-UAM]` (prover.hpp updateAdmissionMap). All file-routed (main run log stays clean, maintainer directive). Remove per Rule 30 once the open question is fixed.
+**Rule-30 trap inventory left in tree (report, not removed — diagnosis handoff):** header helper `gl::o2trapf` (logical_block/case_processor.cpp, writes ); `[O2TRAP-ORARM]` + `[O2TRAP-PARK2]` + `[O2TRAP-ROUTEC]` (logical_block/case_processor.cpp consumeOrLeavesCohort), `[O2TRAP-WAKE]`/`[O2TRAP-WAKE2]` (logical_block/rejected_source_replay.cpp revisitRejectedOrdis2), `[O2TRAP-TWIN]` (proof/proof_grid_builder.cpp addTheoremToMemory priming), `[O2TRAP-DEMAND]` (memory.cpp drainAdmissionKeysOrdis2), `[O2TRAP-MINGATE]` + `[O2TRAP-QUAL]` (memory.cpp demand filter/pass), `[O2TRAP-UAM]` (logical_block/admission_memory.hpp updateAdmissionMap). All file-routed (main run log stays clean, maintainer directive). Remove per Rule 30 once the open question is fixed.
 
 **Also recorded today (the project conventions + AGENTS.md + ):** the hashburst dump TARGET is retargetable at will and MUST follow the LB under investigation; structure/format/deactivation stay Rule-14-gated. Part 3 (X≠X) deferred to a later session by the maintainer (needed for uniqueness-flavored rungs, not for B8's strict route).
 

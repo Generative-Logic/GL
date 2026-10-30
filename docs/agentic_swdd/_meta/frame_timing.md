@@ -16,9 +16,9 @@ Contributions require CLA — see CONTRIBUTING.md.
 
 Every `main.py` run creates . `main.py` configures the ledger through `frame_timing.py` and exports its absolute path as `GL_FRAME_TIMING_PATH`; native subprocesses append to the same file. Each compact JSON object has exactly six fields: `stage`, `parent`, `batch`, `seconds`, `count`, and `excluded`.
 
-`stage` and `parent` form an inclusive hierarchy. The `run.total` root contains startup, unit gates, and `python.pipeline`. Each native `<tag>` scope contains setup, the explicitly excluded prover and compressor boundaries, save/orchestration, raw proof generation, and telemetry. Raw proof generation is subdivided into GL-binary export, chapter-index scan, outer `buildStack` calls, serialization, reload release, and the remaining exclusive work.
+`stage` and `parent` form an inclusive hierarchy. The `run.total` root contains startup, unit gates, and `python.pipeline`. Each native `<tag>` scope contains setup, the start-up stages of the prover call (`native.extent_purge`, `native.ce_filter`, `native.batch_preparation`; [D-533](../40_decisions.md#d-533)), the explicitly excluded prover and compressor boundaries, save/orchestration, raw proof generation, and telemetry. Raw proof generation is subdivided into GL-binary export, chapter-index scan, outer `buildStack` calls, serialization, reload release, and the remaining exclusive work.
 
-Instrumentation is outside the statified burst paths. Python uses `frame_timing.py` and native code measures only parent-owned orchestration/export boundaries in `run_modes.cpp · fullRun` and `visualizer.cpp · ExpressionAnalyzer::generateRawProofGraph`; no per-firing timer or allocation enters `performElemPhase1`, `performElemPhase2`, or `performElemPhase3`.
+Instrumentation is outside the statified burst paths. Python uses `frame_timing.py` and native code measures only parent-owned orchestration/export boundaries in `run_modes.cpp · fullRun` and `proof/proof_graph_writer.cpp · ProofGraphWriter::generateRawProofGraph`; no per-firing timer or allocation enters `performElemPhase1`, `performElemPhase2`, or `performElemPhase3`.
 
 ## Report
 
@@ -38,18 +38,24 @@ WSL measurement runs use `.scripts/wsl_snapshot.py`, which performs the direct w
 
 ## Concurrent finalization
 
-`run_modes.py` and `_finish_full_graphs` finish main processed chapters before
-launching the incubator output process. The child renders and verifies incubator
-chapters while the parent exports and checks Lean, renders main HTML, and verifies
-main chapters. Each process owns its renderer state and output tree. The parent
-joins the child on success and failure, retains its log, and combines both verifier
-counts only after successful child execution. Main HTML still follows Lean.
+`run_modes.py` and `_finish_full_graphs` start a child process that arranges the
+incubator book (`python.processed_graph.incubator`) while the parent processes the
+main graph (`python.processed_graph.main`); both record under `python.finalization`.
+After joining it, the parent launches the incubator output process, which renders and
+verifies incubator chapters while the parent writes the Lean export
+(`python.lean_export.main`, the build excluded), renders main HTML, verifies main
+chapters and finally waits for the background kernel check
+(`python.lean_kernel_wait.main`: only the part of the build the parent waits for).
+Each process owns its renderer state and output tree. The parent joins every child
+and the kernel check on success and failure, retains the child logs, and combines
+both verifier counts only after successful child execution. During the batches,
+`python.incubator_theorem_list` (per tag) is the incubator's theorem-list write.
 
 `python.finalization` is the elapsed wall-time scope under `python.pipeline`.
 Its main and incubator child scopes overlap, so their sum is not elapsed time;
 a negative child-sum residual at this parent represents overlap. Descendant stage
 records retain their individual costs. Use the measured parent wall duration in
-whole-run attribution. See `D-345`.
+whole-run attribution. See `D-345`, `D-540` and `D-537`.
 
 ---
 

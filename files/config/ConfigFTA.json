@@ -23,6 +23,7 @@
       "1"
     ],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 3,
     "max_size_expression_before_existence": 3,
     "max_size_expression_after_existence": 3
@@ -47,6 +48,8 @@
       "2"
     ],
     "output_args": [],
+    "symmetric": true,
+    "uniquely_definable": [],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -74,6 +77,9 @@
       "1"
     ],
     "output_args": [
+      "2"
+    ],
+    "uniquely_definable": [
       "2"
     ],
     "max_size_expression": 4,
@@ -110,6 +116,9 @@
     "output_args": [
       "3"
     ],
+    "uniquely_definable": [
+      "3"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -131,6 +140,9 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "M"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -156,6 +168,9 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "X"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -181,6 +196,7 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -202,6 +218,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 1,
     "max_size_expression_before_existence": 1,
     "max_size_expression_after_existence": 1
@@ -231,6 +248,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -264,6 +282,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -296,6 +315,9 @@
       "m"
     ],
     "output_args": [
+      "p"
+    ],
+    "uniquely_definable": [
       "p"
     ],
     "max_size_expression": 5,
@@ -331,6 +353,9 @@
     "max_count_per_conjecture": 2,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "M"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -370,6 +395,9 @@
       "m"
     ],
     "output_args": [],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -405,6 +433,9 @@
       "n"
     ],
     "output_args": [],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -430,6 +461,9 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "L"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -458,9 +492,16 @@
     "short_mpl": "(appendToSequence[n,a,f,g])",
     "max_count_per_conjecture": 1,
     "input_args": [
-      "n"
+      "n",
+      "a",
+      "f"
     ],
-    "output_args": [],
+    "output_args": [
+      "g"
+    ],
+    "uniquely_definable": [
+      "g"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -510,6 +551,9 @@
     "output_args": [
       "p"
     ],
+    "uniquely_definable": [
+      "p"
+    ],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -542,6 +586,8 @@
       "m"
     ],
     "output_args": [],
+    "symmetric": false,
+    "uniquely_definable": [],
     "max_size_expression": 3,
     "max_size_expression_before_existence": 3,
     "max_size_expression_after_existence": 3
@@ -574,6 +620,8 @@
       "m"
     ],
     "output_args": [],
+    "symmetric": false,
+    "uniquely_definable": [],
     "max_size_expression": 3,
     "max_size_expression_before_existence": 3,
     "max_size_expression_after_existence": 3
@@ -611,6 +659,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["a", "d"],
     "output_args": ["r"],
+    "uniquely_definable": [
+      "r"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -630,9 +681,145 @@
     "max_count_per_conjecture": 0,
     "input_args": ["n"],
     "output_args": ["a"],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
+  },
+  "bezEq": {
+    "arity": 8,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "(1)",
+        false
+      ],
+      "5": [
+        "(1)",
+        true
+      ],
+      "6": [
+        "(1)",
+        true
+      ],
+      "7": [
+        "(1)",
+        true
+      ],
+      "8": [
+        "(1)",
+        true
+      ]
+    },
+    "full_mpl": "bezEq.mpl",
+    "short_mpl": "(bezEq[N,+,*,i1,a,x,b,y])",
+    "max_count_per_conjecture": 1,
+    "input_args": [
+      "a",
+      "x",
+      "b",
+      "y"
+    ],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 7,
+    "max_size_expression_before_existence": 7,
+    "max_size_expression_after_existence": 7
+  },
+  "bez1": {
+    "arity": 6,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "3": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "4": [
+        "(1)",
+        false
+      ],
+      "5": [
+        "(1)",
+        true
+      ],
+      "6": [
+        "(1)",
+        true
+      ]
+    },
+    "full_mpl": "bez1.mpl",
+    "short_mpl": "(bez1[N,+,*,i1,a,b])",
+    "max_count_per_conjecture": 1,
+    "input_args": [
+      "a",
+      "b"
+    ],
+    "output_args": [],
+    "symmetric": true,
+    "uniquely_definable": [],
+    "max_size_expression": 7,
+    "max_size_expression_before_existence": 7,
+    "max_size_expression_after_existence": 7
+  },
+  "coprime": {
+    "arity": 6,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "(1)",
+        false
+      ],
+      "3": [
+        "P(x(1)(1))",
+        false
+      ],
+      "4": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "5": [
+        "(1)",
+        true
+      ],
+      "6": [
+        "(1)",
+        true
+      ]
+    },
+    "full_mpl": "coprime.mpl",
+    "short_mpl": "(coprime[N,i0,s,*,a,b])",
+    "max_count_per_conjecture": 1,
+    "input_args": [
+      "a",
+      "b"
+    ],
+    "output_args": [],
+    "symmetric": true,
+    "uniquely_definable": [],
+    "max_size_expression": 7,
+    "max_size_expression_before_existence": 7,
+    "max_size_expression_after_existence": 7
   },
   "prime": {
     "arity": 6,
@@ -649,6 +836,147 @@
     "max_count_per_conjecture": 0,
     "input_args": ["p"],
     "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "inSequence": {
+    "arity": 3,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "inSequence.mpl",
+    "short_mpl": "(inSequence[N,p,P])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["p"],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 4,
+    "max_size_expression_before_existence": 4,
+    "max_size_expression_after_existence": 4
+  },
+  "primeseq": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["(1)", false],
+      "5": ["(1)", false],
+      "6": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "primeseq.mpl",
+    "short_mpl": "(primeseq[N,+,*,i1,i2,P])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "ordered": {
+    "arity": 3,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "ordered.mpl",
+    "short_mpl": "(ordered[N,+,P])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "subset": {
+    "arity": 2,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["P(1)", true]
+    },
+    "full_mpl": "subset.mpl",
+    "short_mpl": "(subset[X,Y])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "empty": {
+    "arity": 1,
+    "definition_sets": {
+      "1": ["P(1)", true]
+    },
+    "full_mpl": "empty.mpl",
+    "short_mpl": "(empty[X])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "minimum": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(1)", true],
+      "4": ["(1)", true]
+    },
+    "full_mpl": "minimum.mpl",
+    "short_mpl": "(minimum[N,+,M,m])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "uniquely_definable": ["m"],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "hasMinimum": {
+    "arity": 3,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(1)", true]
+    },
+    "full_mpl": "hasMinimum.mpl",
+    "short_mpl": "(hasMinimum[N,+,M])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["M"],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "divisorSet": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["(1)", false],
+      "5": ["(1)", true],
+      "6": ["P(1)", true]
+    },
+    "full_mpl": "divisorSet.mpl",
+    "short_mpl": "(divisorSet[N,+,*,i2,k,D])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["k"],
+    "output_args": [],
+    "uniquely_definable": ["D"],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -686,6 +1014,9 @@
     "max_count_per_conjecture": 0,
     "input_args": ["a", "d"],
     "output_args": ["q"],
+    "uniquely_definable": [
+      "q"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -707,6 +1038,9 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "id"
+    ],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
@@ -742,9 +1076,56 @@
       "m"
     ],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 4,
     "max_size_expression_before_existence": 4,
     "max_size_expression_after_existence": 4
+  },
+  "primeFactorSeq": {
+    "arity": 10,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(1))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["P(x(1)(x(1)(1)))", false],
+      "5": ["(1)", false],
+      "6": ["(1)", false],
+      "7": ["(1)", false],
+      "8": ["(1)", true],
+      "9": ["P(x(1)(1))", true],
+      "10": ["(1)", true]
+    },
+    "full_mpl": "primeFactorSeq.mpl",
+    "short_mpl": "(primeFactorSeq[N,s,+,*,i0,i1,i2,k,P,n])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["k", "P"],
+    "output_args": ["n"],
+    "uniquely_definable": ["P", "n"],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
+  },
+  "hasPrimeFactorization": {
+    "arity": 8,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(1))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["P(x(1)(x(1)(1)))", false],
+      "5": ["(1)", false],
+      "6": ["(1)", false],
+      "7": ["(1)", false],
+      "8": ["(1)", true]
+    },
+    "full_mpl": "hasPrimeFactorization.mpl",
+    "short_mpl": "(hasPrimeFactorization[N,s,+,*,i0,i1,i2,n])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["n"],
+    "output_args": [],
+    "uniquely_definable": [],
+    "max_size_expression": 5,
+    "max_size_expression_before_existence": 5,
+    "max_size_expression_after_existence": 5
   },
   "limitSet": {
     "arity": 5,
@@ -775,6 +1156,9 @@
     "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [
+      "L"
+    ],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -812,6 +1196,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 5,
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
@@ -1103,6 +1488,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 6,
     "max_size_expression_before_existence": 6,
     "max_size_expression_after_existence": 6
@@ -1148,6 +1534,7 @@
     "max_count_per_conjecture": 0,
     "input_args": [],
     "output_args": [],
+    "uniquely_definable": [],
     "max_size_expression": 6,
     "max_size_expression_before_existence": 6,
     "max_size_expression_after_existence": 6
@@ -1209,7 +1596,7 @@
   "prover_parameters": {
     "skip_compression": true,
     "sizeAllBinariesAna": 10,
-    "maxIterationNumberProof": 45,
+    "maxIterationNumberProof": 200,
     "numberIterationsConjectureFiltering": 0,
     "maxSizeDefSetMapping": 5,
     "maxSizeTargetSetMapping": 12,
@@ -1221,6 +1608,8 @@
     "maxNumberFilteredStatements": 16384,
     "standardMaxSecondaryNumber": 1,
     "trackHistory": true,
+    "weak_induction": true,
+    "strong_induction": true,
     "inductionMaxAdmissionDepth": 1,
     "inductionMaxSecondaryNumber": 2,
     "counterExampleBoundary": 6,

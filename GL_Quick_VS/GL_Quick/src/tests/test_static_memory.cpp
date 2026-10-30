@@ -38,12 +38,16 @@
 /// preservation and hole reclamation. The arena core and arena vector have
 /// their own suites (`test_lb_arena`, `test_arena_vector`).
 
+#include "../memory.hpp"
+#include <utility>
 #include "test_harness.hpp"
 
 #include "../memory_infra/lb_memory.hpp"
 #include "../memory_infra/ptr_directory.hpp"
 #include "../memory_infra/steward.hpp"
 #include "../parameters.hpp"
+#include "../memory_infra/gpu_host_memory.hpp"
+#include "../memory_infra/steward.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -334,11 +338,11 @@ TEST(static_memory, lb_memory_reshuffle_preserves_content) {
     // Interleave growth across two containers, then hollow one out.
     for (int16_t i = 0; i < 200; ++i) {
         row.nameId = i;
-        mem.intEncodedStatements.push_back(row);
-        mem.intLocalEncodedStatements.push_back(row);
-        mem.intLocalEncodedStatements.push_back(row);
+        ((mem).intEncodedStatements).push_back(row);
+        ((mem).intLocalEncodedStatements).push_back(row);
+        ((mem).intLocalEncodedStatements).push_back(row);
     }
-    mem.intLocalEncodedStatements.clear();
+    ((mem).intLocalEncodedStatements).clear();
     const gl::DirtyState dirtyBefore = mem.dirty;
     mem.reshuffle(scratch);
     // Content-invisible: bytes identical, dirty untouched (a reshuffle must
@@ -346,9 +350,9 @@ TEST(static_memory, lb_memory_reshuffle_preserves_content) {
     // reclaimed — the content-preservation contract is what this pins.
     ASSERT_EQ(static_cast<int>(mem.dirty),
               static_cast<int>(dirtyBefore));
-    ASSERT_EQ(mem.intEncodedStatements.size(), 200);
+    ASSERT_EQ(((mem).intEncodedStatements).size(), 200);
     for (int32_t i = 0; i < 200; ++i)
-        ASSERT_EQ(mem.intEncodedStatements[i].nameId,
+        ASSERT_EQ(((mem).intEncodedStatements)[i].nameId,
                   static_cast<int16_t>(i));
 }
 
@@ -367,12 +371,12 @@ TEST(static_memory, lb_memory_compaction_reclaims_holes) {
     // then hollow the churned one out — its pages return to the free-list.
     for (int16_t i = 0; i < 4000; ++i) {
         row.nameId = i;
-        mem.intEncodedStatements.push_back(row);
+        ((mem).intEncodedStatements).push_back(row);
         // Enough four-byte references to free several complete blocks.
         for (int copy = 0; copy < 64; ++copy)
-            mem.intLocalEncodedStatements.push_back(row);
+            ((mem).intLocalEncodedStatements).push_back(row);
     }
-    mem.intLocalEncodedStatements.clear();
+    ((mem).intLocalEncodedStatements).clear();
     const int64_t heldBefore = mem.manager.blocksHeld();
     const gl::DirtyState dirtyBefore = mem.dirty;
     const int64_t reclaimed = mem.reshuffle(scratch);
@@ -381,14 +385,14 @@ TEST(static_memory, lb_memory_compaction_reclaims_holes) {
     ASSERT_TRUE(reclaimed > 0);
     ASSERT_TRUE(mem.manager.blocksHeld() < heldBefore);
     ASSERT_EQ(static_cast<int>(mem.dirty), static_cast<int>(dirtyBefore));
-    ASSERT_EQ(mem.intEncodedStatements.size(), 4000);
-    ASSERT_EQ(mem.intLocalEncodedStatements.size(), 0);
+    ASSERT_EQ(((mem).intEncodedStatements).size(), 4000);
+    ASSERT_EQ(((mem).intLocalEncodedStatements).size(), 0);
     for (int32_t i = 0; i < 4000; ++i)
-        ASSERT_EQ(mem.intEncodedStatements[i].nameId,
+        ASSERT_EQ(((mem).intEncodedStatements)[i].nameId,
                   static_cast<int16_t>(i));
     // Already dense: a second pass moves nothing and reclaims nothing.
     ASSERT_EQ(mem.reshuffle(scratch), static_cast<int64_t>(0));
-    ASSERT_EQ(mem.intEncodedStatements[2345].nameId,
+    ASSERT_EQ(((mem).intEncodedStatements)[2345].nameId,
               static_cast<int16_t>(2345));
 }
 
@@ -743,4 +747,225 @@ TEST(ptr_directory, attached_storage_extends_the_direct_region) {
     d.push_back(fakePtr(9));
     ASSERT_EQ(storage[0], fakePtr(9));
     d.assertInvariants();
+}
+
+TEST(static_memory, gpu_host_ranges_and_arena_blocks_share_budget) {
+    gl::GlobalMemoryManager m;
+    m.init({16 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    const auto metadata = m.blocksInUse();
+    ASSERT_EQ(metadata, 1);
+    ASSERT_EQ(m.largestGpuHostRun(), 15);
+    char* a = m.acquireGpuHostRange(3);
+    char* b = m.acquireBlock(gl::PoolPurpose::GpuHost);
+    ASSERT_EQ(b, a + 3 * 262144);
+    ASSERT_EQ(m.blocksInUse(), metadata + 4);
+    ASSERT_EQ(m.gpuHostCommittedBytes(), (metadata + 4) * 262144);
+    std::memset(a, 0x5a, 3 * 262144);
+    m.setGpuHostPinned(a, 3, true);
+    ASSERT_EQ(m.gpuHostPinnedBytes(), 3 * 262144);
+    ASSERT_EQ(m.gpuHostPeakPinnedBytes(), 3 * 262144);
+    m.setGpuHostPinned(a, 3, false);
+    m.releaseGpuHostRange(a, 3);
+    ASSERT_EQ(m.acquireGpuHostRange(2), a);
+    ASSERT_EQ(static_cast<unsigned char>(*a), 0x5a);
+    m.releaseGpuHostRange(a, 2);
+    m.releaseBlock(b, gl::PoolPurpose::GpuHost);
+    ASSERT_EQ(m.blocksInUse(), metadata);
+    ASSERT_EQ(m.largestGpuHostRun(), 15);
+    ASSERT_EQ(m.gpuHostPinnedBytes(), 0);
+    ASSERT_EQ(m.gpuHostPeakPinnedBytes(), 3 * 262144);
+    const auto commitment = m.commitment();
+    ASSERT_EQ(commitment.currentBytes, (metadata + 4) * 262144);
+    ASSERT_EQ(commitment.peakBytes, commitment.currentBytes);
+    ASSERT_EQ(commitment.decommittedBytes, 0);
+    ASSERT_EQ(commitment.recommittedBytes, 0);
+    ASSERT_EQ(commitment.trimCalls, 0);
+}
+
+TEST(static_memory, gpu_host_paged_arena_releases_its_own_storage) {
+    gl::GlobalMemoryManager m;
+    m.init({32 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    const auto metadata = m.blocksInUse();
+    {
+        gl::LbArena arena(&m);
+        arena.setPurpose(gl::PoolPurpose::GpuHost);
+        gl::DirtyState dirty = gl::DirtyState::Clean;
+        gl::PagedVector<uint64_t> values(&arena, &dirty);
+        for (uint64_t i = 0; i < 100000; ++i) values.push_back(i);
+        for (int i = 0; i < 100000; ++i) ASSERT_EQ(values[i], static_cast<uint64_t>(i));
+    }
+    ASSERT_EQ(m.blocksInUse(), metadata);
+}
+
+TEST(static_memory, gpu_host_parallel_range_lifetimes_are_disjoint) {
+    gl::GlobalMemoryManager m;
+    m.init({64 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    std::thread workers[4];
+    for (int i = 0; i < 4; ++i) workers[i] = std::thread([&, i] {
+        for (int round = 0; round < 100; ++round) {
+            char* data = m.acquireGpuHostRange(2);
+            std::memset(data, i + 1, 2 * 262144);
+            ASSERT_EQ(data[0], i + 1);
+            ASSERT_EQ(data[2 * 262144 - 1], i + 1);
+            m.releaseGpuHostRange(data, 2);
+        }
+    });
+    for (auto& worker : workers) worker.join();
+    ASSERT_EQ(m.blocksInUse(), 1);
+}
+
+TEST(static_memory, gpu_host_budget_text_requires_positive_bounded_decimal) {
+    ASSERT_TRUE(gl::isValidGpuHostBudgetText("4096"));
+    ASSERT_TRUE(gl::isValidGpuHostBudgetText("1"));
+    ASSERT_TRUE(!gl::isValidGpuHostBudgetText("0"));
+    ASSERT_TRUE(!gl::isValidGpuHostBudgetText(""));
+    ASSERT_TRUE(!gl::isValidGpuHostBudgetText("-1"));
+    ASSERT_TRUE(!gl::isValidGpuHostBudgetText("4GiB"));
+    ASSERT_TRUE(!gl::isValidGpuHostBudgetText("9999999999999999999999999"));
+    const int64_t configured = gl::configuredGpuHostPoolBytes(4LL << 30);
+    ASSERT_TRUE(configured > 0 && configured % (1 << 20) == 0);
+}
+
+TEST(static_memory, gpu_host_scoped_columns_share_contiguous_lease) {
+    gl::GlobalMemoryManager m;
+    m.init({16 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    const auto metadata = m.blocksInUse();
+    {
+        gl::GpuHostArena arena;
+        ASSERT_EQ(arena.reservedBytes(), 0);
+        arena.reserve(700000, m);
+        auto* a = static_cast<char*>(arena.allocate(300001, 16));
+        auto* b = static_cast<uint64_t*>(arena.allocate(300000, 64));
+        ASSERT_EQ(reinterpret_cast<uintptr_t>(b) % 64, 0);
+        ASSERT_TRUE(reinterpret_cast<char*>(b) >= a + 300001);
+        ASSERT_EQ(arena.capacity(), 700000);
+        ASSERT_EQ(arena.data(), a);
+        ASSERT_EQ(arena.blockCount(), 3);
+        ASSERT_EQ(arena.usedBytes(), 600032);
+        ASSERT_EQ(arena.reservedBytes(), 3 * 262144);
+        ASSERT_EQ(m.blocksInUse(), metadata + 3);
+        std::memset(a, 1, 300001);
+        std::memset(b, 2, 300000);
+        ASSERT_EQ(a[300000], 1);
+    }
+    ASSERT_EQ(m.blocksInUse(), metadata);
+}
+
+CUDA_TEST(static_memory, gpu_host_process_configuration_initializes_on_demand) {
+    gl::GpuHostArena arena;
+    arena.reserve(64);
+    ASSERT_TRUE(gl::gpuHostMemory().initialized());
+    ASSERT_EQ(arena.reservedBytes(), 262144);
+    ASSERT_TRUE(arena.allocate(64, 16) != nullptr);
+}
+
+TEST(static_memory, gpu_host_invalid_operation_probe) {
+#ifdef _WIN32
+    char modeText[32]{};
+    std::size_t modeLength = 0;
+    ASSERT_EQ(getenv_s(&modeLength, modeText, sizeof(modeText), "GL_TEST_GPU_HOST_INVALID"), 0);
+    if (modeLength == 0) return;
+    const char* mode = modeText;
+#else
+    const char* mode = std::getenv("GL_TEST_GPU_HOST_INVALID");
+    if (mode == nullptr) return;
+#endif
+    gl::GlobalMemoryManager m;
+    m.init({16 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    if (std::strcmp(mode, "exhaustion") == 0) m.acquireGpuHostRange(16);
+    if (std::strcmp(mode, "reinit") == 0) m.init({32 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    if (std::strcmp(mode, "arena") == 0) {
+        gl::GpuHostArena arena;
+        arena.reserve(32, m);
+        arena.allocate(33, 16);
+    }
+    if (std::strcmp(mode, "budget") == 0) gl::configuredGpuHostPoolBytes(4LL << 30);
+    if (std::strcmp(mode, "layout") == 0) {
+        gl::GpuHostLayout layout;
+        layout.add<uint64_t>(UINT64_MAX);
+    }
+    if (std::strcmp(mode, "object_index") == 0) {
+        gl::GpuHostObjectArray<int> values(1);
+        (void)values[1];
+    }
+    if (std::strcmp(mode, "order") == 0) {
+        gl::MemoryOrderView invalid(nullptr, 1);
+        (void)invalid;
+    }
+    if (std::strcmp(mode, "order_index") == 0) {
+        gl::MemoryOrderView empty(nullptr, 0);
+        (void)empty[0];
+    }
+    if (std::strcmp(mode, "span") == 0) {
+        gl::GpuHostSpan<const int> invalid(nullptr, 1);
+        (void)invalid;
+    }
+    if (std::strcmp(mode, "trim") == 0) m.trimRecycledBlocks(0);
+    char* a = m.acquireGpuHostRange(3);
+    if (std::strcmp(mode, "length") == 0) m.releaseGpuHostRange(a, 2);
+    if (std::strcmp(mode, "interior") == 0) m.releaseGpuHostRange(a + 262144, 2);
+    if (std::strcmp(mode, "pinned") == 0) {
+        m.setGpuHostPinned(a, 3, true);
+        m.releaseGpuHostRange(a, 3);
+    }
+    if (std::strcmp(mode, "double") == 0) {
+        m.releaseGpuHostRange(a, 3);
+        m.releaseGpuHostRange(a, 3);
+    }
+    ASSERT_TRUE(false);
+}
+
+TEST(static_memory, gpu_host_layout_matches_aligned_arena_consumption) {
+    gl::GpuHostLayout layout;
+    ASSERT_EQ(layout.roundedBytes(262144), 0);
+    layout.add<uint64_t>(0);
+    layout.add<char>(3);
+    layout.add<uint64_t>(7);
+    ASSERT_EQ(layout.bytes, 64);
+    ASSERT_EQ(layout.roundedBytes(262144), 262144);
+    gl::GlobalMemoryManager m;
+    m.init({4 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    gl::GpuHostArena arena;
+    arena.reserve(layout.bytes, m);
+    arena.allocate(3, alignof(char));
+    arena.allocate(7 * sizeof(uint64_t), alignof(uint64_t));
+    ASSERT_EQ(arena.usedBytes(), layout.bytes);
+    ASSERT_EQ(arena.reservedBytes(), layout.roundedBytes(262144));
+}
+
+TEST(static_memory, gpu_host_bulk_blocks_and_ranges_preserve_accounting) {
+    gl::GlobalMemoryManager m;
+    m.init({16 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    char* blocks[3]{};
+    m.acquireBlocks(3, blocks, gl::PoolPurpose::GpuHost);
+    char* run = m.acquireGpuHostRange(4);
+    ASSERT_EQ(m.blocksInUse(), 8);
+    ASSERT_EQ(m.attribution().inUse[static_cast<int>(gl::PoolPurpose::GpuHost)], 8);
+    m.releaseBlocks(blocks, 3, gl::PoolPurpose::GpuHost);
+    ASSERT_EQ(m.blocksInUse(), 5);
+    m.releaseGpuHostRange(run, 4);
+    ASSERT_EQ(m.blocksInUse(), 1);
+    ASSERT_EQ(m.attribution().inUse[static_cast<int>(gl::PoolPurpose::GpuHost)], 1);
+    m.init({16 * 262144LL, 262144, 2048, gl::PoolKind::GpuHost});
+    ASSERT_EQ(m.blocksInUse(), 1);
+}
+
+TEST(static_memory, gpu_host_object_array_and_spans_preserve_lifetimes) {
+    gl::GpuHostObjectArray<int> empty(0);
+    ASSERT_EQ(empty.size(), std::size_t(0));
+    ASSERT_EQ(empty.reservedBytes(), uint64_t(0));
+    gl::GpuHostObjectArray<uint64_t> values(4);
+    ASSERT_TRUE(values.reservedBytes() >= 4 * sizeof(uint64_t));
+    values[0] = 17; values[1] = 31;
+    const auto& constValues = values;
+    ASSERT_EQ(constValues[1], uint64_t(31));
+    gl::GpuHostSpan<const uint64_t> span(values.data(), 2);
+    ASSERT_EQ(span.size(), std::size_t(2));
+    ASSERT_FALSE(span.empty());
+    ASSERT_EQ(span.front(), uint64_t(17));
+    ASSERT_EQ(span[1], uint64_t(31));
+    ASSERT_EQ(span.end() - span.begin(), std::ptrdiff_t(2));
+    gl::GpuHostSpan<const uint64_t> zero(nullptr, 0);
+    ASSERT_TRUE(zero.empty());
+    ASSERT_EQ(zero.begin(), zero.end());
 }

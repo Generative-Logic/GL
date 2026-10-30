@@ -23,6 +23,8 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #pragma once
+#include <optional>
+#include <string>
 
 /// @file
 /// @brief Hand-rolled unit-test harness, no external dependencies.
@@ -31,8 +33,10 @@
 /// Each translation unit under `src/tests/` defines tests using the
 /// `TEST(suite, name) { ... }` macro. Static initializers register the
 /// test functions into a global registry; `gl::tests::runAllTests()`
-/// then walks the registry sequentially, reporting per-test pass/fail
-/// with elapsed milliseconds. The harness aborts on the first failure.
+/// deals the registry to parallel worker processes, each running its
+/// share sequentially in its own project tree and reporting per-test
+/// pass/fail with elapsed milliseconds; a worker aborts on its first
+/// failure and the gate fails when any worker fails.
 ///
 /// Entry point for users is `gl_quick.exe --unit-tests`; `main.py`
 /// invokes it before any pipeline work and aborts on a non-zero exit.
@@ -41,7 +45,7 @@
 /// (`--unit-tests --phase2-backend cpu`, what `main.py` runs without
 /// `--GPU`) does not select them, so a processor run needs no CUDA device.
 ///
-/// Performance budget: <30 s wall-clock for the full suite.
+/// Performance budget: <10 s wall-clock for the full suite.
 /// Per-test budget ~100 µs–500 ms.
 ///
 /// @see `src/tests/test_harness.cpp` for the registry implementation.
@@ -117,6 +121,37 @@ namespace tests {
     /// @return 0 if all selected tests pass, 1 on the first failure (or on
     /// any unexpected exception escaping a test body).
     int runAllTests(bool includeCudaRoute);
+
+    /// Read an optional test selector using the platform's environment API.
+    std::optional<std::string> testEnvironment(const char* name);
+
+    /// Route selected by the parent gate for an isolated child test.
+    bool includeCudaRouteForChildTests();
+
+    /// Worker process that runs a selected test when @p workerCount workers
+    /// share the suite. In the CUDA-route gate (@p cudaWorker) worker 0 runs
+    /// every CUDA-route test, so one process holds the device, and the other
+    /// tests are dealt round-robin to workers 1..K-1; in the processor-route
+    /// gate all tests are dealt round-robin. The deal is a function of the
+    /// registration order alone, so a test always runs in the same worker
+    /// after the same predecessors.
+    /// @param cudaRoute Whether the test is a `CUDA_TEST`.
+    /// @param nonCudaOrdinal Position of the test among the selected tests
+    ///        that are not CUDA-route tests (0 for a CUDA-route test).
+    /// @param workerCount Number of worker processes (at least 1).
+    /// @param cudaWorker Whether worker 0 is reserved for the CUDA-route tests.
+    /// @return Worker index in `[0, workerCount)`.
+    unsigned assignedWorker(bool cudaRoute, std::size_t nonCudaOrdinal, unsigned workerCount,
+                            bool cudaWorker);
+
+    /// Default number of worker processes: half the hardware threads, at
+    /// least 1 and at most 12 (on the 32-thread development host 8, 12, 16
+    /// and 24 workers ran within measurement noise; fewer workers repeat the
+    /// per-process FTA compile fewer times).
+    /// @param hardwareThreads `std::thread::hardware_concurrency()` (0 when
+    ///        unknown).
+    /// @return Worker count.
+    unsigned defaultWorkerCount(unsigned hardwareThreads);
 
 }  // namespace tests
 }  // namespace gl

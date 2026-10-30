@@ -22,10 +22,18 @@ def build_flat_integration_plan(
     """@brief Certify an explicit construction from a flat row's own premises.
 
     @details Enumerates only definition unfoldings allowed by the flat tag.
-    Each leaf must match exactly one recorded premise under an injective
-    renaming of definition witnesses onto the row's bound variables. The
+    Each distinct leaf must match exactly one recorded premise under an
+    injective renaming of definition witnesses onto the row's bound
+    variables; a leaf that repeats an earlier leaf of the same tree (an
+    existence's binder premise that is also the first conjunct of the bundle
+    it binds) reuses that leaf's premise, as the prover names it once. The
     result records premise positions and witness names, not a proof-search
-    command or an additional theorem dependency.
+    command or an additional theorem dependency. A disjunct's flat rule
+    (D-508) binds the disjunct's open arguments,
+    which stand at argument positions of its head: the head equals the
+    template up to an injective renaming of those binders onto the template's
+    arguments, none of which the rule otherwise uses, and the construction
+    builds the head itself, its head binders being parameters, not witnesses.
     @param conclusion The complete implication row.
     @param compact Its cited integration-goal compact.
     @param definitions The certificate's compiled definition entries.
@@ -38,7 +46,21 @@ def build_flat_integration_plan(
         binders.update(cursor.bound_variables)
         premises.append(cursor.premise)
         cursor = cursor.conclusion
-    assert cursor == compact and premises, "flat integration head or premises mismatch"
+    assert isinstance(cursor, Atom) and premises, "flat integration head or premises mismatch"
+    assert cursor.head == compact.head and len(cursor.arguments) == len(compact.arguments)
+    used = {argument for atom in iter_atoms(conclusion) for argument in atom.arguments}
+    renaming: dict[str, str] = {}
+    for head_argument, template_argument in zip(cursor.arguments, compact.arguments):
+        if head_argument in binders:
+            assert renaming.setdefault(head_argument, template_argument) == template_argument
+            assert head_argument == template_argument or template_argument not in used, (
+                "a head binder renamed onto a name the flat rule uses"
+            )
+        else:
+            assert head_argument == template_argument, "flat integration head mismatch"
+    assert len(set(renaming.values())) == len(renaming)
+    binders -= set(renaming)
+    compact = cursor
     assert compact.head in definitions
     assert definitions[compact.head]["category"] in {"and", "existence"}
     occupied = {argument for atom in iter_atoms(conclusion) for argument in atom.arguments}
@@ -163,8 +185,17 @@ def build_flat_integration_plan(
         # The one-level rule belongs to its existing integration tag.
         if all(child["kind"] == "premise" for child in tree["children"]):
             continue
-        for mapping, positions in assignments(leaves(tree)):
-            next_leaf = iter(positions)
+        # A repeated leaf names the same premise as its first occurrence.
+        distinct: list[Expression] = []
+        slot_of_leaf: list[int] = []
+        for leaf in leaves(tree):
+            text = to_mpl(leaf)
+            slot = next((k for k, kept in enumerate(distinct) if to_mpl(kept) == text), len(distinct))
+            if slot == len(distinct):
+                distinct.append(leaf)
+            slot_of_leaf.append(slot)
+        for mapping, positions in assignments(distinct):
+            next_leaf = iter([positions[slot] for slot in slot_of_leaf])
 
             def seal(node: dict) -> dict:
                 """@brief Replace pattern leaves and witnesses by certificate identifiers.

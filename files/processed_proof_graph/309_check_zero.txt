@@ -1,0 +1,6 @@
+(strictOrder[N,+,v2,v3])	main	vacuous truth	(=[v1,i0])	main	!(=[v1,i0])	main	(=[v1,i0])	main
+(=[v1,i0])	main	recursion
+!(=[v1,i0])	main	symmetry of inequality	!(=[i0,v1])	main
+!(=[i0,v1])	main	disintegration	(&(preorder[N,+,i0,v1])!(=[i0,v1]))	main
+(&(preorder[N,+,i0,v1])!(=[i0,v1]))	main	expansion	(strictOrder[N,+,i0,v1])	main
+(strictOrder[N,+,i0,v1])	main	task formulation

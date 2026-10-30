@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 #include "project_paths.hpp"
 #include "compressor.hpp"
+#include "memory_infra/lb_deload.hpp"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -42,7 +43,7 @@ namespace gl {
     /// `globalTheoremList` under an expanded form different from its
     /// compact one. The map ensures `runPhase2`'s output
     /// is in the same form the rest of the pipeline expects.
-    Compressor::Compressor(ExpressionAnalyzer& analyzer,
+    Compressor::Compressor(Prover& analyzer,
         const std::vector<std::string>& all_theorems)
         : analyzer(analyzer),
         all_theorems(all_theorems)
@@ -89,10 +90,10 @@ namespace gl {
     /// the prover under compressor flags.
     ///
     /// @details
-    /// Toggles `analyzer.parameters.compressor_mode = true` and
-    /// `analyzer.parameters.ban_disintegration = true` for the duration of
+    /// Toggles `analyzer.configuration().compressor_mode = true` and
+    /// `analyzer.configuration().ban_disintegration = true` for the duration of
     /// Phase 1. `compressor_mode` does several things:
-    /// 1. Disables Pass B (gated by `!compressor_mode` in prover.cpp's
+    /// 1. Disables Pass B (gated by `!compressor_mode` in compressor.cpp's
     ///    Pass B entry) so the compressor's per-theorem run does not
     ///    spawn disintegration products that would explode the graph.
     /// 2. Caps origin storage at `compressor_max_origins_per_expr`
@@ -126,8 +127,7 @@ namespace gl {
         double graphAssemblySeconds = 0.0;
         double destructionSeconds = 0.0;
         // --- Turn on compressor-specific flags ---
-        analyzer.parameters.compressor_mode            = true;
-        analyzer.parameters.ban_disintegration         = true;
+        analyzer.setCompressionMode(true);
 
         const size_t N = all_theorems.size();
         std::cout << "Building independent Logic Blocks for "
@@ -154,7 +154,7 @@ namespace gl {
             std::vector<std::tuple<std::string, std::vector<std::string>,
                                    std::set<std::string>>> chain;
             theoremHeads[i] = ce::disintegrateImplication(
-                all_theorems[i], chain, analyzer.coreExpressionMap);
+                all_theorems[i], chain, analyzer.definitionRegistry().configurations());
             for (const auto& entry : chain)
                 premiseChains[i].push_back(std::get<0>(entry));
         }
@@ -165,7 +165,7 @@ namespace gl {
             const auto creationStarted = PhaseClock::now();
             const std::string& theorem = all_theorems[i];
 
-            Memory* lb = analyzer.lbStore.create<Memory>();
+            Memory* lb = analyzer.createCompressionBlock();
             lb->level    = 0;
             lb->isActive = true;
             lb->setExprKey("CompressorNode_" + std::to_string(i));
@@ -181,11 +181,11 @@ namespace gl {
                     leaves[leafN++] = StrSpan(premise);
                 }
                 leaves[leafN++] = StrSpan(theoremHeads[i]);
-                analyzer.assignTheoremVarDefinitionSets(*lb, leaves, leafN);
+                analyzer.types().assignTheoremVarDefinitionSets(*lb, leaves, leafN);
                 // A set- or relation-typed `=` head integrates by
                 // extensionality: its entity must exist before the head is
                 // seeded as the node's goal.
-                analyzer.ensureTypedEqualityEntityForTheorem(leaves, leafN);
+                analyzer.types().ensureTypedEqualityEntityForTheorem(leaves, leafN);
             }
             creationSeconds += secondsSince(creationStarted);
 
@@ -207,11 +207,11 @@ namespace gl {
                         && "addToHashMemory chain run exceeds cap");
                     chainRun[chainRunN++] = StrSpan(s);
                 }
-                analyzer.addToHashMemory(
+                analyzer.hashRules().addToHashMemory(
                     chainRun, chainRunN, StrSpan(head), nullptr, 0, *lb, lb->overallHashMemory, lvl0Run, 1, StrSpan(rule),
-                    analyzer.parameters.maxIterationNumberVariable,
-                    analyzer.parameters.standardMaxSecondaryNumber,
-                    false, analyzer.parameters.minNumOperatorsKey,
+                    analyzer.configuration().maxIterationNumberVariable,
+                    analyzer.configuration().standardMaxSecondaryNumber,
+                    false, analyzer.configuration().minNumOperatorsKey,
                     StrSpan("implication", 11), false, StrSpan(rule));
                 ruleInstallSeconds += secondsSince(ruleInstallStarted);
 
@@ -234,7 +234,7 @@ namespace gl {
             const auto ruleFlushStarted = PhaseClock::now();
             assert(lb->ruleStagingArmDepth == 1);
             --lb->ruleStagingArmDepth;
-            analyzer.closeRuleIndexStaging(*lb);
+            gl::HashRuleIndex::closeRuleIndexStaging(*lb);
             ruleInstallSeconds += secondsSince(ruleFlushStarted);
 
             // Split the target theorem into premises + head
@@ -252,12 +252,12 @@ namespace gl {
                 pNode.premises.insert(ExpressionWithValidity(premise, "main"));
 
                 const TransientOrigin origin{ true, OriginTag::premise, nullptr, 0 };
-                analyzer.addExprToMemoryBlock(
+                analyzer.statements().addExprToMemoryBlock(
                     premise, *lb, -1, 1, lvlNonDerived, 1, origin, -1, -1, StrSpan("main", 4), false);
             }
 
             // Set head as proof goal
-            analyzer.addExprToMemoryBlock(
+            analyzer.statements().addExprToMemoryBlock(
                 targetHead, *lb, -1, 2, lvl0Run, 1,
                 TransientOrigin{ true, OriginTag::goal, nullptr, 0 },
                 -1, -1, StrSpan("main", 4), true);
@@ -266,7 +266,7 @@ namespace gl {
             compressorBodies.push_back(lb);
             assert(lb->ruleStagingArmDepth == 1);
             --lb->ruleStagingArmDepth;
-            analyzer.closeRuleIndexStaging(*lb);
+            gl::HashRuleIndex::closeRuleIndexStaging(*lb);
             seedingSeconds += secondsSince(seedingStarted);
         }
 
@@ -276,7 +276,7 @@ namespace gl {
         // ---- 2. Run hash bursts ----
 
         const auto provingStarted = PhaseClock::now();
-        analyzer.prove(analyzer.parameters.compressor_hash_bursts,
+        analyzer.prove(analyzer.configuration().compressor_hash_bursts,
                        compressorBodies);
         const double provingSeconds = secondsSince(provingStarted);
 
@@ -290,6 +290,11 @@ namespace gl {
             CompressorNode& pNode = extracted_graphs[i];
 
             const auto extractionStarted = PhaseClock::now();
+            // A proved compressor LB was discharged, and its barrier drained
+            // it to its canonical image: reload it read-only (no-op when
+            // resident, sanctioned on discharged LBs, D-158) before reading
+            // its origin history. The block is destroyed right after.
+            lb->ensureLoadedForRead(lbdeload::kDeloadDirectory);
             {
                 // Decoded lex-sorted snapshot — strings are the cross-LB
                 // common space of the graph (each compressor LB has its
@@ -314,14 +319,13 @@ namespace gl {
             }
             extractionSeconds += secondsSince(extractionStarted);
             const auto destructionStarted = PhaseClock::now();
-            analyzer.lbStore.destroy(lb);
+            analyzer.destroyCompressionBlock(lb);
             destructionSeconds += secondsSince(destructionStarted);
         }
 
         // ---- 4. Restore global parameters ----
 
-        analyzer.parameters.compressor_mode            = false;
-        analyzer.parameters.ban_disintegration         = false;
+        analyzer.setCompressionMode(false);
 
         std::cout << "Extracted " << extracted_graphs.size()
                   << " proof graphs  (" << total_origins

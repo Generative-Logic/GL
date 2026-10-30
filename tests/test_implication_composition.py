@@ -25,9 +25,9 @@ class ImplicationCompositionTests(unittest.TestCase):
         plan = self.plan(result, first, second)
         self.assertEqual(plan['source_binder_groups'], [[['q'], ['j']], [['j', 'q']]])
         self.assertEqual(plan['result_binder_groups'], [['q'], ['j']])
+        self.assertEqual(plan['premise_order'], [0, 1])
         for invalid in [
             '(>[q,j](=[q,a])(in2[j,q,g]))',
-            '(>[j](=[j,n])(>[q](=[q,a])(in2[j,q,g])))',
             '(>[q](=[q,n])(>[j](=[j,n])(in2[j,q,g])))',
             '(>[q](=[q,a])(>[j]!(=[j,n])(in2[j,q,g])))',
             '(>[](=[q,a])(>[q,j](=[j,n])(in2[j,q,g])))',
@@ -37,6 +37,32 @@ class ImplicationCompositionTests(unittest.TestCase):
                 self.plan(invalid, first, second)
         with self.assertRaises(AssertionError):
             self.plan(result, first, '(>[x,y](in2[x,y,f])(>[](=[x,n])(in2[x,y,g])))')
+
+    def test_conclusion_may_permute_the_producer_premises(self):
+        # The compiler identifies rules up to premise order, so a composed
+        # rule can be stored with the producer chain permuted (main chapter
+        # 242 / incubator chapter 1225 of run g3_wiperm_full_02).
+        plan = self.plan('(>[w1]!(in[w1,V5])(>[w2](in[w2,N])!(in2[w1,w2,V1])))',
+                         '(>[w1](in[w1,N])(>[w2]!(in[w2,V5])!(and21[w1,N,w2,V5])))',
+                         '(>[w1,w2]!(and21[w1,N,w2,V5])!(in2[w2,w1,V1]))')
+        self.assertEqual(plan['premise_order'], [1, 0])
+        self.assertEqual(plan['source_arguments'], [['w2', 'w1'], ['w2', 'w1']])
+        self.assertEqual(plan['intermediate'], '!(and21[w2,N,w1,V5])')
+        first = '(>[p](=[p,a])(>[i](=[i,n])(in2[i,p,f])))'
+        second = '(>[x,y](in2[x,y,f])(in2[x,y,g]))'
+        swapped = self.plan('(>[j](=[j,n])(>[q](=[q,a])(in2[j,q,g])))', first, second)
+        self.assertEqual(swapped['premise_order'], [1, 0])
+        self.assertEqual(swapped['result_binder_groups'], [['j'], ['q']])
+        self.assertEqual(swapped['source_binder_groups'], [[['q'], ['j']], [['j', 'q']]])
+        # A permutation still keeps rigid arguments, signs and binder scopes.
+        for invalid in [
+            '(>[j](=[j,a])(>[q](=[q,a])(in2[j,q,g])))',
+            '(>[j]!(=[j,n])(>[q](=[q,a])(in2[j,q,g])))',
+            '(>[](=[j,n])(>[q,j](=[q,a])(in2[j,q,g])))',
+            '(>[j](=[j,n])(>[q](=[q,a])(in2[q,j,g])))',
+        ]:
+            with self.subTest(invalid=invalid), self.assertRaises(AssertionError):
+                self.plan(invalid, first, second)
 
     def test_lean_kernel_checks_each_producer_premise_and_binder_group(self):
         from proof_export.certificate import _chapter_certificate
@@ -63,6 +89,34 @@ class ImplicationCompositionTests(unittest.TestCase):
             lean.write_text('example {α : Type} (a n : α) (f g : α → α → Prop) '
                 '(first : ∀ p, p=a → ∀ i, i=n → f i p) (second : ∀ x y, f x y → g x y) : '
                 '(∀ q, q=a → ∀ j, j=n → g j q) := by\n' + '\n'.join(lines) + '\n  exact row_3\n', encoding='utf-8')
+            result = subprocess.run([lean_executable(), str(lean)], cwd=LEAN_PROJECT,
+                env=lean_environment(), capture_output=True, text=True, encoding='utf-8', timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_lean_kernel_checks_a_permuted_conclusion(self):
+        from proof_export.certificate import _chapter_certificate
+        from proof_export.graph import Chapter, ProofRow, Dependency, parse_scoped_expression
+        from proof_export.lean import _render_chapter_steps
+        first = '(>[p](=[p,a])(>[i](=[i,n])(in2[i,p,f])))'
+        second = '(>[x,y](in2[x,y,f])(in2[x,y,g]))'
+        conclusion = '(>[j](=[j,n])(>[q](=[q,a])(in2[j,q,g])))'
+        expressions = [parse_scoped_expression(value) for value in (first, second, conclusion)]
+        rows = (ProofRow(1, expressions[0], 'main', 'task formulation', ()),
+                ProofRow(2, expressions[1], 'main', 'task formulation', ()),
+                ProofRow(3, expressions[2], 'main', 'implication composition',
+                         (Dependency(expressions[0], 'main'), Dependency(expressions[1], 'main'))))
+        with tempfile.TemporaryDirectory(prefix='chain_composition_permuted_') as directory:
+            path = Path(directory)/'1_single_chapter_proof.txt'
+            path.write_text(f'{first}\tmain\ttask formulation\n{second}\tmain\ttask formulation\n'
+                f'{conclusion}\tmain\timplication composition\t{first}\tmain\t{second}\tmain\n', encoding='utf-8')
+            certificate = _chapter_certificate(Chapter(path, 1, 'single_chapter_proof', rows),
+                {'=': ('element', 'element'), 'in2': ('element', 'element', 'binary_relation')}, {}, {})
+            lines, _ = _render_chapter_steps(certificate, 'composition', {first: 'first', second: 'second'},
+                {name: name for name in ('a', 'n', 'f', 'g')}, ambient_variables={'a', 'n', 'f', 'g'})
+            lean = Path(directory)/'Composition.lean'
+            lean.write_text('example {α : Type} (a n : α) (f g : α → α → Prop) '
+                '(first : ∀ p, p=a → ∀ i, i=n → f i p) (second : ∀ x y, f x y → g x y) : '
+                '(∀ j, j=n → ∀ q, q=a → g j q) := by\n' + '\n'.join(lines) + '\n  exact row_3\n', encoding='utf-8')
             result = subprocess.run([lean_executable(), str(lean)], cwd=LEAN_PROJECT,
                 env=lean_environment(), capture_output=True, text=True, encoding='utf-8', timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -138,6 +192,11 @@ class ImplicationCompositionTests(unittest.TestCase):
         ]:
             row = make_proof_line(conclusion, target, 'implication composition', first, left, second, right)
             self.assertEqual(check_implication_composition(row, [row], state), expected)
+        permuted = make_proof_line('(>[a]!(in[a,V])(>[b](in[b,N])!(in2[a,b,R])))', 'main',
+                                   'implication composition',
+                                   '(>[x](in[x,N])(>[y]!(in[y,V])!(and21[x,N,y,V])))', 'main',
+                                   '(>[x,y]!(and21[x,N,y,V])!(in2[y,x,R]))', 'main')
+        self.assertTrue(check_implication_composition(permuted, [permuted], state))
         row = make_proof_line(conclusion, 'main', 'implication composition', first, 'main')
         self.assertFalse(check_implication_composition(row, [row], state))
         row = make_proof_line(conclusion, 'main', 'implication composition', first, 'main', first, 'main')

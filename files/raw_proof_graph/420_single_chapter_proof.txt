@@ -1,0 +1,14 @@
+(=[9,11])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(>[11](interval[1,4,2,11,10])(=[9,11]))))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(interval[1,4,2,11,force_lev_1_0])	main	(interval[1,4,2,9,force_lev_1_0])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(>[11](interval[1,4,2,11,10])(=[9,11]))))	main	theorem
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(interval[1,4,2,11,force_lev_1_0])	main	equality1	(interval[1,4,2,11,force_lev_2_0])	main	(=[force_lev_2_0,force_lev_1_0])	main
+(interval[1,4,2,11,force_lev_2_0])	main	disintegration	!(>[force_lev_2_0](interval[1,4,2,11,force_lev_2_0])!(fXY[10,force_lev_2_0,1]))	main
+!(>[force_lev_2_0](interval[1,4,2,11,force_lev_2_0])!(fXY[10,force_lev_2_0,1]))	main	expansion	(sequence[1,4,2,11,10])	main
+(sequence[1,4,2,11,10])	main	task formulation
+(=[force_lev_2_0,force_lev_1_0])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](fXY[9,10,1])(>[11](fXY[9,11,1])(=[10,11]))))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(fXY[10,force_lev_1_0,1])	main	(fXY[10,force_lev_2_0,1])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](fXY[9,10,1])(>[11](fXY[9,11,1])(=[10,11]))))	main	theorem
+(fXY[10,force_lev_1_0,1])	main	disintegration	!(>[force_lev_1_0](interval[1,4,2,9,force_lev_1_0])!(fXY[10,force_lev_1_0,1]))	main
+!(>[force_lev_1_0](interval[1,4,2,9,force_lev_1_0])!(fXY[10,force_lev_1_0,1]))	main	expansion	(sequence[1,4,2,9,10])	main
+(sequence[1,4,2,9,10])	main	task formulation
+(fXY[10,force_lev_2_0,1])	main	disintegration	!(>[force_lev_2_0](interval[1,4,2,11,force_lev_2_0])!(fXY[10,force_lev_2_0,1]))	main
+(interval[1,4,2,9,force_lev_1_0])	main	disintegration	!(>[force_lev_1_0](interval[1,4,2,9,force_lev_1_0])!(fXY[10,force_lev_1_0,1]))	main

@@ -5,23 +5,93 @@ Dual-licensed under the GNU Affero General Public License v3 or later
 and a commercial license — see https://generative-logic.com/license.
 
 Stylesheet for MPU 0.1 (docs/MPU/index.html). Self-contained so the
-folder ships standalone in the public release. Palette reuses the proof-graph /
-user-SwDD colours so the three surfaces feel like one product.
+folder ships standalone in the public release. Palette and type are the
+retro-futurist theme of the proof books, the user SwDD and the website (day
+side by default, night side under prefers-color-scheme: dark). Diagrams keep
+their markup and are recolored at the end of this file.
 */
 
 :root {
-  --bg:        #181B27;   /* page background          */
-  --bg-card:   #20232F;   /* cards, code, callouts    */
-  --bg-side:   #15171F;   /* sidebar                  */
-  --fg:        #F0E8DC;   /* body text                */
-  --fg-dim:    #8B8FA5;   /* captions, meta           */
-  --border:    #3A3D4A;   /* hairlines                */
-  --mint:      #5DCAA5;   /* links, structure, "win"  */
-  --amber:     #EF9F27;   /* goals, emphasis, cost    */
-  --lavender:  #B084EB;   /* scope / control          */
-  --magenta:   #E879F9;   /* mail / cross-block       */
-  --red:       #F2766B;   /* caveats, ceilings */
-  --maxw:      940px;     /* reading column           */
+  color-scheme: light dark;
+  --font-ui: "Jost", "Futura", "Futura PT", "Century Gothic", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-text: "Newsreader", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", "Cascadia Code", Consolas, monospace;
+  --horizon: linear-gradient(90deg, #7E2716 0%, #C2452A 16%, #E5672D 34%, #FFB54A 52%, #EF9AB3 74%, #5B2A55 100%);
+  --bg: #F7EEDF;
+  --bg-card: #FFF9EF;
+  --bg-side: #EFE2CB;
+  --fg: #22162A;
+  --fg-dim: #6E5B68;
+  --border: #E2CCA8;
+  --border-strong: #CDB088;
+  --rule-soft: #EADBC0;
+  --mint: #386460;
+  --amber: #B5420F;
+  --lavender: #5A4A9C;
+  --magenta: #962E8A;
+  --red: #B23A1E;
+  --accent: #A8391F;
+  --tint-mint: #E8EDEA;
+  --tint-amber: #FBE7C3;
+  --tint-red: #F9E3DA;
+  --glow-rgb: 255 176 74;
+  --shadow: rgb(74 38 20 / 0.22);
+  --dg-card: #FFF9EF;
+  --dg-card-2: #F6EBD6;
+  --dg-tint-teal: #E7ECEA;
+  --dg-tint-blue: #E9EEF3;
+  --dg-tint-gold: #FBE7C3;
+  --dg-tint-rose: #F7E6EA;
+  --dg-ink: #22162A;
+  --dg-ink-dim: #6E5B68;
+  --dg-rule: #D2B98F;
+  --dg-teal: #386460;
+  --dg-gold: #B5420F;
+  --dg-violet: #5A4A9C;
+  --dg-magenta: #962E8A;
+  --dg-steel: #5E6E86;
+  --dg-sky: #2F6FA8;
+  --dg-red: #B23A1E;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1C1124;
+    --bg-card: #26182E;
+    --bg-side: #160D1C;
+    --fg: #F7EEDF;
+    --fg-dim: #AE95A6;
+    --border: #3D2A46;
+    --border-strong: #573E60;
+    --rule-soft: #2F1F38;
+    --mint: #96BCB4;
+    --amber: #FFB54A;
+    --lavender: #B9A6F2;
+    --magenta: #E39AE6;
+    --red: #FF8A5B;
+    --accent: #FF9B5A;
+    --tint-mint: #2D3E3C;
+    --tint-amber: #3A2614;
+    --tint-red: #3A1A1C;
+    --glow-rgb: 229 103 45;
+    --shadow: rgb(0 0 0 / 0.55);
+    --dg-card: #26182E;
+    --dg-card-2: #1F1427;
+    --dg-tint-teal: #2D3E3C;
+    --dg-tint-blue: #1E2238;
+    --dg-tint-gold: #3A2614;
+    --dg-tint-rose: #301B2E;
+    --dg-ink: #F7EEDF;
+    --dg-ink-dim: #AE95A6;
+    --dg-rule: #4D3756;
+    --dg-teal: #96BCB4;
+    --dg-gold: #FFB54A;
+    --dg-violet: #B9A6F2;
+    --dg-magenta: #E39AE6;
+    --dg-steel: #93A6C4;
+    --dg-sky: #8EC1F2;
+    --dg-red: #FF8A5B;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -31,8 +101,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        Helvetica, Arial, sans-serif;
+  font: 17px/1.62 var(--font-text);
   display: flex;
   min-height: 100vh;
 }
@@ -111,7 +180,7 @@ main a:hover { color: var(--amber); }
 
 code {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px;
-  padding: 1px 5px; font: 13px/1.5 "SF Mono", "Cascadia Code", Consolas, monospace;
+  padding: 1px 5px; font: 13px/1.5 var(--font-mono);
   color: var(--mint);
 }
 pre {
@@ -123,7 +192,7 @@ pre code { background: none; border: none; padding: 0; color: var(--fg); }
 /* ---- hero (preamble) --------------------------------------------------- */
 
 .hero {
-  background: linear-gradient(135deg, #20232F 0%, #1A1D29 60%, #181B27 100%);
+  background: radial-gradient(520px 260px at 92% 118%, rgb(var(--glow-rgb) / 0.28), transparent 70%), linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);
   border: 1px solid var(--border); border-left: 4px solid var(--amber);
   border-radius: 12px; padding: 26px 30px; margin: 8px 0 30px; max-width: var(--maxw);
 }
@@ -169,7 +238,7 @@ svg text { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
 .key    { border-left-color: var(--amber); }
 .note   { border-left-color: var(--mint); }
 .caveat { border-left-color: var(--red); }
-.win    { border-left-color: var(--mint); background: #1B2620; }
+.win    { border-left-color: var(--mint); background: var(--tint-mint); }
 .note b, .key b, .caveat b, .win b { color: var(--fg); }
 .caveat .lab, .win .lab {
   display: inline-block; font-size: 11px; text-transform: uppercase;
@@ -186,7 +255,7 @@ ul.inv {
 }
 ul.inv li {
   margin: 0; padding: 7px 4px 7px 26px; position: relative;
-  font-size: 14px; border-bottom: 1px solid #23262F;
+  font-size: 14px; border-bottom: 1px solid var(--rule-soft);
 }
 ul.inv li:last-child { border-bottom: none; }
 ul.inv li::before { content: "▸"; position: absolute; left: 6px; color: var(--amber); }
@@ -205,7 +274,7 @@ td.num { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; white-spa
 /* the four-tier cost table — emphasised */
 table.tiers th { color: var(--amber); }
 table.tiers td:first-child { font-weight: 700; color: var(--fg); white-space: nowrap; }
-table.tiers tr:hover td { background: #23262F; }
+table.tiers tr:hover td { background: var(--rule-soft); }
 
 /* the map table (GL concept -> silicon) */
 table.map td:first-child { color: var(--mint); }
@@ -281,3 +350,86 @@ dl.terms dd { margin: 0 0 8px 0; font-size: 14px; color: var(--fg); }
   main { padding: 30px 22px 90px; }
   .vs, .stats { grid-template-columns: 1fr; }
 }
+
+/* ---- retro-futurist skin (shared with the proof books and the website) -- */
+
+::selection { background: rgb(var(--glow-rgb) / 0.32); }
+body {
+  background-color: var(--bg);
+  background-image: radial-gradient(1100px 520px at 18% -80px, rgb(var(--glow-rgb) / 0.15), transparent 72%);
+  background-repeat: no-repeat;
+}
+#side { font-family: var(--font-ui); box-shadow: inset -1px 0 0 var(--border); }
+#side .brand { font-family: var(--font-ui); font-size: 15px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  display: block; }
+#side .brand::before { content: ""; display: inline-block; width: 28px; height: 28px; margin: 0 10px 3px 0; vertical-align: middle;
+  background: url(gl-mark.svg) center / contain no-repeat; }
+.stats .stat .big { font-family: var(--font-ui); font-weight: 500; letter-spacing: .02em; }
+#side .tag { font-family: var(--font-text); font-style: italic; font-size: 13px; }
+#side .part { font-family: var(--font-ui); letter-spacing: .16em; }
+#side::after { content: ""; display: block; height: 3px; margin-top: 26px; border-radius: 2px; background: var(--horizon); opacity: .9; }
+main h1, main h2, main h3, main h4, .pager a, th, .toc strong, figcaption b, .lab, .eyebrow { font-family: var(--font-ui); }
+main h1 { font-weight: 500; letter-spacing: .01em; }
+main h1 .num { color: var(--accent); }
+main h2 { font-weight: 600; color: var(--fg); border-top: 1px solid var(--border); }
+main h2::before { content: ""; display: inline-block; width: 1.4em; height: 3px; margin: 0 .55em .22em 0; vertical-align: middle;
+  border-radius: 2px; background: var(--horizon); }
+main h3 { color: var(--accent); font-weight: 600; }
+main h4 { color: var(--lavender); letter-spacing: .12em; }
+code { font-family: var(--font-mono); background: var(--tint-mint); border-color: transparent; }
+pre { border-radius: 14px; }
+figure { border-radius: 18px; box-shadow: 0 1px 0 rgb(0 0 0 / 0.02), 0 18px 36px -32px var(--shadow); }
+figcaption { font-family: var(--font-ui); letter-spacing: .01em; }
+.toc, .vs > div, ol.walk > li { border-radius: 14px; }
+.note, .key, .ex, .deep { border-radius: 0 12px 12px 0; }
+table { font-family: var(--font-ui); }
+th { letter-spacing: .06em; text-transform: uppercase; font-size: 12.5px; }
+
+/* ---- diagram recoloring ------------------------------------------------
+   The inline SVG diagrams keep their markup; author CSS outranks SVG
+   presentation attributes, so each previous palette color is mapped to a
+   diagram role that follows the day / night side. ------------------------ */
+svg [fill="#262938" i],
+svg [fill="#20232F" i],
+svg [fill="#15171F" i] { fill: var(--dg-card); }
+svg [fill="#1C1F2B" i] { fill: var(--dg-card-2); }
+svg [fill="#23584B" i] { fill: var(--dg-tint-teal); }
+svg [fill="#17364B" i],
+svg [fill="#E8F0F7" i] { fill: var(--dg-tint-blue); }
+svg [fill="#3A2E16" i] { fill: var(--dg-tint-gold); }
+svg [fill="#2D2538" i] { fill: var(--dg-tint-rose); }
+svg [fill="#F0E8DC" i],
+svg [fill="#17212B" i] { fill: var(--dg-ink); }
+svg [fill="#8B8FA5" i] { fill: var(--dg-ink-dim); }
+svg [stroke="#8B8FA5" i] { stroke: var(--dg-ink-dim); }
+svg [stroke="#3A3D4A" i] { stroke: var(--dg-rule); }
+svg [fill="#5DCAA5" i] { fill: var(--dg-teal); }
+svg [stroke="#5DCAA5" i],
+svg [stroke="#6E9E8D" i] { stroke: var(--dg-teal); }
+svg [fill="#EF9F27" i] { fill: var(--dg-gold); }
+svg [stroke="#EF9F27" i] { stroke: var(--dg-gold); }
+svg [fill="#B084EB" i] { fill: var(--dg-violet); }
+svg [stroke="#B084EB" i] { stroke: var(--dg-violet); }
+svg [fill="#E879F9" i] { fill: var(--dg-magenta); }
+svg [stroke="#E879F9" i] { stroke: var(--dg-magenta); }
+svg [stroke="#476B84" i] { stroke: var(--dg-steel); }
+svg [fill="#F2766B" i] { fill: var(--dg-red); }
+
+/* named and short colors of some diagrams (text on cards, connector lines) */
+svg [fill="white" i], svg [fill="#fff" i], svg [fill="#eee" i], svg [fill="#ccc" i] { fill: var(--dg-ink); }
+svg [fill="#aaa" i] { fill: var(--dg-ink-dim); }
+svg [stroke="#678" i] { stroke: var(--dg-steel); }
+
+/* ---- phones: the column fills the viewport (it used to size to its widest
+   unbreakable item and scroll sideways) ---------------------------------- */
+@media (max-width: 880px) {
+  main { margin: 0; width: 100%; max-width: 100%; align-self: stretch; padding: 26px 18px 80px; }
+  main p, main li, main dd, main td, .lede, figcaption, .note, .key, .ex, .deep { overflow-wrap: anywhere; }
+  code { overflow-wrap: anywhere; word-break: break-word; }
+  table { display: block; overflow-x: auto; }
+  .hero { padding: 22px 18px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; }
+}
+
+/* long identifiers in table cells wrap instead of widening the column past the page */
+th, td { overflow-wrap: anywhere; }

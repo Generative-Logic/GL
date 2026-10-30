@@ -117,7 +117,7 @@ before and after seeding; both paths finish with empty staging and zero depth.
 
 - Targeted setup improved by 61.38 percent; complete compression improved 2.09 times on this matched pair and 9.27 times against the original 24.4756505-second baseline. Prover-call timing also varied; no separate inference optimization is claimed.
 - Full run `rt_parts_setup_batched_20260906`: normalized Release rebuild passed; `main.py --GPU` passed in 273.675187 seconds (`run.total`, rebuild excluded). Native tests 1,641/1,641, verifier unit tests 407/407, full verification 141,136 checks with zero failures, and Lean kernel check passed.
-- Every one of the 3,490 captured files is SHA-256 identical to `rt_parts_phase1_profile_20260906`; elimination decisions and verifier result rows are identical. Tracked `files/` artifacts and `visualizer.cpp` have no changes.
+- Every one of the 3,490 captured files is SHA-256 identical to `rt_parts_phase1_profile_20260906`; elimination decisions and verifier result rows are identical. Tracked `files/` artifacts and `proof/proof_reconstructor.cpp` have no changes.
 - Evidence: , , , , , and .
 - The hash-engine chapter, I-221 entry and quick reference, compressor chapter, and user-facing setup diagram now include these two windows. The diagram parses as valid SVG; `git diff --check` passed. No temporary diagnostics or new parallel execution were introduced.
 

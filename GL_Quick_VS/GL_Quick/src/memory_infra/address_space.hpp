@@ -28,8 +28,8 @@
 
 // Operating-system address-space primitives behind the static pools
 // (D-418): a pool reserves its whole range once and
-// commits each block when the block is first carved, so a pool's commit charge
-// is its carve high-water instead of its configured size.
+// commits blocks before use. Returned whole blocks can be decommitted while
+// retaining their reservation and recommitted at the same address on reuse.
 
 namespace gl {
 
@@ -64,6 +64,22 @@ namespace gl {
     ///                reservation.
     /// @see reserveAddressSpace
     void commitAddressSpace(char* address, int64_t bytes);
+
+    /// @brief Decommit complete operating-system pages while retaining their addresses.
+    ///
+    /// @details
+    /// Only unowned, unregistered pages inside a live reservation may be passed.
+    /// The exact range becomes inaccessible and loses its contents; a subsequent
+    /// commit makes zero-filled pages accessible at the same virtual addresses.
+    /// Windows uses MEM_DECOMMIT; POSIX replaces this reserved subrange with an
+    /// anonymous PROT_NONE mapping. No address outside the range is changed.
+    ///
+    /// @param address Page-aligned first byte inside the caller's reservation.
+    /// @param bytes Positive whole-page length entirely owned by the caller.
+    /// @return Nothing.
+    /// @invariant Partial pages and operating-system failures assert.
+    /// @see reserveAddressSpace, commitAddressSpace
+    void decommitAddressSpace(char* address, int64_t bytes);
 
     /// @brief Return a whole reservation, committed parts included, to the
     ///        operating system.

@@ -124,7 +124,7 @@ reference`):
 backward direction) backward-chains on the active goal `(in[p, M])`
 at the interval-body integration scope, producing subgoal
 `(or2[a,p,b])`. `prepareIntegrationCore2` Case OR
-(`prover.hpp:4026-4084`) dispatches two branch validities, each
+(`prover.hpp`) dispatches two branch validities, each
 minted via `NameMap::encodePush(parentValId,
 "orint_(or2[…])_((head_k))")`:
 
@@ -151,7 +151,7 @@ re-entry on subsequent `prepareIntegration` calls.
 
 **Inference.** The branch assumption `!(=[a,p])` coexists with its
 swapped-arg mirror `!(=[p,a])` at the same branch validity. Mirror
-is emitted by the `addNegatedEquality` gateway (`prover.cpp:4163+`)
+is emitted by the `addNegatedEquality` gateway (`logical_block/equivalence_processor.cpp+`)
 via the same centralized choke point as positive equality
 mirroring, tagged `symmetry of inequality`.
 
@@ -198,10 +198,10 @@ encodedStatements at Branch A validity contains
 
 **Inference.** `(existence0[1, repl_lev_1_2, 3])` is compiled as
 `∃y. (in[y, 1]) ∧ (in2[y, repl_lev_1_2, 3])`. `disintegrateExprCore2`'s
-existence case (`prover.cpp:6984-7093`) mints a fresh it_ bound variable
+existence case (`prover.cpp`) mints a fresh it_ bound variable
 `<w>` via the algebra-case path and registers the two element templates
 `(in[<w>, 1])`, `(in2[<w>, repl_lev_1_2, 3])` into `newVarMap`. Pass B
-in `disintegrateExpr2` (`prover.cpp:7322-7371`) must then admit `<w>`
+in `disintegrateExpr2` (`logical_block/disintegration_processor.cpp`) must then admit `<w>`
 for both elements to be deposited into `finalStringStatements` at Branch
 A validity.
 
@@ -213,7 +213,7 @@ missed: no Peano template registered an input-slot-marker key for
 for the algebra-path it_ var and the existence0 body stayed buried.
 
 **How confirmed** (single-input-operator fallback rule,
-`prover.hpp:1858+` / `prover.cpp:7342`). The standalone rule
+`prover.hpp+` / `prover.cpp`). The standalone rule
 `isAllowedAsOperatorInput` admits `<w>` when the stmt is an operator
 invocation with exactly one input slot and `<w>` sits at that slot
 (depth/secondary-count bounds applied). `in2`'s input_args is `[0]` and
@@ -290,14 +290,14 @@ Parent/child scopes fire together (by `NameMap::comparable`), so the
 implication24-scope statement is usable at Branch A.
 
 **`makeNormalizedKeysForAdmission` replKey bug (fixed, commit
-).** The function at `prover.cpp:1532` previously pushed the
+).** The function at `prover.cpp` previously pushed the
 marker-source element itself into `replKey`:
 ```cpp
 if (binary[i] || i == index)   // ← bug: `|| i == index`
 ```
 This polluted `lmv.key` with the target expression (the `in3[3,1,4,u_4]`
 row being admitted), which downstream consumers `isAdmitted`
-(`prover.hpp:2409`) and `admissionMapPropagate` (`prover.cpp:6369`)
+(`prover.hpp`) and `admissionMapPropagate` (`prover.cpp`)
 would iterate as if a real premise — trivially self-matching.
 
 Fix: drop `|| i == index`. After the fix:
@@ -308,7 +308,7 @@ Fix: drop `|| i == index`. After the fix:
 
 **Current blocker: request for the 3-subkey combo is never emitted.**
 Trap at `generateEncodedRequestsStatic` emit-site
-(`prover.cpp:1840`+) gated on SE2 LB full parent chain + `mc ≥ 3` +
+(`prover.cpp`+) gated on SE2 LB full parent chain + `mc ≥ 3` +
 set-membership of the three concrete subkey statements. Target dump:
 . Full-run result: **file not
 created — zero requests at SE2 LB contain all three statements
@@ -347,7 +347,7 @@ Statements` and `localEncodedStatementsDelta` at SE2 LB entry in the
 moment the request should fire.
 
 **Batch 2 filter pre/post trap** (around
-`makeMandatoryEncodedStatementLists1Static` at `prover.cpp:3614`):
+`makeMandatoryEncodedStatementLists1Static` at `prover.cpp`):
 
 ```
 [batch2@SE2] #4 mbPtr=0x…12800 intDeltaSize=77 nMsl2=8 preTargets=3 postTargets=3
@@ -463,7 +463,7 @@ rejects its deposit.
 
 ### Step 6 — COMPLETE (commit 26e3c45)
 
-**Root cause: Case OR seed deposits omitted `mb.level`** (`prover.hpp:4336,
+**Root cause: Case OR seed deposits omitted `mb.level`** (`prover.hpp,
 4341`). Both the negation assumption and the head goal were deposited with
 `std::set<int>` (empty), while every other deposit site in the prover
 explicitly calls `levels.insert(mb.level)`. Empty seeds meant no
@@ -473,7 +473,7 @@ branch-rooted inference ever contributed `{1}` (the LB's level) to
 every derived Branch-A statement ended up with `statementLevelsMap
 entry = {0}`. The equality-substitution gate
 `if (maxLevel!= memoryBlock.level) continue;` at
-`prover.hpp:5163` rejected the substitution, since the substituted
+`prover.hpp` rejected the substitution, since the substituted
 in3 inherited `{0}` but SE2 LB's `level = 1`.
 
 Diagnostic trail:
@@ -572,12 +572,12 @@ of interval's body inside that theorem).
 ### Step 8 — COMPLETE (commit, D-30)
 
 **Root cause: OR emission scope hard-coded to `"main"`.** At
-[`prover.cpp:4419`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp), the
+[`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp), the
 `addExprToMemoryBlock` call that emits the wrapping OR after a
 branch's head proves passed `"main"` as the destination scope.
 Diagnostic trail:
 
-- Trap at `prover.cpp:4404` showed Branch A head `(=[6, repl_lev_1_2])`
+- Trap at `prover.cpp` showed Branch A head `(=[6, repl_lev_1_2])`
  arriving at Branch A scope with `status=1` and `inToBeProvedHere=1`.
  All gate conditions met. The line-4419 emit fired.
 - The OR `(or2[6, repl_lev_1_2, 2])` then landed at `v=main` (per
@@ -587,7 +587,7 @@ Diagnostic trail:
  `_boundary_(implication26[1,4,2,6,15])` — the implication's
  hypothetical scope, NOT at `main`. The deposit at `v=main` did
  not match (toBeProved lookup is exact-scope-keyed at
- `prover.cpp:4404`).
+ `prover.cpp`).
 - Step 8 stalled at `toBeProved=4` regardless of how many bursts ran.
 
 The hard-coded `"main"` was a latent bug from when ORs lived only at
@@ -754,7 +754,7 @@ further up at `v=main`: the same orSignature `(or2[2,repl_lev_1_0,6])`
 exists at two stack positions (impl24-internal AND top-level), the
 top-level OR-convergence promotes to `v=main` first, then the
 impl24-internal convergence's deposit gets dedupe'd by Site F's
-ancestor scan at [`prover.cpp:4800-4804`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp)
+ancestor scan at [`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp)
 because the fact is already live at the strict ancestor v=main.
 Functionally equivalent — comparable-scope inheritance makes the
 v=main entry visible at impl24 and at every other descendant.

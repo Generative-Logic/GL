@@ -14,7 +14,7 @@ and a commercial license — see https://generative-logic.com/license.
 > **Input:** the batch's proved-theorem set (in-memory after stage 3).
 > **Output:** a minimal subset of proved theorems that preserves derivability of every individual theorem; persisted as the pruned `files/theorems/theorems.txt` and (when externals are being rebuilt) the pruned `files/theorems/compressed_external_theorems.txt`.
 > **Owner:** `compressor.cpp` / `compressor.hpp`.
-> **Entry:** `Compressor::run` at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
+> **Entry:** `Compressor::run` at [`compressor.cpp`](../../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
 
 ---
 
@@ -37,7 +37,7 @@ End result: the non-dead theorems are the compressed set.
 
 ### Setup
 
-Entry at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp). Flags flipped:
+Entry at [`compressor.cpp`](../../../GL_Quick_VS/GL_Quick/src/compressor.cpp). Flags flipped:
 
 ```
 analyzer.parameters.compressor_mode    = true
@@ -109,7 +109,7 @@ The `graph`'s value type is a *list of alternative dep-sets* because the hash en
 
 ## Phase 2 — Greedy elimination
 
-Entry at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
+Entry at [`compressor.cpp`](../../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
 
 Steps:
 
@@ -142,7 +142,7 @@ Each query creates independent Boolean reachability state, remaining dependency 
 
 This computes the same least fixed point as repeatedly scanning the string graph. An unseeded cycle cannot make its first member reachable. Removed theorems may still be derived through graph edges; removal affects their initial theorem seed only. Scope identities are unchanged. The query emits no proof rows and cannot change candidate ordering or provenance.
 
-Defined at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
+Defined at [`compressor.cpp`](../../../GL_Quick_VS/GL_Quick/src/compressor.cpp).
 
 Measured on matched full native CUDA runs on 2026-09-06, the indexed oracle
 and shared parser results reduced Peano compression from 20.0558 to 4.3120

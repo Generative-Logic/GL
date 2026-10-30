@@ -348,5 +348,293 @@ class OrIntroductionTests(unittest.TestCase):
                     self.assertEqual(len(manifest), count)
 
 
+AND_SOURCE = "!(and98[x,y,z,w])"
+AND_CASE = "!(=[x,y])"
+AND_REFUTATION = "!(=[z,w])"
+AND_COMPACT = "(implication98[y,z,w])"
+AND_TEMPLATE = "(>[x]" + AND_SOURCE + "(>[]" + AND_REFUTATION + AND_CASE + "))"
+AND_DEFINITIONS = {
+    "and98": {"arity": 4, "category": "and", "elements": ["(=[u_1,u_2])", "!(=[u_3,u_4])"]},
+    "implication98": {"arity": 3, "category": "implication", "elements": [
+        "!(and98[1,u_1,u_2,u_3])", "!(=[u_2,u_3])", "!(=[1,u_1])"]},
+}
+
+
+def negated_and_fixture():
+    """Steps of a negated-conjunction case split under an integration scope.
+
+    The premise ``¬(x = y ∧ ¬ z = w)`` splits into the cases ``¬ x = y`` and
+    ``z = w`` (D-460); the second case is
+    refuted by the parent premise ``¬ z = w`` and the first case is the
+    conclusion itself.
+    """
+    parent = {"namespace": PARENT, "compact": {"mpl": AND_COMPACT},
+              "template": {"mpl": AND_TEMPLATE}, "definition_head": "implication98"}
+    child_template = ("(>[x]" + AND_SOURCE + "(>[]" + AND_REFUTATION
+                      + "(>[]" + AND_CASE + AND_CASE + ")))")
+    child = {"namespace": CHILD, "parent_namespace": PARENT, "scope_kind": "or_branch",
+             "compact": {"mpl": AND_SOURCE}, "template": {"mpl": child_template}}
+    steps = []
+
+    def row(expression, action, namespace, dependencies, **metadata):
+        number = len(steps) + 1
+        step = {"id": f"chapter_1_line_{number}", "source_line": number,
+                "source_tag": action, "action": action, "namespace": namespace,
+                "conclusion": {"mpl": expression}, "dependencies": dependencies, **metadata}
+        steps.append(step)
+        return {"step": step["id"], "namespace": namespace, "expression": step["conclusion"]}
+
+    template_dependency = {"namespace": "main", "source_kind": "integration_goal_template",
+                           "expression": {"mpl": AND_TEMPLATE}}
+    source = row(AND_SOURCE, "integration_premise", PARENT, [template_dependency], scope_namespace=PARENT)
+    refutation = row(AND_REFUTATION, "integration_premise", PARENT, [template_dependency],
+                     scope_namespace=PARENT)
+    branch = row(AND_CASE, "or_branch", CHILD, [source], scope_namespace=CHILD)
+    row(AND_CASE, "or_eliminate", PARENT, [source, branch, refutation], or_definition_head="and98")
+    return {"steps": steps, "scope_contexts": [parent, child],
+            "variable_types": {name: "element" for name in ("x", "y", "z", "w")}}
+
+
+class NegatedConjunctionCaseTests(unittest.TestCase):
+    def test_case_split_cases_complements_conjuncts(self):
+        from proof_export.mpl import Negation
+        from proof_export.or_convergence import case_split_cases, convergence_cases
+        atom, cases = case_split_cases(parse_mpl(AND_SOURCE), AND_DEFINITIONS)
+        self.assertEqual(atom.head, "and98")
+        self.assertEqual([to_mpl(case) for case in cases], ["!(=[x,y])", "(=[z,w])"])
+        self.assertEqual([branch for _, branch in convergence_cases(parse_mpl(AND_SOURCE), PARENT, AND_DEFINITIONS)],
+                         [PARENT + "_boundary_ordis_!(and98[x,y,z,w])_(!(=[x,y]))",
+                          PARENT + "_boundary_ordis_!(and98[x,y,z,w])_((=[z,w]))"])
+        _, or_cases = case_split_cases(parse_mpl(SOURCE), DEFINITIONS)
+        self.assertEqual([to_mpl(case) for case in or_cases], ["(=[x,y])", "(=[x,z])"])
+        with self.assertRaises(AssertionError):
+            case_split_cases(Negation(parse_mpl(SOURCE)), DEFINITIONS)
+
+    def test_metadata_accepts_a_negated_conjunction_source(self):
+        def scoped(text, goal=False):
+            return ScopedExpression(parse_mpl(text), text + ("_integration_goal" if goal else ""),
+                                    "integration_goal" if goal else "ordinary")
+        rows = (
+            ProofRow(1, scoped(AND_TEMPLATE, True), "main", "expansion for integration",
+                     (Dependency(scoped(AND_COMPACT, True), "main"),)),
+            ProofRow(2, scoped(AND_SOURCE), PARENT, "premise element",
+                     (Dependency(scoped(AND_TEMPLATE, True), "main"),)),
+            ProofRow(3, scoped(AND_REFUTATION), PARENT, "premise element",
+                     (Dependency(scoped(AND_TEMPLATE, True), "main"),)),
+            ProofRow(4, scoped(AND_CASE), CHILD, "or disintegration",
+                     (Dependency(scoped(AND_SOURCE), PARENT),)),
+            ProofRow(5, scoped(AND_CASE), PARENT, "or convergence", (
+                Dependency(scoped(AND_SOURCE), PARENT), Dependency(scoped(AND_CASE), CHILD),
+                Dependency(scoped(AND_REFUTATION), PARENT))),
+            ProofRow(6, scoped(AND_COMPACT), "main", "validity name",
+                     (Dependency(scoped(AND_CASE), PARENT),)),
+        )
+        chapter = Chapter(Path("negated_and_fixture.txt"), 1, "single_chapter_proof", rows)
+        metadata, contexts = _schema3_action_metadata(chapter, AND_DEFINITIONS, {}, {})
+        self.assertEqual(metadata[5], {"or_definition_head": "and98"})
+        branch = next(context for context in contexts if context["namespace"] == CHILD)
+        self.assertEqual(branch["definition_head"], "and98")
+
+    def test_kernel_checks_negated_conjunction_case_elimination(self):
+        lines, _ = _render_chapter_steps(negated_and_fixture(), "negated_and", {}, {},
+            ambient_variables={"y", "z", "w"}, binary_definitions=AND_DEFINITIONS)
+        body = "\n".join(lines)
+        self.assertIn("simp only [gl_and98, notAndIffNotOrNot, notNotIff] at or_cases", body)
+        support = (LEAN_PROJECT / "GLExport" / "ProofSupport.lean").read_text(encoding="utf-8")
+        source = (support + "\nopen GLExport\n"
+                  "def gl_and98 {α : Type} (x y z w : α) : Prop := (x = y ∧ ¬ z = w)\n"
+                  "example {α : Type} (y z w : α) : ∀ x, ¬ gl_and98 x y z w → ¬ (z = w) → ¬ (x = y) := by\n"
+                  + body + "\n  exact row_4\n")
+        with tempfile.TemporaryDirectory(prefix="negated_and_") as directory:
+            path = Path(directory) / "NegatedAnd.lean"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run([lean_executable(), str(path)],
+                cwd=LEAN_PROJECT, env=lean_environment(),
+                text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + source)
+
+
+BRANCH_WITNESS_DEFINITIONS = {
+    "or99": {"arity": 3, "category": "or", "elements": ["(=[u_1,u_2])", "(=[u_1,u_3])"]},
+    "ex1": {"arity": 2, "category": "existence", "elements": ["(in[1,u_1])", "(=[1,u_2])"]},
+}
+
+
+def branch_witness_fixture():
+    """A case branch that mints two chained witnesses from its own rows: w from
+    a replayed main existence, then v from a rule's existence built on w. The
+    converged fact depends on both; the case assumption introduces neither."""
+    source = "(or99[x,y,z])"
+    case = "(=[x,y])"
+    refutation = "!(=[x,z])"
+    existence = "(ex1[N,x])"
+    first_rule = "(>[w](=[w,x])(ex1[N,w]))"
+    turn_first = "(>[w](=[w,x])(=[x,w]))"
+    turn_second = "(>[v,w](=[v,w])(=[w,v]))"
+    second_rule = "(>[v,w](=[w,v])(>[](=[x,w])(in[x,N])))"
+    result = "(in[x,N])"
+    child = "main_boundary_ordis_" + source + "_(" + case + ")"
+    context = {"namespace": child, "parent_namespace": "main", "scope_kind": "or_branch",
+               "compact": {"mpl": source}, "template": {"mpl": "(>[]" + case + case + ")"}}
+    steps = []
+
+    def row(expression, action, namespace, dependencies, **metadata):
+        step = {"id": f"chapter_1_line_{len(steps) + 1}", "source_line": len(steps) + 1,
+                "source_tag": action, "action": action, "namespace": namespace,
+                "conclusion": {"mpl": expression}, "dependencies": dependencies, **metadata}
+        steps.append(step)
+        return {"step": step["id"], "namespace": namespace, "expression": step["conclusion"],
+                "source_kind": "local_step"}
+
+    or_source = row(source, "assume", "main", [])
+    refuted = row(refutation, "assume", "main", [])
+    given_existence = row(existence, "assume", "main", [])
+    rule_1 = row(first_rule, "assume", "main", [])
+    turn_1 = row(turn_first, "assume", "main", [])
+    turn_2 = row(turn_second, "assume", "main", [])
+    rule_2 = row(second_rule, "assume", "main", [])
+    local_existence = row(existence, "scope_inherit", child, [given_existence])
+    first_body = row("!(>[w](in[w,N])!(=[w,x]))", "definition_expand", child, [local_existence])
+    first_link = row("(=[w,x])", "compound_project", child, [first_body])
+    built = row("(ex1[N,w])", "implication_apply", child, [rule_1, first_link])
+    second_body = row("!(>[v](in[v,N])!(=[v,w]))", "definition_expand", child, [built])
+    second_link = row("(=[v,w])", "compound_project", child, [second_body])
+    first_turned = row("(=[x,w])", "implication_apply", child, [turn_1, first_link])
+    second_turned = row("(=[w,v])", "implication_apply", child, [turn_2, second_link])
+    branch = row(result, "implication_apply", child, [rule_2, second_turned, first_turned])
+    row(result, "or_eliminate", "main", [or_source, branch, refuted], or_definition_head="or99")
+    chapter = {"steps": steps, "scope_contexts": [context],
+               "variable_types": {"N": "set", "x": "element", "y": "element", "z": "element",
+                                  "w": "element", "v": "element"}}
+    assumptions = {source: "given_or", refutation: "given_refutation", existence: "given_witness",
+                   first_rule: "given_rule_1", turn_first: "given_turn_1", turn_second: "given_turn_2",
+                   second_rule: "given_rule_2"}
+    return chapter, assumptions
+
+
+class OrConvergenceBranchWitnessTests(unittest.TestCase):
+    def test_kernel_obtains_chained_branch_witnesses_from_their_rows(self):
+        chapter, assumptions = branch_witness_fixture()
+        lines, _ = _render_chapter_steps(chapter, "branch_witnesses", assumptions, {},
+            ambient_variables={"x", "y", "z"}, binary_definitions=BRANCH_WITNESS_DEFINITIONS)
+        body = "\n".join(lines)
+        self.assertIn("      obtain ⟨w, witness_guard_1⟩ := row_10 branch_compact\n"
+                      "      obtain ⟨v, witness_guard_2⟩ := row_13 branch_compact w witness_guard_1\n"
+                      "      exact row_16 branch_compact w witness_guard_1 v witness_guard_2", body)
+        support = (LEAN_PROJECT / "GLExport" / "ProofSupport.lean").read_text(encoding="utf-8")
+        source = (support + "\nopen GLExport\n"
+                  "def gl_or99 {α : Type} (x y z : α) : Prop := x = y ∨ x = z\n"
+                  "def gl_ex1 {α : Type} (N : α → Prop) (x : α) : Prop := ¬ (∀ w, N w → ¬ (w = x))\n"
+                  "example {α : Type} (N : α → Prop) (x y z : α)\n"
+                  " (given_or : gl_or99 x y z) (given_refutation : ¬ (x = z))\n"
+                  " (given_witness : gl_ex1 N x)\n"
+                  " (given_rule_1 : ∀ (w : α), w = x → gl_ex1 N w)\n"
+                  " (given_turn_1 : ∀ (w : α), w = x → x = w)\n"
+                  " (given_turn_2 : ∀ (v w : α), v = w → w = v)\n"
+                  " (given_rule_2 : ∀ (v w : α), w = v → x = w → N x) : N x := by\n"
+                  + body + "\n  exact row_17\n")
+        with tempfile.TemporaryDirectory(prefix="branch_witnesses_") as directory:
+            path = Path(directory) / "BranchWitnesses.lean"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run([lean_executable(), str(path)],
+                cwd=LEAN_PROJECT, env=lean_environment(),
+                text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + source)
+
+
+def prerequisite_witness_fixture():
+    """A case branch whose converged fact carries only its second witness v.
+
+    v's existence is built on a fact about the first witness w, so v's row needs
+    w's guard; the row that carries v into the converged fact obtained w from w's
+    own row. The convergence therefore obtains w before it can obtain v (line 20's
+    weak step: v15's row needs V11, which its branch fact does not carry)."""
+    source = "(or99[x,y,z])"
+    case = "(=[x,y])"
+    refutation = "!(=[x,z])"
+    existence = "(ex1[N,x])"
+    first_turn = "(>[w](=[w,x])(=[x,w]))"
+    first_rule = "(>[w](=[x,w])(ex1[N,y]))"
+    second_turn = "(>[v](=[v,y])(=[y,v]))"
+    join = "(>[w](=[w,x])(>[v](=[y,v])(in[v,N])))"
+    last_rule = "(>[v](in[v,N])(in[x,N]))"
+    result = "(in[x,N])"
+    child = "main_boundary_ordis_" + source + "_(" + case + ")"
+    context = {"namespace": child, "parent_namespace": "main", "scope_kind": "or_branch",
+               "compact": {"mpl": source}, "template": {"mpl": "(>[]" + case + case + ")"}}
+    steps = []
+
+    def row(expression, action, namespace, dependencies, **metadata):
+        step = {"id": f"chapter_1_line_{len(steps) + 1}", "source_line": len(steps) + 1,
+                "source_tag": action, "action": action, "namespace": namespace,
+                "conclusion": {"mpl": expression}, "dependencies": dependencies, **metadata}
+        steps.append(step)
+        return {"step": step["id"], "namespace": namespace, "expression": step["conclusion"],
+                "source_kind": "local_step"}
+
+    or_source = row(source, "assume", "main", [])
+    refuted = row(refutation, "assume", "main", [])
+    given_existence = row(existence, "assume", "main", [])
+    turn_1 = row(first_turn, "assume", "main", [])
+    rule_1 = row(first_rule, "assume", "main", [])
+    turn_2 = row(second_turn, "assume", "main", [])
+    joining = row(join, "assume", "main", [])
+    rule_2 = row(last_rule, "assume", "main", [])
+    local_existence = row(existence, "scope_inherit", child, [given_existence])
+    first_body = row("!(>[w](in[w,N])!(=[w,x]))", "definition_expand", child, [local_existence])
+    first_link = row("(=[w,x])", "compound_project", child, [first_body])
+    first_turned = row("(=[x,w])", "implication_apply", child, [turn_1, first_link])
+    built = row("(ex1[N,y])", "implication_apply", child, [rule_1, first_turned])
+    second_body = row("!(>[v](in[v,N])!(=[v,y]))", "definition_expand", child, [built])
+    second_link = row("(=[v,y])", "compound_project", child, [second_body])
+    second_turned = row("(=[y,v])", "implication_apply", child, [turn_2, second_link])
+    joined = row("(in[v,N])", "implication_apply", child, [joining, first_link, second_turned])
+    branch = row(result, "implication_apply", child, [rule_2, joined])
+    row(result, "or_eliminate", "main", [or_source, branch, refuted], or_definition_head="or99")
+    chapter = {"steps": steps, "scope_contexts": [context],
+               "variable_types": {"N": "set", "x": "element", "y": "element", "z": "element",
+                                  "w": "element", "v": "element"}}
+    assumptions = {source: "given_or", refutation: "given_refutation", existence: "given_witness",
+                   first_turn: "given_turn_1", first_rule: "given_rule_1", second_turn: "given_turn_2",
+                   join: "given_join", last_rule: "given_rule_2"}
+    return chapter, assumptions
+
+
+class OrConvergencePrerequisiteWitnessTests(unittest.TestCase):
+    def render(self, chapter, assumptions):
+        lines, _ = _render_chapter_steps(chapter, "prerequisite_witness", assumptions, {},
+            ambient_variables={"x", "y", "z"}, binary_definitions=BRANCH_WITNESS_DEFINITIONS)
+        return "\n".join(lines)
+
+    def test_kernel_obtains_a_witness_the_branch_fact_does_not_carry_first(self):
+        chapter, assumptions = prerequisite_witness_fixture()
+        body = self.render(chapter, assumptions)
+        # The converged fact (row 18) carries only v; v's row (row 15) needs w,
+        # obtained first from w's own row (row 11).
+        self.assertIn("      obtain ⟨w, witness_guard_1⟩ := row_11 branch_compact\n"
+                      "      obtain ⟨v, witness_guard_2⟩ := row_15 branch_compact w witness_guard_1\n"
+                      "      exact row_18 branch_compact v witness_guard_2", body)
+        support = (LEAN_PROJECT / "GLExport" / "ProofSupport.lean").read_text(encoding="utf-8")
+        source = (support + "\nopen GLExport\n"
+                  "def gl_or99 {α : Type} (x y z : α) : Prop := x = y ∨ x = z\n"
+                  "def gl_ex1 {α : Type} (N : α → Prop) (x : α) : Prop := ¬ (∀ w, N w → ¬ (w = x))\n"
+                  "example {α : Type} (N : α → Prop) (x y z : α)\n"
+                  " (given_or : gl_or99 x y z) (given_refutation : ¬ (x = z))\n"
+                  " (given_witness : gl_ex1 N x)\n"
+                  " (given_turn_1 : ∀ (w : α), w = x → x = w)\n"
+                  " (given_rule_1 : ∀ (w : α), x = w → gl_ex1 N y)\n"
+                  " (given_turn_2 : ∀ (v : α), v = y → y = v)\n"
+                  " (given_join : ∀ (w : α), w = x → ∀ (v : α), y = v → N v)\n"
+                  " (given_rule_2 : ∀ (v : α), N v → N x) : N x := by\n"
+                  + body + "\n  exact row_19\n")
+        with tempfile.TemporaryDirectory(prefix="prerequisite_witness_") as directory:
+            path = Path(directory) / "PrerequisiteWitness.lean"
+            path.write_text(source, encoding="utf-8")
+            result = subprocess.run([lean_executable(), str(path)],
+                cwd=LEAN_PROJECT, env=lean_environment(),
+                text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + source)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -229,7 +229,7 @@ attempt 4.
  more bursts, faster propagation of the proved sibling theorem, or
  the flag-off `existence4`-style route.
 3. **New defect exposed:** the chapter export aborts —
- `visualizer.cpp` `buildStack: no origin found`
+ `proof/proof_reconstructor.cpp` `buildStack: no origin found`
  (`gl_quick.exe IncubatorGauss3` exit 0xC0000409) while exporting the
  batch's re-proved theorems (ES2 disproof, rung 1, rung 2 all
  re-proved and printed; the pipeline died before the verifier). Under
@@ -771,7 +771,7 @@ Evidence: the closure-run trace
 parent-side trace , the
 bare-preorder reductio trace
 , and
-`prover.cpp::prehandleAnchor` / `addExprToMemoryBlock`.
+`proof/proof_grid_builder.cpp::prehandleAnchor` / `addExprToMemoryBlock`.
 
 ### What the traces show
 

@@ -26,6 +26,15 @@ def RelationalInduction {α : Type u} (N : GLSet α) (zero : α)
   ∀ (P : α → Prop) (k : α), P zero →
     (∀ n, N n → P n → ∀ m, succ n m → P m) → N k → P k
 
+/-- Strong induction for one fixed domain, zero, successor and addition
+relation: the successor step may use the property at every value `j` below the
+current value `m`, written `j + x = m` and `j ≠ m`. -/
+def StrongRelationalInduction {α : Type u} (N : GLSet α) (zero : α)
+    (succ : GLBinaryRelation α) (add : GLTernaryRelation α) : Prop :=
+  ∀ (P : α → Prop) (k : α), P zero →
+    (∀ n, N n → ∀ m, succ n m → (∀ j x, add j x m → ¬ j = m → P j) → P m) →
+    N k → P k
+
 /-- Classical elimination for GL's negated-universal existence encoding. -/
 theorem existsAndOfNotForallImpNot
     {α : Type u}
@@ -58,6 +67,38 @@ theorem orIffNotAndNot (left right : Prop) :
       exact no_disjunction (Or.inl left_value)
     · intro right_value
       exact no_disjunction (Or.inr right_value)
+
+/-- Classical De Morgan law for a negated conjunction. GL splits a negated
+conjunction premise of an integrated implication into the cases of its
+complemented conjuncts; the case elimination rewrites the unfolded premise
+with this law. -/
+theorem notAndIffNotOrNot (left right : Prop) :
+    ¬ (left ∧ right) ↔ (¬ left ∨ ¬ right) := by
+  constructor
+  · intro not_both
+    apply Classical.byContradiction
+    intro no_disjunction
+    apply not_both
+    constructor
+    · apply Classical.byContradiction
+      intro no_left
+      exact no_disjunction (Or.inl no_left)
+    · apply Classical.byContradiction
+      intro no_right
+      exact no_disjunction (Or.inr no_right)
+  · intro disjunction both
+    cases disjunction with
+    | inl no_left => exact no_left both.1
+    | inr no_right => exact no_right both.2
+
+/-- Classical double negation: a negated conjunct complements to its
+positive core. -/
+theorem notNotIff (value : Prop) : ¬ ¬ value ↔ value := by
+  constructor
+  · intro not_not_value
+    exact Classical.byContradiction not_not_value
+  · intro holds absent
+    exact absent holds
 
 /-- Extensionality of GL sets: two sets are equal exactly when each is a
 subset of the other. GL integrates a set-typed equality through its two

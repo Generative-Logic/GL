@@ -28,36 +28,41 @@
 ///        post-fixpoint drain.
 ///
 /// @details
-/// Coverage for `gl::ExpressionAnalyzer::drainDeferredIntegrationPreps`:
+/// Coverage for `gl::tests::ProverFixture::drainDeferredIntegrationPreps`:
 ///   - symbol existence + signature (`void(gl::Memory&)`);
 ///   - behavioral: every staged `DeferredIntegrationPrep` is replayed
 ///     (`prepareIntegration` invoked once per record, in firing order) and the
 ///     buffer is left intact — the documented `@invariant`; the burst-start
 ///     clear in `performElem2` empties it, not the drain.
-/// `in3` is a core Peano operator, so the `ExpressionAnalyzer("Peano")`
+/// `in3` is a core Peano operator, so the `gl::tests::ProverFixture("Peano")`
 /// construction shared with the other member tests supplies the compiled
 /// expression the replay needs; no extra disk fixtures are required. The
 /// template-registration effect of `prepareIntegration` itself is its own
 /// contract (and is exercised end-to-end by the Gauss fold proof).
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "compiled_definition_fixture.hpp"
 
 #include "../prover.hpp"
 
 TEST(admission_integration_reshuffle, drain_deferred_integration_preps_symbol_signature) {
     // Symbol-existence + signature check: take the drain's address with its
     // expected signature `void(gl::Memory&)`. Compiles only if
-    // drainDeferredIntegrationPreps is declared on gl::ExpressionAnalyzer with
+    // drainDeferredIntegrationPreps is declared on gl::tests::ProverFixture with
     // that exact signature, satisfying Rule 18's symbol-coverage requirement.
-    using DrainFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&);
-    DrainFn fn = &gl::ExpressionAnalyzer::drainDeferredIntegrationPreps;
+    using DrainFn = void (gl::AdmissionMemory::*)(gl::Memory&);
+    DrainFn fn = &gl::AdmissionMemory::drainDeferredIntegrationPreps;
     ASSERT_TRUE(fn != nullptr);
 }
 
 TEST(admission_integration_reshuffle, drain_replays_deferred_prepare_integration) {
-    // Heavy ExpressionAnalyzer construction is unavoidable for member access
+    // Heavy gl::tests::ProverFixture construction is unavoidable for member access
     // (mirrors the test_memory.cpp ea("Peano") behavioral tests).
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
 
     gl::Memory m;
 
@@ -76,21 +81,59 @@ TEST(admission_integration_reshuffle, drain_replays_deferred_prepare_integration
     const gl::SealedString args2Arr[3] = { s("4"), s("c"), s("d") };
     const auto args2 =
         gl::SealedSpan<gl::SealedString>::copyFrom(pages, args2Arr, 3);
-    m.deferredIntegrationPreps.push_back(
+    ((m).deferredIntegrationPreps).push_back(
         gl::DeferredIntegrationPrep{ s("(in3[a,marker,b,4])"), args1, s("main") });
-    m.deferredIntegrationPreps.push_back(
+    ((m).deferredIntegrationPreps).push_back(
         gl::DeferredIntegrationPrep{ s("(in3[c,marker,d,4])"), args2, s("main") });
 
     // Replays prepareIntegration once per record, in firing order; must not
     // throw and must not consume its own buffer.
-    ea.drainDeferredIntegrationPreps(m);
+    ea.admissionMemory.drainDeferredIntegrationPreps(m);
 
     // The drain iterated both records and left the buffer intact (the
     // post-drain clear lives in performElemPhase2, not in the drain) — the
     // documented invariant.
-    ASSERT_TRUE(m.deferredIntegrationPreps.size() == static_cast<std::size_t>(2));
+    ASSERT_TRUE(((m).deferredIntegrationPreps).size() == static_cast<std::size_t>(2));
 
     // Release the views before the pages die (the production clear point).
+    ((m).deferredIntegrationPreps).clear();
+    pages.seal();
+    pages.freePages();
+}
+
+// A queued missing premise whose open position is uniquely definable (in3's
+// third argument in Peano) is not prepared when a statement known at the
+// firing scope already names that object; the same premise shape without a
+// known version is prepared (D-568).
+TEST(admission_integration_reshuffle, drain_skips_a_premise_whose_unique_value_is_known) {
+    gl::tests::ProverFixture ea("Peano");
+    gl::Memory m;
+    gl::upsertStatementKey(m.intKnownStatements,
+        gl::packStatementKey(m.nameMap.encode("(in3[a,b,c,4])"), gl::NameMap::MAIN_ID), true, false);
+
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    const auto s = [&pages](const std::string& v) {
+        return gl::SealedString::copyFrom(pages, v.data(), static_cast<int32_t>(v.size()));
+    };
+    const gl::SealedString knownArr[3] = { s("4"), s("a"), s("b") };
+    const gl::SealedString openArr[3] = { s("4"), s("b"), s("d") };
+    m.deferredIntegrationPreps.push_back(gl::DeferredIntegrationPrep{ s("(in3[a,b,marker,4])"),
+        gl::SealedSpan<gl::SealedString>::copyFrom(pages, knownArr, 3), s("main") });
+    m.deferredIntegrationPreps.push_back(gl::DeferredIntegrationPrep{ s("(in3[d,b,marker,4])"),
+        gl::SealedSpan<gl::SealedString>::copyFrom(pages, openArr, 3), s("main") });
+
+    ea.admissionMemory.drainDeferredIntegrationPreps(m);
+
+    const auto prepared = [&](const std::string& marked) {
+        int64_t key = 0;
+        return gl::lookupTemplateKey(m.templateInterner, m.nameMap, gl::StrSpan(marked),
+                   gl::StrSpan("main", 4), key)
+            && m.integrationPreparedMarker.lookup(key) != 0;
+    };
+    ASSERT_FALSE(prepared("(in3[a,b,marker,4])"));
+    ASSERT_TRUE(prepared("(in3[d,b,marker,4])"));
+
     m.deferredIntegrationPreps.clear();
     pages.seal();
     pages.freePages();
@@ -98,12 +141,12 @@ TEST(admission_integration_reshuffle, drain_replays_deferred_prepare_integration
 
 
 TEST(admission_integration_reshuffle, fold_compiles_two_independent_binary_operations) {
-    gl::ExpressionAnalyzer analyzer("Gauss");
-    const auto& config = analyzer.coreExpressionMap.at("fold");
+    gl::tests::ProverFixture analyzer("Gauss");
+    const auto& config = gl::CompiledDefinitionFixture::coreExpressionMap(analyzer.definitions).at("fold");
     ASSERT_EQ(config.arity, 8);
     ASSERT_EQ(config.inputIndices, (std::vector<int>{6}));
     ASSERT_EQ(config.outputIndices, (std::vector<int>{7}));
-    const auto& compiled = analyzer.compiledExpressions.at("fold");
+    const auto& compiled = gl::CompiledDefinitionFixture::compiledExpressions(analyzer.definitions).at("fold");
     ASSERT_EQ(compiled.arity, 8);
     ASSERT_EQ(compiled.elements.size(), std::size_t{2});
     const auto parameters = ce::getArgs(compiled.signature);

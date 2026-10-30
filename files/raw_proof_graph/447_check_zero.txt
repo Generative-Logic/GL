@@ -1,0 +1,37 @@
+!(preorder[1,4,11,9])	main	contradiction	!(implication89[10,1,4,11])	main_boundary_contradiction_!(preorder[1,4,11,9])	(implication89[10,1,4,11])	main_boundary_contradiction_!(preorder[1,4,11,9])
+!(implication89[10,1,4,11])	main_boundary_contradiction_!(preorder[1,4,11,9])	contradiction	!(in[11,1])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_contradiction_!(implication89[10,1,4,11])	(in[11,1])	main
+!(in[11,1])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_contradiction_!(implication89[10,1,4,11])	implication	(>[1](minimum[u_1,u_4,u_10,1])!(in[1,u_1]))	main	(minimum[1,4,10,11])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_contradiction_!(implication89[10,1,4,11])
+(>[1](minimum[u_1,u_4,u_10,1])!(in[1,u_1]))	main	expansion	(implication2479[1,4,10])	main
+(implication2479[1,4,10])	main	expansion	!(hasMinimum[1,4,10])	main
+!(hasMinimum[1,4,10])	main	task formulation
+(minimum[1,4,10,11])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_contradiction_!(implication89[10,1,4,11])	implication	(>[](in[u_11,u_10])(>[](implication89[u_10,u_1,u_4,u_11])(minimum[u_1,u_4,u_10,u_11])))	main_boundary_contradiction_!(preorder[1,4,11,9])	(implication89[10,1,4,11])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_contradiction_!(implication89[10,1,4,11])	(in[11,10])	main
+(>[](in[u_11,u_10])(>[](implication89[u_10,u_1,u_4,u_11])(minimum[u_1,u_4,u_10,u_11])))	main_boundary_contradiction_!(preorder[1,4,11,9])	expansion	(implication2477[11,10,1,4])	main_boundary_contradiction_!(preorder[1,4,11,9])
+(implication2477[11,10,1,4])	main_boundary_contradiction_!(preorder[1,4,11,9])	reformulation for integration and	(&(in[11,10])(implication89[10,1,4,11]))_integration_goal	main_boundary_contradiction_!(preorder[1,4,11,9])
+(&(in[11,10])(implication89[10,1,4,11]))_integration_goal	main_boundary_contradiction_!(preorder[1,4,11,9])	expansion for integration	(minimum[1,4,10,11])_integration_goal	main_boundary_contradiction_!(preorder[1,4,11,9])
+(implication89[10,1,4,11])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_contradiction_!(implication89[10,1,4,11])	task formulation
+(in[11,10])	main	task formulation
+(in[11,1])	main	implication	(>[1](in[1,u_10])(in[1,u_1]))	main	(in[11,10])	main
+(>[1](in[1,u_10])(in[1,u_1]))	main	expansion	(subset[10,1])	main
+(subset[10,1])	main	task formulation
+(implication89[10,1,4,11])	main_boundary_contradiction_!(preorder[1,4,11,9])	validity name	(preorder[1,4,11,repl_lev_5_0])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])
+(preorder[1,4,11,repl_lev_5_0])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])	equality1	(preorder[1,4,2,repl_lev_5_0])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])	(=[2,11])	main_boundary_contradiction_!(preorder[1,4,11,9])
+(preorder[1,4,2,repl_lev_5_0])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(preorder[1,4,2,9])))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(in[repl_lev_5_0,1])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(preorder[1,4,2,9])))	main	theorem
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(in[repl_lev_5_0,1])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])	implication	(>[1](in[1,u_10])(in[1,u_1]))	main	(in[repl_lev_5_0,10])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])
+(in[repl_lev_5_0,10])	main_boundary_contradiction_!(preorder[1,4,11,9])_boundary_(implication89[10,1,4,11])	premise element	(>[repl_lev_5_0](in[repl_lev_5_0,10])(preorder[1,4,11,repl_lev_5_0]))_integration_goal	main_boundary_contradiction_!(preorder[1,4,11,9])
+(>[repl_lev_5_0](in[repl_lev_5_0,10])(preorder[1,4,11,repl_lev_5_0]))_integration_goal	main_boundary_contradiction_!(preorder[1,4,11,9])	expansion for integration	(implication89[10,1,4,11])_integration_goal	main_boundary_contradiction_!(preorder[1,4,11,9])
+(=[2,11])	main_boundary_contradiction_!(preorder[1,4,11,9])	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,4])(>[](in[8,1])(=[2,7]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[11,force_lev_5_0,2,4])	main_boundary_contradiction_!(preorder[1,4,11,9])	(in[force_lev_5_0,1])	main_boundary_contradiction_!(preorder[1,4,11,9])
+(AnchorPeano[1,2,3,4,5,6])	main	implication	(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	(NaturalNumbers[1,2,3,4,5])	main	(in2[2,6,3])	main
+(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	expansion	(implication76[1,2,3,4,5,6])	main
+(implication76[1,2,3,4,5,6])	main	reformulation for integration and	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main
+(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main	expansion for integration	(AnchorPeano[1,2,3,4,5,6])_integration_goal	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main	expansion	(AnchorFTA[1,2,3,4,5,6,7,8])	main
+(in2[2,6,3])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(in3[11,force_lev_5_0,2,4])	main_boundary_contradiction_!(preorder[1,4,11,9])	equality1	(in3[11,force_lev_5_0,9,4])	main_boundary_contradiction_!(preorder[1,4,11,9])	(=[9,2])	main
+(in3[11,force_lev_5_0,9,4])	main_boundary_contradiction_!(preorder[1,4,11,9])	disintegration	!(>[force_lev_5_0](in[force_lev_5_0,1])!(in3[11,force_lev_5_0,9,4]))	main_boundary_contradiction_!(preorder[1,4,11,9])
+!(>[force_lev_5_0](in[force_lev_5_0,1])!(in3[11,force_lev_5_0,9,4]))	main_boundary_contradiction_!(preorder[1,4,11,9])	expansion	(preorder[1,4,11,9])	main_boundary_contradiction_!(preorder[1,4,11,9])
+(preorder[1,4,11,9])	main_boundary_contradiction_!(preorder[1,4,11,9])	task formulation
+(=[9,2])	main	recursion
+(in[force_lev_5_0,1])	main_boundary_contradiction_!(preorder[1,4,11,9])	disintegration	!(>[force_lev_5_0](in[force_lev_5_0,1])!(in3[11,force_lev_5_0,9,4]))	main_boundary_contradiction_!(preorder[1,4,11,9])

@@ -24,7 +24,7 @@
 
 /// @file
 /// @brief Byte-identity unit tests for
-///        `gl::ExpressionAnalyzer::reconstructImplicationFullBind` after its T3
+///        `gl::tests::ProverFixture::reconstructImplicationFullBind` after its T3
 ///        statification (interior heap -> stack `StrSpan` arrays).
 ///
 /// @details
@@ -35,29 +35,38 @@
 /// pin representative implication chains: empty key (pass-through), `u_` filtering,
 /// and multi-premise nesting with the left-most-occurrence binder placement.
 
+#include "../compiler/definition_expansion.hpp"
+#include "../memory.hpp"
+#include <cstddef>
+#include <cstring>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
+#include "theorem_publisher_fixture.hpp"
+
+#include "compiled_definition_fixture.hpp"
 
 #include "../prover.hpp"
 
 TEST(reconstruct_implication, full_bind_byte_identity) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
 
     // Empty key: nothing to bind, the value passes through unchanged.
-    ASSERT_TRUE(ea.reconstructImplicationFullBind({}, "(p[x])")
+    ASSERT_TRUE(gl::ImplicationBuilder::reconstructImplicationFullBind({}, "(p[x])")
                 == std::string("(p[x])"));
 
     // Single premise: only non-`u_` args bind, so `x` binds and `u_y` is skipped.
-    ASSERT_TRUE(ea.reconstructImplicationFullBind({ "(a[x,u_y])" }, "(b[x])")
+    ASSERT_TRUE(gl::ImplicationBuilder::reconstructImplicationFullBind({ "(a[x,u_y])" }, "(b[x])")
                 == std::string("(>[x](a[x,u_y])(b[x]))"));
 
     // Two premises: each bound var is placed at its left-most occurrence (`x` at
     // the first premise, `y` at the second); the chain nests right-to-left.
-    ASSERT_TRUE(ea.reconstructImplicationFullBind({ "(a[x])", "(b[y])" }, "(c[x,y])")
+    ASSERT_TRUE(gl::ImplicationBuilder::reconstructImplicationFullBind({ "(a[x])", "(b[y])" }, "(c[x,y])")
                 == std::string("(>[x](a[x])(>[y](b[y])(c[x,y])))"));
 
     // The thin forwarder `reconstructImplication` is the same single-binder rule,
     // so it produces the identical string.
-    ASSERT_TRUE(ea.reconstructImplication({ "(a[x])", "(b[y])" }, "(c[x,y])")
+    ASSERT_TRUE(gl::ImplicationBuilder::reconstructImplication({ "(a[x])", "(b[y])" }, "(c[x,y])")
                 == std::string("(>[x](a[x])(>[y](b[y])(c[x,y])))"));
 }
 
@@ -65,40 +74,40 @@ TEST(reconstruct_implication, full_bind_byte_identity) {
 // ValueInterner::encode(StrSpan) and mintOriginKey(StrSpan, StrSpan) must produce the
 // same id / packed key as their std::string forms (they intern the same bytes).
 TEST(absorb_door_span_overloads, origin_mint_byte_identical) {
-    gl::ExpressionAnalyzer ea("Peano");  // inits the static memory pool
+    gl::tests::ProverFixture ea("Peano");  // inits the static memory pool
     gl::Memory m;
 
     const std::string s = "(in3[i0,i1,v1,+])";
-    ASSERT_TRUE(m.valueInterner.encode(gl::StrSpan(s)) == m.valueInterner.encode(s));
+    ASSERT_TRUE(((m).valueInterner).encode(gl::StrSpan(s)) == ((m).valueInterner).encode(s));
     const std::string t = "(=[a,b])";
-    ASSERT_TRUE(m.valueInterner.encode(t) == m.valueInterner.encode(gl::StrSpan(t)));
+    ASSERT_TRUE(((m).valueInterner).encode(t) == ((m).valueInterner).encode(gl::StrSpan(t)));
 
     const std::string e = "(in2[i0,v1,s])";
     const std::string v = "main";
-    ASSERT_TRUE(gl::mintOriginKey(m.originInterner, e, v)
-                == gl::mintOriginKey(m.originInterner, gl::StrSpan(e), gl::StrSpan(v)));
+    ASSERT_TRUE(gl::mintOriginKey(((m).originInterner), e, v)
+                == gl::mintOriginKey(((m).originInterner), gl::StrSpan(e), gl::StrSpan(v)));
 }
 
 // prefixArgumentsWithU statified: every argument is `u_`-prefixed (new bytes
 // built on the per-slot scratch arena), all other bytes pass through. The
 // reference outputs are exactly what the former heap vector<string>+map version
-// produced. The test thread leaves g_currentCoreId at -1, so the reserved
+// produced. The test thread leaves gl::WorkerContext::coreId() at -1, so the reserved
 // scratch slot is exercised.
 TEST(absorb_door_span_overloads, prefix_arguments_with_u) {
-    gl::ExpressionAnalyzer ea("Peano");  // inits the scratch arenas (logicalCores+1)
+    gl::tests::ProverFixture ea("Peano");  // inits the scratch arenas (logicalCores+1)
 
     // No args: plain pass-through.
-    ASSERT_TRUE(ea.prefixArgumentsWithU("(zero[])") == std::string("(zero[])"));
+    ASSERT_TRUE(gl::DefinitionExpansion::prefixArgumentsWithU("(zero[])") == std::string("(zero[])"));
     // Every arg prefixed.
-    ASSERT_TRUE(ea.prefixArgumentsWithU("(in3[a,b,c])")
+    ASSERT_TRUE(gl::DefinitionExpansion::prefixArgumentsWithU("(in3[a,b,c])")
                 == std::string("(in3[u_a,u_b,u_c])"));
-    ASSERT_TRUE(ea.prefixArgumentsWithU("(=[x,y])")
+    ASSERT_TRUE(gl::DefinitionExpansion::prefixArgumentsWithU("(=[x,y])")
                 == std::string("(=[u_x,u_y])"));
     // Already-`u_` args are prefixed again (the original prefixes every arg).
-    ASSERT_TRUE(ea.prefixArgumentsWithU("(p[u_x])")
+    ASSERT_TRUE(gl::DefinitionExpansion::prefixArgumentsWithU("(p[u_x])")
                 == std::string("(p[u_u_x])"));
     // Repeated arg: the source is scanned token-by-token, each replaced once.
-    ASSERT_TRUE(ea.prefixArgumentsWithU("(=[x,x])")
+    ASSERT_TRUE(gl::DefinitionExpansion::prefixArgumentsWithU("(=[x,x])")
                 == std::string("(=[u_x,u_x])"));
 }
 
@@ -123,7 +132,7 @@ static std::vector<std::string> listLastRemovedArgsLEOracle(const gl::LogicalEnt
 // return (from a std::set) became a sorted-unique StrSpan out-param + count. The
 // out spans alias le.elements; the sort/dedup reproduce the std::set order.
 TEST(prover_span_twins, list_last_removed_args_le_matches_heap) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
 
     // duplicate arg across elements (a, b) + u_-prefixed args (skipped) + distinct.
     gl::LogicalEntity le;
@@ -132,7 +141,7 @@ TEST(prover_span_twins, list_last_removed_args_le_matches_heap) {
 
     const std::vector<std::string> oracle = listLastRemovedArgsLEOracle(le);
     gl::StrSpan out[gl::ExecutionParameters::MAX_KEY_SLOTS];
-    const int32_t n = ea.listLastRemovedArgsLE(
+    const int32_t n = gl::DefinitionExpansion::listLastRemovedArgsLE(
         le, out, gl::ExecutionParameters::MAX_KEY_SLOTS);
 
     ASSERT_EQ(static_cast<std::size_t>(n), oracle.size());
@@ -144,7 +153,7 @@ TEST(prover_span_twins, list_last_removed_args_le_matches_heap) {
     const int32_t elemN = static_cast<int32_t>(le.elements.size());
     for (int32_t i = 0; i < elemN; ++i) elemRun[i] = gl::StrSpan(le.elements[i]);
     gl::StrSpan outSpan[gl::ExecutionParameters::MAX_KEY_SLOTS];
-    const int32_t nSpan = ea.listLastRemovedArgsLE(
+    const int32_t nSpan = gl::DefinitionExpansion::listLastRemovedArgsLE(
         gl::StrSpan("existence", 9), elemRun, elemN, outSpan,
         gl::ExecutionParameters::MAX_KEY_SLOTS);
     ASSERT_EQ(nSpan, n);
@@ -160,23 +169,23 @@ TEST(prover_span_twins, list_last_removed_args_le_matches_heap) {
 // an intermediate LB with an empty exprKey (skipped, like the vector form), and
 // the root sentinel alone (empty key).
 TEST(prover_span_twins, get_global_key_span_matches_vector) {
-    gl::ExpressionAnalyzer ea("Peano");  // inits the static memory pool
+    gl::tests::ProverFixture ea("Peano");  // inits the static memory pool
 
     gl::Memory root;                       // root sentinel: empty exprKey
     gl::Memory child;
     child.setExprKey("(=[a,b])");
-    child.parentMemory = &root;
+    ((child).parentMemory) = &root;
     gl::Memory middle;                     // empty exprKey -> skipped by both
-    middle.parentMemory = &child;
+    ((middle).parentMemory) = &child;
     gl::Memory grand;
     grand.setExprKey("(in2[x,N])");
-    grand.parentMemory = &middle;
+    ((grand).parentMemory) = &middle;
 
     const gl::Memory* nodes[] = { &grand, &child, &root };
     for (const gl::Memory* mb : nodes) {
-        const std::vector<std::string> oracle = ea.getGlobalKey(*mb);
+        const std::vector<std::string> oracle = ea.blockKeyReader.getGlobalKey(*mb);
         gl::StrSpan out[64];
-        const int32_t n = ea.getGlobalKey(*mb, out, 64);
+        const int32_t n = ea.blockKeyReader.getGlobalKey(*mb, out, 64);
         ASSERT_EQ(static_cast<std::size_t>(n), oracle.size());
         for (int32_t i = 0; i < n; ++i)
             ASSERT_EQ(gl::StrSpan(out[i]).toStdString(), oracle[i]);
@@ -206,22 +215,22 @@ TEST(prover_span_twins, update_global_direct_sealed_drain_matches_sorted) {
         { "(=[a,b])", 0, false },
     };
     for (const auto& r : input) {
-        ps.appendRecord(gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec{
+        ps.appendRecord(gl::UpdateGlobalSingleChapterRec{
             gl::SealedString::copyFrom(ps, r.thm.data(),
                 static_cast<int32_t>(r.thm.size())),
             r.coreId, nullptr, r.verdict });
     }
 
     // Gather + index-sort via updateGlobalSingleChapterLess (the drain's replay order).
-    std::vector<const gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec*> refs;
-    ps.forEachRecord<gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec>(
-        [&](const gl::ExpressionAnalyzer::UpdateGlobalSingleChapterRec& r) {
+    std::vector<const gl::UpdateGlobalSingleChapterRec*> refs;
+    ps.forEachRecord<gl::UpdateGlobalSingleChapterRec>(
+        [&](const gl::UpdateGlobalSingleChapterRec& r) {
             refs.push_back(&r);
         });
     std::vector<int> idx(refs.size());
     for (std::size_t i = 0; i < idx.size(); ++i) idx[i] = static_cast<int>(i);
     std::sort(idx.begin(), idx.end(), [&](int a, int b) {
-        return gl::ExpressionAnalyzer::updateGlobalSingleChapterLess(
+        return gl::tests::TheoremPublisherFixture::updateGlobalSingleChapterLess(
                    *refs[static_cast<std::size_t>(a)],
                    *refs[static_cast<std::size_t>(b)]) < 0;
     });
@@ -249,8 +258,8 @@ TEST(prover_span_twins, update_global_direct_sealed_drain_matches_sorted) {
 // the AND / existence / implication / OR build + u_/it_/int_/c_ renaming byte-for-byte;
 // the implication case delegates to the surviving member
 // reconstructImplicationFullBindScratch. The single-threaded test thread leaves
-// g_currentCoreId at -1, so the scratch slot is the reserved slotCount()-1.
-static std::string expandSignatureOracle(gl::ExpressionAnalyzer& ea,
+// gl::WorkerContext::coreId() at -1, so the scratch slot is the reserved slotCount()-1.
+static std::string expandSignatureOracle(gl::tests::ProverFixture& ea,
                                          const gl::LogicalEntity& le) {
     const std::string& category = le.category;
     const std::string& signature = le.signature;
@@ -313,7 +322,7 @@ static std::string expandSignatureOracle(gl::ExpressionAnalyzer& ea,
             for (int32_t i = 0; i < chainN; ++i) chainSpans[i] = gl::StrSpan(chain[i]);
             gl::ScratchArena& a =
                 gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
-            result = ea.reconstructImplicationFullBindScratch(
+            result = gl::ImplicationBuilder::reconstructImplicationFullBindScratch(
                 a, chainSpans, chainN, gl::StrSpan(head)).toStdString();
         }
     }
@@ -371,7 +380,7 @@ static std::string expandSignatureOracle(gl::ExpressionAnalyzer& ea,
 // caller ScratchArena (no internal ScratchScope). Byte-identical to the retained
 // heap oracle across every category + rename branch.
 TEST(prover_span_twins, expand_signature_scratch_matches_heap) {
-    gl::ExpressionAnalyzer ea("Peano");  // inits the global scratch arenas
+    gl::tests::ProverFixture ea("Peano");  // inits the global scratch arenas
     gl::ScratchArena& arena =
         gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
 
@@ -395,14 +404,14 @@ TEST(prover_span_twins, expand_signature_scratch_matches_heap) {
     for (const gl::LogicalEntity& le : cases) {
         const std::string oracle = expandSignatureOracle(ea, le);
         gl::ScratchScope sc(arena);
-        const gl::ScratchString twin = ea.expandSignature(le, arena);
+        const gl::ScratchString twin = gl::DefinitionExpansion::expandSignature(le, arena);
         ASSERT_EQ(gl::StrSpan(twin).toStdString(), oracle);
 
         // Span-run entry point directly (the LE form forwards to it).
         gl::StrSpan elemRun[gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS + 1];
         const int32_t elemN = static_cast<int32_t>(le.elements.size());
         for (int32_t i = 0; i < elemN; ++i) elemRun[i] = gl::StrSpan(le.elements[i]);
-        const gl::ScratchString twinSpan = ea.expandSignature(
+        const gl::ScratchString twinSpan = gl::DefinitionExpansion::expandSignature(
             gl::StrSpan(le.category), gl::StrSpan(le.signature), elemRun, elemN, arena);
         ASSERT_EQ(gl::StrSpan(twinSpan).toStdString(), oracle);
     }
@@ -414,13 +423,13 @@ TEST(prover_span_twins, expand_signature_scratch_matches_heap) {
 // flip the disjunct's sign on round-trip and mint a FALSE or compound
 // ((a=b) OR (c=d) instead of (a=b) OR !(c=d)).
 TEST(prover_span_twins, expand_signature_or_negated_disjunct_cancels) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::ScratchArena& arena =
         gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
     const gl::LogicalEntity le(
         "or", { "(=[u_a,u_b])", "!(=[u_c,u_d])" }, "(sig[u_a,u_b,u_c,u_d])", 4);
     gl::ScratchScope sc(arena);
-    const gl::ScratchString twin = ea.expandSignature(le, arena);
+    const gl::ScratchString twin = gl::DefinitionExpansion::expandSignature(le, arena);
     ASSERT_EQ(gl::StrSpan(twin).toStdString(),
               std::string("!(&!(=[a,b])(=[c,d]))"));
     ASSERT_EQ(expandSignatureOracle(ea, le),
@@ -435,13 +444,13 @@ TEST(prover_span_twins, expand_signature_or_negated_disjunct_cancels) {
 // the wrong form (the D-260 latent defect). Literal-bytes assertions so
 // a shared oracle/production error cannot mask again.
 TEST(prover_span_twins, expand_signature_or_three_disjuncts_nests_negated) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     gl::ScratchArena& arena =
         gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
     const gl::LogicalEntity le(
         "or", { "(d0[u_a])", "(d1[u_b])", "(d2[u_c])" }, "(sig[u_a])", 1);
     gl::ScratchScope sc(arena);
-    const gl::ScratchString twin = ea.expandSignature(le, arena);
+    const gl::ScratchString twin = gl::DefinitionExpansion::expandSignature(le, arena);
     ASSERT_EQ(gl::StrSpan(twin).toStdString(),
               std::string("!(&(&!(d0[a])!(d1[b]))!(d2[c]))"));
     ASSERT_EQ(expandSignatureOracle(ea, le),
@@ -451,7 +460,7 @@ TEST(prover_span_twins, expand_signature_or_three_disjuncts_nests_negated) {
     const gl::LogicalEntity leNeg(
         "or", { "(d0[u_a])", "(d1[u_b])", "!(d2[u_c])" }, "(sig[u_a])", 1);
     gl::ScratchScope sc2(arena);
-    const gl::ScratchString twinNeg = ea.expandSignature(leNeg, arena);
+    const gl::ScratchString twinNeg = gl::DefinitionExpansion::expandSignature(leNeg, arena);
     ASSERT_EQ(gl::StrSpan(twinNeg).toStdString(),
               std::string("!(&(&!(d0[a])!(d1[b]))(d2[c]))"));
 }
@@ -482,7 +491,7 @@ static std::vector<std::string> getRemainingArgsOracle(const std::vector<std::st
 // a sorted-unique StrSpan out-param + count. The out spans alias key; the sort/dedup
 // reproduce the std::set order (so the downstream NameMap mint sequence is unchanged).
 TEST(prover_span_twins, get_remaining_args_matches_heap) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
 
     // u_ args stripped, non-u_ args (x, c) ignored, duplicate stripped tail (a).
     const std::vector<std::string> key = {
@@ -490,7 +499,7 @@ TEST(prover_span_twins, get_remaining_args_matches_heap) {
     };
     const std::vector<std::string> oracle = getRemainingArgsOracle(key);
     gl::StrSpan out[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
-    const int32_t n = ea.getRemainingArgs(
+    const int32_t n = gl::HashKeyBuilder::getRemainingArgs(
         key, out, gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS);
 
     ASSERT_EQ(static_cast<std::size_t>(n), oracle.size());
@@ -498,13 +507,15 @@ TEST(prover_span_twins, get_remaining_args_matches_heap) {
         ASSERT_EQ(gl::StrSpan(out[i]).toStdString(), oracle[i]);
 }
 
-// Verbatim retained heap oracle for the former std::set<std::string>-returning
+// Retained heap oracle for the former std::set<std::string>-returning
 // findDigitArgs (moved to tests; a prover-only heap form is not kept in
-// production). Uses the same ExpressionAnalyzer config state (operators /
+// production), following the always-input rule: configured inputs minus the
+// anchor's arguments minus every argument at a non-input slot of a configured
+// element. Uses the same gl::tests::ProverFixture config state (operators /
 // coreExpressionMap / anchorInfo) the twin reads, so the differential comparison is
 // meaningful. The dropped-from-the-twin coreExpressionMap parameter is read here as
 // ea.coreExpressionMap (the value every caller passed).
-static std::set<std::string> findDigitArgsOracle(gl::ExpressionAnalyzer& ea,
+static std::set<std::string> findDigitArgsOracle(gl::tests::ProverFixture& ea,
         const std::string& theorem, const ce::AnchorInfo& anchor) {
     std::vector<std::string> chain;
     gl::StrSpan headSpan;
@@ -516,14 +527,14 @@ static std::set<std::string> findDigitArgsOracle(gl::ExpressionAnalyzer& ea,
 
     for (const auto& element : chain) {
         bool contains = element.find(ea.anchorInfo.name) != std::string::npos;
-        if (ea.isEquality(element) || contains) continue;
+        if (ea.canonicalizer.isEquality(element) || contains) continue;
         std::string stripped = element;
         if (stripped.size() >= 2 && stripped[0] == '!' && stripped[1] == '(')
             stripped = stripped.substr(1, stripped.size() - 2) + ")";
-        if (ea.isEquality(stripped)) continue;
+        if (ea.canonicalizer.isEquality(stripped)) continue;
         std::string coreExpr = gl::extractExpressionSpan(gl::StrSpan(stripped)).toStdString();
-        if (ea.operators.find(coreExpr) == ea.operators.end()
-            && ea.coreExpressionMap.find(coreExpr) == ea.coreExpressionMap.end()) {
+        if (gl::CompiledDefinitionFixture::operators(ea.definitions).find(coreExpr) == gl::CompiledDefinitionFixture::operators(ea.definitions).end()
+            && gl::CompiledDefinitionFixture::coreExpressionMap(ea.definitions).find(coreExpr) == gl::CompiledDefinitionFixture::coreExpressionMap(ea.definitions).end()) {
             if (coreExpr.find("existence") == 0) continue;
             return {};
         }
@@ -532,8 +543,8 @@ static std::set<std::string> findDigitArgsOracle(gl::ExpressionAnalyzer& ea,
     std::set<std::string> allInputArgs;
     for (const auto& element : chain) {
         std::string coreExpr = gl::extractExpressionUniversalSpan(gl::StrSpan(element)).toStdString();
-        auto it = ea.coreExpressionMap.find(coreExpr);
-        if (it != ea.coreExpressionMap.end()) {
+        auto it = gl::CompiledDefinitionFixture::coreExpressionMap(ea.definitions).find(coreExpr);
+        if (it != gl::CompiledDefinitionFixture::coreExpressionMap(ea.definitions).end()) {
             const auto& cfg = it->second;
             if (!cfg.inputIndices.empty()) {
                 gl::StrSpan args[gl::ExecutionParameters::MAX_ARITY];
@@ -552,22 +563,26 @@ static std::set<std::string> findDigitArgsOracle(gl::ExpressionAnalyzer& ea,
             for (int32_t a = 0; a < argsN; ++a) allInputArgs.erase(args[a].toStdString());
         }
     }
-    std::set<std::string> allOutputArgs;
+    // Always an input (D-580): every
+    // argument at a non-input slot of a configured element (its output, or a
+    // slot that is neither input nor output) is removed.
+    std::set<std::string> nonInputArgs;
     for (const auto& element : chain) {
         std::string coreExpr = gl::extractExpressionUniversalSpan(gl::StrSpan(element)).toStdString();
-        auto it = ea.coreExpressionMap.find(coreExpr);
-        if (it != ea.coreExpressionMap.end()) {
+        auto it = gl::CompiledDefinitionFixture::coreExpressionMap(ea.definitions).find(coreExpr);
+        if (it != gl::CompiledDefinitionFixture::coreExpressionMap(ea.definitions).end()) {
             const auto& cfg = it->second;
-            if (!cfg.outputIndices.empty()) {
-                gl::StrSpan args[gl::ExecutionParameters::MAX_ARITY];
-                const int32_t argsN = gl::getArgsSpans(gl::StrSpan(element), args,
-                                                       gl::ExecutionParameters::MAX_ARITY);
-                for (int idx : cfg.outputIndices)
-                    if (idx >= 0 && idx < argsN) allOutputArgs.insert(args[idx].toStdString());
+            gl::StrSpan args[gl::ExecutionParameters::MAX_ARITY];
+            const int32_t argsN = gl::getArgsSpans(gl::StrSpan(element), args,
+                                                   gl::ExecutionParameters::MAX_ARITY);
+            for (int32_t a = 0; a < argsN; ++a) {
+                bool input = false;
+                for (int idx : cfg.inputIndices) input = input || idx == a;
+                if (!input) nonInputArgs.insert(args[a].toStdString());
             }
         }
     }
-    for (const auto& outArg : allOutputArgs) allInputArgs.erase(outArg);
+    for (const auto& arg : nonInputArgs) allInputArgs.erase(arg);
     return allInputArgs;
 }
 
@@ -576,7 +591,7 @@ static std::set<std::string> findDigitArgsOracle(gl::ExpressionAnalyzer& ea,
 // was dropped (reads route through coreConfig). Byte-identical (content AND
 // compareSpans order) to the retained heap oracle across the branch battery.
 TEST(prover_span_twins, find_digit_args_matches_heap) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     const std::vector<std::string> cases = {
         "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))",  // anchor + operator
         // Equality cases are well typed: `=` now joins its arguments' types
@@ -590,7 +605,7 @@ TEST(prover_span_twins, find_digit_args_matches_heap) {
     for (const std::string& theorem : cases) {
         const std::set<std::string> oracle = findDigitArgsOracle(ea, theorem, ea.anchorInfo);
         gl::StrSpan out[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
-        const int32_t n = ea.findDigitArgs(theorem, ea.anchorInfo, out,
+        const int32_t n = ea.scopeTypes.findDigitArgs(theorem, ea.anchorInfo, out,
             gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS);
         ASSERT_EQ(static_cast<std::size_t>(n), oracle.size());
         // compareSpans order == std::set order, so out[i] matches oracle's i-th.
@@ -605,7 +620,7 @@ TEST(prover_span_twins, find_digit_args_matches_heap) {
 // identical out run (same count, same spans in compareSpans order) across the
 // branch battery.
 TEST(prover_span_twins, find_digit_args_span_matches_string) {
-    gl::ExpressionAnalyzer ea("Peano");
+    gl::tests::ProverFixture ea("Peano");
     const std::vector<std::string> cases = {
         "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))",  // anchor + operator
         "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(=[2,6]))", // anchor + equality
@@ -616,14 +631,101 @@ TEST(prover_span_twins, find_digit_args_span_matches_string) {
     };
     for (const std::string& theorem : cases) {
         gl::StrSpan outStr[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
-        const int32_t nStr = ea.findDigitArgs(theorem, ea.anchorInfo, outStr,
+        const int32_t nStr = ea.scopeTypes.findDigitArgs(theorem, ea.anchorInfo, outStr,
             gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS);
         gl::StrSpan outSpan[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
-        const int32_t nSpan = ea.findDigitArgs(gl::StrSpan(theorem), ea.anchorInfo,
+        const int32_t nSpan = ea.scopeTypes.findDigitArgs(gl::StrSpan(theorem), ea.anchorInfo,
             outSpan, gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS);
         ASSERT_EQ(nStr, nSpan);
         for (int32_t i = 0; i < nStr; ++i)
             ASSERT_EQ(gl::StrSpan(outStr[i]).toStdString(),
                       gl::StrSpan(outSpan[i]).toStdString());
     }
+}
+
+// Induction variables are always-input arguments
+// (D-580): a `(1)`-typed configured input
+// qualifies only when none of its occurrences sits at an output slot, at a slot
+// its element's configuration lists as neither input nor output, or in the
+// anchor; a property's non-input arguments are never candidates (D-565
+// retired).
+TEST(induction_variables, find_digit_args_keeps_only_always_input_arguments) {
+    gl::tests::ProverFixture ea("FTA");
+    struct Case { const char* theorem; std::vector<std::string> expected; };
+    const std::vector<Case> cases = {
+        // FTA2 row 20: primeFactorSeq with inputs P and k and output n, so k
+        // (9) only; P and Q are relation-valued and `=` between them types no
+        // digit.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](primeFactorSeq[1,3,4,5,2,6,7,9,10,11])(>[12](primeFactorSeq[1,3,4,5,2,6,7,9,12,11])(=[10,12]))))",
+          { "9" } },
+        // I4's row 15: hasPrimeFactorization's numeric parameters 2, 6, 7 are
+        // anchor arguments; n (9) is its input and preorder's.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](preorder[1,4,7,9])(hasPrimeFactorization[1,3,4,5,2,6,7,9])))",
+          { "9" } },
+        // FTA2 row 6: appendToSequence is an operator in FTA2 (inputs n, a,
+        // f; output g), so its index (9) and appended value (10) are inputs
+        // (D-569); ordered's sequence slots are neither, but they hold no
+        // candidate.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11,12](appendToSequence[9,10,11,12])(>[](ordered[1,4,12])(ordered[1,4,11]))))",
+          { "10", "9" } },
+        // in2's output 10 discards the input k (10) of primeFactorSeq; its n
+        // (12) is an output.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](primeFactorSeq[1,3,4,5,2,6,7,10,11,12])(ordered[1,4,11]))))",
+          { "9" } },
+        // sequence and fold take the end point (9) as their input; sequence's
+        // start is the anchor's zero.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](sequence[1,4,2,9,10])(>[11](fold[1,3,4,5,10,2,9,11])(ordered[1,4,10]))))",
+          { "9" } },
+        // A property's start slot (9) is no candidate; the input end point
+        // (10) is one.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](sequence[1,4,9,10,11])(ordered[1,4,11])))",
+          { "10" } },
+        // interval's end point slot and minimum's value slot are neither
+        // input nor output, so 9 and 11 are discarded although preorder and
+        // prime take them as inputs.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](preorder[1,4,7,9])(>[10](interval[1,4,2,9,10])(>[11](minimum[1,4,10,11])(prime[1,4,5,6,7,11])))))",
+          { } },
+        // in's element slot is its input: x (9) stays; s(x) (10) is in2's
+        // output.
+        { "(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[10](in2[9,10,3])(preorder[1,4,9,10]))))",
+          { "9" } },
+    };
+    for (const Case& c : cases) {
+        // The output spans alias the theorem, so it outlives the reads.
+        const std::string theorem(c.theorem);
+        gl::StrSpan out[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+        const int32_t n = ea.scopeTypes.findDigitArgs(theorem, ea.anchorInfo, out,
+            gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS);
+        ASSERT_EQ(static_cast<std::size_t>(n), c.expected.size());
+        for (int32_t i = 0; i < n; ++i)
+            ASSERT_EQ(out[i].toStdString(), c.expected[static_cast<std::size_t>(i)]);
+    }
+}
+
+// The always-input test: an occurrence at an output slot or at a slot that is
+// neither input nor output reports the candidate; input slots and elements
+// without a core configuration do not.
+TEST(induction_variables, occurs_outside_input_slot_reports_output_and_neither_slots) {
+    gl::tests::ProverFixture ea("FTA");
+    const auto span = [](const char* s) {
+        return gl::StrSpan(s, static_cast<int32_t>(std::strlen(s)));
+    };
+    const gl::StrSpan chain[] = {
+        span("(preorder[1,4,7,9])"),
+        span("(interval[1,4,2,9,10])"),
+        span("(in2[12,13,3])"),
+        span("(in[12,1])"),
+        span("(notConfiguredCore[14])"),
+    };
+    const int32_t chainN = static_cast<int32_t>(sizeof(chain) / sizeof(chain[0]));
+    // interval's end point slot is neither input nor output.
+    ASSERT_TRUE(ea.scopeTypes.occursOutsideInputSlot(chain, chainN, span("9")));
+    // in2's value slot is its output.
+    ASSERT_TRUE(ea.scopeTypes.occursOutsideInputSlot(chain, chainN, span("13")));
+    // in2's and in's element slots are inputs.
+    ASSERT_FALSE(ea.scopeTypes.occursOutsideInputSlot(chain, chainN, span("12")));
+    // An element without a core configuration is not read.
+    ASSERT_FALSE(ea.scopeTypes.occursOutsideInputSlot(chain, chainN, span("14")));
+    // A name that does not occur is not reported.
+    ASSERT_FALSE(ea.scopeTypes.occursOutsideInputSlot(chain, chainN, span("15")));
 }

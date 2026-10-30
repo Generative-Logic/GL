@@ -29,7 +29,8 @@ chapter-level invariant enforced inside ``verify_chapter`` and asserts the
 corresponding counter records the failure. Covered meta-checks: theorem
 goal reached, self-reference, anchor handling
 trace, contradiction trace, vacuous truth trace, origin, definition set
-consistency (D-41), origin chain termination (cycle detection).
+consistency (D-41), bound variable uniqueness (I-29), origin chain
+termination (cycle detection).
 
 See ``tests/test_harness.py`` for fixtures and runner.
 """
@@ -1411,6 +1412,101 @@ def test_origin_accepts_a_fact_inherited_from_an_enclosing_scope():
                             "(=[a,b])", _CHILD)
     assert_chapter_meta_pass(
         [_goal_passing_first_line(), outer, inner], "origin",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+    )
+
+
+
+# ===========================================================================
+#  meta: bound variable uniqueness (I-29)
+# ===========================================================================
+
+# s-injectivity, and its multiplied copy for the partition {w1, w3} with the
+# merged variable's inner binder left in place (the v0.12.0 incubator defect).
+_INJECTIVITY = ("(>[w1](in[w1,N])(>[w2](in2[w2,w1,s])"
+                "(>[w3](in2[w3,w1,s])(=[w2,w3]))))")
+_REBOUND_COPY = ("(>[w1](in[w1,N])(>[w2](in2[w2,w1,s])"
+                 "(>[w1](in2[w1,w1,s])(=[w2,w1]))))")
+_CLEAN_COPY = ("(>[w1](in[w1,N])(>[w2](in2[w2,w1,s])"
+               "(>[](in2[w1,w1,s])(=[w2,w1]))))")
+
+
+def _uniqueness_failures(chapter):
+    """Failures recorded under ``bound variable uniqueness`` for a chapter."""
+    state = assert_chapter_meta_fail(
+        chapter, "bound variable uniqueness",
+        chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
+    )
+    return state.counter_for("bound variable uniqueness").failure
+
+
+@register
+def test_rebound_variables_reports_names_bound_again():
+    """Nested rebinding and a repeat inside one list are reported in order;
+    a malformed cell is None."""
+    from verifier import _rebound_variables
+    assert _rebound_variables(_REBOUND_COPY) == ["w1"]
+    assert _rebound_variables("(>[a,b,a](p[a,b]))") == ["a"]
+    assert _rebound_variables("(>[a](p[a])(>[b,a](q[a,b])(>[b](r[b])(s[a]))))") == ["a", "b"]
+    assert _rebound_variables("(>[a") is None
+    assert _rebound_variables("(>[a](p[a]") is None
+    assert _rebound_variables("(p[a]))") is None
+
+
+@register
+def test_rebound_variables_accepts_independent_scopes():
+    """Siblings, a scope reopened after its predecessor closed, empty lists
+    and plain atoms report nothing."""
+    from verifier import _rebound_variables
+    assert _rebound_variables(_INJECTIVITY) == []
+    assert _rebound_variables(_CLEAN_COPY) == []
+    assert _rebound_variables("(&(>[k](in[k,N])!(in3[g,k,a,*]))"
+                              "(>[k](in[k,N])!(in3[g,k,b,*])))") == []
+    assert _rebound_variables("(>[a](>[b](p[a,b])(q[b]))(>[b](r[a,b])(s[b])))") == []
+    assert _rebound_variables("(in2[v1,v2,s])_integration_goal") == []
+
+
+@register
+def test_bound_variable_uniqueness_checks_every_expression_cell():
+    """The derived expression and every dependency cell are checked; scope
+    names at odd indices are not expressions."""
+    from verifier import check_bound_variable_uniqueness
+    assert check_bound_variable_uniqueness(
+        make_proof_line(_CLEAN_COPY, "main", "multiplied from", _INJECTIVITY, "main"))
+    assert not check_bound_variable_uniqueness(
+        make_proof_line(_REBOUND_COPY, "main", "multiplied from", _INJECTIVITY, "main"))
+    assert not check_bound_variable_uniqueness(
+        make_proof_line("(=[v2,v1])", "main", "implication", _REBOUND_COPY, "main",
+                        "(in[v1,N])", "main"))
+    assert not check_bound_variable_uniqueness(
+        make_proof_line("(in[v1,N])", "main", "task formulation", "(>[a](p[a]", "main"))
+
+
+@register
+def test_bound_variable_uniqueness_multiplied_copy_rebinds():
+    """A multiplied copy that keeps the merged variable's inner binder fails."""
+    row = make_proof_line(_REBOUND_COPY, "main", "multiplied from",
+                          _INJECTIVITY, "main")
+    assert _uniqueness_failures([_goal_passing_first_line(), row]) == 1
+
+
+@register
+def test_bound_variable_uniqueness_rule_citation_rebinds():
+    """An implication row whose cited rule rebinds a name fails."""
+    row = make_proof_line("(=[v2,v1])", "main", "implication",
+                          _REBOUND_COPY, "main",
+                          "(in[v1,N])", "main", "(in2[v2,v1,s])", "main",
+                          "(in2[v1,v1,s])", "main")
+    assert _uniqueness_failures([_goal_passing_first_line(), row]) == 1
+
+
+@register
+def test_bound_variable_uniqueness_clean_copy_passes():
+    """The same copy with the inner binder dropped passes."""
+    row = make_proof_line(_CLEAN_COPY, "main", "multiplied from",
+                          _INJECTIVITY, "main")
+    assert_chapter_meta_pass(
+        [_goal_passing_first_line(), row], "bound variable uniqueness",
         chapter_thm=_GOAL_THM, chapter_type="single_chapter_proof",
     )
 

@@ -26,6 +26,9 @@
 #include "../gpu/phase2_streaming.hpp"
 #include "../memory_infra/paged_sorted_ordinals.hpp"
 
+#include "request_frontier_fixture.hpp"
+#include <cstring>
+#include <cstdlib>
 #include <numeric>
 #include <vector>
 
@@ -63,6 +66,37 @@ TEST(phase2_streaming, test_budget_never_borrows_the_runtime_reserve) {
     ASSERT_TRUE(excessive.bytes + excessive.reserveBytes <= 7 * gib);
     ASSERT_TRUE(7 * gib - excessive.bytes - excessive.reserveBytes
         < gl::gpu::kPhase2GpuBlockBytes);
+}
+
+TEST(phase2_streaming, budget_grants_dedicated_frontier_store_only_from_spare_memory) {
+    constexpr uint64_t mib = 1024ull * 1024;
+    constexpr uint64_t gib = 1024 * mib;
+    const uint64_t want = 896 * mib;
+    // Plenty of spare memory: the whole dedicated store beside a full working budget.
+    const auto roomy = gl::gpu::makePhase2GpuBudget(7 * gib, 8 * gib, 0, want);
+    ASSERT_EQ(roomy.bytes, gl::gpu::kPhase2DefaultGpuBudgetBytes);
+    ASSERT_EQ(roomy.frontierStoreBlocks, static_cast<uint32_t>(want / gl::gpu::kPhase2GpuBlockBytes));
+    ASSERT_EQ(roomy.totalBlocks(), roomy.blocks + roomy.frontierStoreBlocks);
+    // Part of it: only the whole blocks left after the working budget and reserve.
+    const uint64_t tightFree = 4 * gib + 512 * mib + 300 * mib;
+    const auto tight = gl::gpu::makePhase2GpuBudget(tightFree, 8 * gib, 0, want);
+    ASSERT_EQ(tight.bytes, gl::gpu::kPhase2DefaultGpuBudgetBytes);
+    ASSERT_TRUE(tight.frontierStoreBlocks > 0);
+    ASSERT_TRUE(tight.frontierStoreBlocks < roomy.frontierStoreBlocks);
+    ASSERT_TRUE(tightFree - tight.reserveBytes - tight.bytes
+        - static_cast<uint64_t>(tight.frontierStoreBlocks) * gl::gpu::kPhase2GpuBlockBytes
+        < gl::gpu::kPhase2GpuBlockBytes);
+    // None when the working budget already takes everything after the reserve,
+    // and none when nothing is requested.
+    const auto full = gl::gpu::makePhase2GpuBudget(2 * gib, 8 * gib, 0, want);
+    ASSERT_EQ(full.frontierStoreBlocks, 0u);
+    const auto unrequested = gl::gpu::makePhase2GpuBudget(7 * gib, 8 * gib);
+    ASSERT_EQ(unrequested.frontierStoreBlocks, 0u);
+    ASSERT_EQ(unrequested.blocks, roomy.blocks);
+    for (const auto& budget : {roomy, tight, full}) {
+        ASSERT_TRUE(static_cast<uint64_t>(budget.totalBlocks()) * gl::gpu::kPhase2GpuBlockBytes
+            + budget.reserveBytes <= 7 * gib);
+    }
 }
 
 TEST(phase2_streaming, allocation_lends_blocks_to_a_large_input_and_caps_inactive_columns) {
@@ -164,4 +198,128 @@ TEST(phase2_streaming, output_prefix_handles_empty_and_individually_segmented_re
     demand.columns[bytes] = capacity.columns[bytes];
     ASSERT_EQ(gl::gpu::boundedPhase2OutputPrefix(&demand, 1, capacity, occupied), 1u);
     ASSERT_EQ(occupied.columns[bytes], uint64_t{1} << 32);
+}
+
+
+TEST(request_frontier, exact_round_trip_pruning_and_reset_across_storage_boundaries) {
+    gl::tests::RequestFrontierTestFiles files("request_frontier_store_tests");
+    for (bool disk : {false, true}) {
+        for (int32_t budget : {1, 3, 33, 129}) {
+            gl::LbArena arena(&gl::staticMemory());
+            gl::gpu::RequestFrontierStore frontier(arena, disk ? &files.files[0] : nullptr, budget);
+            gl::gpu::DeviceGrowthNode scratch[17]{};
+            ASSERT_TRUE(frontier.empty());
+            frontier.appendRun(nullptr, 0);
+            frontier.copyRunTo(0, 0, nullptr);
+            const uint8_t all[3] = {1, 1, 1};
+            ASSERT_EQ(frontier.pruneByCall(all, 3, scratch, 17), 0ull);
+            for (int cycle = 0; cycle < 4; ++cycle) {
+                std::vector<gl::gpu::DeviceGrowthNode> expected;
+                for (int i = 0; i < 521; ++i) {
+                    gl::gpu::DeviceGrowthNode row{};
+                    row.callIndex = i % 3;
+                    row.runOrdinal = cycle * 1000 + i;
+                    row.filteredPositions[0] = i * 7;
+                    row.validityId = i % 11;
+                    expected.push_back(row);
+                }
+                // Cross several cache boundaries in a single append.
+                frontier.appendRun(expected.data(), static_cast<int32_t>(expected.size()));
+                ASSERT_EQ(frontier.size(), static_cast<uint64_t>(expected.size()));
+                for (int32_t begin = 0; begin < static_cast<int32_t>(expected.size()); begin += 17) {
+                    const int32_t count = std::min(17, static_cast<int32_t>(expected.size()) - begin);
+                    frontier.copyRunTo(begin, count, scratch);
+                    ASSERT_EQ(std::memcmp(scratch, expected.data() + begin, count * sizeof(scratch[0])), 0);
+                }
+                const uint8_t keep[3] = {
+                    static_cast<uint8_t>(cycle != 2),
+                    static_cast<uint8_t>(cycle == 0),
+                    static_cast<uint8_t>(cycle != 2)};
+                std::vector<gl::gpu::DeviceGrowthNode> kept;
+                for (const auto& row : expected) if (keep[row.callIndex] != 0) kept.push_back(row);
+                ASSERT_EQ(frontier.pruneByCall(keep, 3, scratch, 17),
+                    static_cast<uint64_t>(expected.size() - kept.size()));
+                ASSERT_EQ(frontier.size(), static_cast<uint64_t>(kept.size()));
+                for (std::size_t i = 0; i < kept.size(); ++i) {
+                    frontier.copyRunTo(i, 1, scratch);
+                    ASSERT_EQ(std::memcmp(scratch, &kept[i], sizeof(scratch[0])), 0);
+                }
+                // Appending after disk compaction keeps the compacted prefix.
+                frontier.appendRun(expected.data(), 2);
+                frontier.copyRunTo(kept.size(), 2, scratch);
+                ASSERT_EQ(std::memcmp(scratch, expected.data(), 2 * sizeof(scratch[0])), 0);
+                frontier.resetKeepingPages();
+                ASSERT_TRUE(frontier.empty());
+            }
+            const auto& stats = frontier.stats();
+            if (disk) {
+                ASSERT_TRUE(stats.writes > 0 && stats.reads > 0);
+                ASSERT_TRUE(stats.writtenBytes > 0 && stats.readBytes > 0);
+                ASSERT_TRUE(stats.peakResidentPayloadBytes <= static_cast<uint64_t>(budget) * sizeof(scratch[0]));
+                ASSERT_TRUE(stats.peakResidentStorageBytes >= stats.peakResidentPayloadBytes);
+            } else {
+                ASSERT_EQ(stats.writes, 0ull);
+                ASSERT_EQ(stats.reads, 0ull);
+                ASSERT_TRUE(stats.peakResidentPayloadBytes > static_cast<uint64_t>(budget) * sizeof(scratch[0]));
+            }
+        }
+    }
+}
+
+TEST(request_frontier, independent_files_and_no_spill_below_limit) {
+    gl::tests::RequestFrontierTestFiles files("request_frontier_independent_tests");
+    gl::LbArena arena(&gl::staticMemory());
+    gl::gpu::RequestFrontierStore first(arena, &files.files[0], 3);
+    gl::gpu::RequestFrontierStore second(arena, &files.files[1], 3);
+    gl::gpu::DeviceGrowthNode rows[4]{}, read[4]{};
+    for (uint32_t i = 0; i < 4; ++i) rows[i].runOrdinal = i;
+    first.appendRun(rows, 3);
+    ASSERT_EQ(first.stats().writes, 0ull);
+    first.appendRun(rows + 3, 1);
+    for (auto& row : rows) row.runOrdinal += 10;
+    second.appendRun(rows, 4);
+    first.copyRunTo(0, 4, read);
+    for (uint32_t i = 0; i < 4; ++i) ASSERT_EQ(read[i].runOrdinal, i);
+    second.copyRunTo(0, 4, read);
+    for (uint32_t i = 0; i < 4; ++i) ASSERT_EQ(read[i].runOrdinal, i + 10);
+    first.resetKeepingPages();
+    second.copyRunTo(0, 4, read);
+    ASSERT_EQ(read[3].runOrdinal, 13u);
+}
+
+TEST(request_frontier, invalid_operation_probe) {
+    std::string mode;
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t length = 0;
+    ASSERT_EQ(_dupenv_s(&value, &length, "GL_TEST_REQUEST_FRONTIER_INVALID"), 0);
+    if (value != nullptr) { mode = value; std::free(value); }
+#else
+    if (const char* value = std::getenv("GL_TEST_REQUEST_FRONTIER_INVALID")) mode = value;
+#endif
+    if (mode.empty()) return;
+    gl::tests::RequestFrontierTestFiles files("request_frontier_invalid_tests");
+    gl::LbArena arena(&gl::staticMemory());
+    gl::gpu::DeviceGrowthNode rows[4]{};
+    if (mode == "budget") {
+        gl::gpu::RequestFrontierStore invalid(arena, &files.files[0], 0);
+    } else {
+        gl::gpu::RequestFrontierStore frontier(arena, &files.files[0], 1);
+        frontier.appendRun(rows, 4);
+        if (mode == "range") frontier.copyRunTo(4, 1, rows);
+        else if (mode == "closed") {
+            files.files[0].close();
+            frontier.copyRunTo(0, 1, rows);
+        } else if (mode == "short_read") {
+            files.files[0].preallocate(0);
+            frontier.copyRunTo(0, 1, rows);
+        } else if (mode == "write") {
+            files.files[0].close();
+            frontier.appendRun(rows, 1);
+        } else if (mode == "call") {
+            const uint8_t keep[] = {2};
+            frontier.pruneByCall(keep, 1, rows, 4);
+        } else ASSERT_TRUE(false);
+    }
+    ASSERT_TRUE(false);
 }

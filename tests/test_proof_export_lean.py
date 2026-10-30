@@ -20,6 +20,8 @@ from pathlib import Path
 
 from proof_export.certificate import (
     _constructed_or_definition,
+    _or_construction_disjuncts,
+    _or_disjunct_positions,
     _chapter_certificate,
     _defined_output_totality,
     _schema3_action_metadata,
@@ -39,6 +41,9 @@ from proof_export.graph import (
 from proof_export.certificate import is_subset_implication
 from proof_export.lean import (
     _assert_manifest_coverage,
+    _chapter_copy_sources,
+    _chapter_replacements,
+    _or_parent_arguments,
     _context_application,
     _context_signature,
     _definition_body,
@@ -302,6 +307,40 @@ class LeanOrdinaryTypeTests(unittest.TestCase):
             infer_expression_variables(
                 [parse_mpl("(&(tset[A])(&(=[A,b])(tel[b])))")], signatures)
 
+    def test_fixed_types_constrain_tokens_bound_outside(self) -> None:
+        signatures = {"tset": (SET,), "tel": (ELEMENT,), "=": (ELEMENT, ELEMENT)}
+        # A token only `=` joins takes the type known for its partner outside
+        # the expression instead of the element default.
+        self.assertEqual(
+            infer_expression_variables(
+                [parse_mpl("(=[x,A])")], signatures, {"A": SET, "unused": ELEMENT}),
+            {"A": SET, "x": SET},
+        )
+        with self.assertRaisesRegex(AssertionError, "GL type conflict"):
+            infer_expression_variables([parse_mpl("(tel[A])")], signatures, {"A": SET})
+
+    def test_signatures_type_a_binder_from_its_own_implication(self) -> None:
+        signatures = {"in": [ELEMENT, SET], "in2": [ELEMENT, ELEMENT, BINARY_RELATION]}
+        # The chapter's V2 is a set; the cited closed implication binds its own
+        # V2 as a relation and must not borrow the chapter's type.
+        chapter_types = {"V2": SET, "v1": ELEMENT}
+        closed = parse_mpl("(>[V2,v1](in2[v1,v1,V2])(in2[v1,v1,V2]))")
+        self.assertEqual(
+            render_expression(closed, chapter_types, signatures=signatures),
+            "(∀ (V2 : GLBinaryRelation α) (v1 : α), "
+            "((V2 v1 v1) → (V2 v1 v1)))",
+        )
+        self.assertEqual(
+            render_expression(closed, chapter_types),
+            "(∀ (V2 : GLSet α) (v1 : α), ((V2 v1 v1) → (V2 v1 v1)))",
+        )
+        # A binder with no atom in its implication keeps its name's type.
+        wrapper = parse_mpl("(>[V2,x](in[x,S])(in[x,S]))")
+        self.assertEqual(
+            render_expression(wrapper, {"V2": SET, "S": SET}, signatures=signatures),
+            "(∀ (V2 : GLSet α) (x : α), ((S x) → (S x)))",
+        )
+
     def test_definition_variables_type_equality_per_occurrence(self) -> None:
         entry = {
             "category": "implication",
@@ -401,6 +440,136 @@ class LeanOrdinaryTypeTests(unittest.TestCase):
             ["v1"],
         )
 
+    def test_helper_free_tokens_prefer_original_over_twin_predecessor_alias(self) -> None:
+        # rec2 sorts before v9, yet the source is kept and the alias dropped.
+        chapter = {
+            "steps": [
+                {
+                    "action": "task_formulation",
+                    "conclusion": {"mpl": "(=[v9,rec2])"},
+                    "dependencies": [],
+                }
+            ],
+            "variable_types": {"v9": ELEMENT, "rec2": ELEMENT},
+        }
+        self.assertEqual(
+            _helper_free_tokens(chapter, {"rec2": "v9"}),
+            ["v9"],
+        )
+
+    def test_chapter_replacements_render_copy_aliases_as_their_source(self) -> None:
+        def alias_step(source: str, alias: str) -> dict[str, object]:
+            return {"action": "variable_alias",
+                    "variable_alias": {"source": source, "alias": alias}}
+
+        replacements = _chapter_replacements(
+            {"steps": [alias_step("v1", "v1_copy"), alias_step("v9", "rec2")]})
+        self.assertEqual(replacements["v1_copy"], lean_name("v1"))
+        self.assertEqual(replacements["rec2"], lean_name("v9"))
+        with self.assertRaises(AssertionError):
+            _chapter_replacements({"steps": [alias_step("v9", "rec3")]})
+
+    def test_chapter_copy_sources_map_each_copy_to_its_first_source(self) -> None:
+        def alias_step(source: str, alias: str) -> dict[str, object]:
+            return {"action": "variable_alias",
+                    "variable_alias": {"source": source, "alias": alias}}
+
+        sources = _chapter_copy_sources({"steps": [
+            {"action": "assume"},
+            alias_step("v1", "v1_copy"),
+            alias_step("v1_copy", "v1_copy_copy"),
+            alias_step("v11", "rec2"),
+        ]})
+        self.assertEqual(sources, {"v1_copy": "v1", "v1_copy_copy": "v1", "rec2": "v11"})
+        self.assertEqual(_chapter_copy_sources({"steps": [{"action": "assume"}]}), {})
+        # One name cannot copy two sources, and a copy cannot copy itself.
+        with self.assertRaises(AssertionError):
+            _chapter_copy_sources({"steps": [alias_step("v1", "rec2"), alias_step("v2", "rec2")]})
+        with self.assertRaises(AssertionError):
+            _chapter_copy_sources({"steps": [alias_step("v1", "v1_copy"),
+                                             alias_step("v1_copy", "v1")]})
+
+    def test_helper_free_tokens_drop_a_copy_of_an_existence_witness(self) -> None:
+        # rec2 copies the case witness q, which an existence projection binds:
+        # neither is a parameter of the helper, although rec2 occurs free.
+        existence = "!(>[q](in[q,N])!(in2[q,v3,s]))"
+        chapter = {
+            "steps": [
+                {"id": "chapter_1_line_4", "action": "definition_expand",
+                 "conclusion": {"mpl": existence}, "dependencies": []},
+                {"id": "chapter_1_line_3", "action": "compound_project",
+                 "conclusion": {"mpl": "(in2[q,v3,s])"},
+                 "dependencies": [{"step": "chapter_1_line_4", "expression": {"mpl": existence}}]},
+                {"id": "chapter_1_line_2", "action": "variable_alias",
+                 "variable_alias": {"source": "q", "alias": "rec2"},
+                 "conclusion": {"mpl": "(=[q,rec2])"}, "dependencies": []},
+                {"id": "chapter_1_line_1", "action": "equality_substitute",
+                 "conclusion": {"mpl": "(in2[rec2,v3,s])"}, "dependencies": []},
+            ],
+            "variable_types": {"q": ELEMENT, "rec2": ELEMENT, "v3": ELEMENT},
+        }
+        self.assertEqual(_helper_free_tokens(chapter, _chapter_replacements(chapter)), ["v3"])
+
+    def test_helper_free_tokens_skip_integration_goal_marker_slots(self) -> None:
+        # The zero chapter of G3 states a flattened rule as its compact and
+        # cites the goal marker `bezEq[...,v1,v18,v2,v19]`: the open witness
+        # slots v18 and v19 are bound by the rule, never helper parameters.
+        chapter = {
+            "steps": [
+                {
+                    "action": "reformulation_for_integration_flattened",
+                    "conclusion": {"mpl": "(implication7[N,v1,*,v2,i1,+])"},
+                    "dependencies": [
+                        {
+                            "expression": {
+                                "mpl": "(bezEq[N,+,*,i1,v1,v18,v2,v19])",
+                                "proof_scope": "integration_goal",
+                            },
+                        },
+                    ],
+                },
+                {
+                    "action": "task_formulation",
+                    "conclusion": {"mpl": "(in[v1,N])"},
+                    "dependencies": [
+                        {
+                            "expression": {
+                                "mpl": "(in[v2,N])",
+                                "proof_scope": "ordinary",
+                            },
+                        },
+                    ],
+                },
+            ],
+            "variable_types": {"v1": ELEMENT, "v2": ELEMENT, "v18": ELEMENT, "v19": ELEMENT},
+        }
+        self.assertEqual(_helper_free_tokens(chapter, {}), ["v1", "v2"])
+
+
+class OrParentArgumentTests(unittest.TestCase):
+    """Apply a constructed OR's first parent in its own premise order."""
+
+    LAYERS = [["n", "or_parent_premise_1"], ["M", "or_parent_premise_2"],
+              ["x", "or_parent_premise_3"]]
+
+    def test_without_a_record_every_layer_precedes_every_case(self) -> None:
+        self.assertEqual(_or_parent_arguments(self.LAYERS, 1, None), [
+            "n", "or_parent_premise_1", "M", "or_parent_premise_2",
+            "x", "or_parent_premise_3", "or_case_1"])
+
+    def test_a_recorded_case_takes_its_place_between_layers(self) -> None:
+        order = [["premise", 0], ["premise", 1], ["case", 1], ["premise", 2]]
+        self.assertEqual(_or_parent_arguments(self.LAYERS, 1, order), [
+            "n", "or_parent_premise_1", "M", "or_parent_premise_2",
+            "or_case_1", "x", "or_parent_premise_3"])
+
+    def test_reordered_layers_or_missing_cases_are_rejected(self) -> None:
+        for order in ([["premise", 1], ["premise", 0], ["premise", 2], ["case", 1]],
+                      [["premise", 0], ["premise", 1], ["premise", 2]],
+                      [["premise", 0], ["case", 1], ["premise", 1], ["case", 1], ["premise", 2]]):
+            with self.subTest(order=order), self.assertRaises(AssertionError):
+                _or_parent_arguments(self.LAYERS, 1, order)
+
 
 class ConstructedOrDefinitionTests(unittest.TestCase):
     """Reconstruct OR operators from processed rows, negated disjuncts included."""
@@ -455,7 +624,7 @@ class ConstructedOrDefinitionTests(unittest.TestCase):
             "(>[](=[w1,w3])(=[w2,w4])))))"
         )
         definition = _constructed_or_definition(
-            self._or_theorem_record(head, parent_a, parent_b)
+            self._or_theorem_record(head, parent_a, parent_b), {}
         )
         self.assertEqual(definition["head"], "or0")
         self.assertEqual(definition["elements"], ["(=[u_1,u_2])", "!(=[u_3,u_4])"])
@@ -476,12 +645,94 @@ class ConstructedOrDefinitionTests(unittest.TestCase):
             "(>[w1](in[w1,N])(>[]!(in2[i0,w1,s])(=[w1,i0]))))"
         )
         definition = _constructed_or_definition(
-            self._or_theorem_record(head, parent_a, parent_b)
+            self._or_theorem_record(head, parent_a, parent_b), {}
         )
         self.assertEqual(definition["head"], "or1")
         self.assertEqual(
             definition["elements"], ["(=[u_1,u_2])", "(in2[u_2,u_1,u_3])"]
         )
+
+    # One operator per canonical body: GL's or1 stores the disjuncts the other
+    # way round, so the theorem names it with its arguments in that order.
+    PERMUTED_HEAD = (
+        "(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])"
+        "(>[v1](in[v1,N])(or1[i0,v1,s])))"
+    )
+    PERMUTED_PARENTS = (
+        "(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])"
+        "(>[w1](in[w1,N])(>[]!(=[w1,i0])(in2[i0,w1,s]))))",
+        "(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])"
+        "(>[w1](in[w1,N])(>[]!(in2[i0,w1,s])(=[w1,i0]))))",
+    )
+    STORED_OR1 = {
+        "category": "or",
+        "elements": ["(in2[u_1,u_2,u_3])", "(=[u_2,u_1])"],
+        "signature": "(or1[u_1,u_2,u_3])",
+    }
+
+    def test_construction_disjuncts_follow_the_source_parent(self) -> None:
+        record = self._or_theorem_record(self.PERMUTED_HEAD, *self.PERMUTED_PARENTS)
+        or_atom, disjuncts, order = _or_construction_disjuncts(
+            record.expression, record.chapters[0].rows[0]
+        )
+        self.assertEqual(or_atom.head, "or1")
+        self.assertEqual(or_atom.arguments, ("i0", "v1", "s"))
+        self.assertEqual([to_mpl(item) for item in disjuncts], ["(=[v1,i0])", "(in2[i0,v1,s])"])
+        self.assertEqual(order, [["premise", 0], ["case", 1]])
+
+    # FTA2 row 10: the folded premise !(hasMinimum[...]) stands before the
+    # shared premise that binds x; the head switch places the companion's
+    # new premise after that binder.
+    REORDERED_HEAD = (
+        "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+        "(>[v1](in[v1,N])(>[V1](subset[V1,N])(>[v2](in[v2,V1])(or17[N,+,V1,v2,v1])))))"
+    )
+    REORDERED_PARENTS = (
+        "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+        "(>[w1](in[w1,N])(>[W1](subset[W1,N])(>[]!(hasMinimum[N,+,W1])"
+        "(>[w2](in[w2,W1])!(preorder[N,+,w2,w1]))))))",
+        "(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])"
+        "(>[w1](in[w1,N])(>[W1](subset[W1,N])(>[w2](in[w2,W1])"
+        "(>[](preorder[N,+,w2,w1])(hasMinimum[N,+,W1]))))))",
+    )
+
+    def test_a_folded_premise_before_a_shared_premise_keeps_its_place(self) -> None:
+        record = self._or_theorem_record(self.REORDERED_HEAD, *self.REORDERED_PARENTS)
+        or_atom, disjuncts, order = _or_construction_disjuncts(
+            record.expression, record.chapters[0].rows[0]
+        )
+        self.assertEqual(or_atom.head, "or17")
+        self.assertEqual([to_mpl(item) for item in disjuncts],
+                         ["(hasMinimum[N,+,V1])", "!(preorder[N,+,v2,v1])"])
+        self.assertEqual(order, [["premise", 0], ["premise", 1], ["case", 1], ["premise", 2]])
+
+    def test_a_parent_missing_a_shared_premise_is_rejected(self) -> None:
+        source, companion = self.REORDERED_PARENTS
+        record = self._or_theorem_record(
+            self.REORDERED_HEAD, source.replace("(>[W1](subset[W1,N])", "(>[W1](in[W1,N])"), companion)
+        with self.assertRaises(AssertionError):
+            _or_construction_disjuncts(record.expression, record.chapters[0].rows[0])
+
+    def test_disjunct_positions_place_each_construction_disjunct(self) -> None:
+        record = self._or_theorem_record(self.PERMUTED_HEAD, *self.PERMUTED_PARENTS)
+        or_atom, disjuncts, _ = _or_construction_disjuncts(
+            record.expression, record.chapters[0].rows[0]
+        )
+        self.assertEqual(_or_disjunct_positions(self.STORED_OR1, or_atom, disjuncts), [1, 0])
+        other = {**self.STORED_OR1, "elements": ["(in2[u_1,u_2,u_3])", "(=[u_1,u_2])"]}
+        with self.assertRaises(AssertionError):
+            _or_disjunct_positions(other, or_atom, disjuncts)
+
+    def test_stored_operator_keeps_its_order_for_a_reversed_construction(self) -> None:
+        record = self._or_theorem_record(self.PERMUTED_HEAD, *self.PERMUTED_PARENTS)
+        definition = _constructed_or_definition(record, {"or1": self.STORED_OR1})
+        self.assertEqual(definition["elements"], self.STORED_OR1["elements"])
+        self.assertEqual(definition["signature"], "(or1[u_1,u_2,u_3])")
+        self.assertEqual(definition["arguments"], ["i0", "v1", "s"])
+        # Without GL's entry the theorem must define the operator itself, in
+        # its own order; a reordered head then contradicts it.
+        with self.assertRaises(AssertionError):
+            _constructed_or_definition(record, {})
 
 
 class LeanFullCertificateTests(unittest.TestCase):
@@ -748,7 +999,10 @@ class LeanFTACertificateTests(unittest.TestCase):
         self.assertEqual(coverage["theorems"], len(selected))
         self.assertEqual(coverage["chapters"], sum(len(record.chapters) for record in selected))
         self.assertEqual(coverage["rows"], rows)
-        self.assertEqual(coverage["actions"], rows)
+        # A row that states a compact adds its derived rule step.
+        derived = sum(bool(step.get("derived_rule")) for theorem in certificate["theorems"]
+                      for chapter in theorem["chapters"] for step in chapter["steps"])
+        self.assertEqual(coverage["actions"], rows + derived)
         self.assertEqual(coverage["methods"], dict(Counter(record.method for record in selected)))
         self.assertEqual(set(certificate["corpus"]["target_source_indices"]), indices)
         self.assertEqual(certificate["corpus"]["support_source_indices"], [])
@@ -780,7 +1034,7 @@ class LeanFTACertificateTests(unittest.TestCase):
         repeated, repeated_manifest = render_gauss_theory(certificate)
         self.assertEqual(source, repeated)
         self.assertEqual(manifest, repeated_manifest)
-        self.assertEqual(source.count("GL tag "), certificate["corpus"]["coverage"]["rows"])
+        self.assertEqual(source.count("GL tag "), certificate["corpus"]["coverage"]["actions"])
         self.assertEqual(source.count("\ntheorem fta_"), len(certificate["theorems"]))
         self.assertIn("import GLExport.Generated.Gauss", source)
         self.assertIn("anchorPeanoOfFTA", source)
@@ -789,7 +1043,25 @@ class LeanFTACertificateTests(unittest.TestCase):
         self.assertIn("gauss_source_", source)
         self.assertNotIn("(external_", source)
         self.assertNotIn("induction_N", source)
-        self.assertIn("intro compiled_anchor compiled_induction", source)
+        # A nullary global-theorem compaction renders through the compiled
+        # anchor and induction carriers, one introduction per compaction. The
+        # cited theorem belongs to this certificate or to a preceding one (a
+        # Peano theorem compiled inside an FTA proof). Whether the live proofs
+        # contain one is a property of the run: chapters cite proved theorems
+        # through their `theorem` leaf, and in-run OR theorems carry that leaf
+        # since D-459. NullaryTheoremCompactionTests
+        # (test_lean_nested_scopes.py) covers the rendering for every anchor.
+        nullary_compactions = [
+            step
+            for theorem in certificate["theorems"]
+            for chapter in theorem["chapters"]
+            for step in chapter["steps"]
+            if step.get("action") == "definition_compact"
+            and not step["conclusion"].get("arguments")
+            and step["dependencies"][0]["source_kind"] != "local_step"
+        ]
+        self.assertEqual(
+            source.count("intro compiled_anchor compiled_induction"), len(nullary_compactions))
         self.assertEqual(len(_assert_manifest_coverage(certificate, manifest)), len(certificate["theorems"]))
         for forbidden in ("grind", "sorry", "admit", "axiom ", "opaque ", "unsafe "):
             self.assertNotIn(forbidden, source.lower())
@@ -891,12 +1163,21 @@ def _or_witness_rows(certificate: dict) -> set[str]:
     Follow the certificate dependency graph to a projection of the branch's
     own existential assumption. This expectation follows the proof input,
     independently of the generated Lean text or the renderer's witness flags.
+    A variable copy names the token it copies (a copy of a copy names the
+    first source), so a consequence that names a copy of the branch's witness
+    still carries the witness: the twin partner's predecessor `rec2` copies
+    the successor case's witness q.
     """
     expected = set()
     for theorem in certificate["theorems"]:
         for chapter in theorem["chapters"]:
             steps = {step["id"]: step for step in chapter["steps"]}
             contexts = {context["namespace"]: context for context in chapter.get("scope_contexts", [])}
+            copy_sources = {}
+            for step in chapter["steps"]:
+                if step["action"] == "variable_alias":
+                    alias = step["variable_alias"]
+                    copy_sources[alias["alias"]] = copy_sources.get(alias["source"], alias["source"])
             for conclusion in chapter["steps"]:
                 if conclusion["source_tag"] != "or convergence":
                     continue
@@ -931,7 +1212,8 @@ def _or_witness_rows(certificate: dict) -> set[str]:
                                     supplied_witnesses.update(
                                         argument for atom in iter_atoms(parse_mpl(projection["conclusion"]["mpl"]))
                                         for argument in atom.arguments if argument not in premise["arguments"])
-                        conclusion_arguments = {argument for atom in iter_atoms(parse_mpl(step["conclusion"]["mpl"]))
+                        conclusion_arguments = {copy_sources.get(argument, argument)
+                                                for atom in iter_atoms(parse_mpl(step["conclusion"]["mpl"]))
                                                 for argument in atom.arguments}
                         if supplied_witnesses and not supplied_witnesses.intersection(conclusion_arguments):
                             # This consequence receives its existential projection
@@ -1103,6 +1385,53 @@ class ScopeEntryTests(unittest.TestCase):
                 "row_8 v2 v5 scope_premise_1 outer witness_guard_1"
             ),
         )
+
+    @staticmethod
+    def _case_and_subproof() -> dict:
+        """Return a case scope and a subproof opened inside it."""
+        return {
+            "case": {"namespace": "case", "template": {"mpl": "(>[](p[x])(p[x]))"}},
+            "case_boundary_sub": {"namespace": "case_boundary_sub",
+                                  "template": {"mpl": "(>[](p[x])(>[v](in2[x,v,W])(in2[x,v,W])))"}},
+            "other": {"namespace": "other", "template": {"mpl": "(>[](p[x])(p[x]))"}},
+        }
+
+    def test_entry_below_an_entered_scope_keeps_its_layers_and_guards(self) -> None:
+        # The case and the guards of w and W are already introduced: only the
+        # subproof's own layer is, numbered after the case's.
+        lines = _scope_entry_and_specializations(
+            "case_boundary_sub",
+            self._case_and_subproof(),
+            (),
+            (),
+            [(_dependency("case_boundary_sub"), "row_7", ("W",), ("w", "W"), (), False)],
+            {},
+            entered_namespace="case",
+            entered_guards=("w", "W"),
+        )
+        self.assertEqual(lines, [
+            "    intro v",
+            "    intro scope_premise_2",
+            "    have scoped_fact_1 := row_7 W scope_premise_1 v scope_premise_2 "
+            "w witness_guard_1 witness_guard_2",
+        ])
+
+    def test_entry_below_a_scope_that_does_not_enclose_it_is_rejected(self) -> None:
+        contexts = self._case_and_subproof()
+        with self.assertRaises(AssertionError):
+            _scope_entry_and_specializations(
+                "case_boundary_sub", contexts, (), (), [], {}, entered_namespace="other")
+        # The entered layers carry the scope prefix, so none is introduced again.
+        with self.assertRaises(AssertionError):
+            _scope_entry_and_specializations(
+                "case_boundary_sub", contexts, ("W",), (), [], {}, entered_namespace="case")
+        # Guards come only from an entered scope.
+        with self.assertRaises(AssertionError):
+            _scope_entry_and_specializations(
+                "case_boundary_sub", contexts, (), (), [], {}, entered_guards=("w",))
+        with self.assertRaises(AssertionError):
+            _scope_entry_and_specializations(
+                "main", contexts, (), (), [], {}, entered_namespace="case")
 
 
 class ExplicitRowReplayTests(unittest.TestCase):
@@ -1359,7 +1688,7 @@ class ExplicitRowReplayTests(unittest.TestCase):
             source = _generated_module(name).read_text(encoding="utf-8").splitlines()
             for index, line in enumerate(source):
                 if not re.match(
-                    r"\s*--\s*chapter_\d+_line_\d+: "
+                    r"\s*--\s*chapter_\d+_line_\d+(_rule)?: "
                     r"GL tag reformulation for integration >\[bound\]\.",
                     line,
                 ):
@@ -1371,9 +1700,13 @@ class ExplicitRowReplayTests(unittest.TestCase):
                         break
                     body.append(part)
                 proof = "\n".join(body)
+                self.assertNotIn("grind", proof, f"{name}: {line}")
+                # A row stating a compact folds its derived rule step, which
+                # carries the refutation.
+                if re.fullmatch(r"\s*simpa only \[gl_\w+\] using row_\d+_rule", proof):
+                    continue
                 self.assertIn(").2", proof, f"{name}: {line}")
                 self.assertIn("universal_counterexample", proof, f"{name}: {line}")
-                self.assertNotIn("grind", proof, f"{name}: {line}")
 
         self.assertEqual(
             emitted, _expected_rows(r"reformulation for integration >\[bound\]", ("Peano.lean", "Gauss.lean", "FTA.lean"))
@@ -1415,7 +1748,7 @@ class ExplicitRowReplayTests(unittest.TestCase):
             source = _generated_module(name).read_text(encoding="utf-8").splitlines()
             for index, line in enumerate(source):
                 if not re.match(
-                    r"\s*--\s*chapter_\d+_line_\d+: "
+                    r"\s*--\s*chapter_\d+_line_\d+(_rule)?: "
                     r"GL tag reformulation for integration >\[\]\.",
                     line,
                 ):
@@ -1427,9 +1760,13 @@ class ExplicitRowReplayTests(unittest.TestCase):
                         break
                     body.append(part)
                 proof = "\n".join(body)
+                self.assertNotIn("grind", proof, f"{name}: {line}")
+                # A row stating a compact folds its derived rule step, which
+                # carries the refutation.
+                if re.fullmatch(r"\s*simpa only \[gl_\w+\] using row_\d+_rule", proof):
+                    continue
                 self.assertIn(").2", proof, f"{name}: {line}")
                 self.assertIn("universal_counterexample", proof, f"{name}: {line}")
-                self.assertNotIn("grind", proof, f"{name}: {line}")
 
         self.assertEqual(
             emitted, _expected_rows(r"reformulation for integration >\[\]", ("Peano.lean", "Gauss.lean", "FTA.lean"))
@@ -1548,7 +1885,8 @@ class ExplicitRowReplayTests(unittest.TestCase):
 
     @live_exports_present
     def test_scoped_task_formulation_rows_return_the_scope_premise(self) -> None:
-        """Every scoped task formulation must be the explicit identity proof."""
+        """Every scoped task formulation must be the explicit identity proof
+        of its own assumption, the innermost scope premise it introduces."""
 
         emitted = 0
         for name in ("Peano.lean", "Gauss.lean", "FTA.lean"):
@@ -1568,7 +1906,12 @@ class ExplicitRowReplayTests(unittest.TestCase):
                     continue
                 emitted += 1
                 proof = "\n".join(body)
-                self.assertIn("exact scope_premise_1", proof, f"{name}: {line}")
+                innermost = max(
+                    int(number)
+                    for part in body
+                    for number in re.findall(r"intro scope_premise_(\d+)", part)
+                )
+                self.assertIn(f"exact scope_premise_{innermost}", proof, f"{name}: {line}")
                 self.assertNotIn("grind", proof, f"{name}: {line}")
 
         self.assertEqual(
@@ -1736,25 +2079,38 @@ class ScopeInheritanceTests(unittest.TestCase):
         from process_proof_graphs import create_processed_proof_graph
         from verifier import check_zoom_in
         from tests.test_harness import make_proof_line, make_state_minimal
-        theorem = "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(in2[2,7,3])))"
+        theorem = "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(in[7,1])))"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             raw = root / "raw"
             raw.mkdir()
             (raw / "global_theorem_list.txt").write_text(theorem + "\tsingle chapter proof\t-1\n", encoding="utf-8")
+            fact = "(in[7,1])"
+            goal_row = "\t".join([theorem, "main", "task formulation"])
+            parent_row = "\t".join([fact, "main", "task formulation"])
+            child_row = "\t".join([fact, "main_boundary_child", "zoom in", fact, "main"])
             (raw / "0_single_chapter_proof.txt").write_text(
-                "\t".join([theorem, "main_boundary_child", "zoom in", theorem, "main"]) + "\n"
-                + "\t".join([theorem, "main", "task formulation"]) + "\n", encoding="utf-8")
+                goal_row + "\n" + parent_row + "\n" + child_row + "\n", encoding="utf-8")
             processed = root / "processed"
             create_processed_proof_graph(configuration_reader(REPOSITORY_ROOT / "files/config/ConfigVisu.json"),
                                          raw_dir=raw, proc_dir=processed, theorems_dir=root / "theorems")
             rows = [line.split("\t") for line in (processed / "0_single_chapter_proof.txt").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(rows[0][1], "main")
             zoom = next(row for row in rows if row[2] == "zoom in")
+            parent = next(row for row in rows if row[1] == "main" and row[0] == zoom[3])
+            self.assertEqual(parent[0], zoom[0])
+            self.assertGreater(rows.index(parent), rows.index(zoom))
             self.assertEqual(zoom[0], zoom[3])
             self.assertEqual(zoom[1], "main_boundary_child")
             self.assertEqual(zoom[4], "main")
             lines = [make_proof_line(row[0], row[1], row[2], *row[3:]) for row in rows]
             self.assertTrue(check_zoom_in(next(row for row in lines if row.tag == "zoom in"), lines, make_state_minimal()))
+            (raw / "0_single_chapter_proof.txt").write_text(
+                child_row + "\n" + parent_row + "\n", encoding="utf-8")
+            with self.assertRaises(AssertionError):
+                create_processed_proof_graph(
+                    configuration_reader(REPOSITORY_ROOT / "files/config/ConfigVisu.json"),
+                    raw_dir=raw, proc_dir=root / "invalid_processed", theorems_dir=root / "invalid_theorems")
 
     def test_certificate_records_exact_parent_dependency(self) -> None:
         expression = parse_scoped_expression("(in[x,N])")

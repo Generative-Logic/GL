@@ -41,7 +41,7 @@ namespace gl {
     /// them was visible only as mimalloc's committed bytes, which cannot tell
     /// live data from freed memory the allocator retains, nor name the owner.
     /// Two instruments close that gap (measurement builds only,
-    /// `MEM_MEASUREMENT`):
+    /// `HEAP_MEASUREMENT`):
     ///
     /// - **Live bytes.** The replaced global `operator new` / `operator delete`
     ///   (`heap_profile_hooks.cpp`, mimalloc builds) add and subtract each

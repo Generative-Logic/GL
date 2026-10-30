@@ -77,6 +77,21 @@ class FlatIntegrationExportTests(unittest.TestCase):
         self.assertFalse(contexts)
         self.assertEqual(metadata[1]["flat_integration_plan"], self.plan())
 
+    def test_shared_premise_is_reused_by_both_leaves(self):
+        from tests.test_verifier_flattened import SHARED, SHARED_RULE
+
+        plan = build_flat_integration_plan(parse_mpl(SHARED_RULE), parse_mpl("(hasPF[N])"), SHARED)
+        self.assertEqual(plan["premise_count"], 3)
+        root = plan["construction"]
+        self.assertEqual(root["children"][0], {"kind": "premise", "index": 0})
+        inner = root["children"][1]
+        self.assertEqual(inner["children"][0], {"kind": "premise", "index": 1})
+        self.assertEqual(inner["children"][1]["children"],
+                         [{"kind": "premise", "index": 1}, {"kind": "premise", "index": 2}])
+        term = render_flat_integration_term(plan, ["h0", "h1", "h2"], lambda name: name)
+        self.assertGreaterEqual(term.count("h1"), 2)
+        self.assertNotIn("sorry", term)
+
     def test_d1_intact_and_extended_variants(self):
         from tests.test_verifier_flattened import GOAL, RULE_LT, RULE_LE, RULE_FLAT
 

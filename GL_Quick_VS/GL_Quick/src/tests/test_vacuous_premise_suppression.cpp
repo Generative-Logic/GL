@@ -28,7 +28,11 @@
 ///        `drainSubtreeDeactivations` walk, and the
 ///        `hasContradictedAncestor` emission-gate helper.
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../prover.hpp"
 
@@ -38,14 +42,14 @@ namespace {
 
     // Registers kConj with both contradiction polarities enabled. The
     // premise-LB chain: root -> (AnchorPeano[...]) -> (in2[7,8,3]).
-    void registerChain(gl::ExpressionAnalyzer& ea) {
+    void registerChain(gl::tests::ProverFixture& ea) {
         ea.parameters.try_contradiction = true;
         ea.parameters.try_contradiction_negated_head = true;
-        ea.addTheoremToMemory(std::string(kConj), ea.body, 0, false,
+        ea.proofGridBuilder.addTheoremToMemory(std::string(kConj), ea.body, 0, false,
                               ea.globalDependencies);
     }
 
-    gl::Memory* innerOf(gl::ExpressionAnalyzer& ea) {
+    gl::Memory* innerOf(gl::tests::ProverFixture& ea) {
         gl::Memory* anchorLB = ea.simpleMapStore.findChild(
             &ea.body, "(AnchorPeano[1,2,3,4,5,6])");
         ASSERT_TRUE(anchorLB != nullptr);
@@ -56,45 +60,45 @@ namespace {
     }
 
     // Deposits a contradicting statement pair at the LB's exact main.
-    void depositMainPair(gl::ExpressionAnalyzer& ea, gl::Memory& lb) {
-        const int lvRun[1] = { lb.level };
+    void depositMainPair(gl::tests::ProverFixture& ea, gl::Memory& lb) {
+        const int lvRun[1] = { ((lb).level) };
         const gl::TransientOrigin origin{
             true, gl::OriginTag::taskFormulation, nullptr, 0 };
-        ea.addExprToMemoryBlock(gl::StrSpan("(in[7,1])", 9), lb, 0, 0,
+        ea.statementMemory.addExprToMemoryBlock(gl::StrSpan("(in[7,1])", 9), lb, 0, 0,
             lvRun, 1, origin, -1, -1, gl::StrSpan("main", 4), false);
-        ea.addExprToMemoryBlock(gl::StrSpan("!(in[7,1])", 10), lb, 0, 0,
+        ea.statementMemory.addExprToMemoryBlock(gl::StrSpan("!(in[7,1])", 10), lb, 0, 0,
             lvRun, 1, origin, -1, -1, gl::StrSpan("main", 4), false);
     }
 }
 
 TEST(vacuous_premise_suppression, normal_lb_pair_sets_flag_and_deactivates) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     gl::Memory* innerLB = innerOf(ea);
 
     depositMainPair(ea, *innerLB);
-    ASSERT_TRUE(innerLB->isActive);
-    ASSERT_FALSE(innerLB->mainContradiction);
+    ASSERT_TRUE(((*(innerLB)).isActive));
+    ASSERT_FALSE(((*(innerLB)).mainContradiction));
 
-    ea.dischargeContradiction(*innerLB, -1);
+    ea.goalProcessor.dischargeContradiction(*innerLB, -1);
 
-    ASSERT_TRUE(innerLB->mainContradiction);
-    ASSERT_FALSE(innerLB->isActive);
+    ASSERT_TRUE(((*(innerLB)).mainContradiction));
+    ASSERT_FALSE(((*(innerLB)).isActive));
 }
 
 TEST(vacuous_premise_suppression, no_pair_no_flag) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     gl::Memory* innerLB = innerOf(ea);
 
-    ea.dischargeContradiction(*innerLB, -1);
+    ea.goalProcessor.dischargeContradiction(*innerLB, -1);
 
-    ASSERT_FALSE(innerLB->mainContradiction);
-    ASSERT_TRUE(innerLB->isActive);
+    ASSERT_FALSE(((*(innerLB)).mainContradiction));
+    ASSERT_TRUE(((*(innerLB)).isActive));
 }
 
 TEST(vacuous_premise_suppression, subtree_drain_deactivates_descendants) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     gl::Memory* innerLB = innerOf(ea);
 
@@ -104,39 +108,39 @@ TEST(vacuous_premise_suppression, subtree_drain_deactivates_descendants) {
         ea.simpleMapStore.findChild(innerLB, "__contradiction__!(=[7,8])");
     ASSERT_TRUE(contraPos != nullptr);
     ASSERT_TRUE(contraNeg != nullptr);
-    ASSERT_TRUE(contraPos->isActive);
-    ASSERT_TRUE(contraNeg->isActive);
-    ASSERT_NE(contraPos->contradictionTheoremId, 0);
-    ASSERT_NE(contraNeg->contradictionTheoremId, 0);
+    ASSERT_TRUE(((*(contraPos)).isActive));
+    ASSERT_TRUE(((*(contraNeg)).isActive));
+    ASSERT_NE(((*(contraPos)).contradictionTheoremId), 0);
+    ASSERT_NE(((*(contraNeg)).contradictionTheoremId), 0);
 
     depositMainPair(ea, *innerLB);
-    ea.dischargeContradiction(*innerLB, -1);
-    ea.drainSubtreeDeactivations();
+    ea.goalProcessor.dischargeContradiction(*innerLB, -1);
+    ea.scopeLifecycle.drainSubtreeDeactivations();
 
-    ASSERT_FALSE(contraPos->isActive);
-    ASSERT_FALSE(contraNeg->isActive);
-    ASSERT_EQ(contraPos->contradictionTheoremId, 0);
-    ASSERT_EQ(contraNeg->contradictionTheoremId, 0);
+    ASSERT_FALSE(((*(contraPos)).isActive));
+    ASSERT_FALSE(((*(contraNeg)).isActive));
+    ASSERT_EQ(((*(contraPos)).contradictionTheoremId), 0);
+    ASSERT_EQ(((*(contraNeg)).contradictionTheoremId), 0);
     // The staging vector is cleared by the drain.
     ASSERT_EQ(static_cast<int>(ea.pendingSubtreeDeactivations.size()), 0);
 }
 
 TEST(vacuous_premise_suppression, has_contradicted_ancestor_walk) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     gl::Memory* innerLB = innerOf(ea);
     gl::Memory* contraNeg =
         ea.simpleMapStore.findChild(innerLB, "__contradiction__!(=[7,8])");
     ASSERT_TRUE(contraNeg != nullptr);
 
-    ASSERT_FALSE(gl::hasContradictedAncestor(innerLB));
-    ASSERT_FALSE(gl::hasContradictedAncestor(contraNeg));
-    ASSERT_FALSE(gl::hasContradictedAncestor(&ea.body));
+    ASSERT_FALSE(gl::StatementKnowledge::hasContradictedAncestor(innerLB));
+    ASSERT_FALSE(gl::StatementKnowledge::hasContradictedAncestor(contraNeg));
+    ASSERT_FALSE(gl::StatementKnowledge::hasContradictedAncestor(&ea.body));
 
-    innerLB->mainContradiction = true;
+    ((*(innerLB)).mainContradiction) = true;
 
-    ASSERT_TRUE(gl::hasContradictedAncestor(innerLB));      // self
-    ASSERT_TRUE(gl::hasContradictedAncestor(contraNeg));    // parent
-    ASSERT_FALSE(gl::hasContradictedAncestor(innerLB->parentMemory));
-    ASSERT_FALSE(gl::hasContradictedAncestor(&ea.body));    // root untouched
+    ASSERT_TRUE(gl::StatementKnowledge::hasContradictedAncestor(innerLB));      // self
+    ASSERT_TRUE(gl::StatementKnowledge::hasContradictedAncestor(contraNeg));    // parent
+    ASSERT_FALSE(gl::StatementKnowledge::hasContradictedAncestor(((*(innerLB)).parentMemory)));
+    ASSERT_FALSE(gl::StatementKnowledge::hasContradictedAncestor(&ea.body));    // root untouched
 }

@@ -1,0 +1,1 @@
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i2,v1])(existence36[N,+,*,i2,v1])))	main	reformulated from	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](preorder[N,+,i2,w1])(>[W1](divisorSet[N,+,*,i2,w1,W1])(hasMinimum[N,+,W1]))))	main

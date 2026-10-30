@@ -38,7 +38,7 @@ Every build is native Windows MSBuild `-t:Rebuild` launched through Python with 
 
 ## Evidence
 
-- Source donor: `prover.hpp` and `ensureEmptySubkeyRecord`, `stageEmptySubkeyRecord`, `flushSubkeySection`, `removeRuleSubkeyEntry`, `eraseOwnerlessEntries`, `prepareIntegrationCore2`; install sites in `memory.cpp`.
+- Source donor: `inference/hash_rule_installer.hpp` and `ensureEmptySubkeyRecord`, `stageEmptySubkeyRecord`, `flushSubkeySection`, `removeRuleSubkeyEntry`, `eraseOwnerlessEntries`, `prepareIntegrationCore2`; install sites in `memory.cpp`.
 - Current processor and CUDA growth already accept short subkeys by presence; signature readers apply only from three premises onward.
 - Baseline : rebuild 112.099 seconds; C++ 1,669/1,669 and verifier 407/407; full GPU pipeline 323.714 seconds internally (323.927 seconds process wall); 151,482 proof checks, zero failures; connected Lean kernel passed (Peano 64, Gauss 30, FTA 79 exported rows).
 - Baseline manifest retains 5,553 files / 793,050,213 bytes under ; source commit, source manifest, executable hash, full-input archive members, timing and diagnostic evidence are preserved in the parent folder.

@@ -41,13 +41,33 @@ namespace gl::gpu {
 
     static_assert(deviceIntegrationJustification
         == static_cast<int32_t>(RuleJustification::integration));
+    static_assert(deviceGoalDemandJustification
+        == static_cast<int32_t>(RuleJustification::goalDemand));
 
-    /// @brief Record the evaluator capacity; allocates nothing.
+    /// @brief Measure all fixed download and ownership-conversion scratch.
+    /// @details Columns remain live together until this chunk finishes sealing.
+    /// @param capacity Positive evaluator capacity.
+    /// @return Exact aligned payload layout before block rounding.
+    GpuHostLayout Phase2SealingArena::hostLayout(Phase2EvaluationCapacity capacity) {
+        GpuHostLayout layout;
+        layout.add<DevicePhase2FiringRecord>(capacity.firingRecords);
+        layout.add<char>(capacity.generatedBytes);
+        layout.add<int32_t>(capacity.levelValues);
+        layout.add<DeviceEvaluationDependency>(capacity.originDependencies);
+        layout.add<DeviceEvaluationByteSlice>(capacity.markerKeys);
+        layout.add<int32_t>(capacity.markerRemainingArgs);
+        layout.add<DeviceEvaluationByteSlice>(capacity.markerArgs);
+        layout.add<uint32_t>(capacity.firingRecords);
+        layout.add<SealedString>(std::max({capacity.markerKeys, capacity.markerRemainingArgs, capacity.markerArgs}));
+        layout.add<SealedExpressionWithValidity>(capacity.originDependencies);
+        return layout;
+    }
+
+    /// @brief Record evaluator capacity for a measured first-download lease.
     ///
     /// @details
-    /// The processor columns and the per-record sealing scratch start empty;
-    /// `downloadAndSeal` grows them to the used counts of the windows it seals,
-    /// never beyond this capacity.
+    /// Columns remain unallocated through construction and upload. The first
+    /// download reserves the measured lease; later windows reuse its columns.
     ///
     /// @param fixedCapacity Immutable evaluator element and byte ceilings.
     /// @return An empty reusable sealing arena.
@@ -63,6 +83,36 @@ namespace gl::gpu {
         assert(capacity_.markerKeys > 0);
         assert(capacity_.markerRemainingArgs > 0);
         assert(capacity_.markerArgs > 0);
+
+    }
+
+    /// @brief Reserve measured output columns at the first download.
+    /// @details Completed construction windows have returned their leases;
+    /// subsequent downloads reuse these fixed columns without allocator growth.
+    /// @return Nothing.
+    void Phase2SealingArena::reserveStorage() {
+        assert(hostStorage_.reservedBytes() == 0);
+        hostStorage_.reserve(hostLayout(capacity_).bytes);
+        firingRecords_.bindStorage(hostStorage_);
+        firingRecords_.reserve(capacity_.firingRecords);
+        generatedBytes_.bindStorage(hostStorage_);
+        generatedBytes_.reserve(capacity_.generatedBytes);
+        levelValues_.bindStorage(hostStorage_);
+        levelValues_.reserve(capacity_.levelValues);
+        originDependencies_.bindStorage(hostStorage_);
+        originDependencies_.reserve(capacity_.originDependencies);
+        markerKeys_.bindStorage(hostStorage_);
+        markerKeys_.reserve(capacity_.markerKeys);
+        markerRemainingArgs_.bindStorage(hostStorage_);
+        markerRemainingArgs_.reserve(capacity_.markerRemainingArgs);
+        markerArgs_.bindStorage(hostStorage_);
+        markerArgs_.reserve(capacity_.markerArgs);
+        firingOrder_.bindStorage(hostStorage_);
+        firingOrder_.reserve(capacity_.firingRecords);
+        sealedStringsScratch_.bindStorage(hostStorage_);
+        sealedStringsScratch_.reserve(std::max({capacity_.markerKeys, capacity_.markerRemainingArgs, capacity_.markerArgs}));
+        sealedDependenciesScratch_.bindStorage(hostStorage_);
+        sealedDependenciesScratch_.reserve(capacity_.originDependencies);
     }
 
     /// @brief Download retained GPU records into their owning block pages.
@@ -115,15 +165,10 @@ namespace gl::gpu {
             || (retainedFiringCount == 1 && options.receive != nullptr
                 && options.repeatedMarkerHeader->isMarker));
 
-        // Grow every column to this window's used count (the largest window so
-        // far stays allocated for the next one). A column's content is
-        // rewritten every window, so a growing column is emptied and released
-        // first and then allocated at exactly the new count.
+        if (hostStorage_.reservedBytes() == 0) reserveStorage();
+        // Used prefixes change per download; all backing was budgeted once.
         const auto growTo = [](auto& column, uint32_t count) {
-            if (column.size() >= count) return;
-            column.clear();
-            column.shrink_to_fit();
-            column.resize(count);
+            if (column.size() < count) column.resize(count);
         };
         growTo(firingRecords_, used.firingRecordCount);
         growTo(generatedBytes_, used.generatedByteCount);
@@ -223,16 +268,6 @@ namespace gl::gpu {
         const auto seal = [](SealedPageSet& pages, StrSpan bytes) {
             return SealedString::copyFrom(pages, bytes.ptr, bytes.len);
         };
-        // The fired rule copy of a head or marker record: the retained copy of
-        // the projected LMV the record references (the processor route reads
-        // the same two fields off its LMV; I-284,
-        // D-444).
-        const auto firedRuleCopy = [&](uint32_t blobRecordIndex) -> RuleOwner {
-            assert(blobRecordIndex < projection.blobRuleOwners.size());
-            const RuleOwner copy = projection.blobRuleOwners[blobRecordIndex];
-            assert(copy != 0 && "a firing record references a blob record that is no LMV");
-            return copy;
-        };
 
         uint32_t previousBlock = 0;
         bool havePreviousBlock = false;
@@ -264,9 +299,13 @@ namespace gl::gpu {
                 (source.flags & deviceFiringOrdis2Demand) != 0;
             assert(!(marker && demand));
             assert(options.repeatedMarkerHeader == nullptr || marker);
+            const bool goalNearMiss =
+                (source.flags & deviceFiringGoalNearMiss) != 0;
+            assert(!goalNearMiss || demand);
             FiringRecord record;
             record.isMarker = marker;
             record.isOrdis2Demand = demand;
+            record.isGoalNearMiss = goalNearMiss;
             if (options.repeatedMarkerHeader) {
                 record = *options.repeatedMarkerHeader;
                 const StrSpan expression = checkedSlice(source.expression);
@@ -341,14 +380,8 @@ namespace gl::gpu {
                 record.alreadyKnown =
                     (source.flags & deviceFiringAlreadyKnown) != 0;
                 record.iteration = source.iteration;
-                record.ruleCopyOwner = firedRuleCopy(source.blobRecordIndex);
             }
             else {
-                const RuleOwner firedCopy = firedRuleCopy(source.blobRecordIndex);
-                if (options.repeatedMarkerHeader != nullptr)
-                    assert(record.ruleCopyOwner == firedCopy
-                        && "a marker fragment names another rule copy than its header");
-                record.ruleCopyOwner = firedCopy;
                 if (options.repeatedMarkerHeader == nullptr) {
                     assert(source.markerArgOffset <= used.markerArgCount);
                     assert(source.markerArgCount
@@ -440,6 +473,7 @@ namespace gl::gpu {
     /// @param taskSubkeyCounts Complete cumulative subkey counts per task.
     /// @param taskCapacity Number of supplied task counter slots.
     /// @param doomLines Optional per-block stop states; returns zero or INT64_MAX.
+    /// @param frontierStorage Prepared request-frontier files and resident budget.
     /// @return Logical totals, transfer bytes and completed storage pressure.
     /// @invariant Scratch fits one CPU-supported output fragment; snapshots
     ///            stay immutable and no statement is deposited during drains.
@@ -448,7 +482,7 @@ namespace gl::gpu {
         const Phase2TaskProjectionArena& tasks, const Phase2GrowthScheduleArena& schedule,
         const DevicePhase2GrowthParameters& parameters, const Phase2BufferPlan& plan,
         SealedPageSet* const* outputs, uint32_t outputCount,
-        uint64_t* taskSubkeyCounts, uint32_t taskCapacity, int64_t* doomLines) {
+        uint64_t* taskSubkeyCounts, uint32_t taskCapacity, int64_t* doomLines, RequestFrontierStorageOptions frontierStorage) {
         gl::Phase2TraceScope phase2OperationTrace("Phase2SealingArena::runWindows");
         assert(outputCount == projection.logicalBlocks.size());
         for (uint32_t block = 0; block < outputCount; ++block)
@@ -601,7 +635,8 @@ namespace gl::gpu {
         const auto generationStarted = std::chrono::steady_clock::now();
         result.growth = buffers.growth.runRequestGrowthWindows(buffers.projection,
             buffers.tasks, tasks, buffers.filter, schedule, parameters, drain, &context,
-            taskSubkeyCounts, taskCapacity, doomLines != nullptr ? +retainedCalls : nullptr);
+            taskSubkeyCounts, taskCapacity, doomLines != nullptr ? +retainedCalls : nullptr,
+            frontierStorage);
         result.generationAndDrainSeconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - generationStarted).count();
         result.feedback.drains[0] = result.growth.drainCount - result.growth.cutoffDrainCount;

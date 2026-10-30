@@ -1,0 +1,13 @@
+(primeseq[N,+,*,i1,i2,V1])	main	validity name	(prime[N,+,*,i1,i2,v3])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])
+(prime[N,+,*,i1,i2,v3])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])	implication	(>[w1,w2](in2[w1,w2,V1])(prime[N,+,*,i1,i2,w2]))	main	(in2[v6,v3,V1])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])
+(in2[v6,v3,V1])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])	premise element	(>[v6,v3](in2[v6,v3,V1])(prime[N,+,*,i1,i2,v3]))_integration_goal	main
+(>[w1,w2](in2[w1,w2,V1])(prime[N,+,*,i1,i2,w2]))	main	implication composition	(>[w1,w2](in2[w1,w2,V1])(or5[w1,w2,V1,v1,v2]))	main	(>[w1,w2](or5[w1,w2,V1,v1,v2])(prime[N,+,*,i1,i2,w2]))	main
+(>[w1,w2](or5[w1,w2,V1,v1,v2])(prime[N,+,*,i1,i2,w2]))	main	implication composition	(>[w1,w2](or5[w1,w2,V1,v1,v2])(in2[w1,w2,V2]))	main	(>[w1,w2](in2[w1,w2,V2])(prime[N,+,*,i1,i2,w2]))	main
+(>[w1,w2](in2[w1,w2,V1])(or5[w1,w2,V1,v1,v2]))	main	expansion	(implication2453[V1,v1,v2,V2])	main
+(>[w1,w2](or5[w1,w2,V1,v1,v2])(in2[w1,w2,V2]))	main	expansion	(implication2453[V1,v1,v2,V2])	main
+(implication2453[V1,v1,v2,V2])	main	disintegration	(&(implication2452[V2,V1,v1,v2])(implication2453[V1,v1,v2,V2]))	main
+(&(implication2452[V2,V1,v1,v2])(implication2453[V1,v1,v2,V2]))	main	expansion	(appendToSequence[v1,v2,V1,V2])	main
+(appendToSequence[v1,v2,V1,V2])	main	task formulation
+(>[w1,w2](in2[w1,w2,V2])(prime[N,+,*,i1,i2,w2]))	main	expansion	(primeseq[N,+,*,i1,i2,V2])	main
+(primeseq[N,+,*,i1,i2,V2])	main	task formulation
+(>[v6,v3](in2[v6,v3,V1])(prime[N,+,*,i1,i2,v3]))_integration_goal	main	expansion for integration	(primeseq[N,+,*,i1,i2,V1])_integration_goal	main

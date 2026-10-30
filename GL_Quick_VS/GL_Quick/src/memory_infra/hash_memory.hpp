@@ -24,12 +24,10 @@
 
 #pragma once
 
-// HashMemory -- the per-LB hash-inference engine (one struct, four instances
-// per Memory). After Batch 4 every member is a cold (arena-backed,
-// deload-persisted) container, so the struct lives in memory_infra/ alongside
-// the rest of the static-memory substrate and can be held directly by LbMemory
-// (D-147). The blob-map record codecs live beside their record
-// types in memory.hpp.
+// HashMemory stores the rule, admission and rejected-source columns of one
+// logical block. Its four instances share the block's cold arena. Algorithm
+// owners access public columns; reset and tagged visitation preserve the
+// established allocation and deload contracts.
 
 #include "typed_cold_map.hpp"
 #include "reverse_args_index.hpp"
@@ -39,7 +37,6 @@
 #include <utility>
 
 namespace gl {
-
     // Record value types -- fully defined in memory.hpp. Forward-declared here
     // because the TypedColdBlobMap facade names its Record type only inside
     // member-template methods (assignRun / recordsAt / appendRecord), which
@@ -113,7 +110,7 @@ namespace gl {
         // every whole key to the run of the rules that installed it
         // (RuleOwnerRec, sorted-unique, addOwnerToRun via addWholeKeyOwner);
         // the request generator's emission gate is a bare lookup
-        // (ExpressionAnalyzer::wholeKeyPresent). A rule's removal deletes its
+        // (HashRuleIndex::wholeKeyPresent). A rule's removal deletes its
         // owner and an owner-less key is erased at the end of the apply
         // (eraseEmptyRuns); never scope-wiped. Five deload facets: the key
         // Lengths+Bytes at 5/6, the owner run's RunStarts+BlobStarts+BlobPool
@@ -140,7 +137,7 @@ namespace gl {
         TypedColdBlobMap<NormKey, OwnerSet>::BlobPoolView normalizedEncodedSubkeysBlobPool;
         NameId maxKeyLength = 0;
         // Raised by every owner removal (a rule leaving hash memory), consumed
-        // by ExpressionAnalyzer::eraseOwnerlessEntries at the end of the
+        // by HashRuleIndex::eraseOwnerlessEntries at the end of the
         // apply: the one compacting pass per owner map runs only on an
         // instance that lost an owner since the last pass. Transient
         // bookkeeping, never deloaded (a removal and its erasure sit inside
@@ -156,11 +153,21 @@ namespace gl {
         // the owner-less sweep, whose compaction keeps the survivors' order.
         // Resident scalar, never deloaded: a reload keeps the chain ids.
         int32_t goalScanChainMark = 0;
+        // The contradiction-scope demand's chain floor
+        // (D-560): every contradiction scope the
+        // demand drain has bootstrapped has been matched against the
+        // `originals` chains 1..contradictionChainMark, so a drain matches
+        // only the chains above it against the facts those scopes see.
+        // Raised at the end of each drain, zeroed at every teardown and
+        // remapped by the owner-less sweep exactly as the goal-rescan floor.
+        // Resident scalar, never deloaded.
+        int32_t contradictionChainMark = 0;
         // --- shared members (path-independent) ---
         // Implication chains (premises + head) as ruleInterner id vectors
-        // (D-133). Written at install; iterated (decoded lex-sorted) by the
-        // integration premise-matcher and the dump; the orphan check erases a
-        // chain once no LMV references it.
+        // (D-133). Written at install; iterated in ascending chain-id (install)
+        // order by the integration premise-matcher, the necessity check and
+        // the goal rescan, decoded and sorted by the dump; the orphan check
+        // erases a chain once no LMV references it.
         // Statified COLD set (D-173): byte-key set,
         // one IdVecKey blob per chain. Two facets: key Lengths + Bytes.
         // Owner lists (RuleOwnerRec run per chain): the same chain text can be
@@ -199,6 +206,26 @@ namespace gl {
         TypedColdBlobMap<IdVecKey, RuleOwnerRec>::RunStartsView copyOwnersRunStarts;
         TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobStartsView copyOwnersBlobStarts;
         TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobPoolView copyOwnersBlobPool;
+        // Premise patterns of the installed rules, read by the request
+        // statement filter (premisePatternAdmits). Three key families in one
+        // owner-run map: a premise SHAPE key (kind 1: signed predicate plus
+        // first-appearance argument numbering) -> the run of distinct u_ slot
+        // masks seen for that shape; a PATTERN key (kind 2: signed predicate
+        // plus, per slot, the literal id of a u_ argument or the numbered
+        // variable) -> the run of scope-major owners (install scope in the
+        // high half, copy id in the low half); a CLOSED-SCOPE key (kind 3:
+        // the scope) -> one record while a subtree wipe has removed the
+        // scope's rules from encodedMap and no install has reopened it.
+        // Installs stage per copy and premise; a removal deletes the owner and
+        // the owner-less sweep erases an emptied key; the wipe keeps the
+        // owners and records the closed scope. Mask runs only grow. Five
+        // facets at 93..97.
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec> premisePatterns;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::LengthsView premisePatternsLengths;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BytesView premisePatternsBytes;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::RunStartsView premisePatternsRunStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobStartsView premisePatternsBlobStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobPoolView premisePatternsBlobPool;
         // Packed (templateId, validityId) keys — template half from
         // Memory::templateInterner, validity half from Memory::nameMap
         // (D-132). Order-sensitive walks iterate
@@ -244,6 +271,17 @@ namespace gl {
         TypedColdSet<int64_t>::KeysView admissionSetIntegrationKeys;
         TypedColdSet<int64_t> triggersForAdmissionSetIntegration;
         TypedColdSet<int64_t>::KeysView triggersForAdmissionSetIntegrationKeys;
+        // Double-marker integration demands (D-492):
+        // packed (templateId, validityId) key of a flattened root goal's OR
+        // disjunct with its two open arguments as `marker1` / `marker2` (the
+        // other arguments `u_`) -> 0. The value carries no information; the
+        // map shape stays because the Rule-14 hashburst dump reads it as a
+        // map. No instruction payload: a hit only admits an `int_` witness. Statified COLD single-value map, scope-wiped like the
+        // admission set. Two facets: key, value. Only ever used via
+        // overallHashMemory.
+        TypedColdMap<int64_t, int64_t> admissionMapIntegrationDouble;
+        TypedColdMap<int64_t, int64_t>::KeysView admissionMapIntegrationDoubleKeys;
+        TypedColdMap<int64_t, int64_t>::ValuesView admissionMapIntegrationDoubleValues;
         // Packed (templateId, validityId) keys (D-132);
         // id-form values ordered by DecodedRejectedValueLess.
         // Statified COLD blob map (D-172): packed
@@ -399,19 +437,14 @@ namespace gl {
         TypedColdSet<int64_t> subproofRevisitInProgress;
         TypedColdSet<int64_t>::KeysView subproofRevisitInProgressKeys;
 
-        /// @brief Bind the rule store to the owning LB's arena + dirty flag.
-        ///
-        /// @details
-        /// Replaces the former default constructor: an arena-bound `HashMemory`
-        /// is constructed with the arena its (migrating) cold containers will
-        /// allocate on and the dirty flag they will set. Stored but unused
-        /// while every member is still heap (Part C 1b-i).
-        ///
-        /// @param arena The arena backing this instance's cold containers
-        ///              (LbMemory's cold arena for the deloaded overall/local
-        ///              instances; a HOT arena for the transient working/delta
-        ///              instances; may be null in a heap-only unit test).
-        /// @param dirty The shared content-change flag the cold containers set.
+    public:
+        /// @brief Bind the rule store to its logical block's arena and dirty flag.
+        /// @details Every cold container uses the supplied arena and shares the
+        /// content-change flag. The four hash stores retain their original arena
+        /// ownership, shared blob pools and per-burst reset boundaries.
+        /// @param arena Arena backing the instance's cold containers.
+        /// @param dirty Shared content-change flag written by those containers.
+        /// @return Constructed bound rule store.
         HashMemory(LbArena* arena, DirtyState* dirty)
             : arena_(arena), dirty_(dirty),
               encodedMap(arena, dirty),
@@ -459,6 +492,12 @@ namespace gl {
               copyOwnersRunStarts(&copyOwners.inner()),
               copyOwnersBlobStarts(&copyOwners.inner()),
               copyOwnersBlobPool(&copyOwners.inner()),
+              premisePatterns(arena, dirty),
+              premisePatternsLengths(&premisePatterns.inner()),
+              premisePatternsBytes(&premisePatterns.inner()),
+              premisePatternsRunStarts(&premisePatterns.inner()),
+              premisePatternsBlobStarts(&premisePatterns.inner()),
+              premisePatternsBlobPool(&premisePatterns.inner()),
               admissionMap(arena, dirty),
               admissionMapKeys(&admissionMap.inner()),
               admissionMapRunStarts(&admissionMap.inner()),
@@ -473,6 +512,9 @@ namespace gl {
               admissionSetIntegrationKeys(&admissionSetIntegration.inner()),
               triggersForAdmissionSetIntegration(arena, dirty),
               triggersForAdmissionSetIntegrationKeys(&triggersForAdmissionSetIntegration.inner()),
+              admissionMapIntegrationDouble(arena, dirty),
+              admissionMapIntegrationDoubleKeys(&admissionMapIntegrationDouble.inner()),
+              admissionMapIntegrationDoubleValues(&admissionMapIntegrationDouble.inner()),
               rejectedMap(arena, dirty),
               rejectedMapKeys(&rejectedMap.inner()),
               rejectedMapRunStarts(&rejectedMap.inner()),
@@ -544,25 +586,23 @@ namespace gl {
             remainingArgsNormalizedEncodedMap.inner().bindSharedBlobBytes(pool);
             remainingArgsOwners.inner().keyStore().bindSharedBytes(pool);
             copyOwners.inner().keyStore().bindSharedBytes(pool);
+            premisePatterns.inner().keyStore().bindSharedBytes(pool);
             remainingArgsReverseIndex.bindSharedBytes(pool);
             encodedMap.inner().bindSharedBlobBytes(pool, true);
             normalizedEncodedSubkeys.inner().bindSharedBlobBytes(pool, true);
             normalizedEncodedKeys.inner().bindSharedBlobBytes(pool, true);
             remainingArgsOwners.inner().bindSharedBlobBytes(pool, true);
             copyOwners.inner().bindSharedBlobBytes(pool, true);
+            premisePatterns.inner().bindSharedBlobBytes(pool, true);
         }
 
         HashMemory(const HashMemory&) = delete;
         HashMemory& operator=(const HashMemory&) = delete;
 
-        /// @brief Wholesale reset to empty — the destroyGrid / per-burst path.
-        ///
-        /// @details
-        /// Empties every member. As containers migrate onto the cold facade,
-        /// each adds its `resetToFresh()` here; the heap members stay
-        /// `clear()`ed. Replaces the former `= HashMemory()` and
-        /// swap-with-empty resets, which cannot move an arena-bound instance
-        /// between arenas.
+        /// @brief Reset every rule-store container without moving its arena binding.
+        /// @details Calls the existing clear operation so the bound storage can
+        /// be reused at the grid-teardown and per-burst boundaries.
+        /// @return No value.
         void resetToFresh() {
             clear();
         }
@@ -575,33 +615,35 @@ namespace gl {
         ///
         /// @return Live bytes across this instance's cold containers.
         int64_t liveBytes() const {
-            return encodedMap.liveBytes()
-                 + normalizedEncodedKeys.liveBytes()
-                 + normalizedEncodedSubkeys.liveBytes()
-                 + admissionMap.liveBytes()
-                 + admissionStatusMap.liveBytes()
-                 + varsInAdmissionMapKeys.liveBytes()
-                 + rejectedMap.liveBytes()
-                 + revisitInProgress.liveBytes()
-                 + ordisRevisitInProgress.liveBytes()
-                 + admissionMapOrdis2.liveBytes()
-                 + rejectedMapOrdis2.liveBytes()
-                 + ordis2RevisitInProgress.liveBytes()
-                 + rejectedMapSubproof.liveBytes()
-                 + subproofRevisitInProgress.liveBytes()
-                 + admissionMapIntegration.liveBytes()
-                 + rejectedMapIntegration.liveBytes()
-                 + rejectedMapOrdis.liveBytes()
-                 + varsInAdmissionMapIntegrationKeys.liveBytes()
-                 + varsInRejectedMapIntegrationKeys.liveBytes()
-                 + admissionSetIntegration.liveBytes()
-                 + triggersForAdmissionSetIntegration.liveBytes()
-                 + productsOfRecursionIds.liveBytes()
-                 + originals.liveBytes()
-                 + remainingArgsNormalizedEncodedMap.liveBytes()
-                 + remainingArgsOwners.liveBytes()
-                 + copyOwners.liveBytes()
-                 + remainingArgsReverseIndex.liveBytes();
+            return peak_snapshot::measure("encodedMap", encodedMap, [&] { return encodedMap.liveBytes(); })
+                 + peak_snapshot::measure("normalizedEncodedKeys", normalizedEncodedKeys, [&] { return normalizedEncodedKeys.liveBytes(); })
+                 + peak_snapshot::measure("normalizedEncodedSubkeys", normalizedEncodedSubkeys, [&] { return normalizedEncodedSubkeys.liveBytes(); })
+                 + peak_snapshot::measure("admissionMap", admissionMap, [&] { return admissionMap.liveBytes(); })
+                 + peak_snapshot::measure("admissionStatusMap", admissionStatusMap, [&] { return admissionStatusMap.liveBytes(); })
+                 + peak_snapshot::measure("varsInAdmissionMapKeys", varsInAdmissionMapKeys, [&] { return varsInAdmissionMapKeys.liveBytes(); })
+                 + peak_snapshot::measure("rejectedMap", rejectedMap, [&] { return rejectedMap.liveBytes(); })
+                 + peak_snapshot::measure("revisitInProgress", revisitInProgress, [&] { return revisitInProgress.liveBytes(); })
+                 + peak_snapshot::measure("ordisRevisitInProgress", ordisRevisitInProgress, [&] { return ordisRevisitInProgress.liveBytes(); })
+                 + peak_snapshot::measure("admissionMapOrdis2", admissionMapOrdis2, [&] { return admissionMapOrdis2.liveBytes(); })
+                 + peak_snapshot::measure("rejectedMapOrdis2", rejectedMapOrdis2, [&] { return rejectedMapOrdis2.liveBytes(); })
+                 + peak_snapshot::measure("ordis2RevisitInProgress", ordis2RevisitInProgress, [&] { return ordis2RevisitInProgress.liveBytes(); })
+                 + peak_snapshot::measure("rejectedMapSubproof", rejectedMapSubproof, [&] { return rejectedMapSubproof.liveBytes(); })
+                 + peak_snapshot::measure("subproofRevisitInProgress", subproofRevisitInProgress, [&] { return subproofRevisitInProgress.liveBytes(); })
+                 + peak_snapshot::measure("admissionMapIntegration", admissionMapIntegration, [&] { return admissionMapIntegration.liveBytes(); })
+                 + peak_snapshot::measure("rejectedMapIntegration", rejectedMapIntegration, [&] { return rejectedMapIntegration.liveBytes(); })
+                 + peak_snapshot::measure("rejectedMapOrdis", rejectedMapOrdis, [&] { return rejectedMapOrdis.liveBytes(); })
+                 + peak_snapshot::measure("varsInAdmissionMapIntegrationKeys", varsInAdmissionMapIntegrationKeys, [&] { return varsInAdmissionMapIntegrationKeys.liveBytes(); })
+                 + peak_snapshot::measure("varsInRejectedMapIntegrationKeys", varsInRejectedMapIntegrationKeys, [&] { return varsInRejectedMapIntegrationKeys.liveBytes(); })
+                 + peak_snapshot::measure("admissionSetIntegration", admissionSetIntegration, [&] { return admissionSetIntegration.liveBytes(); })
+                 + peak_snapshot::measure("triggersForAdmissionSetIntegration", triggersForAdmissionSetIntegration, [&] { return triggersForAdmissionSetIntegration.liveBytes(); })
+                 + peak_snapshot::measure("admissionMapIntegrationDouble", admissionMapIntegrationDouble, [&] { return admissionMapIntegrationDouble.liveBytes(); })
+                 + peak_snapshot::measure("productsOfRecursionIds", productsOfRecursionIds, [&] { return productsOfRecursionIds.liveBytes(); })
+                 + peak_snapshot::measure("originals", originals, [&] { return originals.liveBytes(); })
+                 + peak_snapshot::measure("remainingArgsNormalizedEncodedMap", remainingArgsNormalizedEncodedMap, [&] { return remainingArgsNormalizedEncodedMap.liveBytes(); })
+                 + peak_snapshot::measure("remainingArgsOwners", remainingArgsOwners, [&] { return remainingArgsOwners.liveBytes(); })
+                 + peak_snapshot::measure("copyOwners", copyOwners, [&] { return copyOwners.liveBytes(); })
+                 + peak_snapshot::measure("premisePatterns", premisePatterns, [&] { return premisePatterns.liveBytes(); })
+                 + peak_snapshot::measure("remainingArgsReverseIndex", remainingArgsReverseIndex, [&] { return remainingArgsReverseIndex.liveBytes(); });
         }
 
         /// @brief Release every cold (arena-backed) container's blocks + index —
@@ -634,14 +676,17 @@ namespace gl {
             varsInRejectedMapIntegrationKeys.release();
             admissionSetIntegration.release();
             triggersForAdmissionSetIntegration.release();
+            admissionMapIntegrationDouble.release();
             productsOfRecursionIds.release();
             originals.release();
             remainingArgsNormalizedEncodedMap.release();
             remainingArgsOwners.release();
             copyOwners.release();
+            premisePatterns.release();
             remainingArgsReverseIndex.clear();
             originalsHeadIndex.clear();
             goalScanChainMark = 0;
+            contradictionChainMark = 0;
         }
 
         void clear() {
@@ -649,6 +694,7 @@ namespace gl {
             remainingArgsNormalizedEncodedMap.resetToFresh();
             remainingArgsOwners.resetToFresh();
             copyOwners.resetToFresh();
+            premisePatterns.resetToFresh();
             remainingArgsReverseIndex.clear();
             originalsHeadIndex.clear();
             normalizedEncodedKeys.resetToFresh();
@@ -656,11 +702,13 @@ namespace gl {
             maxKeyLength = 0;
             ownerlessPending = false;
             goalScanChainMark = 0;
+            contradictionChainMark = 0;
             originals.resetToFresh();
             admissionMap.resetToFresh();
             admissionMapIntegration.resetToFresh();
             admissionSetIntegration.resetToFresh();
             triggersForAdmissionSetIntegration.resetToFresh();
+            admissionMapIntegrationDouble.resetToFresh();
             rejectedMap.resetToFresh();
             rejectedMapIntegration.resetToFresh();
             rejectedMapOrdis.resetToFresh();
@@ -678,30 +726,17 @@ namespace gl {
             subproofRevisitInProgress.resetToFresh();
         }
 
-        /// @brief Enumerate this instance's COLD (deload-visited) facets at
-        ///        `base + offset` tags — the seam the deload uses to reach the
-        ///        cold `HashMemory` instances during the Part-C migration.
-        ///
-        /// @details
-        /// `HashMemory` is not yet an `LbMemory` member (it still holds heap
-        /// members that need complete `memory.hpp` types), so `Memory` wraps
-        /// each facet this emits as a `lbdeload::DeloadColumn` and hands the
-        /// list to the deload alongside `LbMemory`. Empty until `encodedMap`
-        /// migrates onto the typed cold facade (Part C commit 1b); thereafter
-        /// each migrated container contributes its facets at consecutive
-        /// `base + offset` tags, ascending. When every member is migrated,
-        /// `HashMemory` moves INTO `LbMemory` and this is walked by
-        /// `LbMemory::visitContainers` instead.
-        ///
-        /// @tparam Visitor Callable `(uint32_t tag, facet&)`.
-        /// @param base  The instance's reserved tag-block base
-        ///              (`kOverallHashMemoryDeloadBase` / `..Local..`).
-        /// @param visit The per-facet visitor.
-        /// @see `kOverallHashMemoryDeloadBase`, `lbdeload::DeloadColumn`.
-        // Enumerate this instance's COLD facets at base+offset tags. Shared
-        // body for the const + non-const overloads -- the deload DUMP reads a
-        // const LbMemory&, the LOAD / RELEASE walk a mutable one (now that
-        // HashMemory is an LbMemory member, D-147).
+        /// @brief Visit the established cold-container facets in deload-tag order.
+        /// @details Shared implementation of the const dump walk and mutable
+        /// load/release walk. LbMemory supplies the instance's reserved tag base;
+        /// all field tags and facet ordering remain fixed.
+        /// @tparam Self Const or mutable HashMemory instance.
+        /// @tparam Visitor Callable receiving each tag and container facet.
+        /// @param self Instance whose facets are visited.
+        /// @param base Reserved tag-block base for this instance.
+        /// @param visit Operation applied to each tagged facet.
+        /// @return No value.
+    private:
         template <typename Self, typename Visitor>
         static void visitContainersImpl(Self& self, uint32_t base, Visitor&& visit) {
             // encodedMap: 5 facets at base+0..4 (key Lengths+Bytes, value
@@ -825,8 +860,23 @@ namespace gl {
             visit(base + 90u, self.rejectedMapSubproofBlobStarts);
             visit(base + 91u, self.rejectedMapSubproofBlobPool);
             visit(base + 92u, self.subproofRevisitInProgressKeys);
+            // Premise patterns of the installed rules: 5 facets at
+            // base+93..97, appended per the band's append-only discipline
+            // (D-174).
+            visit(base + 93u, self.premisePatternsLengths);
+            visit(base + 94u, self.premisePatternsBytes);
+            visit(base + 95u, self.premisePatternsRunStarts);
+            visit(base + 96u, self.premisePatternsBlobStarts);
+            visit(base + 97u, self.premisePatternsBlobPool);
+            // Double-marker integration demands
+            // (D-492): 2 facets at base+98..99,
+            // the band's last tags, appended per the append-only discipline
+            // (D-174).
+            visit(base + 98u, self.admissionMapIntegrationDoubleKeys);
+            visit(base + 99u, self.admissionMapIntegrationDoubleValues);
         }
 
+    public:
         template <typename Visitor>
         void visitContainers(uint32_t base, Visitor&& visit) {
             visitContainersImpl(*this, base, std::forward<Visitor>(visit));

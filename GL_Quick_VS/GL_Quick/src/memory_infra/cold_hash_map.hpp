@@ -29,6 +29,7 @@
 #include "lb_arena.hpp"
 #include "paged_hash_index.hpp"
 #include "paged_vector.hpp"
+#include "paged_sorted_ordinals.hpp"
 #include "scratch_arena.hpp"
 #include "str_ops.hpp"
 #include "infra/rt_tracker.hpp"
@@ -38,7 +39,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -46,21 +49,32 @@
 namespace gl {
 
     class SharedBytePool;
+    class BatchByteDictionary;
 
     /// @brief Location of one cold string in a byte-key store's paged byte
     ///        pool: the logical byte index where its bytes begin, the byte
-    ///        length, and the key's cached `coldKeyHash` digest.
+    ///        length, and an 18-bit tag of the key's `coldKeyHash` digest.
     ///
     /// @details
-    /// Element type of a `BytesKeyStore`'s id → location index. `byteStart` is
-    /// the physical char index in the byte pool (`PagedVector<char>`) where the
-    /// string begins; a string occupies `[byteStart, byteStart + len)` and is
-    /// interned WITHIN A SINGLE PAGE (no straddle — the pool carries page-tail
-    /// padding the deload never emits). Trivially copyable — the index is itself
-    /// a paged container element. `hash` caches the full `coldKeyHash` digest beside
-    /// the location so lookup never re-walks stored bytes merely to place or
-    /// reject a candidate. An interned empty string has `len` zero (no bytes;
-    /// `byteStart` is the pool size at intern time).
+    /// Element type of a `BytesKeyStore`'s id → location index, 8 bytes per
+    /// key. `byteStart` is the physical char index in the byte pool
+    /// (`PagedVector<char>`) where the string begins (or the shared-payload
+    /// identifier of a shared store). A NEGATIVE `byteStart` is a reference
+    /// to entry `-byteStart` of the process-wide `BatchByteDictionary`, whose
+    /// bytes never move or die while the process runs; a string occupies
+    /// `[byteStart, byteStart + len)` and is interned WITHIN A SINGLE PAGE (no
+    /// straddle — the pool carries page-tail padding the deload never emits), so
+    /// its length never exceeds `static_page_bytes` and fits 14 bits (production
+    /// pages hold 2 KiB, the default `StaticMemoryConfig` page 8 KiB). `tag`
+    /// holds the top 18 bits of the key's `coldKeyHash` digest (`coldKeyTag`):
+    /// a probe compares it before touching stored bytes, so a mismatching
+    /// candidate is rejected without a byte comparison except for one in 2^18.
+    /// The full digest is recomputed from the stored bytes where the index
+    /// places stored ids (`BytesKeyStore::hashStored`, called only by index
+    /// rebuilds). Trivially copyable — the index is itself a paged container
+    /// element. An interned empty string has `len` zero (no bytes; `byteStart`
+    /// is the pool size at intern time). Build one with
+    /// `makeColdStringLocation`.
     ///
     /// The name keeps the `ColdString*` spelling the byte-key store inherited
     /// from the hand-rolled `ColdStringTable` it generalizes, so the seven
@@ -68,8 +82,70 @@ namespace gl {
     /// `using ColdStringTable = ColdHashSet<BytesKeyStore>` alias.
     struct ColdStringLocation {
         int32_t byteStart;
-        int32_t len;
-        uint64_t hash;
+        uint32_t len : 14;
+        uint32_t tag : 18;
+    };
+    static_assert(sizeof(ColdStringLocation) == 8 && alignof(ColdStringLocation) == 4,
+        "ColdStringLocation must stay one 8-byte record");
+    static_assert(std::is_trivially_copyable_v<ColdStringLocation>);
+
+    /// @brief Largest key length a `ColdStringLocation` can record (14 bits).
+    ///
+    /// @details A key lives inside one page, so `static_page_bytes` above this
+    /// limit trips the assert in `makeColdStringLocation`.
+    inline constexpr int32_t kMaxColdStringKeyBytes = (1 << 14) - 1;
+
+    /// @brief Top 18 bits of a `coldKeyHash` digest — the probe-rejection tag.
+    ///
+    /// @details
+    /// The index places keys by the LOW bits of the digest, so keys meeting in
+    /// one probe chain share low bits; the tag therefore takes the high bits,
+    /// which stay independent of the bucket position.
+    ///
+    /// @param hash Full `coldKeyHash` digest.
+    /// @return The tag value, below 2^18.
+    inline constexpr uint32_t coldKeyTag(uint64_t hash) {
+        return static_cast<uint32_t>(hash >> 46);
+    }
+
+    /// @brief Build a location record from a key's start, length and digest.
+    ///
+    /// @details
+    /// The one construction door for `ColdStringLocation`: it checks the
+    /// 14-bit length contract and stores the digest's tag.
+    ///
+    /// @param byteStart Byte-pool index (or shared-payload identifier) of the key.
+    /// @param len Key length in bytes, `0 <= len <= kMaxColdStringKeyBytes`.
+    /// @param hash The key's `coldKeyHash` digest.
+    /// @return The packed 8-byte location.
+    inline ColdStringLocation makeColdStringLocation(int32_t byteStart, int32_t len,
+                                                     uint64_t hash) {
+        assert(len >= 0 && len <= kMaxColdStringKeyBytes
+            && "ColdStringLocation: key longer than its 14-bit length field");
+        ColdStringLocation location{};
+        location.byteStart = byteStart;
+        location.len = static_cast<uint32_t>(len);
+        location.tag = coldKeyTag(hash);
+        return location;
+    }
+
+    /// @brief Prefix reference for one stable local key identifier.
+    /// @details Zero prefix denotes a full restart; other rows refer to a sorted predecessor.
+    struct PrefixKeyReference { int32_t predecessor; int32_t prefix; };
+
+    /// @brief Optional owner-provided metadata for prefix-packed string keys.
+    /// @details The descriptor lives beside its table, survives raw images, and is
+    /// cleared with the table. Canonical images contain only full original bytes.
+    struct PrefixKeyMetadata {
+        PagedVector<PrefixKeyReference> rows;
+        int32_t examinedCount = 0;
+        DirtyState* dirty;
+        /// @brief Bind metadata to the table's owning arena and dirty state.
+        /// @details Construction allocates no page and enables no compression.
+        /// @param arena Owning table arena.
+        /// @param dirty Owning logical block's content state.
+        /// @return Empty metadata.
+        PrefixKeyMetadata(LbArena* arena, DirtyState* dirty) : rows(arena, dirty), dirty(dirty) {}
     };
 
     /// @brief Key-store policy for variable-length byte keys — the cold storage
@@ -143,6 +219,211 @@ namespace gl {
             assert(arena != nullptr && dirty != nullptr);
         }
 
+        /// @brief Bind optional prefix metadata before the first key is minted.
+        /// @details Only independently owned append-only tables select this format.
+        /// @param metadata Stable descriptor on the same owning logical block.
+        /// @return Nothing.
+        void bindPrefixes(PrefixKeyMetadata& metadata) {
+            assert(empty() && metadata.rows.empty() && shared_ == nullptr && prefixes_ == nullptr);
+            prefixes_ = &metadata;
+        }
+
+        /// @brief Copy a decoded key into explicit caller-owned storage.
+        /// @details Follows at most fifteen predecessor links, copying only the
+        /// required portions of suffixes. The destination never aliases a store cache.
+        /// @param id Stable local identifier.
+        /// @param destination Caller buffer, writable for capacity bytes.
+        /// @param capacity Caller buffer capacity.
+        /// @return Exact decoded byte length.
+        int32_t copyKeyTo(int32_t id, char* destination, int32_t capacity) const {
+            assert(id > 0 && id <= count());
+            const int32_t length = locations_[id - 1].len;
+            assert(capacity >= length && (length == 0 || destination != nullptr));
+            if (shared_ != nullptr) {
+                const auto bytes = sharedBytesAt(locations_[id - 1].byteStart);
+                if (length != 0) std::memcpy(destination, bytes.ptr, length);
+                return length;
+            }
+            int32_t needed = length;
+            int links = 0;
+            while (needed > 0) {
+                const auto location = locations_[id - 1];
+                const auto reference = prefixes_ != nullptr && !prefixes_->rows.empty()
+                    ? prefixes_->rows[id - 1] : PrefixKeyReference{0, 0};
+                assert(reference.prefix >= 0 && reference.prefix <= location.len);
+                assert((location.byteStart >= 0 || reference.prefix == 0)
+                    && "a batch-dictionary reference always holds the whole key");
+                if (needed > reference.prefix)
+                    copyStoredRun(location, needed - reference.prefix,
+                        destination + reference.prefix);
+                needed = std::min(needed, reference.prefix);
+                if (needed > 0) {
+                    assert(reference.predecessor > 0 && ++links < 16);
+                    id = reference.predecessor;
+                }
+            }
+            return length;
+        }
+
+        /// @brief Decode a key into the caller's scratch lifetime.
+        /// @details The caller owns the arena and its rewind boundary. Nested
+        /// interner reads or mints do not invalidate this copied string.
+        /// @param id Stable local key identifier.
+        /// @param scratch Caller-owned scratch arena.
+        /// @return Span valid until the caller rewinds or releases its allocation.
+        StrSpan copyView(int32_t id, ScratchArena& scratch) const {
+            assert(id > 0 && id <= count());
+            const int32_t length = locations_[id - 1].len;
+            if (length == 0) return StrSpan();
+            char* output = scratch.allocBytes(length);
+            copyKeyTo(id, output, length);
+            return StrSpan(output, length);
+        }
+
+        /// @brief Read a key as reverse-ordered immutable suffix segments.
+        /// @details The segments together cover each decoded byte exactly once;
+        /// their storage remains borrowed only during the synchronous comparison.
+        /// @param id Stable key identifier.
+        /// @param parts Caller-owned array of sixteen segment descriptors.
+        /// @return Number of suffix segments, zero for the empty key.
+        int keySegments(int32_t id, StrSpan (&parts)[16]) const {
+            assert(id > 0 && id <= count());
+            if (shared_ != nullptr) {
+                parts[0] = sharedBytesAt(locations_[id - 1].byteStart);
+                return parts[0].len == 0 ? 0 : 1;
+            }
+            int32_t needed = locations_[id - 1].len;
+            int count = 0, links = 0;
+            while (needed > 0) {
+                const auto location = locations_[id - 1];
+                const auto reference = prefixes_ != nullptr && !prefixes_->rows.empty()
+                    ? prefixes_->rows[id - 1] : PrefixKeyReference{0, 0};
+                assert((location.byteStart >= 0 || reference.prefix == 0)
+                    && "a batch-dictionary reference always holds the whole key");
+                if (needed > reference.prefix) {
+                    int32_t available = 0;
+                    const char* suffix = storedRun(location, available);
+                    assert(available >= needed - reference.prefix && count < 16);
+                    parts[count++] = StrSpan(suffix, needed - reference.prefix);
+                }
+                needed = std::min(needed, reference.prefix);
+                if (needed > 0) { assert(reference.predecessor > 0 && ++links < 16); id = reference.predecessor; }
+            }
+            return count;
+        }
+
+        /// @brief Compare two decoded keys without allocating decoded strings.
+        /// @details Walks immutable suffix segments in forward byte order and
+        /// uses the same unsigned byte comparison as contiguous StrSpan keys.
+        /// @param first First stable identifier.
+        /// @param second Second stable identifier.
+        /// @return Negative, zero or positive according to decoded lexical order.
+        int compareKeys(int32_t first, int32_t second) const {
+            if (prefixes_ == nullptr || prefixes_->rows.empty()) return compareSpans(decodeAt(first), decodeAt(second));
+            StrSpan a[16], b[16];
+            int ai = keySegments(first, a) - 1, bi = keySegments(second, b) - 1;
+            int32_t ao = 0, bo = 0;
+            while (ai >= 0 && bi >= 0) {
+                const int32_t take = std::min(a[ai].len - ao, b[bi].len - bo);
+                const int comparison = std::memcmp(a[ai].ptr + ao, b[bi].ptr + bo, take);
+                if (comparison != 0) return comparison;
+                ao += take; bo += take;
+                if (ao == a[ai].len) { --ai; ao = 0; }
+                if (bo == b[bi].len) { --bi; bo = 0; }
+            }
+            return (ai >= 0) - (bi >= 0);
+        }
+
+        /// @brief Pack sorted keys with a restart every sixteen rows.
+        /// @details Run only at a quiescent seam with no borrowed views. A first
+        /// attempt waits for 1024 keys; subsequent attempts wait for doubled key
+        /// population. Keep the existing format when complete candidate pages
+        /// and metadata would not reduce resident bytes. Scratch is temporary.
+        /// @param scratch Separate caller-owned arena for full keys and sort runs.
+        /// @return Nothing.
+        void packPrefixes(LbArena& scratch) {
+            assert(prefixes_ != nullptr && shared_ == nullptr && &scratch != arena_);
+            const int32_t n = count();
+            if (n < 1024 || static_cast<int64_t>(n) < static_cast<int64_t>(prefixes_->examinedCount) * 2) return;
+            repackPrefixes(scratch);
+        }
+
+        /// @brief Rebuild the prefix-packed byte pool from the rows holding
+        ///        local bytes, without the population gate of `packPrefixes`.
+        ///
+        /// @details
+        /// Rows that reference the batch dictionary keep their references and
+        /// restart rows (prefix zero); only rows holding local bytes are
+        /// decoded, sorted and packed, with a restart every sixteen packed rows,
+        /// so no predecessor chain exceeds fifteen links. The existing format is
+        /// kept when the candidate pages and metadata would not reduce resident
+        /// bytes. Run only at a quiescent seam with no borrowed views; scratch is
+        /// temporary. Key identifiers, lengths and decoded bytes never change.
+        ///
+        /// @param scratch Separate caller-owned arena for full keys and sort runs.
+        /// @return Nothing.
+        /// @invariant Every key decodes to the same bytes before and after.
+        void repackPrefixes(LbArena& scratch) {
+            assert(prefixes_ != nullptr && shared_ == nullptr && &scratch != arena_);
+            assert(scratch.pageBytes() == arena_->pageBytes());
+            const int32_t n = count();
+            prefixes_->examinedCount = n;
+            *prefixes_->dirty = DirtyState::Restructured;
+            RT_SCOPE_HERE("PREFIX_PACK_KEYS");
+            DirtyState temporaryDirty = DirtyState::Clean;
+            BytesKeyStore full(&scratch, &temporaryDirty);
+            PagedVector<int32_t> localIds(&scratch, &temporaryDirty);
+            const int32_t bufferPage = scratch.allocPage();
+            char* buffer = scratch.pageAt(bufferPage);
+            for (int32_t id = 1; id <= n; ++id) {
+                if (locations_[id - 1].byteStart < 0) continue;
+                const int32_t length = copyKeyTo(id, buffer, scratch.pageBytes());
+                full.appendKey(StrSpan(buffer, length));
+                localIds.push_back(id);
+            }
+            scratch.freePage(bufferPage);
+            const int32_t localCount = localIds.size();
+            const auto less = [&](int32_t a, int32_t b) {
+                return compareSpans(full.decodeAt(a + 1), full.decodeAt(b + 1)) < 0;
+            };
+            PagedSortedOrdinals<decltype(less)> order(scratch, localCount, less, 4096);
+            PagedVector<char> suffixes(&scratch, &temporaryDirty);
+            PagedVector<PrefixKeyReference> references(&scratch, &temporaryDirty);
+            PagedVector<int32_t> starts(&scratch, &temporaryDirty);
+            for (int32_t id = 0; id < n; ++id) {
+                references.push_back({0, 0});
+                starts.push_back(locations_[id].byteStart);
+            }
+            int32_t previous = 0, previousId = 0;
+            for (int32_t sorted = 0; sorted < localCount; ++sorted) {
+                const int32_t local = order.next() + 1;
+                const int32_t id = localIds[local - 1];
+                const StrSpan bytes = full.decodeAt(local);
+                int32_t prefix = 0;
+                if ((sorted % 16) != 0) {
+                    const StrSpan prior = full.decodeAt(previous);
+                    const int32_t limit = std::min(bytes.len, prior.len);
+                    while (prefix < limit && bytes.ptr[prefix] == prior.ptr[prefix]) ++prefix;
+                }
+                const char* suffix = bytes.len == 0 ? nullptr : bytes.ptr + prefix;
+                starts.setAt(id - 1, suffixes.appendRunNoStraddle(suffix, bytes.len - prefix));
+                references.setAt(id - 1, PrefixKeyReference{prefix == 0 ? 0 : previousId, prefix});
+                previous = local;
+                previousId = id;
+            }
+            if (suffixes.liveBytes() + references.liveBytes() >= bytePool_.liveBytes() + prefixes_->rows.liveBytes()) return;
+            bytePool_.clear(); prefixes_->rows.clear();
+            for (int32_t at = 0; at < suffixes.size();) {
+                int32_t available = 0; const char* bytes = suffixes.contiguousRun(at, available);
+                const int32_t take = std::min(available, suffixes.size() - at);
+                bytePool_.appendRun(bytes, take); at += take;
+            }
+            for (int32_t id = 0; id < n; ++id) {
+                auto location = locations_[id]; location.byteStart = starts[id];
+                locations_.setAt(id, location); prefixes_->rows.push_back(references[id]);
+            }
+        }
+
     /// @brief Detach a byte-key client before its metadata is destroyed.
     ///
     /// @details Shared payload belongs to the enclosing block pool, which outlives every registered key store.
@@ -177,6 +458,109 @@ namespace gl {
     /// @invariant Surviving key bytes, order and cached hashes are unchanged.
     void compactStoredBytes(int32_t pageBytes);
 
+    /// @brief Make this store take part in the process-wide batch byte
+    ///        dictionary.
+    ///
+    /// @details
+    /// A participating store looks a new key up in the batch dictionary
+    /// before it stores the bytes, and its rows are converted and nominated
+    /// at the block maintenance seams (`shareNewRows`, `sharePendingRows`).
+    /// Bind once while the store is empty. A client bound to a block pool
+    /// never participates: its payload lives in that pool, whose own store
+    /// participates instead.
+    ///
+    /// @return Nothing.
+    /// @invariant Key identifiers, lengths, hashes and decoded bytes never
+    ///            depend on participation.
+    void enableBatchSharing();
+
+    /// @brief Convert the rows minted since the last scan, and nominate the
+    ///        rest — the end-of-phase-3 maintenance seam.
+    ///
+    /// @details
+    /// Every row from the scan mark to the end that still holds local bytes
+    /// is looked up in the batch dictionary, which is read-only here. A hit
+    /// turns the row into a reference; a miss hands the row's bytes and their
+    /// `coldKeyHash` digest to `nominate`, so each row is hashed once. The
+    /// scanned rows stay pending until `sharePendingRows`, because the next
+    /// barrier may add their bytes to the dictionary. When rows were
+    /// converted the caller reclaims their bytes with
+    /// `compactAfterBatchConversion`.
+    ///
+    /// @tparam Nominate Callable `void(StrSpan, uint64_t)`.
+    /// @param nominate Receives each missing row's bytes, valid during the
+    ///        call only, and their `coldKeyHash` digest.
+    /// @return Number of rows converted to references.
+    /// @invariant Decoded bytes, identifiers and hashes of every key are unchanged.
+    template <typename Nominate>
+    int32_t shareNewRows(Nominate&& nominate);
+
+    /// @brief Convert the pending rows whose bytes the dictionary now holds
+    ///        — the end-of-phase-1 maintenance seam.
+    ///
+    /// @details
+    /// The rows scanned at the last end-of-phase-3 seam are looked up again
+    /// after the barrier has filled the dictionary; hits become references.
+    /// The pending range is empty afterwards.
+    ///
+    /// @return Number of rows converted to references.
+    /// @invariant Decoded bytes, identifiers and hashes of every key are unchanged.
+    int32_t sharePendingRows();
+
+    /// @brief Reclaim the local bytes of rows just converted to references.
+    ///
+    /// @details
+    /// A prefix-packed store repacks its remaining local rows; any other
+    /// store slides its surviving local payloads toward the front. Call only
+    /// at a quiescent seam with no outstanding spans.
+    ///
+    /// @param scratch Separate caller-owned page-tier arena; used by a
+    ///        prefix-packed store only.
+    /// @return Nothing.
+    /// @invariant Decoded bytes, identifiers and hashes of every key are unchanged.
+    void compactAfterBatchConversion(LbArena& scratch);
+
+    /// @brief Open a stable forward erase — the `HashMap` erase hook.
+    ///
+    /// @details The scan marks of a participating store follow the erase
+    /// exactly: `noteStableErase` reports each removed row, and
+    /// `endStableErase` moves the marks down by the removed rows below them.
+    ///
+    /// @return Nothing.
+    void beginStableErase() {
+        assert(!stableEraseOpen_);
+        stableEraseOpen_ = true;
+        erasedBelowScanned_ = 0;
+        erasedBelowPending_ = 0;
+    }
+
+    /// @brief Report one row removed by the open stable erase.
+    ///
+    /// @details Rows are reported in increasing order of their old position.
+    ///
+    /// @param row Zero-based old position of the removed row.
+    /// @return Nothing.
+    void noteStableErase(int32_t row) {
+        assert(stableEraseOpen_ && row >= 0 && row < locations_.size());
+        if (row < batchScanned_) ++erasedBelowScanned_;
+        if (row < batchPending_) ++erasedBelowPending_;
+    }
+
+    /// @brief Close the open stable erase and move the scan marks.
+    ///
+    /// @details Called after the location index has been truncated to the
+    /// survivors.
+    ///
+    /// @return Nothing.
+    void endStableErase() {
+        assert(stableEraseOpen_);
+        stableEraseOpen_ = false;
+        batchScanned_ -= erasedBelowScanned_;
+        batchPending_ -= erasedBelowPending_;
+        assert(batchPending_ >= 0 && batchPending_ <= batchScanned_
+            && batchScanned_ <= locations_.size());
+    }
+
         BytesKeyStore(const BytesKeyStore&) = delete;
         BytesKeyStore& operator=(const BytesKeyStore&) = delete;
 
@@ -195,7 +579,8 @@ namespace gl {
         ///
         /// @return Live bytes the keys and their location index occupy.
         int64_t liveBytes() const {
-            return bytePool_.liveBytes() + locations_.liveBytes();
+            return peak_snapshot::measure("bytePool_", bytePool_, [&] { return bytePool_.liveBytes(); }) + peak_snapshot::measure("locations_", locations_, [&] { return locations_.liveBytes(); })
+                + (prefixes_ == nullptr ? 0 : peak_snapshot::measure("prefixRows_", prefixes_->rows, [&] { return prefixes_->rows.liveBytes(); }));
         }
 
         /// @brief Return the exact logical key-byte total without walking keys.
@@ -220,7 +605,11 @@ namespace gl {
         /// `byteStart` is the current pool size and `len` 0), then records the
         /// location — escalating the shared dirty flag through the location
         /// append. The new id is `count()` after the call (the owning set reads
-        /// it). Does NOT touch the heap index — the set inserts into it.
+        /// it). Does NOT touch the heap index — the set inserts into it. A
+        /// participating store first looks the bytes up in the active batch
+        /// dictionary and, on a hit, stores a reference instead of the bytes;
+        /// without an active dictionary (before the prover starts sharing, or
+        /// in a context that never shares) the bytes are stored locally.
         ///
         /// @param s Key bytes to store.
         void appendKey(const StrSpan& s) {
@@ -228,26 +617,45 @@ namespace gl {
             if (shared_ != nullptr) { appendSharedKey(s); return; }
             assert(logicalByteCount_
                 <= std::numeric_limits<int64_t>::max() - s.len);
-            const int32_t start = bytePool_.appendRunNoStraddle(s.ptr, s.len);
-            locations_.push_back(ColdStringLocation{
-                start, s.len, coldKeyHash(s) });
+            const uint64_t hash = coldKeyHash(s);
+            const int32_t reference = batchEnabled_ && s.len > 0 && batch_ != nullptr
+                ? batchReference(s, hash) : 0;
+            const int32_t start = reference != 0
+                ? reference : bytePool_.appendRunNoStraddle(s.ptr, s.len);
+            locations_.push_back(makeColdStringLocation(start, s.len, hash));
             logicalByteCount_ += s.len;
+            if (prefixes_ != nullptr && !prefixes_->rows.empty()) prefixes_->rows.push_back({0, 0});
         }
 
-        /// @brief Cached `coldKeyHash` of stored key `id`'s bytes — the
-        ///        hash the owning set's index places stored ids with.
+        /// @brief `coldKeyHash` of stored key `id`'s bytes — the hash the
+        ///        owning set's index places stored ids with.
         ///
         /// @details
-        /// Read directly from the static paged location record. `appendKey`
-        /// computes it once; `copyKeysFrom` copies it; canonical reload
-        /// recomputes it from the serialized logical bytes. It uses the same
-        /// `coldKeyHash` digest as a contiguous probe, which is the dedup
-        /// correctness condition.
+        /// Recomputed from the stored bytes: a plain key is one contiguous
+        /// in-page run, a shared key is read from its shared payload, and a
+        /// prefix-packed key is decoded into a stack buffer first. Only index
+        /// rebuilds place stored ids, so the digest costs one hash per key per
+        /// rebuild; a fresh mint takes the bucket its own miss probe found. It
+        /// is the same `coldKeyHash` digest as a contiguous probe, which is the
+        /// dedup correctness condition.
         ///
         /// @param id A stored id (`1 <= id <= count()`).
         /// @return The key's `coldKeyHash` digest.
         uint64_t hashStored(int32_t id) const {
-            return locations_[id - 1].hash;
+            const ColdStringLocation& loc = locations_[id - 1];
+            if (shared_ != nullptr) return coldKeyHash(sharedBytesAt(loc.byteStart));
+            if (loc.byteStart < 0) return coldKeyHash(batchBytesAt(loc));
+            if (prefixes_ != nullptr && !prefixes_->rows.empty()) {
+                char bytes[kMaxColdStringKeyBytes];
+                const int32_t length = copyKeyTo(id, bytes, kMaxColdStringKeyBytes);
+                return coldKeyHash(StrSpan(bytes, length));
+            }
+            const int32_t length = static_cast<int32_t>(loc.len);
+            if (length == 0) return coldKeyHash(StrSpan(nullptr, 0));
+            int32_t run = 0;
+            const char* p = bytePool_.contiguousRun(loc.byteStart, run);
+            assert(run >= length && "BytesKeyStore::hashStored: stored key straddles a page");
+            return coldKeyHash(StrSpan(p, length));
         }
 
         /// @brief `coldKeyHash` of a contiguous probe — the hash the owning
@@ -259,7 +667,7 @@ namespace gl {
         uint64_t hashProbe(const StrSpan& s) const { return coldKeyHash(s); }
 
         /// @brief Byte equality of stored key `id` against a contiguous probe,
-        ///        with a cached-hash rejection before page resolution.
+        ///        with a hash-tag rejection before page resolution.
         ///
         /// @param id        A stored id (the stored side is page-contained).
         /// @param probe     The contiguous lookup bytes.
@@ -268,12 +676,33 @@ namespace gl {
         GL_FORCEINLINE bool equalStored(int32_t id, const StrSpan& probe,
                          uint64_t probeHash) const {
             const ColdStringLocation& loc = locations_[id - 1];
-            if (loc.hash != probeHash) return false;
+            if (loc.tag != coldKeyTag(probeHash)) return false;
             if (loc.len != probe.len) return false;
             if (loc.len == 0) return true;
             if (shared_ != nullptr)
                 return std::memcmp(sharedBytesAt(loc.byteStart).ptr, probe.ptr,
                     static_cast<std::size_t>(loc.len)) == 0;
+            if (loc.byteStart < 0)
+                return std::memcmp(batchBytesAt(loc).ptr, probe.ptr,
+                    static_cast<std::size_t>(loc.len)) == 0;
+            if (prefixes_ != nullptr && !prefixes_->rows.empty()) {
+                int32_t needed = loc.len; int links = 0;
+                while (needed > 0) {
+                    const auto current = locations_[id - 1];
+                    const auto reference = prefixes_->rows[id - 1];
+                    assert((current.byteStart >= 0 || reference.prefix == 0)
+                        && "a batch-dictionary reference always holds the whole key");
+                    if (needed > reference.prefix) {
+                        int32_t available = 0;
+                        const char* suffix = storedRun(current, available);
+                        assert(available >= needed - reference.prefix);
+                        if (std::memcmp(suffix, probe.ptr + reference.prefix, needed - reference.prefix) != 0) return false;
+                    }
+                    needed = std::min(needed, reference.prefix);
+                    if (needed > 0) { assert(reference.predecessor > 0 && ++links < 16); id = reference.predecessor; }
+                }
+                return true;
+            }
             int32_t pos = loc.byteStart;
             const int32_t end = loc.byteStart + loc.len;
             int32_t probeOff = 0;
@@ -304,10 +733,12 @@ namespace gl {
         /// @return Contiguous span over the key's bytes; the empty span for an
         ///         interned empty key.
         GL_FORCEINLINE StrSpan decodeAt(int32_t id) const {
+            assert((prefixes_ == nullptr || prefixes_->rows.empty()) && "prefix-packed key requires caller-owned copyView");
             assert(id >= 1 && id <= locations_.size()
                 && "BytesKeyStore::decodeAt on an unstored id");
             const ColdStringLocation& loc = locations_[id - 1];
             if (shared_ != nullptr) return sharedBytesAt(loc.byteStart);
+            if (loc.byteStart < 0) return batchBytesAt(loc);
             if (loc.len == 0) return StrSpan();
             int32_t run = 0;
             const char* p = bytePool_.contiguousRun(loc.byteStart, run);
@@ -324,12 +755,19 @@ namespace gl {
         /// @return Heap copy of the bytes (page-aware — walks the byte pool, so
         ///         it works for page-straddling keys where `decodeAt` cannot).
         std::string decodeStringAt(int32_t id) const {
+            if (prefixes_ != nullptr && !prefixes_->rows.empty()) {
+                assert(id > 0 && id <= count());
+                std::string result(static_cast<std::size_t>(locations_[id - 1].len), char(0));
+                copyKeyTo(id, result.data(), static_cast<int32_t>(result.size()));
+                return result;
+            }
             assert(id >= 1 && id <= locations_.size()
                 && "BytesKeyStore::decodeStringAt on an unstored id");
             const ColdStringLocation& loc = locations_[id - 1];
             if (loc.len == 0) return std::string();
-            if (shared_ != nullptr) {
-                const StrSpan bytes = sharedBytesAt(loc.byteStart);
+            if (shared_ != nullptr || loc.byteStart < 0) {
+                const StrSpan bytes = shared_ != nullptr
+                    ? sharedBytesAt(loc.byteStart) : batchBytesAt(loc);
                 return std::string(bytes.ptr, static_cast<std::size_t>(bytes.len));
             }
             std::string out;
@@ -354,18 +792,24 @@ namespace gl {
         /// reclaims. Every previously stored id is invalid afterwards. The heap
         /// index is the owning set's to drop.
         void clear() {
+            if (prefixes_ != nullptr) { prefixes_->rows.clear(); prefixes_->examinedCount = 0; }
             locations_.clear();
             bytePool_.clear();
             logicalByteCount_ = 0;
+            batchScanned_ = 0;
+            batchPending_ = 0;
             if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
         /// @brief Drop everything including page capacity — the owning set's
         ///        `release`.
         void release() {
+            if (prefixes_ != nullptr) { prefixes_->rows.clear(); prefixes_->examinedCount = 0; }
             locations_.release();
             bytePool_.release();
             logicalByteCount_ = 0;
+            batchScanned_ = 0;
+            batchPending_ = 0;
             if (shared_ != nullptr) releaseSharedIfUnused();
         }
 
@@ -386,6 +830,9 @@ namespace gl {
         /// @param destPos Destination position in `[0, count())`.
         /// @param srcId   Source id; `1 <= srcId <= count()`.
         void moveKeyTo(int32_t destPos, int32_t srcId) {
+            assert(prefixes_ == nullptr && "prefix format is append-only until wholesale clear");
+            assert((!batchEnabled_ || stableEraseOpen_)
+                && "a participating store erases only through a reported stable erase");
             assert(destPos >= 0 && destPos < locations_.size());
             assert(srcId >= 1 && srcId <= locations_.size());
             logicalByteCount_ -= locations_[destPos].len;
@@ -407,6 +854,9 @@ namespace gl {
         ///
         /// @param newCount Retained key count, in `[0, count()]`.
         void truncate(int32_t newCount) {
+            assert(prefixes_ == nullptr && "prefix format is append-only until wholesale clear");
+            assert((!batchEnabled_ || stableEraseOpen_)
+                && "a participating store erases only through a reported stable erase");
             assert(newCount >= 0 && newCount <= locations_.size());
             for (int32_t index = newCount; index < locations_.size(); ++index)
                 logicalByteCount_ -= locations_[index].len;
@@ -431,6 +881,17 @@ namespace gl {
                 && "BytesKeyStore::copyKeysFrom into a non-empty store");
             assert(logicalByteCount_ == 0);
             const int32_t n = other.count();
+            if (other.prefixes_ != nullptr && !other.prefixes_->rows.empty()) {
+                const int32_t bufferPage = arena_->allocPage();
+                char* buffer = arena_->pageAt(bufferPage);
+                for (int32_t id = 1; id <= n; ++id) {
+                    const int32_t length = other.copyKeyTo(id, buffer, arena_->pageBytes());
+                    appendKey(StrSpan(buffer, length));
+                }
+                arena_->freePage(bufferPage);
+                assert(logicalByteCount_ == other.logicalByteCount_);
+                return;
+            }
             if (shared_ != nullptr || other.shared_ != nullptr) {
                 for (int32_t id = 1; id <= n; ++id) appendKey(other.decodeAt(id));
                 assert(logicalByteCount_ == other.logicalByteCount_);
@@ -438,6 +899,13 @@ namespace gl {
             }
             for (int32_t id = 1; id <= n; ++id) {
                 const ColdStringLocation& oloc = other.locations_[id - 1];
+                if (oloc.byteStart < 0) {
+                    // A batch-dictionary reference is valid in every store of
+                    // the process; the copy shares the same entry.
+                    locations_.push_back(oloc);
+                    logicalByteCount_ += oloc.len;
+                    continue;
+                }
                 int32_t start;
                 if (oloc.len > 0) {
                     // The source is no-straddle, so its key is one contiguous
@@ -453,8 +921,9 @@ namespace gl {
                 } else {
                     start = bytePool_.size();
                 }
-                locations_.push_back(ColdStringLocation{
-                    start, oloc.len, oloc.hash });
+                ColdStringLocation location = oloc;
+                location.byteStart = start;
+                locations_.push_back(location);
                 logicalByteCount_ += oloc.len;
             }
             assert(logicalByteCount_ == other.logicalByteCount_);
@@ -496,6 +965,16 @@ namespace gl {
         void appendContentBytes(std::vector<char>& out, int32_t fromRow) const {
             const int32_t n = locations_.size();
             assert(fromRow >= 0 && fromRow <= n);
+            if (prefixes_ != nullptr && !prefixes_->rows.empty()) {
+                const int32_t bufferPage = arena_->allocPage();
+                char* buffer = arena_->pageAt(bufferPage);
+                for (int32_t id = fromRow + 1; id <= n; ++id) {
+                    const int32_t length = copyKeyTo(id, buffer, arena_->pageBytes());
+                    out.insert(out.end(), buffer, buffer + length);
+                }
+                arena_->freePage(bufferPage);
+                return;
+            }
             if (shared_ != nullptr) {
                 for (int32_t id = fromRow + 1; id <= n; ++id) {
                     const StrSpan bytes = decodeAt(id);
@@ -505,6 +984,11 @@ namespace gl {
             }
             for (int32_t i = fromRow; i < n; ++i) {
                 const ColdStringLocation& loc = locations_[i];
+                if (loc.byteStart < 0) {
+                    const StrSpan shared = batchBytesAt(loc);
+                    out.insert(out.end(), shared.ptr, shared.ptr + shared.len);
+                    continue;
+                }
                 int32_t pos = loc.byteStart;
                 const int32_t end = loc.byteStart + loc.len;
                 while (pos < end) {
@@ -538,8 +1022,10 @@ namespace gl {
         /// @details
         /// Re-bumps element-by-element in id order and recomputes every cached
         /// digest from the canonical bytes, so every (offset, len, hash) — and
-        /// therefore every id — reproduces exactly. Loud on malformed input via
-        /// asserts.
+        /// therefore every id — reproduces exactly. A participating store looks
+        /// each key up in the active batch dictionary first and stores a
+        /// reference on a hit, exactly as `appendKey` does. Loud on malformed
+        /// input via asserts.
         ///
         /// @param lengths  `rowCount` int32 lengths in id order.
         /// @param bytes    The concatenated key bytes.
@@ -567,12 +1053,15 @@ namespace gl {
                 assert(off + len <= byteLen
                     && "BytesKeyStore::bulkLoadKeys: bytes shorter than "
                        "lengths");
-                const int32_t start = (len > 0)
-                    ? bytePool_.appendRunNoStraddle(bytes + off, len)
+                const StrSpan key(bytes + off, len);
+                const uint64_t hash = coldKeyHash(key);
+                const int32_t reference = batchEnabled_ && len > 0 && batch_ != nullptr
+                    ? batchReference(key, hash) : 0;
+                const int32_t start = reference != 0 ? reference
+                    : (len > 0) ? bytePool_.appendRunNoStraddle(bytes + off, len)
                     : bytePool_.size();
-                locations_.push_back(ColdStringLocation{
-                    start, len,
-                    coldKeyHash(StrSpan(bytes + off, len)) });
+                locations_.push_back(makeColdStringLocation(start, len, hash));
+                if (prefixes_ != nullptr && !prefixes_->rows.empty()) prefixes_->rows.push_back({0, 0});
                 off += len;
             }
             assert(off == byteLen
@@ -645,9 +1134,99 @@ namespace gl {
 
     private:
         friend class SharedBytePool;
+        friend class BatchByteDictionary;
         LbArena* arena_;
         SharedBytePool* shared_ = nullptr;
+        PrefixKeyMetadata* prefixes_ = nullptr;
         BytesKeyStore* nextShared_ = nullptr;
+
+        // The active process-wide batch dictionary. Activated single-threaded
+        // before any worker runs; null while no dictionary shares bytes.
+        static inline BatchByteDictionary* batch_ = nullptr;
+        // Whether this store takes part in batch sharing.
+        bool batchEnabled_ = false;
+        // Whether a HashMap stable erase is reporting removed rows.
+        bool stableEraseOpen_ = false;
+        // Rows [0, batchScanned_) were scanned at an end-of-phase-3 seam; rows
+        // [batchPending_, batchScanned_) wait for the post-barrier lookup.
+        int32_t batchScanned_ = 0;
+        int32_t batchPending_ = 0;
+        // Removed rows below each mark during the open stable erase.
+        int32_t erasedBelowScanned_ = 0;
+        int32_t erasedBelowPending_ = 0;
+
+    /// @brief Resolve a batch-dictionary reference.
+    ///
+    /// @details The reference names the entry's first byte in the
+    /// dictionary's byte pool and the row keeps the length, so a read is
+    /// one page resolve. Dictionary entries never move or die while the
+    /// process runs, so the view stays valid for the process lifetime.
+    ///
+    /// @param location A row location with a negative start.
+    /// @return Borrowed immutable bytes of the dictionary entry.
+    StrSpan batchBytesAt(const ColdStringLocation& location) const;
+
+    /// @brief The reference a row records for bytes the active batch
+    ///        dictionary holds.
+    ///
+    /// @details Read-only; safe from every worker while the dictionary is
+    /// frozen (between barriers).
+    ///
+    /// @param bytes Non-empty key bytes.
+    /// @param hash `coldKeyHash(bytes)`.
+    /// @return The negative location start of the entry, or 0 when the
+    ///         dictionary misses.
+    int32_t batchReference(StrSpan bytes, uint64_t hash) const;
+
+    /// @brief Contiguous stored bytes of one location, local or shared by the
+    ///        batch dictionary.
+    ///
+    /// @details A local location yields its in-page run; a reference yields
+    /// the whole dictionary entry.
+    ///
+    /// @param location The row's location.
+    /// @param available Receives the contiguous byte count at the result.
+    /// @return Pointer to the first stored byte.
+    const char* storedRun(const ColdStringLocation& location, int32_t& available) const {
+        if (location.byteStart >= 0) return bytePool_.contiguousRun(location.byteStart, available);
+        const StrSpan bytes = batchBytesAt(location);
+        available = bytes.len;
+        return bytes.ptr;
+    }
+
+    /// @brief Copy the first stored bytes of one location, local or shared
+    ///        by the batch dictionary.
+    ///
+    /// @details Used by the prefix walk, which copies a suffix of a local row
+    /// or a leading part of a whole referenced key.
+    ///
+    /// @param location The row's location.
+    /// @param count Bytes to copy from the location's start.
+    /// @param destination Caller buffer with room for `count` bytes.
+    /// @return Nothing.
+    void copyStoredRun(const ColdStringLocation& location, int32_t count, char* destination) const {
+        if (location.byteStart >= 0) { bytePool_.copyRunTo(location.byteStart, count, destination); return; }
+        const StrSpan bytes = batchBytesAt(location);
+        assert(count >= 0 && count <= bytes.len);
+        std::memcpy(destination, bytes.ptr, static_cast<std::size_t>(count));
+    }
+
+    /// @brief Turn local rows of a range into references where the batch
+    ///        dictionary holds their bytes.
+    ///
+    /// @details Rows that already reference the dictionary and empty rows are
+    /// skipped. A prefix-packed row is decoded into a stack buffer first and
+    /// becomes a restart row (prefix zero) when converted; local rows chained
+    /// through it then read its leading bytes from the dictionary entry.
+    ///
+    /// @tparam Miss Callable `void(StrSpan, uint64_t)`.
+    /// @param from First zero-based row.
+    /// @param to One past the last row.
+    /// @param miss Receives the bytes of each local row the dictionary misses,
+    ///        valid during the call only, and their `coldKeyHash` digest.
+    /// @return Number of rows converted.
+    template <typename Miss>
+    int32_t convertLocalRows(int32_t from, int32_t to, Miss&& miss);
     /// @brief Append a local key reference to shared immutable payload.
     ///
     /// @details The shared pool interns bytes before the local metadata row is appended.
@@ -761,7 +1340,7 @@ namespace gl {
         /// @brief Approximate live byte footprint (the key column).
         ///
         /// @return Live bytes the keys occupy.
-        int64_t liveBytes() const { return keys_.liveBytes(); }
+        int64_t liveBytes() const { return peak_snapshot::measure("keys_", keys_, [&] { return keys_.liveBytes(); }); }
 
         /// @brief Append `k` at the next id — the store's write primitive.
         ///
@@ -849,6 +1428,30 @@ namespace gl {
         ///
         /// @param newCount Retained key count, in `[0, count()]`.
         void truncate(int32_t newCount) { keys_.truncate(newCount); }
+
+        /// @brief Open a stable forward erase — the `HashMap` erase hook.
+        ///
+        /// @details A fixed-size key store keeps no scan marks, so the hook
+        /// pair is empty; it exists so `HashMap::eraseIf` reports removals to
+        /// every key store alike.
+        ///
+        /// @return Nothing.
+        void beginStableErase() {}
+
+        /// @brief Report one row removed by the open stable erase.
+        ///
+        /// @details Empty for fixed-size keys (see `beginStableErase`).
+        ///
+        /// @param row Zero-based old position of the removed row.
+        /// @return Nothing.
+        void noteStableErase(int32_t row) { (void)row; }
+
+        /// @brief Close the open stable erase.
+        ///
+        /// @details Empty for fixed-size keys (see `beginStableErase`).
+        ///
+        /// @return Nothing.
+        void endStableErase() {}
 
         /// @brief Wholesale reset to empty — the owning set's `resetToFresh`.
         void clear() { keys_.clear(); }
@@ -988,7 +1591,7 @@ namespace gl {
         /// @brief Uniform contract: value-column live bytes.
         ///
         /// @return Live bytes the values occupy.
-        int64_t valuesLiveBytes() const { return values_.liveBytes(); }
+        int64_t valuesLiveBytes() const { return peak_snapshot::measure("values_", values_, [&] { return values_.liveBytes(); }); }
 
         /// @brief Append one value at the next id — the `insert` value half.
         ///
@@ -1129,7 +1732,7 @@ namespace gl {
         ///
         /// @return Live bytes the runs index and values occupy.
         int64_t valuesLiveBytes() const {
-            return runStarts_.liveBytes() + values_.liveBytes();
+            return peak_snapshot::measure("runStarts_", runStarts_, [&] { return runStarts_.liveBytes(); }) + peak_snapshot::measure("values_", values_, [&] { return values_.liveBytes(); });
         }
 
         /// @brief Open a fresh run for a brand-new key at the current value end.
@@ -1270,7 +1873,7 @@ namespace gl {
         ///
         /// @return Live bytes the runs index and values occupy.
         int64_t valuesLiveBytes() const {
-            return runStarts_.liveBytes() + values_.liveBytes();
+            return peak_snapshot::measure("runStarts_", runStarts_, [&] { return runStarts_.liveBytes(); }) + peak_snapshot::measure("values_", values_, [&] { return values_.liveBytes(); });
         }
 
         /// @brief Open a fresh empty run for a brand-new key at the current
@@ -1600,8 +2203,8 @@ namespace gl {
         ///
         /// @return Live bytes the value columns occupy.
         int64_t valuesLiveBytes() const {
-            return runStarts_.liveBytes() + blobStarts_.liveBytes()
-                 + blobPool_.liveBytes() + oversized_.liveBytes();
+            return peak_snapshot::measure("runStarts_", runStarts_, [&] { return runStarts_.liveBytes(); }) + peak_snapshot::measure("blobStarts_", blobStarts_, [&] { return blobStarts_.liveBytes(); })
+                 + peak_snapshot::measure("blobPool_", blobPool_, [&] { return blobPool_.liveBytes(); }) + peak_snapshot::measure("oversized_", oversized_, [&] { return oversized_.liveBytes(); });
         }
 
         /// @brief Total blobs across every run.
@@ -2869,7 +3472,7 @@ namespace gl {
         ///
         /// @return Live bytes the keys and the hash index occupy.
         int64_t liveBytes() const {
-            return ks_.liveBytes() + buckets_.liveBytes()
+            return peak_snapshot::measure("ks_", ks_, [&] { return ks_.liveBytes(); }) + peak_snapshot::measure("buckets_", buckets_, [&] { return buckets_.liveBytes(); })
                  + ValueStore::valuesLiveBytes();
         }
 
@@ -2884,7 +3487,7 @@ namespace gl {
         /// branches on it (Rule 16).
         ///
         /// @return Live bytes of the throw-away hash index.
-        /// @see `indexBytes()` on the key facet views, `mem_tracker.hpp`.
+        /// @see `indexBytes()` on the key facet views, `peak_snapshot.hpp`.
         int64_t indexBytes() const { return buckets_.liveBytes(); }
 
         /// @brief The cold key store — the column-dump / reload escape hatch for
@@ -2930,7 +3533,7 @@ namespace gl {
         /// without touching anything; a miss appends the key (cold) at the next
         /// id and inserts that id into the throw-away paged hash index at the
         /// empty bucket the miss probe ended on (the bucket a fresh placement
-        /// would choose), growing the index via a rebuild at 1/2 load. The cold
+        /// would choose), growing the index via a rebuild at 3/4 load. The cold
         /// key append escalates the aggregate dirty flag; the throw-away index
         /// never touches a dirty flag.
         ///
@@ -2942,6 +3545,28 @@ namespace gl {
                    "point first (I-111)");
             int32_t emptySlot = -1;
             const int32_t existing = probe(k, emptySlot);
+            if (existing != 0) return existing;
+            return mintAbsent(k, emptySlot);
+        }
+
+        /// @brief Find-or-mint with the key's digest already computed.
+        ///
+        /// @details
+        /// Same result, ids and buckets as `mint(k)` when @p hash is the key's
+        /// `hashProbe` digest; a caller that already holds the digest skips
+        /// the probe's own hash. A wrong digest cannot pass silently: the
+        /// fresh-mint round-trip tripwire in `mintAbsent` probes with the
+        /// real digest. Single-threaded write side only (I-83).
+        ///
+        /// @param k Key to intern.
+        /// @param hash The key's `hashProbe` digest.
+        /// @return The key's id; >= 1.
+        int32_t mintHashed(const KeyView& k, uint64_t hash) {
+            assert(arena_->resident()
+                && "mint on a deloaded LB - reload at a sanctioned touch "
+                   "point first (I-111)");
+            int32_t emptySlot = -1;
+            const int32_t existing = probeHashed(k, hash, emptySlot);
             if (existing != 0) return existing;
             return mintAbsent(k, emptySlot);
         }
@@ -3007,6 +3632,22 @@ namespace gl {
                    "point first (I-111)");
             int32_t emptySlot = -1;
             return probe(k, emptySlot);
+        }
+
+        /// @brief Non-minting probe with the key's digest already computed.
+        ///
+        /// @details Same result as `lookup(k)` when `hash` is the key's
+        /// `hashProbe` digest; safe from the parallel burst.
+        ///
+        /// @param k Key to look up.
+        /// @param hash The key's `hashProbe` digest.
+        /// @return The id, or 0 when `k` was never minted.
+        int32_t lookupHashed(const KeyView& k, uint64_t hash) const {
+            assert(arena_->resident()
+                && "lookup on a deloaded LB - reload at a sanctioned touch "
+                   "point first (I-111)");
+            int32_t emptySlot = -1;
+            return probeHashed(k, hash, emptySlot);
         }
 
         /// @brief Decode an id back to its key (the cold, positional direction).
@@ -3080,9 +3721,13 @@ namespace gl {
                 && "eraseIf on a deloaded LB (I-111)");
             const int32_t n = ks_.count();
             int32_t write = 0;   // survivors compacted so far (0-based)
+            ks_.beginStableErase();
             for (int32_t read = 0; read < n; ++read) {
                 const int32_t id = read + 1;        // 1-based id of this slot
-                if (pred(ks_.decodeAt(id))) continue;   // dead — skip it
+                if (pred(ks_.decodeAt(id))) {       // dead — skip it
+                    ks_.noteStableErase(read);
+                    continue;
+                }
                 if (write != read) {                // slide the survivor down
                     ks_.moveKeyTo(write, id);       // POD: value copy; byte-key:
                     ValueStore::moveValue(write + 1, id);   // location copy
@@ -3093,8 +3738,9 @@ namespace gl {
             if (removed != 0) {
                 ks_.truncate(write);
                 ValueStore::truncateValues(write);
-                rebuildIndex();
             }
+            ks_.endStableErase();
+            if (removed != 0) rebuildIndex();
             return removed;
         }
 
@@ -4267,8 +4913,8 @@ namespace gl {
         ///        `indexInsert`.
         ///
         /// @details
-        /// Sizes the bucket array to a power of two above 2× the key count (1/2
-        /// load), zeroes it (`reset`), and re-places every id. The transient
+        /// Sizes the bucket array to a power of two strictly above 4/3 of the
+        /// key count (3/4 load), zeroes it (`reset`), and re-places every id. The transient
         /// scratch-free rebuild a throw-away container affords.
         void rebuildIndex() {
             const int32_t n = ks_.count();
@@ -4277,7 +4923,10 @@ namespace gl {
                 return;
             }
             int32_t cap = 64;
-            while (cap < n * 2 + 2) cap <<= 1;
+            while (static_cast<int64_t>(cap) * 3 <= static_cast<int64_t>(n) * 4) {
+                assert(cap <= INT32_MAX / 2);
+                cap <<= 1;
+            }
             buckets_.reset(cap);
             for (int32_t id = 1; id <= n; ++id) indexPlace(id);
             // Consistency: after a rebuild the index holds exactly the key
@@ -4915,8 +5564,23 @@ namespace gl {
         GL_FORCEINLINE int32_t probe(const KeyView& k, int32_t& emptySlot) const {
             emptySlot = -1;
             if (buckets_.empty()) return 0;
+            return probeHashed(k, ks_.hashProbe(k), emptySlot);
+        }
+
+        /// @brief The probe loop with the key's digest already computed.
+        ///
+        /// @details Identical to `probe` for `probeHash == hashProbe(k)`; a
+        /// caller that already holds the digest skips the second hash.
+        ///
+        /// @param k Key to find.
+        /// @param probeHash The key's `hashProbe` digest.
+        /// @param emptySlot [out] As for `probe`.
+        /// @return The id, or 0 on a miss.
+        GL_FORCEINLINE int32_t probeHashed(const KeyView& k, uint64_t probeHash,
+                                           int32_t& emptySlot) const {
+            emptySlot = -1;
+            if (buckets_.empty()) return 0;
             const uint64_t mask = buckets_.capacity() - 1;
-            const uint64_t probeHash = ks_.hashProbe(k);
             uint64_t i = probeHash & mask;
             while (true) {
                 const int32_t id = buckets_.at(static_cast<int32_t>(i));
@@ -4933,7 +5597,7 @@ namespace gl {
         ///        half of `mint`.
         ///
         /// @details
-        /// Appends the key at the next id; below 1/2 load the id takes the empty
+        /// Appends the key at the next id; below 3/4 load the id takes the empty
         /// bucket the miss probe ended on, otherwise (or with no index yet) the
         /// index is rebuilt, exactly as `indexInsert` decides. Bumps the key-set
         /// epoch and keeps the per-mint round-trip tripwire.
@@ -4946,7 +5610,7 @@ namespace gl {
             const int32_t id = ks_.count();
             const int64_t n = id;
             if (buckets_.empty()
-                || n * 2 >= static_cast<int64_t>(buckets_.capacity())) {
+                || n * 4 >= static_cast<int64_t>(buckets_.capacity()) * 3) {
                 rebuildIndex();     // sizes for n and places every id
             } else {
                 assert(emptySlot >= 0 && buckets_.at(emptySlot) == 0
@@ -4962,7 +5626,7 @@ namespace gl {
         }
 
         /// @brief Insert `id` into the hash index, growing (via a rebuild) when
-        ///        the load factor would reach 1/2.
+        ///        the load factor would reach 3/4.
         ///
         /// @param id The freshly minted id (already in the key store).
         void indexInsert(int32_t id) {
@@ -4971,7 +5635,7 @@ namespace gl {
                 && "cold-index desync: indexInsert id != latest key count");
             const int64_t n = ks_.count();
             if (buckets_.empty()
-                || n * 2 >= static_cast<int64_t>(buckets_.capacity())) {
+                || n * 4 >= static_cast<int64_t>(buckets_.capacity()) * 3) {
                 rebuildIndex();     // sizes for n and places every id
                 return;
             }
@@ -5096,6 +5760,14 @@ namespace gl {
     /// @return Borrowed immutable bytes.
     /// @invariant Map membership and canonical key bytes remain unchanged.
     StrSpan view(int32_t id) const { return contents_.keyAt(id); }
+    /// @brief The pool's own payload store — the batch-sharing maintenance door.
+    ///
+    /// @details Used only by the block's batch-sharing seams, which enable
+    /// sharing on it and convert, nominate and compact its payload rows;
+    /// clients never see it.
+    ///
+    /// @return The payload key store.
+    BytesKeyStore& payloadStore() { return contents_.keyStore(); }
     /// @brief Report number of retained distinct payloads.
     ///
     /// @details Read-only accounting includes retained payload until the next quiescent collection.
@@ -5123,7 +5795,7 @@ namespace gl {
     ///
     /// @return Physical pages retained by the shared dictionary.
     /// @invariant Map membership and canonical key bytes remain unchanged.
-    int64_t liveBytes() const { return contents_.liveBytes(); }
+    int64_t liveBytes() const { return peak_snapshot::measure("contents_", contents_, [&] { return contents_.liveBytes(); }); }
     /// @brief Release derived shared bytes after every client has released its rows.
     ///
     /// @details Canonical deload calls this after its container and derived-index walks. Raw eviction keeps the store intact.
@@ -5245,6 +5917,7 @@ namespace gl {
     /// @invariant Map membership and canonical key bytes remain unchanged.
     inline void BytesKeyStore::bindSharedBytes(SharedBytePool& pool) {
         assert(shared_ == nullptr && locations_.empty() && bytePool_.empty());
+        assert(!batchEnabled_ && "a block-pool client never takes part in batch sharing");
         assert(arena_ == pool.arena_);
         shared_ = &pool;
         nextShared_ = pool.keyHead_;
@@ -5261,7 +5934,7 @@ namespace gl {
         assert(shared_ != nullptr);
         assert(logicalByteCount_ <= std::numeric_limits<int64_t>::max() - bytes.len);
         const int32_t id = shared_->intern(bytes);
-        locations_.push_back(ColdStringLocation{id, bytes.len, coldKeyHash(bytes)});
+        locations_.push_back(makeColdStringLocation(id, bytes.len, coldKeyHash(bytes)));
         logicalByteCount_ += bytes.len;
     }
     /// @brief Resolve a block-local shared payload identifier.
@@ -5277,16 +5950,19 @@ namespace gl {
     }
     /// @brief Compact independently owned key bytes after a stable key erase.
     ///
-    /// @details No-straddle placement is retained. Forward memmove is safe because stable key erasure preserves increasing source offsets.
+    /// @details No-straddle placement is retained. Forward memmove is safe because stable key erasure preserves increasing source offsets. Rows that reference the batch dictionary hold no local bytes and are skipped. A prefix-packed layout is not ordered by row and is rebuilt by `repackPrefixes` instead.
     ///
     /// @param pageBytes Byte capacity of one arena page.
     /// @return Nothing.
     /// @invariant Key bytes, key identifiers and hashes do not change.
     inline void BytesKeyStore::compactStoredBytes(int32_t pageBytes) {
         assert(shared_ == nullptr && pageBytes > 0);
+        assert((prefixes_ == nullptr || prefixes_->rows.empty())
+            && "a prefix-packed pool is rebuilt by repackPrefixes");
         int32_t write = 0;
         for (int32_t row = 0; row < locations_.size(); ++row) {
             ColdStringLocation location = locations_[row];
+            if (location.byteStart < 0) continue;
             assert(location.len >= 0 && location.len <= pageBytes);
             const int32_t within = write % pageBytes;
             if (within + location.len > pageBytes) write += pageBytes - within;
@@ -5434,6 +6110,496 @@ namespace gl {
     inline void BlobCsrValueStore::releaseSharedIfUnused() {
         assert(shared_ != nullptr);
         shared_->releaseIfUnused();
+    }
+
+    /// @brief One stripe of the nominations for the batch byte dictionary.
+    ///
+    /// @details
+    /// At their end-of-phase-3 seams the logic blocks hand the bytes of every
+    /// local key the dictionary misses to the stripe that the bytes' hash
+    /// selects. The stripe keeps each distinct payload once and counts its
+    /// nominations; a mutex serializes the concurrent workers, and the stripe
+    /// owns its arena, so no other state is shared. The barrier reads every
+    /// stripe in `BatchByteDictionary::promoteNominations` while no worker
+    /// runs, then releases it.
+    ///
+    /// @invariant Each stored payload has at least one nomination; a payload
+    ///            lives in exactly one stripe.
+    class BatchByteCandidates {
+    public:
+        /// @brief Bind the stripe's tables to a pool.
+        ///
+        /// @details Lazy: no block is taken before the first nomination.
+        ///
+        /// @param pool Pool that grants the stripe's pages.
+        /// @return A stripe with no nominations.
+        explicit BatchByteCandidates(GlobalMemoryManager* pool)
+            : arena_(pool), table_(&arena_, &dirty_), counts_(&arena_, &dirty_) {
+            assert(pool != nullptr);
+            arena_.setPurpose(PoolPurpose::ScratchGen);
+        }
+
+        BatchByteCandidates(const BatchByteCandidates&) = delete;
+        BatchByteCandidates& operator=(const BatchByteCandidates&) = delete;
+
+        /// @brief Count one nomination of a payload; safe from every worker.
+        ///
+        /// @details The first nomination copies the bytes into the stripe;
+        /// later ones only raise the count. The caller's digest places the
+        /// payload in the stripe's index, so the bytes are not hashed again.
+        ///
+        /// @param bytes Non-empty payload, valid during the call.
+        /// @param hash `coldKeyHash(bytes)`.
+        /// @return Nothing.
+        void nominate(StrSpan bytes, uint64_t hash) {
+            assert(bytes.len > 0);
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++nominations_;
+            const int32_t id = table_.mintHashed(bytes, hash);
+            if (id > counts_.size()) {
+                assert(id == counts_.size() + 1);
+                counts_.push_back(1);
+                return;
+            }
+            counts_.setAt(id - 1, counts_[id - 1] + 1);
+        }
+
+        /// @brief Nominations counted since the last release, duplicates
+        ///        included.
+        ///
+        /// @details Read while no worker nominates; telemetry and tests.
+        ///
+        /// @return The sum of every payload's nomination count.
+        int64_t nominationTotal() const { return nominations_; }
+
+        /// @brief Number of distinct nominated payloads.
+        ///
+        /// @details Read while no worker nominates. Identifiers run from 1 to
+        /// this count.
+        ///
+        /// @return Distinct payload count.
+        int32_t count() const { return table_.count(); }
+
+        /// @brief Bytes of one nominated payload.
+        ///
+        /// @details The view stays valid until `release`.
+        ///
+        /// @param id Payload identifier, `1 <= id <= count()`.
+        /// @return The payload bytes.
+        StrSpan bytesAt(int32_t id) const { return table_.keyAt(id); }
+
+        /// @brief Nominations counted for one payload.
+        ///
+        /// @details One per logic-block row that nominated the bytes.
+        ///
+        /// @param id Payload identifier, `1 <= id <= count()`.
+        /// @return The nomination count, at least 1.
+        int32_t nominationsAt(int32_t id) const {
+            assert(id >= 1 && id <= counts_.size());
+            return counts_[id - 1];
+        }
+
+        /// @brief Bytes held by the stripe's tables.
+        ///
+        /// @details Telemetry only.
+        ///
+        /// @return Live bytes of the payload table and the counts.
+        int64_t liveBytes() const { return table_.liveBytes() + counts_.liveBytes(); }
+
+        /// @brief Drop every nomination and return the stripe's blocks.
+        ///
+        /// @details Called by the barrier after the promotion.
+        ///
+        /// @return Nothing.
+        void release() {
+            table_.release();
+            counts_.release();
+            arena_.releaseAll();
+            nominations_ = 0;
+        }
+
+    private:
+        std::mutex mutex_;
+        LbArena arena_;
+        DirtyState dirty_ = DirtyState::Clean;
+        ColdHashSet<BytesKeyStore> table_;
+        PagedVector<int32_t> counts_;
+        int64_t nominations_ = 0;
+    };
+
+    /// @brief The batch-dictionary nominations, striped by payload hash.
+    ///
+    /// @details Every worker nominates through `nominate`, which picks the
+    /// stripe from the bytes' hash, so a payload is copied once however many
+    /// blocks and workers hold it. `init` is single-threaded; the stripes
+    /// keep stable addresses.
+    ///
+    /// @invariant The stripe count is fixed at the first `init`.
+    class BatchByteCandidateRegistry {
+    public:
+        /// @brief Create the stripes.
+        ///
+        /// @details Idempotent for an identical shape (several provers per
+        /// process); a mismatching re-init asserts.
+        ///
+        /// @param pool Pool that grants the stripes' pages.
+        /// @param stripeCount Number of stripes.
+        /// @return Nothing.
+        void init(GlobalMemoryManager* pool, unsigned stripeCount) {
+            assert(pool != nullptr && stripeCount > 0);
+            if (!stripes_.empty()) {
+                assert(pool_ == pool && stripes_.size() == stripeCount
+                    && "batch candidate registry re-initialized with another shape");
+                return;
+            }
+            pool_ = pool;
+            for (unsigned stripe = 0; stripe < stripeCount; ++stripe) stripes_.emplace_back(pool);
+        }
+
+        /// @brief Number of stripes fixed at init.
+        ///
+        /// @details Asserts that `init` ran.
+        ///
+        /// @return Stripe count.
+        unsigned stripeCount() const {
+            assert(!stripes_.empty());
+            return static_cast<unsigned>(stripes_.size());
+        }
+
+        /// @brief Count one nomination of a payload in its stripe.
+        ///
+        /// @details Safe from every worker; the stripe's mutex serializes.
+        /// The stripe comes from digest bits 32 and up, which neither a
+        /// stripe's bucket index (the low bits) nor the location tag (the top
+        /// 18 bits) uses, so each stripe's payloads spread over all of its
+        /// buckets.
+        ///
+        /// @param bytes Non-empty payload, valid during the call.
+        /// @param hash `coldKeyHash(bytes)`.
+        /// @return Nothing.
+        void nominate(StrSpan bytes, uint64_t hash) {
+            assert(!stripes_.empty());
+            stripes_[static_cast<std::size_t>((hash >> 32) % stripes_.size())].nominate(bytes, hash);
+        }
+
+        /// @brief Nominations counted over all stripes since the last
+        ///        release, duplicates included.
+        ///
+        /// @details Read while no worker nominates; telemetry and tests.
+        ///
+        /// @return Total nomination count.
+        int64_t nominationTotal() const {
+            int64_t total = 0;
+            for (const BatchByteCandidates& stripe : stripes_) total += stripe.nominationTotal();
+            return total;
+        }
+
+        /// @brief One stripe.
+        ///
+        /// @details Stable address for the registry lifetime.
+        ///
+        /// @param stripe Stripe index, `< stripeCount()`.
+        /// @return The stripe.
+        BatchByteCandidates& stripe(unsigned stripe) {
+            assert(stripe < stripes_.size());
+            return stripes_[stripe];
+        }
+
+        /// @brief Number of distinct nominated payloads over all stripes.
+        ///
+        /// @details Read while no worker nominates; telemetry and tests.
+        ///
+        /// @return Distinct payload count.
+        int32_t distinctCount() const {
+            int32_t total = 0;
+            for (const BatchByteCandidates& stripe : stripes_) total += stripe.count();
+            return total;
+        }
+
+        /// @brief Drop the nominations of every stripe.
+        ///
+        /// @details Called by the barrier after the promotion.
+        ///
+        /// @return Nothing.
+        void releaseAll() {
+            for (BatchByteCandidates& stripe : stripes_) stripe.release();
+        }
+
+    private:
+        std::deque<BatchByteCandidates> stripes_;
+        GlobalMemoryManager* pool_ = nullptr;
+    };
+
+    /// @brief Process-wide dictionary of key bytes shared by the per-block
+    ///        byte-key stores of one batch.
+    ///
+    /// @details
+    /// A participating `BytesKeyStore` holds a reference (a negative location
+    /// start) instead of its own copy when this dictionary holds the bytes.
+    /// Entries are added only by `promoteNominations`, at the barrier window
+    /// in which no worker and no steward executor runs; between two such
+    /// windows the dictionary is read-only and every thread may read it.
+    /// Entries are never removed or moved, so references and views stay
+    /// valid until the process ends and raw eviction images may carry
+    /// references. Identifiers and layout are never observable: canonical
+    /// images, hashes and decoded bytes are those of the logical keys.
+    ///
+    /// @invariant At most one dictionary is active at a time; activation is
+    ///            single-threaded, and destroying the active dictionary
+    ///            restores the one it replaced.
+    class BatchByteDictionary {
+    public:
+        /// @brief Bind the dictionary to its never-deloaded pool.
+        ///
+        /// @details Lazy: no block is taken before the first entry. The
+        /// dictionary is inactive until `activate`.
+        ///
+        /// @param pool Pool that grants the dictionary's pages.
+        /// @return An empty, inactive dictionary.
+        explicit BatchByteDictionary(GlobalMemoryManager* pool)
+            : arena_(pool), contents_(&arena_, &dirty_) {
+            assert(pool != nullptr);
+            arena_.setPurpose(PoolPurpose::LbState);
+        }
+
+        /// @brief Restore the previously active dictionary when this one is
+        ///        still active.
+        ///
+        /// @details Every store referring to this dictionary must be gone.
+        ///
+        /// @return Nothing.
+        ~BatchByteDictionary() {
+            if (BytesKeyStore::batch_ == this) BytesKeyStore::batch_ = previous_;
+        }
+
+        BatchByteDictionary(const BatchByteDictionary&) = delete;
+        BatchByteDictionary& operator=(const BatchByteDictionary&) = delete;
+
+        /// @brief Make this the dictionary every participating store uses.
+        ///
+        /// @details Single-threaded, before any worker runs. Destroying this
+        /// dictionary restores the previously active one.
+        ///
+        /// @return Nothing.
+        void activate() {
+            assert(BytesKeyStore::batch_ != this);
+            previous_ = BytesKeyStore::batch_;
+            BytesKeyStore::batch_ = this;
+        }
+
+        /// @brief The reference a participating store records for bytes this
+        ///        dictionary holds.
+        ///
+        /// @details Read-only; safe from every thread between barriers. The
+        /// reference is the negated position of the entry's first byte in the
+        /// dictionary's byte pool, minus one, so `bytesAt` resolves it with one
+        /// page lookup and no entry-table read.
+        ///
+        /// @param bytes Non-empty key bytes.
+        /// @param hash `coldKeyHash(bytes)`.
+        /// @return The negative reference, or 0 when the dictionary misses.
+        int32_t referenceOf(StrSpan bytes, uint64_t hash) const {
+            assert(bytes.len > 0);
+            const int32_t id = contents_.lookupHashed(bytes, hash);
+            if (id == 0) return 0;
+            const int32_t start = contents_.keyStore().locations_[id - 1].byteStart;
+            assert(start >= 0 && start < std::numeric_limits<int32_t>::max()
+                && "a dictionary entry is a local run of the dictionary's byte pool");
+            return -(start + 1);
+        }
+
+        /// @brief Bytes an entry reference names.
+        ///
+        /// @details Valid until the process ends. Entries never straddle a
+        /// page, so the run is contiguous.
+        ///
+        /// @param reference A value `referenceOf` returned.
+        /// @param length The key length the referencing row records.
+        /// @return The entry bytes.
+        StrSpan bytesAt(int32_t reference, int32_t length) const {
+            assert(reference < 0 && length > 0);
+            int32_t run = 0;
+            const char* bytes = contents_.keyStore().bytePool_.contiguousRun(-(reference + 1), run);
+            assert(run >= length && "a dictionary reference names one in-page entry");
+            return StrSpan(bytes, length);
+        }
+
+        /// @brief Number of entries.
+        ///
+        /// @details Telemetry and tests.
+        ///
+        /// @return Entry count.
+        int32_t count() const { return contents_.count(); }
+
+        /// @brief Sum of all entry lengths.
+        ///
+        /// @details Excludes page padding and the index.
+        ///
+        /// @return Logical entry bytes.
+        int64_t logicalByteCount() const { return contents_.keyStore().logicalByteCount(); }
+
+        /// @brief Pages and index held by the dictionary.
+        ///
+        /// @details Telemetry and the peak snapshot.
+        ///
+        /// @return Live bytes.
+        int64_t liveBytes() const {
+            return peak_snapshot::measure("contents_", contents_, [&] { return contents_.liveBytes(); });
+        }
+
+        /// @brief Add every payload nominated at least twice since the last
+        ///        barrier, then drop all nominations.
+        ///
+        /// @details
+        /// The barrier calls this while no worker and no steward executor runs.
+        /// A payload lives in exactly one stripe, whose count sums every
+        /// nominating row, so the promoted set does not depend on which worker
+        /// processed which block. A nominated payload was absent when it was
+        /// nominated, and the dictionary has not changed since, so every
+        /// promotion adds a new entry.
+        ///
+        /// @param candidates The stripes filled during phase 3.
+        /// @return Number of entries added.
+        int32_t promoteNominations(BatchByteCandidateRegistry& candidates) {
+            int32_t added = 0;
+            for (unsigned index = 0; index < candidates.stripeCount(); ++index) {
+                const BatchByteCandidates& stripe = candidates.stripe(index);
+                for (int32_t id = 1; id <= stripe.count(); ++id) {
+                    if (stripe.nominationsAt(id) < 2) continue;
+                    const StrSpan bytes = stripe.bytesAt(id);
+                    const uint64_t hash = coldKeyHash(bytes);
+                    assert(contents_.lookupHashed(bytes, hash) == 0
+                        && "a nominated payload was absent at nomination and the dictionary is frozen between barriers");
+                    contents_.mintHashed(bytes, hash);
+                    ++added;
+                }
+            }
+            candidates.releaseAll();
+            return added;
+        }
+
+    private:
+        LbArena arena_;
+        DirtyState dirty_ = DirtyState::Clean;
+        ColdHashSet<BytesKeyStore> contents_;
+        BatchByteDictionary* previous_ = nullptr;
+    };
+
+    /// @brief Resolve a batch-dictionary reference.
+    ///
+    /// @details One page resolve in the dictionary's byte pool; entries never
+    /// move or die while the process runs.
+    ///
+    /// @param location A row location with a negative start.
+    /// @return Borrowed immutable bytes of the entry.
+    inline StrSpan BytesKeyStore::batchBytesAt(const ColdStringLocation& location) const {
+        assert(location.byteStart < 0 && batch_ != nullptr
+            && "a batch reference exists only while its dictionary is active");
+        return batch_->bytesAt(location.byteStart, static_cast<int32_t>(location.len));
+    }
+
+    /// @brief The reference a row records for bytes the active batch
+    ///        dictionary holds.
+    ///
+    /// @details Read-only.
+    ///
+    /// @param bytes Non-empty key bytes.
+    /// @param hash `coldKeyHash(bytes)`.
+    /// @return The negative reference, or 0 when absent.
+    inline int32_t BytesKeyStore::batchReference(StrSpan bytes, uint64_t hash) const {
+        assert(batch_ != nullptr);
+        return batch_->referenceOf(bytes, hash);
+    }
+
+    /// @brief Make this store take part in the batch byte dictionary.
+    ///
+    /// @details See the declaration.
+    ///
+    /// @return Nothing.
+    inline void BytesKeyStore::enableBatchSharing() {
+        assert(!batchEnabled_ && shared_ == nullptr && locations_.empty()
+            && "batch sharing is bound once, on an empty store that owns its bytes");
+        batchEnabled_ = true;
+    }
+
+    /// @brief Turn local rows of a range into batch references where the
+    ///        dictionary holds their bytes.
+    ///
+    /// @details See the declaration.
+    ///
+    /// @tparam Miss Callable `void(StrSpan, uint64_t)`.
+    /// @param from First zero-based row.
+    /// @param to One past the last row.
+    /// @param miss Receives each missing local row's bytes and digest.
+    /// @return Number of rows converted.
+    template <typename Miss>
+    inline int32_t BytesKeyStore::convertLocalRows(int32_t from, int32_t to, Miss&& miss) {
+        assert(batchEnabled_ && batch_ != nullptr && shared_ == nullptr);
+        assert(from >= 0 && from <= to && to <= locations_.size());
+        const bool packed = prefixes_ != nullptr && !prefixes_->rows.empty();
+        char buffer[kMaxColdStringKeyBytes];
+        int32_t converted = 0;
+        for (int32_t row = from; row < to; ++row) {
+            ColdStringLocation location = locations_[row];
+            if (location.byteStart < 0 || location.len == 0) continue;
+            const StrSpan bytes = packed
+                ? StrSpan(buffer, copyKeyTo(row + 1, buffer, kMaxColdStringKeyBytes))
+                : decodeAt(row + 1);
+            const uint64_t hash = coldKeyHash(bytes);
+            const int32_t reference = batchReference(bytes, hash);
+            if (reference == 0) {
+                miss(bytes, hash);
+                continue;
+            }
+            location.byteStart = reference;
+            locations_.setAt(row, location);
+            if (packed) prefixes_->rows.setAt(row, PrefixKeyReference{0, 0});
+            ++converted;
+        }
+        return converted;
+    }
+
+    /// @brief Convert the rows minted since the last scan and nominate the
+    ///        rest — the end-of-phase-3 seam.
+    ///
+    /// @details See the declaration.
+    ///
+    /// @tparam Nominate Callable `void(StrSpan, uint64_t)`.
+    /// @param nominate Receives each missing row's bytes and digest.
+    /// @return Number of rows converted.
+    template <typename Nominate>
+    inline int32_t BytesKeyStore::shareNewRows(Nominate&& nominate) {
+        const int32_t end = locations_.size();
+        const int32_t converted = convertLocalRows(batchScanned_, end, nominate);
+        batchScanned_ = end;
+        return converted;
+    }
+
+    /// @brief Convert the pending rows the dictionary now holds — the
+    ///        end-of-phase-1 seam.
+    ///
+    /// @details See the declaration.
+    ///
+    /// @return Number of rows converted.
+    inline int32_t BytesKeyStore::sharePendingRows() {
+        const int32_t converted = convertLocalRows(batchPending_, batchScanned_, [](StrSpan, uint64_t) {});
+        batchPending_ = batchScanned_;
+        return converted;
+    }
+
+    /// @brief Reclaim the local bytes of rows just converted to references.
+    ///
+    /// @details See the declaration.
+    ///
+    /// @param scratch Separate page-tier arena for a prefix-packed store.
+    /// @return Nothing.
+    inline void BytesKeyStore::compactAfterBatchConversion(LbArena& scratch) {
+        assert(batchEnabled_ && shared_ == nullptr);
+        if (prefixes_ != nullptr && !prefixes_->rows.empty()) {
+            repackPrefixes(scratch);
+            return;
+        }
+        compactStoredBytes(arena_->pageBytes());
     }
 
 }

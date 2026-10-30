@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #include "memory_census.hpp"
+#include "peak_snapshot.hpp"
 #include "heap_profile.hpp"
 
 #include <algorithm>
@@ -142,7 +143,7 @@ namespace gl {
             int64_t poolReservationBytes() {
                 int64_t total = 0;
                 for (GlobalMemoryManager* m : { &staticMemory(), &persistentMemory(),
-                                                &mailMemory(), &lbMemory() })
+                                                &mailMemory(), &lbMemory(), &gpuHostMemory() })
                     if (m->initialized())
                         total += m->totalBlocks() * m->blockBytes();
                 return total;
@@ -239,6 +240,7 @@ namespace gl {
             assert(ok && "memory census: GetProcessMemoryInfo failed");
             p.peakWorkingSetBytes = static_cast<int64_t>(pmc.PeakWorkingSetSize);
             p.peakPrivateBytes = static_cast<int64_t>(pmc.PeakPagefileUsage);
+            p.pageFaultCount = static_cast<int64_t>(pmc.PageFaultCount);
 #elif defined(__APPLE__)
             task_vm_info_data_t info{};
             mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
@@ -255,15 +257,15 @@ namespace gl {
             return p;
         }
 
-        /// @brief Sum of every initialized pool's carve high-water in bytes.
+        /// @brief Sum of the currently committed backing of every initialized pool.
         ///
-        /// @return Touched pool bytes.
+        /// @return Committed pool bytes, excluding decommitted recycled blocks.
         int64_t poolTouchedBytes() {
             int64_t total = 0;
             for (GlobalMemoryManager* m : { &staticMemory(), &persistentMemory(),
-                                            &mailMemory(), &lbMemory() })
+                                            &mailMemory(), &lbMemory(), &gpuHostMemory() })
                 if (m->initialized())
-                    total += m->peakBlocksInUse() * m->blockBytes();
+                    total += m->commitment().currentBytes;
             return total;
         }
 
@@ -281,6 +283,7 @@ namespace gl {
                 foldLocked(st, static_cast<int>(st.current), sample, touched);
                 st.current = next;
             }
+            peak_snapshot::checkpoint(sample.workingSetBytes, static_cast<int>(next));
             if (staticMemory().initialized())
                 staticMemory().setAttributionPhase(next);
         }
@@ -290,8 +293,13 @@ namespace gl {
             const ProcessSample sample = readProcess();
             const int64_t touched = poolTouchedBytes();
             CensusState& st = state();
-            std::lock_guard<std::mutex> lock(st.mutex);
-            foldLocked(st, static_cast<int>(st.current), sample, touched);
+            int phase;
+            {
+                std::lock_guard<std::mutex> lock(st.mutex);
+                phase = static_cast<int>(st.current);
+                foldLocked(st, phase, sample, touched);
+            }
+            peak_snapshot::checkpoint(sample.workingSetBytes, phase);
         }
 
         /// @brief Fold one CUDA chunk's host-arena bytes into the maxima.
@@ -366,7 +374,8 @@ namespace gl {
             struct NamedPool { const char* name; GlobalMemoryManager* pool; };
             const NamedPool pools[] = {
                 { "main", &staticMemory() }, { "persistent", &persistentMemory() },
-                { "mail", &mailMemory() }, { "lb", &lbMemory() } };
+                { "mail", &mailMemory() }, { "lb", &lbMemory() },
+                { "gpu_host", &gpuHostMemory() } };
 
             markdown << "\n### Pool attribution by purpose (MiB)\n\n"
                      << "`At peak` is the split at the pool's lifetime high-water "
@@ -398,6 +407,26 @@ namespace gl {
                 }
             }
 
+            if (gpuHostMemory().initialized()) {
+                auto& pool = gpuHostMemory();
+                const int64_t block = pool.blockBytes();
+                diagnostics << "[GPU-HOST-MEMORY] reserved_bytes=" << pool.totalBlocks() * block
+                    << " committed_bytes=" << pool.gpuHostCommittedBytes()
+                    << " live_bytes=" << pool.blocksInUse() * block
+                    << " peak_live_bytes=" << pool.attribution().peakBlocks * block
+                    << " pinned_bytes=" << pool.gpuHostPinnedBytes()
+                    << " peak_pinned_bytes=" << pool.gpuHostPeakPinnedBytes() << std::endl;
+                markdown << "\n### Independent GPU-host reservation (MiB)\n\n"
+                    << "| Reserved | Committed | Live | Peak live | Pinned | Peak pinned |\n"
+                    << "|---:|---:|---:|---:|---:|---:|\n| "
+                    << mib(pool.totalBlocks() * block) << " | "
+                    << mib(pool.gpuHostCommittedBytes()) << " | "
+                    << mib(pool.blocksInUse() * block) << " | "
+                    << mib(pool.attribution().peakBlocks * block) << " | "
+                    << mib(pool.gpuHostPinnedBytes()) << " | "
+                    << mib(pool.gpuHostPeakPinnedBytes()) << " |\n";
+            }
+
             if (staticMemory().initialized()) {
                 const PoolAttribution a = staticMemory().attribution();
                 const int64_t bb = staticMemory().blockBytes();
@@ -427,12 +456,29 @@ namespace gl {
                 }
             }
 
+            markdown << "\n### Pool backing commitment (MiB)\n\n"
+                     << "| Pool | Current | Lifetime peak | Cumulative decommit | Cumulative recommit | Trims |\n"
+                     << "|---|---:|---:|---:|---:|---:|\n";
+            for (const NamedPool& np : pools) {
+                if (!np.pool->initialized()) continue;
+                const PoolCommitment c = np.pool->commitment();
+                diagnostics << "[pool-commitment] pool=" << np.name
+                    << " current_bytes=" << c.currentBytes << " peak_bytes=" << c.peakBytes
+                    << " decommitted_bytes=" << c.decommittedBytes
+                    << " recommitted_bytes=" << c.recommittedBytes
+                    << " trim_calls=" << c.trimCalls << std::endl;
+                markdown << "| " << np.name << " | " << mib(c.currentBytes)
+                    << " | " << mib(c.peakBytes) << " | " << mib(c.decommittedBytes)
+                    << " | " << mib(c.recommittedBytes) << " | " << c.trimCalls << " |\n";
+            }
+
             const ProcessPeaks peaks = readProcessPeaks();
             const int64_t reservation = poolReservationBytes();
             const int64_t touched = poolTouchedBytes();
             diagnostics << "[process-memory] os_peak_working_set_bytes="
                         << peaks.peakWorkingSetBytes
                         << " os_peak_private_bytes=" << peaks.peakPrivateBytes
+                        << " page_fault_count=" << peaks.pageFaultCount
                         << " heap_committed_peak_bytes=" << peaks.heapCommittedPeakBytes
                         << " pool_reservation_bytes=" << reservation
                         << " pool_touched_bytes=" << touched << std::endl;
@@ -447,9 +493,9 @@ namespace gl {
             writeHeapMib(markdown, peaks.heapCommittedPeakBytes);
             markdown << " | mimalloc committed peak (heap only; the pools reserve their own address space) |\n"
                      << "| Pool reservations | " << mib(reservation)
-                     << " | Four static pools' address space, reserved at program start |\n"
+                     << " | Initialized static pools' address space, including the lazy GPU-host pool |\n"
                      << "| Pool bytes committed | " << mib(touched)
-                     << " | Sum of the pools' carve high-waters; a block is committed when first carved |\n";
+                     << " | Current backing after returned-block trimming; reservation and lifetime peaks are separate |\n";
 
             const PhaseMaxima pm = phaseMaxima();
             markdown << "\n### Process memory per prover step (maximum over the "
@@ -501,9 +547,9 @@ namespace gl {
                          << mib(static_cast<int64_t>(g.deviceTotalBytes - g.deviceFreeBeforePoolBytes)) << " |\n"
                          << "| Fixed Phase 2 reservation | " << mib(static_cast<int64_t>(g.deviceBudgetBytes)) << " |\n"
                          << "| Chunks | " << g.chunks << " |\n"
-                         << "| Largest chunk host total | " << mib(static_cast<int64_t>(g.maxChunkTotal)) << " |\n"
+                         << "| Largest sum of chunk component capacities | " << mib(static_cast<int64_t>(g.maxChunkTotal)) << " |\n"
                          << "| Largest host projection | " << mib(static_cast<int64_t>(m.projection)) << " |\n"
-                         << "| Largest projection shards' own column storage (shards are slices of the projection) | "
+                         << "| Largest projection shards' owned construction scratch | "
                          << mib(static_cast<int64_t>(m.shards)) << " |\n"
                          << "| Largest task arena | " << mib(static_cast<int64_t>(m.tasks)) << " |\n"
                          << "| Largest filter schedule | " << mib(static_cast<int64_t>(m.filterSchedule)) << " |\n"

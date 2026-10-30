@@ -1,0 +1,29 @@
+(preorder[N,+,v3,v1])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,+])(preorder[N,+,w1,w3])))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in3[v3,v4,v1,+])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,+])(preorder[N,+,v1,v3])))	main	theorem
+(in3[v3,v4,v1,+])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2](in2[w1,w2,s])(>[w3,w4](in3[w3,w4,w2,+])(>[w5](in2[w5,w4,s])(in3[w3,w5,w1,+])))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in2[v1,v2,s])	main	(in2[v4,v5,s])	main	(in3[v3,v5,v2,+])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in3[v3,v4,v2,+])(>[v5](in2[v5,v4,s])(in3[v3,v5,v1,+])))))	main	theorem
+(in2[v1,v2,s])	main	task formulation
+(in2[v4,v5,s])	main	disintegration	!(>[v4](in[v4,N])!(in2[v4,v5,s]))	main
+!(>[v4](in[v4,N])!(in2[v4,v5,s]))	main	expansion	(inSequence[N,v5,s])	main
+(inSequence[N,v5,s])	main	implication	(>[]!(=[v5,i0])(inSequence[N,v5,s]))	main	!(=[v5,i0])	main
+!(=[v5,i0])	main	symmetry of inequality	!(=[i0,v5])	main
+!(=[i0,v5])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2](strictOrder[N,+,w1,w2])(>[w3](in3[w1,w3,w2,+])!(=[i0,w3]))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in3[v3,v5,v2,+])	main	(strictOrder[N,+,v3,v2])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](strictOrder[N,+,v1,v2])(>[v3](in3[v1,v3,v2,+])!(=[i0,v3]))))	main	theorem
+(>[]!(=[v5,i0])(inSequence[N,v5,s]))	main	expansion	(implication1885[v5,i0,N,s])	main
+(implication1885[v5,i0,N,s])	main	disintegration	!(&!(inSequence[N,v5,s])!(=[v5,i0]))	main
+!(&!(inSequence[N,v5,s])!(=[v5,i0]))	main	expansion	(or1[N,v5,s,i0])	main
+(or1[N,v5,s,i0])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1](in[w1,N])(or1[N,w1,s,i0])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in[v5,N])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	(NaturalNumbers[N,i0,s,+,*])	main	(in2[i0,i1,s])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	expansion	(implication76[N,i0,s,+,*,i1])	main
+(implication76[N,i0,s,+,*,i1])	main	reformulation for integration and	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main	expansion for integration	(AnchorPeano[N,i0,s,+,*,i1])_integration_goal	main
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in3[v3,v5,v2,+])	main	disintegration	!(>[v5](in[v5,N])!(in3[v3,v5,v2,+]))	main
+(in[v5,N])	main	disintegration	!(>[v5](in[v5,N])!(in3[v3,v5,v2,+]))	main
+!(>[v5](in[v5,N])!(in3[v3,v5,v2,+]))	main	expansion	(preorder[N,+,v3,v2])	main
+(preorder[N,+,v3,v2])	main	disintegration	(&(preorder[N,+,v3,v2])!(=[v3,v2]))	main
+(&(preorder[N,+,v3,v2])!(=[v3,v2]))	main	expansion	(strictOrder[N,+,v3,v2])	main
+(strictOrder[N,+,v3,v2])	main	task formulation

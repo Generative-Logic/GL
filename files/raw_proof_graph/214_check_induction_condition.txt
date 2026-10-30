@@ -1,0 +1,55 @@
+(in3[2,7,8,5])	main	equality1	(in3[2,7,it_0_lev_1_0,5])	main	(=[it_0_lev_1_0,8])	main
+(in3[2,7,it_0_lev_1_0,5])	main	disintegration	!(>[it_0_lev_1_0](in[it_0_lev_1_0,1])!(in3[2,7,it_0_lev_1_0,5]))	main
+!(>[it_0_lev_1_0](in[it_0_lev_1_0,1])!(in3[2,7,it_0_lev_1_0,5]))	main	expansion	(existence1[1,2,7,5])	main
+(existence1[1,2,7,5])	main	implication	(>[1](in[1,u_1])(>[2](in[2,u_1])(existence1[u_1,1,2,u_5])))	main	(in[2,1])	main	(in[7,1])	main
+(>[1](in[1,u_1])(>[2](in[2,u_1])(existence1[u_1,1,2,u_5])))	main	expansion	(implication18[1,1,1,5])	main
+(implication18[1,1,1,5])	main	disintegration	(&(&(&(&(implication11[5,1])(implication12[5,1]))(implication13[5,1]))(implication18[1,1,1,5]))(implication19[1,1,5]))	main
+(&(&(&(&(implication11[5,1])(implication12[5,1]))(implication13[5,1]))(implication18[1,1,1,5]))(implication19[1,1,5]))	main	expansion	(fXYZ[5,1,1,1])	main
+(fXYZ[5,1,1,1])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main	expansion	(NaturalNumbers[1,2,3,4,5])	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main
+(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main	expansion	(AnchorPeano[1,2,3,4,5,6])	main
+(AnchorPeano[1,2,3,4,5,6])	main	task formulation
+(in[2,1])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(in[7,1])	main	implication	(>[1,2](in2[1,2,u_3])(in[2,u_1]))	main	(in2[rec,7,3])	main
+(>[1,2](in2[1,2,u_3])(in[2,u_1]))	main	expansion	(implication1[3,1])	main
+(implication1[3,1])	main	disintegration	(&(&(&(implication0[3,1])(implication1[3,1]))(implication6[1,1,3]))(implication7[1,3]))	main
+(&(&(&(implication0[3,1])(implication1[3,1]))(implication6[1,1,3]))(implication7[1,3]))	main	expansion	(fXY[3,1,1])	main
+(fXY[3,1,1])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(in2[rec,7,3])	main	recursion
+(=[it_0_lev_1_0,8])	main	equality2	(=[it_0_lev_1_0,it_0_lev_2_2])	main	(=[it_0_lev_2_2,8])	main
+(=[it_0_lev_1_0,it_0_lev_2_2])	main	symmetry of equality	(=[it_0_lev_2_2,it_0_lev_1_0])	main
+(=[it_0_lev_2_2,it_0_lev_1_0])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(>[](in[7,1])(=[7,8]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[it_0_lev_2_2,2,it_0_lev_1_0,4])	main	(in[it_0_lev_2_2,1])	main
+(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(>[](in[7,1])(=[7,8]))))	main	theorem
+(in3[it_0_lev_2_2,2,it_0_lev_1_0,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[](in2[10,8,3])(in3[11,7,9,4])))))	main	(AnchorPeano[1,x2,3,4,5,6])	main	(in2[rec,7,3])	main	(in3[2,7,it_0_lev_1_0,5])	main	(in3[2,rec,it_0_lev_2_2,5])	main
+(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[](in2[10,8,3])(in3[11,7,9,4])))))	main	theorem
+(AnchorPeano[1,x2,3,4,5,6])	main	anchor handling	(AnchorPeano[1,2,3,4,5,6])	main
+(in3[2,rec,it_0_lev_2_2,5])	main	disintegration	!(>[it_0_lev_2_2](in[it_0_lev_2_2,1])!(in3[2,rec,it_0_lev_2_2,5]))	main
+!(>[it_0_lev_2_2](in[it_0_lev_2_2,1])!(in3[2,rec,it_0_lev_2_2,5]))	main	expansion	(existence1[1,2,rec,5])	main
+(existence1[1,2,rec,5])	main	implication	(>[1](in[1,u_1])(>[2](in[2,u_1])(existence1[u_1,1,2,u_5])))	main	(in[2,1])	main	(in[rec,1])	main
+(in[rec,1])	main	implication	(>[1,2](in2[1,2,u_3])(in[1,u_1]))	main	(in2[rec,7,3])	main
+(>[1,2](in2[1,2,u_3])(in[1,u_1]))	main	expansion	(implication0[3,1])	main
+(implication0[3,1])	main	disintegration	(&(&(&(implication0[3,1])(implication1[3,1]))(implication6[1,1,3]))(implication7[1,3]))	main
+(in[it_0_lev_2_2,1])	main	disintegration	!(>[it_0_lev_2_2](in[it_0_lev_2_2,1])!(in3[2,rec,it_0_lev_2_2,5]))	main
+(=[it_0_lev_2_2,8])	main	implication	(>[1](in[1,u_1])(>[2](in[2,u_1])(>[3](in3[1,2,3,u_5])(>[4](in3[1,2,4,u_5])(=[3,4])))))	main	(in3[2,rec,8,5])	main	(in3[2,rec,it_0_lev_2_2,5])	main	(in[2,1])	main	(in[rec,1])	main
+(>[1](in[1,u_1])(>[2](in[2,u_1])(>[3](in3[1,2,3,u_5])(>[4](in3[1,2,4,u_5])(=[3,4])))))	main	expansion	(implication19[1,1,5])	main
+(implication19[1,1,5])	main	disintegration	(&(&(&(&(implication11[5,1])(implication12[5,1]))(implication13[5,1]))(implication18[1,1,1,5]))(implication19[1,1,5]))	main
+(in3[2,rec,8,5])	main	implication	(>[8](in3[u_rec,u_2,8,u_5])(in3[u_2,u_rec,8,u_5]))	main	(in3[rec,2,8,5])	main
+(>[8](in3[u_rec,u_2,8,u_5])(in3[u_2,u_rec,8,u_5]))	main	recursion
+(in3[rec,2,8,5])	main	implication	(>[1](=[1,u_2])(>[2](in[2,u_1])(>[](in[1,u_1])(in3[2,u_2,1,u_5]))))	main	(=[8,2])	main	(in[8,1])	main	(in[rec,1])	main
+(>[1](=[1,u_2])(>[2](in[2,u_1])(>[](in[1,u_1])(in3[2,u_2,1,u_5]))))	main	expansion	(implication26[2,1,5])	main
+(implication26[2,1,5])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(=[8,2])	main	implication	(>[1](in[1,u_1])(>[2](in3[1,u_2,2,u_5])(=[2,u_2])))	main	(in3[7,2,8,5])	main	(in[7,1])	main
+(>[1](in[1,u_1])(>[2](in3[1,u_2,2,u_5])(=[2,u_2])))	main	expansion	(implication25[1,2,5])	main
+(implication25[1,2,5])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication9[1,2,3]))(implication10[1,3]))(fXYZ[4,1,1,1]))(implication21[1,2,4]))(implication22[1,2,4]))(implication23[1,3,4]))(implication24[1,3,4]))(fXYZ[5,1,1,1]))(implication25[1,2,5]))(implication26[2,1,5]))(implication27[1,3,5,4]))(implication28[1,3,5,4]))	main
+(in3[7,2,8,5])	main	task formulation
+(in[8,1])	main	disintegration	(&(&(in[7,1])(in[2,1]))(in[8,1]))	main
+(&(&(in[7,1])(in[2,1]))(in[8,1]))	main	expansion	(and21[7,1,2,1,8,1])	main
+(and21[7,1,2,1,8,1])	main	implication	(>[1,2,3](in3[1,2,3,u_5])(and21[1,u_1,2,u_1,3,u_1]))	main	(in3[7,2,8,5])	main
+(>[1,2,3](in3[1,2,3,u_5])(and21[1,u_1,2,u_1,3,u_1]))	main	implication grouping	(>[1,2,3](in3[1,2,3,u_5])(in[1,u_1]))	main	(>[1,2,3](in3[1,2,3,u_5])(in[2,u_1]))	main	(>[1,2,3](in3[1,2,3,u_5])(in[3,u_1]))	main
+(>[1,2,3](in3[1,2,3,u_5])(in[1,u_1]))	main	expansion	(implication11[5,1])	main
+(implication11[5,1])	main	disintegration	(&(&(&(&(implication11[5,1])(implication12[5,1]))(implication13[5,1]))(implication18[1,1,1,5]))(implication19[1,1,5]))	main
+(>[1,2,3](in3[1,2,3,u_5])(in[2,u_1]))	main	expansion	(implication12[5,1])	main
+(implication12[5,1])	main	disintegration	(&(&(&(&(implication11[5,1])(implication12[5,1]))(implication13[5,1]))(implication18[1,1,1,5]))(implication19[1,1,5]))	main
+(>[1,2,3](in3[1,2,3,u_5])(in[3,u_1]))	main	expansion	(implication13[5,1])	main
+(implication13[5,1])	main	disintegration	(&(&(&(&(implication11[5,1])(implication12[5,1]))(implication13[5,1]))(implication18[1,1,1,5]))(implication19[1,1,5]))	main

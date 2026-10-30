@@ -5957,11 +5957,16 @@ namespace {
         const bool markerOrDemand = (flags
             & (gl::gpu::deviceFiringMarker
                 | gl::gpu::deviceFiringOrdis2Demand)) != 0;
+        const int32_t justification = readProjectedI32(lmv, blob.byteLength, 8);
         const bool integrationDemand =
             (flags & gl::gpu::deviceFiringOrdis2Demand) != 0
-            && readProjectedI32(lmv, blob.byteLength, 8)
-                == gl::gpu::deviceIntegrationJustification;
-        if (markerOrDemand && state.pure == 0 && !integrationDemand) return;
+            && justification == gl::gpu::deviceIntegrationJustification;
+        // Both goal-driven variant kinds skip the purity gate
+        // (D-574).
+        const bool goalDemand =
+            justification == gl::gpu::deviceGoalDemandJustification;
+        if (markerOrDemand && state.pure == 0 && !integrationDemand
+            && !goalDemand) return;
 
         const gl::gpu::DeviceByteMapEntry& remainingEntry =
             columns.byteMapEntries[work.remainingEntryIndex];
@@ -6151,11 +6156,19 @@ namespace {
         const bool markerOrDemand = (flags
             & (gl::gpu::deviceFiringMarker
                 | gl::gpu::deviceFiringOrdis2Demand)) != 0;
+        const int32_t justification = readProjectedI32(lmv, blob.byteLength, 8);
         const bool integrationDemand =
             (flags & gl::gpu::deviceFiringOrdis2Demand) != 0
-            && readProjectedI32(lmv, blob.byteLength, 8)
-                == gl::gpu::deviceIntegrationJustification;
-        if (markerOrDemand && state.pure == 0 && !integrationDemand) return;
+            && justification == gl::gpu::deviceIntegrationJustification;
+        // Both goal-driven variant kinds skip the purity gate; a demand of
+        // that kind is a flat-rule near-miss
+        // (D-574).
+        const bool goalDemand =
+            justification == gl::gpu::deviceGoalDemandJustification;
+        if (goalDemand && (flags & gl::gpu::deviceFiringOrdis2Demand) != 0)
+            flags |= gl::gpu::deviceFiringGoalNearMiss;
+        if (markerOrDemand && state.pure == 0 && !integrationDemand
+            && !goalDemand) return;
 
         const gl::gpu::DeviceByteMapEntry& remainingEntry =
             columns.byteMapEntries[work.remainingEntryIndex];
@@ -6237,9 +6250,8 @@ namespace {
         uint32_t markerArgOffset = 0;
         uint32_t markerArgCount = 0;
         if (head) {
-            if (block.recursionAuxyImplId != 0
-                && readProjectedI32(lmv, blob.byteLength, 4)
-                    == block.recursionAuxyImplId) {
+            if (gl::gpu::isInductionHypothesisSource(block,
+                    readProjectedI32(lmv, blob.byteLength, 4))) {
                 flags |= gl::gpu::deviceFiringRecursionHead;
             }
             bool doNotDisintegrate = (flags
@@ -6656,6 +6668,11 @@ namespace {
             comparison = compareRuleIds(
                 left.demandSourceImplId, right.demandSourceImplId);
             if (comparison != 0) return comparison;
+            const bool leftNearMiss =
+                (left.flags & gl::gpu::deviceFiringGoalNearMiss) != 0;
+            const bool rightNearMiss =
+                (right.flags & gl::gpu::deviceFiringGoalNearMiss) != 0;
+            if (leftNearMiss != rightNearMiss) return leftNearMiss ? 1 : -1;
         } else if (!leftMarker) {
             if (left.originDependencyCount != right.originDependencyCount) {
                 return left.originDependencyCount < right.originDependencyCount
@@ -6807,7 +6824,7 @@ namespace {
     /// @brief Probe the projected name interner for a firing head's negation.
     ///
     /// @details
-    /// Reproduces `ExpressionAnalyzer::negate` as a virtual byte span: a leading
+    /// Reproduces `DefinitionExpansion::negate` as a virtual byte span: a leading
     /// exclamation mark is removed, otherwise one is prepended. The virtual bytes
     /// are hashed and compared directly against the fixed projected name table, so
     /// contradiction detection needs no temporary string or device allocation.
@@ -7181,10 +7198,13 @@ namespace gl::gpu {
     /// happens once; subsequent leases reuse this same device allocation.
     ///
     /// @param limitBytes Optional test ceiling, zero for automatic sizing.
+    /// @param frontierStoreReserveBytes Dedicated frontier-store bytes wanted
+    ///        beyond the working budget, granted only from spare device memory.
     /// @return An initialized pool with no live leases.
     /// @invariant The working reservation leaves the runtime reserve free.
-    CudaPhase2BlockPool::CudaPhase2BlockPool(uint64_t limitBytes)
-        : metadataArena_(&staticMemory()), owners_(&metadataArena_, &metadataDirty_) {
+    CudaPhase2BlockPool::CudaPhase2BlockPool(uint64_t limitBytes,
+        uint64_t frontierStoreReserveBytes)
+        : metadataArena_(&gpuHostStorage()), owners_(&metadataArena_, &metadataDirty_) {
         metadataArena_.setPurpose(PoolPurpose::GpuHost);  // pool attribution
         static_cast<void>(queryCudaDeviceContract());
         GL_CUDA_ASSERT(cudaFree(nullptr));
@@ -7192,10 +7212,11 @@ namespace gl::gpu {
         GL_CUDA_ASSERT(cudaMemGetInfo(&freeBytes, &totalBytes));
         deviceTotalBytes_ = static_cast<uint64_t>(totalBytes);
         deviceFreeBeforePoolBytes_ = static_cast<uint64_t>(freeBytes);
-        budget_ = makePhase2GpuBudget(freeBytes, totalBytes, limitBytes);
-        for (uint32_t index = 0; index < budget_.blocks; ++index)
+        budget_ = makePhase2GpuBudget(freeBytes, totalBytes, limitBytes,
+            frontierStoreReserveBytes);
+        for (uint32_t index = 0; index < budget_.totalBlocks(); ++index)
             owners_.push_back(0);
-        GL_CUDA_ASSERT(cudaMalloc(&device_, static_cast<std::size_t>(budget_.bytes)));
+        GL_CUDA_ASSERT(cudaMalloc(&device_, static_cast<std::size_t>(reservedBytes())));
     }
 
     /// @brief Free the device reservation after all lease owners are gone.
@@ -7237,15 +7258,15 @@ namespace gl::gpu {
     /// @invariant No two live leases overlap.
     Phase2GpuLease CudaPhase2BlockPool::reserveBlocks(uint32_t count) {
         assert(count > 0 && count <= availableBlocks());
-        uint32_t current = 0, first = budget_.blocks;
-        for (uint32_t index = 0; index < budget_.blocks; ++index) {
+        uint32_t current = 0, first = budget_.totalBlocks();
+        for (uint32_t index = 0; index < budget_.totalBlocks(); ++index) {
             current = owners_[index] == 0 ? current + 1 : 0;
             if (current == count) {
                 first = index + 1 - count;
                 break;
             }
         }
-        assert(first < budget_.blocks
+        assert(first < budget_.totalBlocks()
             && "GPU block allocation must be preceded by a fitting layout plan");
         static std::atomic<uint64_t> nextGeneration{1};
         const uint64_t generation = nextGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -7266,8 +7287,8 @@ namespace gl::gpu {
     /// @invariant Range and generation match the ownership directory.
     void* CudaPhase2BlockPool::address(const Phase2GpuLease& lease) const {
         assert(lease.generation != 0 && lease.count > 0);
-        assert(lease.first < budget_.blocks);
-        assert(lease.count <= budget_.blocks - lease.first);
+        assert(lease.first < budget_.totalBlocks());
+        assert(lease.count <= budget_.totalBlocks() - lease.first);
         for (uint32_t index = lease.first; index < lease.first + lease.count; ++index)
             assert(owners_[index] == lease.generation);
         return static_cast<char*>(device_)
@@ -7306,6 +7327,11 @@ namespace gl::gpu {
     ///            strictly positive memory, multiprocessor, and block limits.
     /// @see launchCudaContractProbe
     CudaDeviceContract queryCudaDeviceContract() {
+        // Every CUDA entry point queries the contract first, so this call
+        // makes each one wait until the process's CUDA context exists
+        // instead of initializing the runtime concurrently with the
+        // background warm-up (D-554).
+        createCudaContext();
         int deviceCount = 0;
         GL_CUDA_ASSERT(cudaGetDeviceCount(&deviceCount));
         assert(deviceCount > 0);
@@ -7331,6 +7357,45 @@ namespace gl::gpu {
         contract.multiprocessorCount = properties.multiProcessorCount;
         contract.maximumThreadsPerBlock = properties.maxThreadsPerBlock;
         return contract;
+    }
+
+    /// @brief Create this process's CUDA context, once.
+    ///
+    /// @details
+    /// The first call initializes the runtime (`cudaGetDeviceCount`) and
+    /// forces the active device's primary context into existence
+    /// (`cudaFree(nullptr)`); a call arriving while that runs waits for it
+    /// (`std::call_once`), later calls return at once. See the declaration.
+    ///
+    /// @return None.
+    /// @invariant On return the active device's primary context exists.
+    /// @see CudaContextWarmup, queryCudaDeviceContract
+    void createCudaContext() {
+        static std::once_flag contextCreated;
+        std::call_once(contextCreated, [] {
+            int deviceCount = 0;
+            GL_CUDA_ASSERT(cudaGetDeviceCount(&deviceCount));
+            assert(deviceCount > 0);
+            GL_CUDA_ASSERT(cudaFree(nullptr));
+        });
+    }
+
+    /// @brief Start creating the CUDA context on a background thread.
+    ///
+    /// @details The thread runs `createCudaContext`; the constructor returns at once.
+    ///
+    /// @return A running warm-up.
+    /// @see ~CudaContextWarmup
+    CudaContextWarmup::CudaContextWarmup() : thread_(createCudaContext) {}
+
+    /// @brief Wait until the background context creation has finished.
+    ///
+    /// @details Joins the warm-up thread; a failing CUDA call asserted on that thread already.
+    ///
+    /// @return None.
+    CudaContextWarmup::~CudaContextWarmup() {
+        assert(thread_.joinable());
+        thread_.join();
     }
 
     /// @brief Launch a real native CUDA kernel and return its deterministic word.
@@ -7546,9 +7611,12 @@ namespace gl::gpu {
         const bool staged = pinnedHostBytes_ != 0;
         for (uint32_t deferredColumn : kDeferredPhase2Columns) {
             assert((deferredHostColumns_[deferredColumn] != nullptr) == staged);
-            if (staged)
-                GL_CUDA_ASSERT(cudaFreeHost(
-                    deferredHostColumns_[deferredColumn]));
+
+        }
+        if (staged) {
+            GL_CUDA_ASSERT(cudaHostUnregister(deferredHostStorage_.data()));
+            gpuHostStorage().setGpuHostPinned(deferredHostStorage_.data(),
+                deferredHostStorage_.blockCount(), false);
         }
         assert(deferredUploadStream_ != nullptr);
         GL_CUDA_ASSERT(cudaStreamDestroy(
@@ -7597,15 +7665,25 @@ namespace gl::gpu {
         gl::Phase2TraceScope phase2OperationTrace("CudaPhase2ProjectionBuffer::beginPhase2Upload");
         assert(!phase2UploadPending_);
         if (pinnedHostBytes_ == 0) {
-            for (uint32_t deferredColumn : kDeferredPhase2Columns) {
-                assert(deferredHostColumns_[deferredColumn] == nullptr);
-                GL_CUDA_ASSERT(cudaHostAlloc(
-                    &deferredHostColumns_[deferredColumn],
-                    static_cast<std::size_t>(deferredStagingBytes_[deferredColumn]),
-                    cudaHostAllocDefault));
-                assert(deferredHostColumns_[deferredColumn] != nullptr);
-                pinnedHostBytes_ += deferredStagingBytes_[deferredColumn];
+            GpuHostLayout layout;
+            for (uint32_t column : kDeferredPhase2Columns) {
+                const uint64_t bytes = deferredStagingBytes_[column];
+                assert(bytes > 0 && bytes <= UINT64_MAX - sizeof(std::max_align_t));
+                layout.add<std::max_align_t>((bytes + sizeof(std::max_align_t) - 1)
+                    / sizeof(std::max_align_t));
             }
+            deferredHostStorage_.reserve(layout.bytes);
+            for (uint32_t column : kDeferredPhase2Columns) {
+                assert(deferredHostColumns_[column] == nullptr);
+                deferredHostColumns_[column] = deferredHostStorage_.allocate(
+                    deferredStagingBytes_[column], alignof(std::max_align_t));
+            }
+            GL_CUDA_ASSERT(cudaHostRegister(deferredHostStorage_.data(),
+                static_cast<std::size_t>(deferredHostStorage_.reservedBytes()),
+                cudaHostRegisterDefault));
+            gpuHostStorage().setGpuHostPinned(deferredHostStorage_.data(),
+                deferredHostStorage_.blockCount(), true);
+            pinnedHostBytes_ = deferredHostStorage_.reservedBytes();
         }
         const void* hostData[kProjectionColumnCount] = {
             hostProjection.logicalBlocks.data(),
@@ -7889,36 +7967,37 @@ namespace gl::gpu {
     /// @brief Hand one complete window to the upload thread.
     ///
     /// @details
-    /// Waits until the previous window is uploaded and retained, takes ownership
-    /// of `window`, wakes the thread and releases the previous window on the
-    /// calling thread.
+    /// Waits until the previous window is uploaded, retained and released,
+    /// borrows `slot` and wakes the thread. The upload thread empties the
+    /// slot after both copies; the caller touches the slot again only after
+    /// the next submit, waitUntilUploaded or finish returns.
     ///
-    /// @param window Adopted window whose references already address their
-    ///        complete-image offsets; non-null.
+    /// @param slot Engaged slot holding the adopted window, whose references
+    ///        already address their complete-image offsets.
     /// @param bases Complete-image column positions of the window's first rows,
     ///        equal to the ends of every earlier window.
     /// @return Nothing.
     /// @invariant `finish` has not been called.
-    void Phase2WindowUploader::submit(std::unique_ptr<Phase2ProjectionArena> window,
+    void Phase2WindowUploader::submit(std::optional<Phase2ProjectionArena>& slot,
         const Phase2ProjectionArena::ShardBases& bases) {
-        assert(window != nullptr);
-        std::unique_ptr<Phase2ProjectionArena> released;
+        assert(slot.has_value() && "an empty slot submitted for upload");
         {
             gl::Phase2TraceScope phase2WaitTrace("GL.Phase2.Projection.UploadWait");
             std::unique_lock<std::mutex> lock(mutex_);
             assert(!finished_ && "window submitted after the uploader finished");
             uploaded_.wait(lock, [this] { return !pending_; });
-            released = std::move(window_);
-            window_ = std::move(window);
+            assert(slot_ == nullptr && window_ == nullptr
+                && "an idle uploader still holds a window");
+            slot_ = &slot;
+            window_ = &*slot;
             bases_ = bases;
             pending_ = true;
         }
         ready_.notify_one();
-        gl::Phase2TraceScope phase2ReleaseTrace("GL.Phase2.Projection.Release");
-        released.reset();
     }
 
-    /// @brief Wait for the last window, release it and join the thread.
+    /// @brief Wait until the last window is uploaded and released, then join
+    ///        the thread.
     ///
     /// @details
     /// After return the device image holds every submitted window and the
@@ -7927,28 +8006,65 @@ namespace gl::gpu {
     /// @return Nothing.
     /// @invariant Called once.
     void Phase2WindowUploader::finish() {
-        std::unique_ptr<Phase2ProjectionArena> released;
         {
             gl::Phase2TraceScope phase2WaitTrace("GL.Phase2.Projection.UploadWait");
             std::unique_lock<std::mutex> lock(mutex_);
             assert(!finished_ && "window uploader finished twice");
             uploaded_.wait(lock, [this] { return !pending_; });
-            released = std::move(window_);
+            assert(slot_ == nullptr && window_ == nullptr
+                && "an idle uploader still holds a window");
             finished_ = true;
         }
         ready_.notify_one();
         thread_.join();
-        gl::Phase2TraceScope phase2ReleaseTrace("GL.Phase2.Projection.Release");
-        released.reset();
     }
 
-    /// @brief Thread body: upload and retain each submitted window in order.
+
+    /// @brief Wait until the current window is uploaded and released.
+    /// @details Both device upload and retained lookup copying finish, and the
+    /// upload thread empties the borrowed slot, before the pending flag
+    /// clears. The caller may then rebuild its slot.
+    /// @return Nothing.
+    void Phase2WindowUploader::waitUntilUploaded() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        assert(!finished_);
+        uploaded_.wait(lock, [this] { return !pending_; });
+        assert(slot_ == nullptr && window_ == nullptr
+            && "an idle uploader still holds a window");
+    }
+
+    /// @brief Wait for an idle upload thread.
+    /// @details The submitting thread stays at the diagnostic capture seam; an
+    /// idle uploader has already released its last window.
+    /// @return Nothing.
+    void Phase2WindowUploader::quiesceForSnapshot() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        uploaded_.wait(lock,[this]{return !pending_;});
+    }
+    /// @brief Observe the upload window after quiescence.
+    /// @details Quiescence is a required precondition; an idle uploader holds
+    /// no window, so the defined result is zero.
+    /// @return Retained host column bytes (zero once idle).
+    uint64_t Phase2WindowUploader::observeForSnapshot() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(!pending_);
+        assert(slot_ == nullptr && window_ == nullptr
+            && "an idle uploader still holds a window");
+        return 0;
+    }
+
+    /// @brief Thread body: upload, retain and release each submitted window in
+    ///        order.
     ///
     /// @details
     /// Waits for a pending window or the finish request; copies the window's used
     /// column ranges into the device image, appends its retained data to the
-    /// sealing image, clears the pending flag and wakes the submitter. The finish
-    /// request arrives only with no window pending.
+    /// sealing image, empties the borrowed slot, clears the pending flag and
+    /// wakes the submitter. Both copies are synchronous, so the window has no
+    /// reader left when they return; while the pending flag is set the
+    /// submitter does not touch the slot, so the release needs no lock, and it
+    /// completes before the thread reports idle. The finish request arrives
+    /// only with no window pending.
     ///
     /// @return Nothing.
     void Phase2WindowUploader::work() {
@@ -7956,6 +8072,7 @@ namespace gl::gpu {
         while (true) {
             ready_.wait(lock, [this] { return pending_ || finished_; });
             if (!pending_) return;
+            std::optional<Phase2ProjectionArena>& slot = *slot_;
             const Phase2ProjectionArena& window = *window_;
             const Phase2ProjectionArena::ShardBases bases = bases_;
             lock.unlock();
@@ -7967,7 +8084,13 @@ namespace gl::gpu {
                 gl::Phase2TraceScope phase2SealingTrace("GL.Phase2.Projection.SealingCopy");
                 sealing_.appendSealingProjection(window, bases);
             }
+            {
+                gl::Phase2TraceScope phase2ReleaseTrace("GL.Phase2.Projection.Release");
+                slot.reset();
+            }
             lock.lock();
+            slot_ = nullptr;
+            window_ = nullptr;
             pending_ = false;
             uploaded_.notify_one();
         }
@@ -9835,7 +9958,8 @@ namespace gl::gpu {
     /// A pass-local device frontier store (`frontierStoreRecords` rows per
     /// buffer) holds the level being grown and collects its children; pages are
     /// read in place, device rows first. Rows of a level that outgrows a buffer
-    /// spill to host static-pool pages, which upload through two alternating
+    /// spill to bounded host tails and prepared disk files when enabled. Rows
+    /// upload through two alternating
     /// registered staging blocks into the consumed buffer. Cheap rejection fills
     /// bounded candidate scratch; consecutive selected survivors reserve
     /// worst-case append space against host upper bounds of the append counters,
@@ -9858,6 +9982,7 @@ namespace gl::gpu {
     /// @param retainedCalls Optional cutoff query run after each completed
     ///        level's drain: fills one keep flag per scheduled call (0 stops the
     ///        call's descendants) and returns whether any flag is 0.
+    /// @param frontierStorage Prepared disk files and the resident frontier budget.
     /// @return Logical totals and frontier transfer/backing measurements.
     /// @invariant A prefix fits minimum execution scratch and a drain completes
     ///            before any pending request event is overwritten.
@@ -9870,7 +9995,8 @@ namespace gl::gpu {
         DevicePhase2GrowthParameters parameters,
         void (*drain)(void*, const CudaPhase2GrowthBuffer&, bool), void* context,
         uint64_t* taskSubkeyCounts, uint32_t taskCapacity,
-        bool (*retainedCalls)(void*, uint8_t*, uint32_t)) {
+        bool (*retainedCalls)(void*, uint8_t*, uint32_t),
+        RequestFrontierStorageOptions frontierStorage) {
         gl::Phase2TraceScope phase2OperationTrace("CudaPhase2GrowthBuffer::runRequestGrowthWindows");
         assert(drain != nullptr && taskSubkeyCounts != nullptr);
         assert(parameters.collectSpanCensus == 0);
@@ -9961,7 +10087,7 @@ namespace gl::gpu {
         auto* subkeyCounts = static_cast<uint32_t*>(deviceTaskSubkeyCounts_);
         // Pass-local frontier store: one buffer holds the level being grown and
         // the other collects its children; a level that outgrows a buffer
-        // spills those rows to the host pages below. Nothing in the store
+        // spills those rows through the host frontier stores below. Nothing in the store
         // outlives this call.
         DeviceGrowthNode* const store[2] = {
             static_cast<DeviceGrowthNode*>(deviceFrontiers_[0]),
@@ -9993,9 +10119,9 @@ namespace gl::gpu {
             static_cast<uint32_t>(probeBlocksPerProcessor) * static_cast<uint32_t>(processors);
         // Dedicated registered host blocks keep transfer pages bounded and
         // avoid pageable-memory staging. Registration ends before pool release.
-        LbArena backing(&staticMemory());
+        LbArena backing(&gpuHostStorage());
         backing.setPurpose(PoolPurpose::GpuHost);  // pool attribution
-        const uint32_t blockBytes = static_cast<uint32_t>(staticMemory().blockBytes());
+        const uint32_t blockBytes = static_cast<uint32_t>(gpuHostStorage().blockBytes());
         const uint32_t hostPageRows = std::min(phase2FrontierCopyRows,
             static_cast<uint32_t>(blockBytes / std::max(sizeof(DeviceGrowthNode), sizeof(DeviceGrowthPrefix))));
         assert(hostPageRows > 0 && blockBytes <= INT32_MAX);
@@ -10005,6 +10131,7 @@ namespace gl::gpu {
             void* const address = backing.resolve(offset);
             assert(reinterpret_cast<uintptr_t>(address) % 4096 == 0);
             GL_CUDA_ASSERT(cudaHostRegister(address, blockBytes, cudaHostRegisterDefault));
+            gpuHostStorage().setGpuHostPinned(static_cast<char*>(address), 1, true);
             return address;
         };
         auto* nodeTransfer = static_cast<DeviceGrowthNode*>(pinnedScratch());
@@ -10028,7 +10155,11 @@ namespace gl::gpu {
         }
         result.frontierTransferRows = hostPageRows;
         DirtyState dirty = DirtyState::Clean;
-        PagedVector<DeviceGrowthNode> first(&backing, &dirty), second(&backing, &dirty);
+        assert((frontierStorage.files[0] == nullptr) == (frontierStorage.files[1] == nullptr));
+        assert(frontierStorage.files[0] == nullptr
+            || frontierStorage.files[0] != frontierStorage.files[1]);
+        RequestFrontierStore first(backing, frontierStorage.files[0], frontierStorage.cacheRows);
+        RequestFrontierStore second(backing, frontierStorage.files[1], frontierStorage.cacheRows);
         PagedVector<uint64_t> measuredSizes(&backing, &dirty);
         // The packed prefix sizes download whole pinned blocks at a time.
         const uint32_t packedPageRows = blockBytes / static_cast<uint32_t>(sizeof(uint64_t));
@@ -10125,8 +10256,8 @@ namespace gl::gpu {
             if (retainedCalls != nullptr) {
                 flushRequests(false, true);
                 if (retainedCalls(context, keepByCall, callCount)) {
-                    result.prunedFrontierNodes += pruneFrontierByCall(
-                        *current, keepByCall, callCount);
+                    result.prunedFrontierNodes += current->pruneByCall(
+                        keepByCall, callCount, nodeTransfer, static_cast<int32_t>(hostPageRows));
                     if (currentDeviceRows > 0) {
                         // The other store buffer is free at a level boundary.
                         GL_CUDA_ASSERT(cudaMemcpy(deviceKeepByCall_, keepByCall, callCount,
@@ -10145,7 +10276,7 @@ namespace gl::gpu {
             }
         };
         auto retainFrontier = [&](const DeviceGrowthNode* rows, uint32_t count,
-            PagedVector<DeviceGrowthNode>& destination) {
+            RequestFrontierStore& destination) {
             gl::Phase2TraceScope phase2InnerTrace("GL.Phase2.Growth.retainFrontier");
             assert(count <= capacity_.frontierStoreRecords);
             for (uint32_t begin = 0; begin < count; begin += hostPageRows) {
@@ -10208,7 +10339,7 @@ namespace gl::gpu {
         // After settleCounts: a store buffer's rows move behind the host pages
         // this level already spilled.
         auto spillRows = [&](uint32_t ordinal, const DeviceGrowthNode* rows,
-                             PagedVector<DeviceGrowthNode>& destination) {
+                             RequestFrontierStore& destination) {
             retainFrontier(rows, counts.frontierCounts[ordinal], destination);
             ++result.frontierSpills;
             clearFrontierCount(ordinal);
@@ -10286,14 +10417,15 @@ namespace gl::gpu {
                 // Device rows first; once consumed, their buffer stages the
                 // spilled host pages.
                 uint32_t deviceDone = 0;
-                int32_t hostDone = 0;
+                uint64_t hostDone = 0;
                 while (deviceDone < currentDeviceRows || hostDone < current->size()) {
                     const bool devicePage = deviceDone < currentDeviceRows;
                     const uint32_t pageCount = devicePage
                         ? std::min({phase2FrontierExecutionRows, capacity_.frontierRecords,
                               currentDeviceRows - deviceDone})
                         : std::min({phase2FrontierExecutionRows, capacity_.frontierRecords,
-                              static_cast<uint32_t>(current->size() - hostDone)});
+                              static_cast<uint32_t>(std::min<uint64_t>(UINT32_MAX,
+                                  current->size() - hostDone))});
                     gl::Phase2TraceScope phase2FrontierPageTrace("GL.Phase2.Growth.FrontierPage",
                         devicePage ? deviceDone : static_cast<uint32_t>(hostDone));
                     DeviceGrowthNode* const pageNodes = devicePage ? levelRows + deviceDone : levelRows;
@@ -10305,7 +10437,7 @@ namespace gl::gpu {
                                 uploadPending[uploadStage] = false;
                             }
                             DeviceGrowthNode* const staging = uploadStages[uploadStage];
-                            current->copyRunTo(hostDone + static_cast<int32_t>(begin),
+                            current->copyRunTo(hostDone + begin,
                                 static_cast<int32_t>(copied), staging);
                             GL_CUDA_ASSERT(cudaMemcpyAsync(pageNodes + begin, staging,
                                 copied * sizeof(DeviceGrowthNode), cudaMemcpyHostToDevice, 0));
@@ -10362,7 +10494,8 @@ namespace gl::gpu {
                         bool tracedMixed = false;
                         if (gl::phase2TraceEnabled() && !devicePage) {
                             for (uint32_t offset = 0; offset < nodeCount; ++offset) {
-                                const auto& node = (*current)[static_cast<int32_t>(hostDone + pageAt + offset)];
+                                DeviceGrowthNode node{};
+                                current->copyRunTo(hostDone + pageAt + offset, 1, &node);
                                 const uint32_t task = schedule.calls[node.callIndex].taskIndex;
                                 assert(task < hostTasks.tasks.size());
                                 const uint32_t block = hostTasks.tasks[task].logicalBlockIndex;
@@ -10513,7 +10646,7 @@ namespace gl::gpu {
                         pageAt += nodeCount;
                     }
                     if (devicePage) deviceDone += pageCount;
-                    else hostDone += static_cast<int32_t>(pageCount);
+                    else hostDone += pageCount;
                 }
                 // The children form the next level: spilled host pages plus the
                 // rows left in the child buffer, which becomes the current one.
@@ -10533,10 +10666,26 @@ namespace gl::gpu {
         for (cudaEvent_t event : snapshotDone) GL_CUDA_ASSERT(cudaEventDestroy(event));
         GL_CUDA_ASSERT(cudaEventDestroy(exactDone));
         GL_CUDA_ASSERT(cudaHostUnregister(counterSnapshots));
+        gpuHostStorage().setGpuHostPinned(reinterpret_cast<char*>(counterSnapshots), 1, false);
         GL_CUDA_ASSERT(cudaHostUnregister(uploadStages[1]));
+        gpuHostStorage().setGpuHostPinned(reinterpret_cast<char*>(uploadStages[1]), 1, false);
         GL_CUDA_ASSERT(cudaHostUnregister(countTransfer));
+        gpuHostStorage().setGpuHostPinned(reinterpret_cast<char*>(countTransfer), 1, false);
         GL_CUDA_ASSERT(cudaHostUnregister(packedSizeTransfer));
+        gpuHostStorage().setGpuHostPinned(reinterpret_cast<char*>(packedSizeTransfer), 1, false);
         GL_CUDA_ASSERT(cudaHostUnregister(nodeTransfer));
+        gpuHostStorage().setGpuHostPinned(reinterpret_cast<char*>(nodeTransfer), 1, false);
+        for (const RequestFrontierStore* frontier : {&first, &second}) {
+            const auto& stats = frontier->stats();
+            result.frontierStorage.writes += stats.writes;
+            result.frontierStorage.reads += stats.reads;
+            result.frontierStorage.writtenBytes += stats.writtenBytes;
+            result.frontierStorage.readBytes += stats.readBytes;
+            // Pages remain allocated after reset, so the two retained maxima
+            // bound simultaneous storage throughout this growth call.
+            result.frontierStorage.peakResidentPayloadBytes += stats.peakResidentPayloadBytes;
+            result.frontierStorage.peakResidentStorageBytes += stats.peakResidentStorageBytes;
+        }
         return result;
     }
 
@@ -10594,7 +10743,7 @@ namespace gl::gpu {
     /// Copies the fixed counter prefix belonging to the uploaded task image.
     /// Device growth increments a task counter only when the subkey owner probe
     /// accepts a node, excluding whole-key-only events exactly like
-    /// `ExpressionAnalyzer::g_growthMatchCount`.
+    /// `Prover::g_growthMatchCount`.
     ///
     /// @param destination Caller-owned task-count output array.
     /// @param capacity Destination element capacity.
@@ -10855,7 +11004,9 @@ namespace gl::gpu {
                 static_cast<const uint32_t*>(
                     deviceIndices_[currentIndices]),
                 static_cast<uint32_t*>(deviceIndices_[nextIndices]),
-                static_cast<int>(usedEvents_)));
+                static_cast<int>(usedEvents_), 0,
+                components[pass] < ExecutionParameters::MAX_EXPRESSIONS
+                    ? kDeviceGrowthPathRadixBits : 32));
             currentIndices = nextIndices;
         }
         GL_CUDA_ASSERT(cudaMemcpy(
@@ -13152,17 +13303,25 @@ namespace gl::gpu {
     /// A monotone search scales relative demand after minimum progress is secured.
     /// Leftover blocks are lent to the largest flexible demand. Prefix and child
     /// windows stop growing at the amount one bounded execution window can use.
+    /// Dedicated frontier-store blocks hold the largest power-of-two store, up
+    /// to `phase2FrontierStoreMaximumRows`, whose two buffers fit them, whatever
+    /// the measured level demand; they are not charged to the working blocks
+    /// the scaled search and the lending fill.
     ///
     /// @param input Immutable input and schedule column capacities.
-    /// @param availableBlocks Whole 2 MiB blocks available for the chunk.
+    /// @param availableBlocks Whole 2 MiB working blocks available for the chunk.
     /// @param demand Nonzero recent processing demand.
     /// @param minimumOutput Simultaneous pending-fragment output requirements.
     /// @param minimumOnly Measure only the minimum progress reservation.
+    /// @param frontierStoreBlocks Dedicated frontier-store blocks beyond the
+    ///        working blocks; zero plans the store inside them.
     /// @return Fitting capacities or an explicit scheduling continuation.
     Phase2BufferPlan planPhase2Buffers(const Phase2BufferPlanInput& input,
         uint64_t availableBlocks, const Phase2WorkDemand& demand,
-        Phase2OutputUsage minimumOutput, bool minimumOnly) {
+        Phase2OutputUsage minimumOutput, bool minimumOnly, uint64_t frontierStoreBlocks) {
         constexpr uint32_t maximumRows = uint32_t{1} << 30;
+        constexpr uint32_t storeDimension =
+            static_cast<uint32_t>(Phase2WorkDimension::frontierStore);
         constexpr uint32_t maximumRequests = uint32_t{1} << 29;
         for (uint64_t count : demand.items) assert(count > 0);
         const auto floorPower = [](uint32_t count) {
@@ -13205,10 +13364,18 @@ namespace gl::gpu {
             const uint32_t frontierRecords = std::min(std::max(candidates, std::min(items[2], maximumCandidates)),
                 std::max(phase2FrontierExecutionRows, requests));
             // The pass-local store holds a whole measured level when the budget
-            // allows; a larger level spills its oldest rows to host pages.
-            const uint32_t frontierStoreRecords = std::max(frontierRecords,
-                ceilPower(std::min(items[static_cast<uint32_t>(Phase2WorkDimension::frontierStore)],
-                    phase2FrontierStoreMaximumRows)));
+            // allows; a larger level spills its rows to host pages. Dedicated
+            // store blocks are already reserved, so the store fills them: the
+            // measured demand lags a level larger than every earlier one.
+            uint32_t frontierStoreRecords = std::max(frontierRecords,
+                ceilPower(std::min(items[storeDimension], phase2FrontierStoreMaximumRows)));
+            if (frontierStoreBlocks != 0) {
+                uint32_t dedicated = phase2FrontierStoreMaximumRows;
+                while (dedicated > 1 && 2ull * dedicated * sizeof(DeviceGrowthNode)
+                       > frontierStoreBlocks * kPhase2GpuBlockBytes)
+                    dedicated /= 2;
+                frontierStoreRecords = std::max(frontierStoreRecords, dedicated);
+            }
             plan.growth = {std::max(input.tasks.tasks, input.filter.calls), input.filter.retainedRows,
                 frontierRecords, std::max(items[0], requests),
                 requests,
@@ -13237,7 +13404,13 @@ namespace gl::gpu {
                     / kPhase2GpuBlockBytes;
                 plan.totalBlocks += plan.blocks[i];
             }
-            if (plan.totalBlocks <= availableBlocks) plan.state = Phase2BufferPlanState::fits;
+            // Only whole blocks the two store buffers occupy are dedicated; the
+            // rounding remainder stays charged to the working blocks.
+            plan.frontierStoreDedicatedBlocks = std::min<uint64_t>(frontierStoreBlocks,
+                2ull * plan.growth.frontierStoreRecords * sizeof(DeviceGrowthNode)
+                    / kPhase2GpuBlockBytes);
+            if (plan.totalBlocks <= availableBlocks + plan.frontierStoreDedicatedBlocks)
+                plan.state = Phase2BufferPlanState::fits;
             return plan;
         };
         uint32_t minimumItems[phase2WorkDimensionCount];
@@ -13309,7 +13482,8 @@ namespace gl::gpu {
         const uint32_t usefulMaximum[] = {maximumRows, std::max(phase2FrontierExecutionRows, best.growth.rawRequests),
             phase2FrontierExecutionRows * ExecutionParameters::MAX_KEY_SLOTS,
             argumentMaximum, argumentMaximum, candidateMaximum};
-        for (uint32_t pass = 0; pass < 6 && best.totalBlocks < availableBlocks; ++pass) {
+        for (uint32_t pass = 0; pass < 6
+                && best.totalBlocks - best.frontierStoreDedicatedBlocks < availableBlocks; ++pass) {
             uint32_t selectedSlot = 0;
             uint64_t weight = 0;
             for (uint32_t i = 0; i < 6; ++i) {

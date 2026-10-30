@@ -95,10 +95,10 @@ User-oriented SwDD — Chapter 10: Reformulation & head switch.
         <li><a href="provenance.html#local">Locality</a></li>
         <li><a href="provenance.html#lift">The chapter walker</a></li>
         <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
-        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#barrier">Lift barriers</a></li>
         <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
         <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
-        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+        <li><a href="provenance.html#permanent">Permanent proof history</a></li>
       </ul>
     </li>
     <li><a href="compilation.html">Compilation &amp; names</a>
@@ -187,7 +187,9 @@ The resulting witness satisfies both the definition and the proved conclusion.</
 the predicate witness, proves each direction of its membership definition,
 and applies the cited source theorem with its recorded premises. This works
 with no remaining premise, as for the singleton interval, as well as with one
-or several premises. Missing or mismatched premises stop the export.</p>
+or several premises. Missing or mismatched premises stop the export. The
+existence is GL's own definition; when the cited theorem states its equality
+property the other way round, the replay adds one symmetry step.</p>
 <div class="note" role="img" aria-label="A proved construction implication produces one witness satisfying its definition and property">
 <p><b>Proved:</b> context &rArr; (definition of X &rArr; property of X)</p>
 <p aria-hidden="true">&darr; set-definition reformulation</p>
@@ -226,7 +228,11 @@ constructive existence, this certifies the FTA ladder's append lemma F5.</p>
 <figcaption>Certified successor extension: reformulation supplies one extended object with both its membership definition and its interval or sequence property.</figcaption>
 </figure>
 <p>The new object occurs only in the final defining premise and the conclusion.
-This preserves the existing reformulation gate. The same sequence-extension
+This preserves the existing reformulation gate. The defining premise must bind
+the new object alone: a value that only the defining premise mentions would be
+left without a binder in the generated statement, so no construction is
+generated, and every registered theorem is checked to bind all of its
+variables. The same sequence-extension
 lemma can extend an accumulator graph when proving a Fold product.</p>
 <p>Lean replay retains the enclosing assumptions when an OR argument occurs
 inside an implication proof. Case elimination checks every disjunct under those
@@ -370,6 +376,15 @@ juggling — which is exactly what the prover does dynamically anyway, but the
 head-switch helper is deliberately the cheap rewrite, not a re-prover. Cases
 that need binders are picked up by the regular proof loop via
 <code>back-reformulation</code> (§10.5).
+</div>
+
+<div class="key">
+<b>The binder-order rule.</b> When a premise after <code>!Q</code> binds a
+variable that <code>R</code> uses, <code>!R</code> does not take
+<code>!Q</code>'s place but goes right after that premise, so it never mentions
+a variable before its binder; <code>!Q</code>'s own place is dropped. Moving it
+is safe: <code>!Q</code> comes before that binder and cannot mention its
+variable.
 </div>
 
 <!-- ===================== 10.3 ===================== -->
@@ -594,7 +609,15 @@ A <b>single proved direction licenses the OR</b>; the companion reading
 <code>!B → A</code> is its contrapositive (with double negation eliminated,
 which the prover's reductio discharge already commits it to) and need not be
 proved separately. When both directions of a mirror pair happen to be proved,
-they license the same OR once.
+they license the same OR once. The OR operator itself is shared: an OR with
+the same disjuncts in any order, from an earlier batch or from this run, is
+reused with its arguments reordered, so one disjunction has one name everywhere.
+An OR assembled during the run already stands
+for its companion, so a proof of the companion that arrives later is not
+registered: it could rest on the OR itself, and the OR's own record names the
+companion, which would make the two proofs cite each other. The companion's own
+logic blocks stop as soon as the OR is assembled: its goal is closed as settled
+and its contradiction and induction blocks are deactivated.
 </p>
 
 <figure>

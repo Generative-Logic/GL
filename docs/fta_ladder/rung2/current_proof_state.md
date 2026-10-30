@@ -220,7 +220,7 @@ Three current contracts combine to make the missing step impossible:
  cases require two disintegration layers.
 2. `ConfigIncubatorGauss3.json` sets `max_or_depth` to `1`, explicitly
  permitting only the outer layer.
-3. In `ExpressionAnalyzer::disintegrateExprCore2`, admitted OR disjuncts are
+3. In `DisintegrationProcessor::disintegrateExprCore2`, admitted OR disjuncts are
  collected in `orBranchStatements`; the caller installs them through
  `addStatement`, not through `addExprToMemoryBlock`. A disjunct that is
  itself an OR therefore never re-enters the disintegration pipeline. The
@@ -605,7 +605,7 @@ It is never consumed: nine bursts (EXIT #6 through EXIT #15) pass with `q∈N`,
 never appears, so the second predecessor split never starts. The branch
 instead accumulates 17,498 flat statements with zero sub-scopes.
 
-Mechanism, from the trace and `ExpressionAnalyzer::disintegrateExpr2`'s OR
+Mechanism, from the trace and `DisintegrationProcessor::disintegrateExpr2`'s OR
 case:
 
 - At non-branch scopes an admitted OR statement receives an expansion record

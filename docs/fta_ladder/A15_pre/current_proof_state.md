@@ -713,9 +713,9 @@ Design points settled in discussion (the next session starts here):
  and single-parent `or theorem` provenance. Iterate against the actual
  emitted rows once A15 proves.
 - **Temporary traps still in tree (Rule 30, remove before final verification):**
- `[TRIAD-DBG]` ×3 in `prover.cpp::addTheoremToMemory` (digit-arg loop,
+ `[TRIAD-DBG]` ×3 in `proof/proof_grid_builder.cpp::addTheoremToMemory` (digit-arg loop,
  triad-creation branch, auxyImplication print), `[NEGINT-DBG]` ×2
- (`prover.hpp::updateAdmissionMap`, `prepareIntegrationCore`).
+ (`logical_block/admission_memory.hpp::updateAdmissionMap`, `prepareIntegrationCore`).
 - **SwDD (Rules 10/15/20):** `D-pending-<slug>` for contradiction-based
  integration + the sequenced-ordis decision, `I-pending-<slug>` for the
  polarity contract and the exact-scope discharge guard, verifier chapter,

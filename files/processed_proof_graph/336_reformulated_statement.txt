@@ -1,0 +1,1 @@
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(existence28[i0,N,+]))	main	reformulated from	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[W1](EnumerationSet1[i0,W1])(interval[N,+,i0,i0,W1])))	main

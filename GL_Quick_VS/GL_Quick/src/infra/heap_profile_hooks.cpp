@@ -35,7 +35,7 @@
 #include <cstddef>
 #include <new>
 
-#if MEM_MEASUREMENT && defined(USE_MIMALLOC)
+#if HEAP_MEASUREMENT && defined(USE_MIMALLOC)
 
 #include <mimalloc.h>
 

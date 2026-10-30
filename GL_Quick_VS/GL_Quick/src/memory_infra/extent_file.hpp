@@ -66,8 +66,11 @@ namespace gl {
     ///
     /// **Failure policy (Rule 19).** Every I/O failure, short transfer, or
     /// growth failure asserts loudly naming the actionable knob — a failed
-    /// state is a bug we want to see NOW, never a silent fallback. There is no
-    /// artificial size ceiling; growth's only bound is the disk.
+    /// state is a bug we want to see NOW, never a silent fallback. The summed
+    /// logical size of every open `PositionedFile` of the process (the
+    /// `.deload` extent file and the request-frontier spill) is held to
+    /// `kMaxDeloadBytes`: a sizing that would pass it asserts before the disk
+    /// is touched.
     ///
     /// @invariant Between `open` and `close` the file's logical size equals
     ///            `fileSize()`; every offset a caller reads was previously
@@ -81,6 +84,56 @@ namespace gl {
         ///        with room to spare; slabs are far smaller, so the loop is a
         ///        single pass in practice.
         static constexpr int64_t kMaxIoChunkBytes = 1LL << 30;
+
+        /// @brief Ceiling on the summed logical size of every open
+        ///        `PositionedFile` of the process: 50 GiB.
+        ///
+        /// @details
+        /// The `.deload` extent file and the two request-frontier spill files
+        /// are the process's positioned files; together they may hold at most
+        /// this many bytes. A run whose deload would pass it is a runaway to
+        /// surface, not a disk to fill.
+        static constexpr int64_t kMaxDeloadBytes = 50LL << 30;
+
+        /// @brief Whether a summed deload size stays within the ceiling.
+        ///
+        /// @details
+        /// The test every sizing of a positioned file asserts on the process
+        /// total it would produce. Pure; no file is touched.
+        ///
+        /// @param bytes A summed logical size in bytes; >= 0.
+        /// @return True iff @p bytes is at most `kMaxDeloadBytes`.
+        /// @see openDeloadBytes, accountDeloadResize.
+        static bool deloadWithinCeiling(int64_t bytes);
+
+        /// @brief The summed logical size of every open `PositionedFile` of
+        ///        the process.
+        ///
+        /// @details
+        /// Raised by `preallocate` and `grow` before the resize, lowered by a
+        /// shrinking `preallocate` and by `close`. A closed file's bytes stay
+        /// on disk until the next open truncates them or the batch purges
+        /// `.deload`, so the open total bounds the deload's peak.
+        ///
+        /// @return Bytes; >= 0.
+        /// @see kMaxDeloadBytes, accountDeloadResize.
+        static int64_t openDeloadBytes();
+
+        /// @brief Move the process's open deload total by one file's resize.
+        ///
+        /// @details
+        /// Adds `newSize - oldSize` to the total `openDeloadBytes` reports. A
+        /// growth asserts that the new total stays within `kMaxDeloadBytes`
+        /// (Rule 19: a runaway's deload stops the run here, before the disk
+        /// fills); a shrink never asserts. `preallocate` and `grow` call it
+        /// before the resize, `close` with a new size of zero.
+        ///
+        /// @param oldSize The file's logical size before; >= 0.
+        /// @param newSize The file's logical size after; >= 0.
+        /// @return The process total after the move.
+        /// @invariant The total never drops below zero.
+        /// @see openDeloadBytes, deloadWithinCeiling.
+        static int64_t accountDeloadResize(int64_t oldSize, int64_t newSize);
 
         /// @brief Construct a closed file. `open` must run before any I/O.
         PositionedFile() = default;

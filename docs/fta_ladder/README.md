@@ -11,17 +11,17 @@ and a commercial license — see https://generative-logic.com/license.
 
 # FTA ladder — rung index
 
-> Rung-by-rung path toward the Fundamental Theorem of Arithmetic. Each rung is a self-contained subfolder with a human-notation proof file (`proof_NN_<slug>.md`) and an append-only `current_proof_state.md` that records the GL prover's progress against that rung. When a rung's directed conjectures all close, the rung is marked **closed** here and the in-flight subfolder freezes; subsequent prover work moves to the next rung.
+> Rung-by-rung record of the path to the Fundamental Theorem of Arithmetic, which GL has proved since v0.13.0. Each rung is a self-contained subfolder with an append-only `current_proof_state.md` that records the GL prover's progress against that rung, and usually a human-notation proof (`proof_NN_<slug>.md` or `human_proof.md`). When a rung's directed conjectures all closed, the rung was marked **closed** here and its subfolder froze; prover work moved to the next rung.
 
 
 
-The ladder exists because FTA is too large a step from Peano + Gauss in a single jump. Each rung exercises one new piece of OR / case-split / induction machinery, validates it on a smaller theorem, and leaves the infrastructure available for the next rung. By the time the ladder reaches FTA, every required mechanism has been exercised at least once.
+The ladder existed because FTA was too large a step from Peano + Gauss in a single jump. Each rung exercised one new piece of OR / case-split / induction machinery, validated it on a smaller theorem, and left the infrastructure available for the next rung. The ladder reached FTA in v0.13.0: one FTA batch proves both halves of the theorem from the 103 FTA conjectures of [`fta_conjectures.md`](fta_conjectures.md), which GL is given as goals without hints for their proofs.
 
 ---
 
 ## Same-run or-headed theorems ARE minted and broadcast in-run
 
-**A case split over an or built from the batch's own proved implications is available while the grid runs.** `prover.cpp` → `constructOrTheoremsInRun` builds the or rows at the in-run theorem-drain seam (the single-threaded phase-4 barrier window) and broadcasts them like any proved theorem; the mint sequence follows `globalTheoremList` append order, so it is a deterministic function of the proof history. `run_modes.cpp` → `constructOrTheoremsFromPairs` remains the post-run export seam only.
+**A case split over an or built from the batch's own proved implications is available while the grid runs.** `proof/or_theorem_builder.cpp` → `constructOrTheoremsInRun` builds the or rows at the in-run theorem-drain seam (the single-threaded phase-4 barrier window) and broadcasts them like any proved theorem; the mint sequence follows `globalTheoremList` append order, so it is a deterministic function of the proof history. `run_modes.cpp` → `constructOrTheoremsFromPairs` remains the post-run export seam only.
 
 So all three split sources are live: corpus or rules loaded at start (the predecessor splits), ors minted in-run from proved implications with a negated premise, and negated AND-bodied premises through the runtime De-Morgan door (which case-splits the negated compound itself — how A16 closed). A16's stall diagnosis, which recorded the in-run route as missing, predates that mechanism; the C8 trace shows both `or0[…]` and `or10[…]` rules registered inside a live premise LB.
 
@@ -42,11 +42,11 @@ Three reusable shapes: (1) *fact-producer lemmas* that flatly derive a trigger t
 
 | Rung | Theorem (human) | Forward direction | Reverse direction | Folder |
 |---|---|---|---|---|
-| 1 | `{0, 1} = [0, 1]` (set-equality of enumerated and interval forms) | ✓ closed (D-34) | ⏳ open — next rung-1 frontier | [`rung1/`](rung1/) |
+| 1 | `{0, 1} = [0, 1]` (set-equality of enumerated and interval forms) | ✓ closed (D-34) | open — not proved in current runs | [`rung1/`](rung1/) |
 | 2 | `{0, 1, 2} = [0, 2]` (three-way set equality) | ✓ closed — flat atomic `_ordis_` | ✓ closed 2026-07-25 — `_orint_`-scoped secondary budget | [`rung2/`](rung2/) |
-| 2.1 | `{0, 1, 2} ≠ [0, 1]` (disproof of the false cross-pair) | ⏳ open — reductio, not started | — (single negation theorem) | [`rung2_1/`](rung2_1/) |
+| 2.1 | `{0, 1, 2} ≠ [0, 1]` (disproof of the false cross-pair) | ✓ closed (v0.10.0) — reductio | — (single negation theorem) | [`rung2_1/`](rung2_1/) |
 
-Counts: **2 rungs in progress** (1, 2.1), **1 rung fully closed** (2), FTA not yet reached.
+Counts: rungs **2** and **2.1 closed**; rung **1** closed in its forward direction, its reverse direction open. The later steps were rows of the FTA shortlist: the folders `A15_pre`, `A16`, `A17`, `A20`, `B3`, `B8`, `B10`, `C6`, `C8`, `D1` and `D2` hold the records of those that needed one, and [`fta_shortlist.md`](fta_shortlist.md) and [`fta_conjectures.md`](fta_conjectures.md) cover the rest. FTA reached in v0.13.0.
 
 ---
 
@@ -75,7 +75,7 @@ The two sides denote the same subset of `N`. Full human-notation proof in [`rung
 
 ### MPL formulation
 
-GL stores the set equality as two **directed** conjectures — set equality decomposes into two implications, each proved separately. With the `AnchorIncubator` 14-arg anchor binding (positions: `1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2, 8=id, 9=Z, 10=…, 11=…, 12=…, 13=…, 14=…`), the two conjectures are:
+GL stores the set equality as two **directed** conjectures — set equality decomposes into two implications, each proved separately. In the formulation of the rung's closure (May 2026), with the then 14-argument `AnchorIncubator` binding (positions: `1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2, 8=id, 9=Z, 10=…, 11=…, 12=…, 13=…, 14=…`), the two conjectures were:
 
 **Forward — `EnumerationSet2 ⟹ interval` ✓ (proved under D-34):**
 
@@ -86,7 +86,7 @@ GL stores the set equality as two **directed** conjectures — set equality deco
 
 Reading: *"For any `N`, `0`, `+`, `1` (slots 1, 2, 4, 6 of AnchorIncubator), and any set `15` (= `M`), if `M` is the enumerated `{0, 1}` then `M` is the interval `[0, 1]`."*
 
-**Reverse — `interval ⟹ EnumerationSet2` ⏳ (open):**
+**Reverse — `interval ⟹ EnumerationSet2` (open):**
 
 ```text
 (>[1,2,4,6](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])
@@ -95,11 +95,11 @@ Reading: *"For any `N`, `0`, `+`, `1` (slots 1, 2, 4, 6 of AnchorIncubator), and
 
 Reading: *"…if `M` is the interval `[0, 1]` then `M` is the enumerated `{0, 1}`."*
 
-Both directed conjectures live in `files/theorems/theorems.txt` (lines 340 and 342 in current MPL ordering); the forward direction lands in `files/incubator/theorems/proved_theorems.txt` after a successful pipeline run.
+The 14-argument `AnchorIncubator` has since been retired. The incubator now states the forward direction with `AnchorIncubator3` as `(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet2[2,6,10])(interval[1,4,2,6,10])))` and proves it in every full run (`files/incubator/theorems/theorems.txt`); the reverse direction is not proved in current runs.
 
 ### State
 
-- **Forward direction closed** — saved in incubator's `proved_theorems.txt`. End-to-end closure required D-29 (disintegration gate), D-30 (OR-integration emit scope), D-32 (sharper OR-disint admission), D-33 (bidirectional eq-class application + single-channel discharge), and D-34 (kernel-level `ordisMerge` + mailOut main-only gate). See [`rung1/current_proof_state.md`](rung1/current_proof_state.md) Steps 1–10 for the layered investigation trail.
+- **Forward direction closed** — proved by the incubator in every full run. End-to-end closure required D-29 (disintegration gate), D-30 (OR-integration emit scope), D-32 (sharper OR-disint admission), D-33 (bidirectional eq-class application + single-channel discharge), and D-34 (kernel-level `ordisMerge` + mailOut main-only gate). See [`rung1/current_proof_state.md`](rung1/current_proof_state.md) Steps 1–10 for the layered investigation trail.
 
 ---
 
@@ -120,8 +120,8 @@ The full proof is in
 ### MPL formulation
 
 With `AnchorIncubator3` binding
-`1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2, 8=id, 9=3`, the active positive
-conjecture is:
+`1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2, 8=id, 9=3`, the positive
+conjecture, proved in every full run, is:
 
 ```text
 (>[1,2,3,4,5,6,7,8,9]
@@ -150,9 +150,9 @@ The complete chronological evidence is in
 ### Human formulation
 
 The disproof rung split out of rung 2 at its closure: the IncubatorGauss3
-batch's last unsettled conjecture is the false cross-pair asserting that
-the three-element enumerated set equals the two-element interval. GL must
-prove the negation by reductio: assuming the interval description forces
+batch's last unsettled conjecture was the false cross-pair asserting that
+the three-element enumerated set equals the two-element interval. GL proves
+the negation by reductio: assuming the interval description forces
 `2 ≤ 1`, and two rounds of successor-addition descent turn the witnessed
 sum `2 + k = 1` into a successor with value `0`. Full disproof in
 [`rung2_1/proof_02_1_es3_not_interval_0_1.md`](rung2_1/proof_02_1_es3_not_interval_0_1.md).
@@ -160,7 +160,7 @@ sum `2 + k = 1` into a successor with value `0`. Full disproof in
 ### MPL formulation
 
 With the `AnchorIncubator3` binding `1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2,
-8=id, 9=3`, the target negation theorem is:
+8=id, 9=3`, the negation theorem, proved in every full run, is:
 
 ```text
 (>[1,2,3,4,5,6,7,8,9]
@@ -170,17 +170,17 @@ With the `AnchorIncubator3` binding `1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2,
 
 ### State
 
-- **Not started** — created at the rung-2 closure; prover work begins in a
- new session. Anticipated first boundary: the reductio's descent runs at
- the contradiction LB's `main` scope, outside the `_orint_` widening's
- scope condition. See
+- **CLOSED in v0.10.0 (2026-07-31)** — GL disproves the cross-pair by
+ reductio. The closure needed new capabilities, among them retiring a case
+ branch whose assumed case is refuted and governing vacuous truth (see the
+ v0.10.0 release notes). The investigation trail is in
  [`rung2_1/current_proof_state.md`](rung2_1/current_proof_state.md).
 
 ---
 
 ## How rungs are added
 
-When the maintainer plans the next rung:
+Rung folders were made this way until September 2026; the later lemmas are recorded in [`fta_shortlist.md`](fta_shortlist.md) and [`fta_conjectures.md`](fta_conjectures.md). When the maintainer planned the next rung:
 
 1. Create `rung<N>/` subfolder.
 2. Drop `proof_<NN>_<slug>.md` with the human-notation proof (Theorem statement, Background facts, §-numbered proof, Conclusion, Structure of the proof GL needs to reconstruct).
@@ -196,6 +196,7 @@ When all directed conjectures of a rung close:
 
 ## See also
 
+- [`fta_conjectures.txt`](fta_conjectures.txt) and its readable companion [`fta_conjectures.md`](fta_conjectures.md) — the 160 conjectures the Fundamental Theorem of Arithmetic rests on, in proof order: the 103 FTA rows the FTA batch is given as goals (the existence and uniqueness halves, I4 and I5, with every lemma they rest on, plus two that no proof cites but GL's search depends on) and 57 Peano and Gauss rows, which GL conjectures itself except one lemma supplied to the Peano batch. The Peano axioms and GL's definitions are the only other input.
 - [`docs/agentic_swdd/40_decisions.md`](../agentic_swdd/40_decisions.md) — D-22 onward documents the architectural decisions that the FTA ladder forced.
 - [`docs/agentic_swdd/20_core_concepts/07_or_branching.md`](../agentic_swdd/20_core_concepts/07_or_branching.md) — OR-branching machinery exercises every rung.
 - [`docs/agentic_swdd/30_invariants.md`](../agentic_swdd/30_invariants.md) — load-bearing invariants the rungs validate.

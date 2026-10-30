@@ -1,0 +1,10 @@
+(inSequence[1,11,10])	main	implication	(>[pi_lev_2_4](in[pi_lev_2_4,u_1])(>[](in2[pi_lev_2_4,u_11,u_10])(inSequence[u_1,u_11,u_10])))	main	(in2[9,11,10])	main	(in[9,1])	main
+(>[pi_lev_2_4](in[pi_lev_2_4,u_1])(>[](in2[pi_lev_2_4,u_11,u_10])(inSequence[u_1,u_11,u_10])))	main	expansion	(implication2667[1,11,10])	main
+(implication2667[1,11,10])	main	reformulation for integration >[bound]	!(>[pi_lev_2_3](in[pi_lev_2_3,1])!(in2[pi_lev_2_3,11,10]))_integration_goal	main
+!(>[pi_lev_2_3](in[pi_lev_2_3,1])!(in2[pi_lev_2_3,11,10]))_integration_goal	main	expansion for integration	(inSequence[1,11,10])_integration_goal	main
+(in2[9,11,10])	main	task formulation
+(in[9,1])	main	disintegration	(&(&(&(&(implication89[force_lev_1_0,1,4,2])(implication90[force_lev_1_0,1,4,9]))(implication91[1,4,2,9,force_lev_1_0]))(in[2,1]))(in[9,1]))	main
+(&(&(&(&(implication89[force_lev_1_0,1,4,2])(implication90[force_lev_1_0,1,4,9]))(implication91[1,4,2,9,force_lev_1_0]))(in[2,1]))(in[9,1]))	main	expansion	(interval[1,4,2,9,force_lev_1_0])	main
+(interval[1,4,2,9,force_lev_1_0])	main	disintegration	!(>[force_lev_1_0](interval[1,4,2,9,force_lev_1_0])!(fXY[10,force_lev_1_0,1]))	main
+!(>[force_lev_1_0](interval[1,4,2,9,force_lev_1_0])!(fXY[10,force_lev_1_0,1]))	main	expansion	(sequence[1,4,2,9,10])	main
+(sequence[1,4,2,9,10])	main	task formulation

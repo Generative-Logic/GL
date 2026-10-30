@@ -107,7 +107,7 @@ untouched — it uses `method = single chapter proof` after OR-convergence, not
 
 ### Stage 2 — chapter emission
 
-**Files touched**: `visualizer.cpp`, `generate_full_proof_graph.py`,
+**Files touched**: `proof/proof_reconstructor.cpp`, `generate_full_proof_graph.py`,
 `process_proof_graphs.py`, `run_modes.py`, `run_modes.cpp`.
 
 - Chapter filename convention:
@@ -116,7 +116,7 @@ untouched — it uses `method = single chapter proof` after OR-convergence, not
  (Or pick another three-chapter numbering scheme — the constraint is
  deterministic ordering so the verifier can match typing-chapter to
  parent theorem.)
-- `visualizer.cpp` — when building the raw proof graph for the induction
+- `proof/proof_reconstructor.cpp` — when building the raw proof graph for the induction
  target, walk the third recursion block too and emit it as a chapter
  with all the usual tags.
 - `process_proof_graphs.py` — recognize the new filename, apply the

@@ -66,6 +66,38 @@ class CounterexampleWitnessTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 lean._counterexample_witness_data(parse_mpl(text))
 
+    def test_projection_group_follows_the_source_order(self) -> None:
+        # A case witness's head projected before its typing: the group keeps
+        # the source row's order, so the folded witness bundle is the
+        # definition's conjunction (in, then the head).
+        source = '!(>[w](in[w,N])!(existence13[N,a,w]))'
+        first = {'id': 'chapter_1_line_1', 'source_line': 1,
+                 'source_tag': 'task formulation', 'action': 'assume',
+                 'namespace': 'main', 'conclusion': {'mpl': source}, 'dependencies': []}
+        steps = [first]
+        for index, fact in enumerate(['(existence13[N,a,w])', '(in[w,N])'], 2):
+            steps.append({'id': f'chapter_1_line_{index}', 'source_line': index,
+                          'source_tag': 'disintegration', 'action': 'compound_project',
+                          'namespace': 'main', 'conclusion': {'mpl': fact},
+                          'dependencies': [{'step': first['id'], 'namespace': 'main',
+                                            'expression': {'mpl': source}}]})
+        grouped = lean._existence_projection_sources({'steps': steps})
+        self.assertEqual([lean.to_mpl(projection) for projection in grouped[first['id']]],
+                         ['(in[w,N])', '(existence13[N,a,w])'])
+
+    def test_projection_outside_the_source_bundle_asserts(self) -> None:
+        source = '!(>[w](in[w,N])!(existence13[N,a,w]))'
+        first = {'id': 'chapter_1_line_1', 'source_line': 1,
+                 'source_tag': 'task formulation', 'action': 'assume',
+                 'namespace': 'main', 'conclusion': {'mpl': source}, 'dependencies': []}
+        stray = {'id': 'chapter_1_line_2', 'source_line': 2,
+                 'source_tag': 'disintegration', 'action': 'compound_project',
+                 'namespace': 'main', 'conclusion': {'mpl': '(in2[w,a,s])'},
+                 'dependencies': [{'step': first['id'], 'namespace': 'main',
+                                   'expression': {'mpl': source}}]}
+        with self.assertRaises(AssertionError):
+            lean._existence_projection_sources({'steps': [first, stray]})
+
     def test_renderer_extracts_once_and_projects_three_shared_facts(self) -> None:
         source = '!(>[w](in[w,N])(>[](in2[w,a,s])(=[w,a])))'
         first = {'id': 'chapter_1_line_1', 'source_line': 1,

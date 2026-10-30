@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #pragma once
+#include "../infra/peak_snapshot.hpp"
 
 #include <cassert>
 
@@ -42,9 +43,15 @@
 #include <thread>
 #include <type_traits>
 #include <vector>
+#include "../memory_infra/gpu_host_memory.hpp"
+
+namespace ce {
+    struct AnchorInfo;
+}
 
 namespace gl {
-    struct ExpressionAnalyzer;
+    class CompiledDefinitionRegistry;
+    struct ProverParameters;
     struct ExpressionStump;
     struct Memory;
 }
@@ -80,7 +87,7 @@ namespace gl::gpu {
     ///
     /// @details
     /// Each field is an element or byte ceiling for one reusable projection
-    /// arena. The arena reserves every vector to these limits in its constructor,
+    /// arena. The arena reserves its owned columns to these limits in its constructor,
     /// then asserts before each append; no logical-block append can grow storage.
     struct Phase2ProjectionCapacity {
         uint32_t logicalBlocks{ 0 };
@@ -245,8 +252,7 @@ namespace gl::gpu {
     /// substitution; callers may reduce the returned integers in any order.
     ///
     /// @param body Resident logical block whose post-Phase-1 read image is measured.
-    /// @param analyzer Analyzer-wide immutable configuration and compiled-core
-    ///                 registry used by Phase 2 evaluation.
+    /// @param anchorInfo Immutable anchor information used to measure its name bytes.
     /// @param selectedHashMemories Bit `1 << DeviceHashMemoryKind` for every
     ///                 request memory consumed by this logical block's tasks.
     /// @param buildPrefixFilter Include derived next-predicate maps used by the
@@ -257,7 +263,7 @@ namespace gl::gpu {
     ///            proof gate, request, or verdict.
     Phase2ProjectionUsage measurePhase2ProjectionUsage(
         const Memory& body,
-        const ExpressionAnalyzer& analyzer,
+        const ce::AnchorInfo& anchorInfo,
         uint32_t selectedHashMemories = 0x0fu,
         bool buildPrefixFilter = false);
 
@@ -442,6 +448,7 @@ namespace gl::gpu {
         int32_t primedForContradiction{ 0 };
         int32_t isPartOfRecursion{ 0 };
         int32_t recursionAuxyImplId{ 0 };
+        int32_t recursionProductImplId{ 0 };
         int32_t contradictionIndex{ -1 };
         NameId mainValidityId{ 0 };
         int32_t level{ 0 };
@@ -468,7 +475,31 @@ namespace gl::gpu {
     static_assert(sizeof(DeviceReverseMapView) == 16);
     static_assert(sizeof(DevicePodMapEntry) == 24);
     static_assert(sizeof(DevicePodMapView) == 20);
-    static_assert(sizeof(DeviceLogicalBlockProjection) == 160);
+    static_assert(sizeof(DeviceLogicalBlockProjection) == 164);
+
+    /// @brief Whether a firing's source rule is one of the block's installed
+    ///        induction implications — the device twin of
+    ///        `Memory::isInductionHypothesisRule`
+    ///        (D-566).
+    ///
+    /// @details
+    /// A recursion step block projects its induction implication's rule id;
+    /// a strong step block also projects its multiplication catcher's. A
+    /// firing of either rule carries the recursion-head flag (D-356). An id
+    /// of 0 names no rule.
+    ///
+    /// @param block    The projected logical block.
+    /// @param sourceId The fired rule's source rule-interner id.
+    /// @return True iff @p sourceId is nonzero and names one of the block's
+    ///         induction implications.
+    /// @see Memory::isInductionHypothesisRule.
+#ifdef __CUDACC__
+    __host__ __device__
+#endif
+    inline bool isInductionHypothesisSource(const DeviceLogicalBlockProjection& block, int32_t sourceId) {
+        return sourceId != 0
+            && (sourceId == block.recursionAuxyImplId || sourceId == block.recursionProductImplId);
+    }
 
     /// @brief Host-clock attribution for one cleared projection batch.
     ///
@@ -499,19 +530,14 @@ namespace gl::gpu {
         uint64_t mergeNanoseconds{ 0 };
     };
 
-    /// @brief Heap bytes reserved by a set of `std::vector` columns — the
-    ///        host-memory measure of the fixed-capacity CUDA host arenas.
+    /// @brief Sum logical column capacity in bytes.
     ///
-    /// @details
-    /// Every CUDA host arena reserves its columns once to a fixed capacity at
-    /// construction, so `capacity() * sizeof(value_type)` summed over the
-    /// columns is exactly the heap the arena pins while it lives. Used by the
-    /// arenas' `hostBytes()` accessors for the memory playbook's per-chunk
-    /// census. Observability only (Rule 16).
+    /// @details Measures payload capacity without enclosing-lease alignment or
+    /// block rounding. Physical host ownership is reported by each arena.
     ///
-    /// @tparam Vectors `std::vector` column types.
-    /// @param vectors The columns to measure.
-    /// @return Sum of reserved bytes; 0 for no columns.
+    /// @tparam Vectors Column types with capacity and value_type.
+    /// @param vectors Columns to measure.
+    /// @return Sum of payload capacities; zero for no columns.
     template <class... Vectors>
     inline uint64_t vectorCapacityBytes(const Vectors&... vectors) {
         return (static_cast<uint64_t>(0) + ... + static_cast<uint64_t>(
@@ -579,13 +605,10 @@ namespace gl::gpu {
 
         ProjectionColumn() = default;
 
-        /// @brief Free owned storage.
-        ///
-        /// @details
-        /// A slice frees nothing: its storage belongs to the owning column.
-        ~ProjectionColumn() {
-            if (owned_) std::allocator<T>().deallocate(data_, capacity_);
-        }
+        /// @brief End this column and its optional standalone lease.
+        /// @details Enclosing-arena columns and slices return no storage here;
+        /// their arena owns the lease through the last consumer.
+        ~ProjectionColumn() = default;
 
         ProjectionColumn(const ProjectionColumn&) = delete;
         ProjectionColumn& operator=(const ProjectionColumn&) = delete;
@@ -600,10 +623,41 @@ namespace gl::gpu {
         /// @return Nothing.
         void reserve(std::size_t capacity) {
             assert(data_ == nullptr && capacity > 0);
-            data_ = std::allocator<T>().allocate(capacity);
+            assert(capacity <= UINT64_MAX / sizeof(T));
+            const uint64_t bytes = static_cast<uint64_t>(capacity) * sizeof(T);
+            if (arena_ == nullptr) {
+                ownStorage_.reserve(bytes);
+                arena_ = &ownStorage_;
+            }
+            data_ = static_cast<T*>(arena_->allocate(bytes, alignof(T)));
             capacity_ = capacity;
             owned_ = true;
+    }
+
+        /// @brief Bind a column to its enclosing fixed-capacity host arena.
+        /// @details The arena owns the complete lease and outlives every column.
+        /// @param arena Reserved enclosing storage, with this column counted.
+        /// @return Nothing.
+        void bindStorage(GpuHostArena& arena) {
+            assert(data_ == nullptr && arena_ == nullptr);
+            arena_ = &arena;
         }
+
+        /// @brief Replace the used prefix with repeated values.
+        /// @details Uses existing capacity; no allocation or relocation occurs.
+        /// @param count New used count, bounded by capacity.
+        /// @param value Value written into every used position.
+        /// @return Nothing.
+        void assign(std::size_t count, const T& value) {
+            assert(count <= capacity_);
+            std::fill_n(data_, count, value);
+            size_ = count;
+        }
+
+        /// @brief Remove the last element of a nonempty scratch column.
+        /// @details The storage remains available for the next append.
+        /// @return Nothing.
+        void pop_back() { assert(size_ > 0); --size_; }
 
         /// @brief View `capacity` elements of `storage` starting at `offset`.
         ///
@@ -639,11 +693,16 @@ namespace gl::gpu {
         /// @return `size() == 0`.
         bool empty() const { return size_ == 0; }
 
-        /// @brief Heap bytes this column owns.
+        /// @brief Payload bytes this column owns.
         ///
         /// @return `capacity() * sizeof(T)` when owning, zero for a slice or an
         ///         unreserved column.
         uint64_t ownedBytes() const {
+            if (owned_ && peak_snapshot::active()) {
+                static_assert(alignof(T) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+                peak_snapshot::note(data_, capacity_ * sizeof(T), 5);
+                peak_snapshot::note(data_, size_ * sizeof(T), 8);
+            }
             return owned_ ? static_cast<uint64_t>(capacity_) * sizeof(T) : 0;
         }
 
@@ -774,6 +833,8 @@ namespace gl::gpu {
         }
 
     private:
+        GpuHostArena ownStorage_;
+        GpuHostArena* arena_ = nullptr;
         T* data_ = nullptr;
         std::size_t size_ = 0;
         std::size_t capacity_ = 0;
@@ -878,7 +939,7 @@ namespace gl::gpu {
         uint32_t workingThreads_ = 0;
         uint64_t generation_ = 0;
         bool stopping_ = false;
-        std::vector<std::thread> threads_;
+        GpuHostObjectArray<std::thread> threads_;
     };
 
     /// @brief Reusable fixed-capacity host image for Phase 2 device projection.
@@ -896,7 +957,20 @@ namespace gl::gpu {
     /// retains only descriptors, lookup data and source ordinals. `clear` resets sizes
     /// while retaining all reservations for the next task batch.
     class Phase2ProjectionArena {
+        GpuHostArena hostStorage_;
     public:
+        enum class Role : uint8_t { Owning, Backing, Slice, Sealing };
+
+        /// @brief Measure exact aligned storage for a projection ownership role.
+        /// @details Matches the construction order, including shard scratch and
+        /// retained sealing fields. The caller charges whole-block rounding.
+        /// @param fixedCapacity Logical field and scratch ceilings.
+        /// @param storage Backing-column ceilings, including shard padding.
+        /// @param role Ownership shape to measure.
+        /// @return Exact contiguous payload layout before block rounding.
+        static GpuHostLayout hostLayout(const Phase2ProjectionCapacity& fixedCapacity,
+            const Phase2ProjectionCapacity& storage, Role role);
+
         Phase2ProjectionCapacity capacity;
         Phase2ProjectionTiming timing;
         ProjectionColumn<DeviceLogicalBlockProjection> logicalBlocks;
@@ -926,11 +1000,6 @@ namespace gl::gpu {
         ProjectionColumn<int32_t> podRunValues;
         ProjectionColumn<int64_t> mandatoryStatementKeys;
         ProjectionColumn<char> metadataBytes;
-        // Host-only, sealing image: the rule copy (`packRuleOwner` of the LMV's
-        // original implication and scope) of each complete-image blob record
-        // of an overall encoded-map run, zero for any other blob record; read
-        // by the sealing of marker records (I-284).
-        ProjectionColumn<int64_t> blobRuleOwners;
 
         /// @brief Select a retained host image containing only sealing inputs.
         struct SealingOnly {};
@@ -995,28 +1064,16 @@ namespace gl::gpu {
         Phase2ProjectionArena(Phase2ProjectionCapacity sliceCapacity,
             Phase2ProjectionArena& backing, const Phase2ProjectionCapacity& sliceStart);
 
-        /// @brief Heap bytes the arena's columns own (fixed at construction) —
-        ///        the per-chunk host projection size.
-        ///
-        /// @details
-        /// Sums `ProjectionColumn::ownedBytes` over every column, host-only
-        /// ordinals included. A slice shard owns none: its rows live in the
-        /// backing arena. The arena reserves once and never grows, so the figure
-        /// is the heap this projection pins from construction to destruction.
-        /// Observability only (Rule 16).
-        ///
-        /// @return Owned heap bytes.
+        /// @brief Whole-block bytes reserved for this arena's owned storage.
+        /// @details Includes construction scratch and alignment/rounding. Borrowed
+        /// projection slices add no payload copies; their scratch remains owned.
+        /// Observability only; this count is never a proof input.
+        /// @return Physical reservation bytes charged to the GPU-host pool.
         uint64_t hostBytes() const {
-            const auto owned = [](const auto&... columns) {
-                return (static_cast<uint64_t>(0) + ... + columns.ownedBytes());
-            };
-            return owned(logicalBlocks, statements, sourceStatementIndices,
-                nameRecords, nameBytes, nameSlots, ruleStringRecords,
-                ruleStringBytes, byteMapViews, byteMapEntries, byteMapSlots,
-                byteKeyBytes, blobRecords, blobBytes, reverseMapViews,
-                reverseMapEntries, reverseMapSlots, reverseKeyBytes, reverseOwners,
-                podMapViews, podMapEntries, podMapSlots, podRunValues,
-                mandatoryStatementKeys, metadataBytes, blobRuleOwners);
+            const uint64_t observed = peak_snapshot::measure("logicalBlocks", logicalBlocks, [&] { return logicalBlocks.ownedBytes(); }) + peak_snapshot::measure("statements", statements, [&] { return statements.ownedBytes(); }) + peak_snapshot::measure("sourceStatementIndices", sourceStatementIndices, [&] { return sourceStatementIndices.ownedBytes(); }) + peak_snapshot::measure("nameRecords", nameRecords, [&] { return nameRecords.ownedBytes(); }) + peak_snapshot::measure("nameBytes", nameBytes, [&] { return nameBytes.ownedBytes(); }) + peak_snapshot::measure("nameSlots", nameSlots, [&] { return nameSlots.ownedBytes(); }) + peak_snapshot::measure("ruleStringRecords", ruleStringRecords, [&] { return ruleStringRecords.ownedBytes(); }) + peak_snapshot::measure("ruleStringBytes", ruleStringBytes, [&] { return ruleStringBytes.ownedBytes(); }) + peak_snapshot::measure("byteMapViews", byteMapViews, [&] { return byteMapViews.ownedBytes(); }) + peak_snapshot::measure("byteMapEntries", byteMapEntries, [&] { return byteMapEntries.ownedBytes(); }) + peak_snapshot::measure("byteMapSlots", byteMapSlots, [&] { return byteMapSlots.ownedBytes(); }) + peak_snapshot::measure("byteKeyBytes", byteKeyBytes, [&] { return byteKeyBytes.ownedBytes(); }) + peak_snapshot::measure("blobRecords", blobRecords, [&] { return blobRecords.ownedBytes(); }) + peak_snapshot::measure("blobBytes", blobBytes, [&] { return blobBytes.ownedBytes(); }) + peak_snapshot::measure("reverseMapViews", reverseMapViews, [&] { return reverseMapViews.ownedBytes(); }) + peak_snapshot::measure("reverseMapEntries", reverseMapEntries, [&] { return reverseMapEntries.ownedBytes(); }) + peak_snapshot::measure("reverseMapSlots", reverseMapSlots, [&] { return reverseMapSlots.ownedBytes(); }) + peak_snapshot::measure("reverseKeyBytes", reverseKeyBytes, [&] { return reverseKeyBytes.ownedBytes(); }) + peak_snapshot::measure("reverseOwners", reverseOwners, [&] { return reverseOwners.ownedBytes(); }) + peak_snapshot::measure("podMapViews", podMapViews, [&] { return podMapViews.ownedBytes(); }) + peak_snapshot::measure("podMapEntries", podMapEntries, [&] { return podMapEntries.ownedBytes(); }) + peak_snapshot::measure("podMapSlots", podMapSlots, [&] { return podMapSlots.ownedBytes(); }) + peak_snapshot::measure("podRunValues", podRunValues, [&] { return podRunValues.ownedBytes(); }) + peak_snapshot::measure("mandatoryStatementKeys", mandatoryStatementKeys, [&] { return mandatoryStatementKeys.ownedBytes(); }) + peak_snapshot::measure("metadataBytes", metadataBytes, [&] { return metadataBytes.ownedBytes(); });
+
+            (void)observed;
+            return hostStorage_.reservedBytes();
         }
 
         /// @brief Reset all used prefixes without releasing reserved storage.
@@ -1049,8 +1106,9 @@ namespace gl::gpu {
         /// are excluded before upload; retained rows keep their relative order.
         ///
         /// @param body Resident logical block whose read-only Phase 2 state is read.
-        /// @param analyzer Analyzer-wide immutable parameters, anchor name, and
-        ///                 compiled-core categories read by evaluation.
+        /// @param definitions Immutable compiled-core registry.
+    /// @param anchorInfo Immutable anchor information.
+    /// @param parameters Immutable phase-two evaluation parameters.
         /// @param selectedHashMemories Bit `1 << DeviceHashMemoryKind` for every
         ///                 request memory consumed by this logical block's tasks.
         /// @param buildPrefixFilter Build the exact-prefix next-predicate maps;
@@ -1060,7 +1118,9 @@ namespace gl::gpu {
         ///            preserve relative statement order and local identifier values.
         DeviceLogicalBlockProjection appendLogicalBlock(
             const Memory& body,
-            const ExpressionAnalyzer& analyzer,
+            const CompiledDefinitionRegistry& definitions,
+            const ce::AnchorInfo& anchorInfo,
+            const ProverParameters& parameters,
             uint32_t selectedHashMemories = 0x0fu,
             bool buildPrefixFilter = false);
 
@@ -1159,6 +1219,22 @@ namespace gl::gpu {
         void appendSealingProjection(const Phase2ProjectionArena& source,
             const ShardBases& bases);
 
+        /// @brief Observe all host columns and private construction scratch.
+        /// @details Diagnostic only. Borrowed columns contribute no allocation;
+        /// private scratch retains its separate owner and exact vector capacity.
+        /// @return Total owned host column and construction-scratch capacity bytes.
+        uint64_t snapshotBytes() const {
+            peak_snapshot::note(this, sizeof(*this), 0);
+            peak_snapshot::measure("decodedRankScratch_", decodedRankScratch_, [&] { return decodedRankScratch_.ownedBytes(); });
+            peak_snapshot::measure("usedAsPremiseScratch_", usedAsPremiseScratch_, [&] { return usedAsPremiseScratch_.ownedBytes(); });
+            peak_snapshot::measure("decodedRankWorkScratch_", decodedRankWorkScratch_, [&] { return decodedRankWorkScratch_.ownedBytes(); });
+            peak_snapshot::measure("decodedRankRangeScratch_", decodedRankRangeScratch_, [&] { return decodedRankRangeScratch_.ownedBytes(); });
+            peak_snapshot::measure("reverseRunScratch_", reverseRunScratch_, [&] { return reverseRunScratch_.ownedBytes(); });
+            peak_snapshot::measure("sharedNameProjections_", sharedNameProjections_, [&] { return sharedNameProjections_.ownedBytes(); });
+            peak_snapshot::measure("sharedRuleStringProjections_", sharedRuleStringProjections_, [&] { return sharedRuleStringProjections_.ownedBytes(); });
+            return hostBytes();
+        }
+
     private:
         /// @brief The destination column sizes before a shard is appended — the
         ///        bases its rebased references add.
@@ -1231,7 +1307,6 @@ namespace gl::gpu {
         /// `Backing`: the columns own the storage of a build-once projection and
         /// receive their rows through `adoptShards`. `Slice`: the columns view part
         /// of a backing arena's storage. Sealing retains only host lookup data.
-        enum class Role : uint8_t { Owning, Backing, Slice, Sealing };
 
         /// @brief Assert that every field of `capacity` is positive.
         ///
@@ -1243,13 +1318,9 @@ namespace gl::gpu {
         ///
         /// @param storage Elements each column reserves.
         /// @return Nothing.
-        void reserveColumns(const Phase2ProjectionCapacity& storage);
+        void reserveStorage(const Phase2ProjectionCapacity& storage);
 
-        /// @brief Reserve the construction scratch for this arena's `capacity`
-        ///        (owning and slice arenas).
-        ///
-        /// @return Nothing.
-        void reserveScratch();
+
 
         /// @brief Add a shard's construction timing to this arena's totals.
         ///
@@ -1317,13 +1388,13 @@ namespace gl::gpu {
             uint32_t byteCount{ 0 };
         };
 
-        std::vector<NameId> decodedRankScratch_;
-        std::vector<uint8_t> usedAsPremiseScratch_;
-        std::vector<NameId> decodedRankWorkScratch_;
-        std::vector<DecodedRankRange> decodedRankRangeScratch_;
-        std::vector<uint32_t> reverseRunScratch_;
-        std::vector<SharedNameProjection> sharedNameProjections_;
-        std::vector<SharedRuleStringProjection> sharedRuleStringProjections_;
+        ProjectionColumn<NameId> decodedRankScratch_;
+        ProjectionColumn<uint8_t> usedAsPremiseScratch_;
+        ProjectionColumn<NameId> decodedRankWorkScratch_;
+        ProjectionColumn<DecodedRankRange> decodedRankRangeScratch_;
+        ProjectionColumn<uint32_t> reverseRunScratch_;
+        ProjectionColumn<SharedNameProjection> sharedNameProjections_;
+        ProjectionColumn<SharedRuleStringProjection> sharedRuleStringProjections_;
         Role role_ = Role::Owning;
         bool adopted_ = false;
     };
@@ -1486,19 +1557,28 @@ namespace gl::gpu {
     /// indices and terminal markers exactly. Construction is the only allocation;
     /// append and clear never change vector capacities.
     class Phase2TaskProjectionArena {
+        GpuHostArena hostStorage_;
     public:
-        Phase2TaskProjectionCapacity capacity;
-        std::vector<DevicePhase2Task> tasks;
-        std::vector<DeviceRequestBatch> batches;
-        std::vector<DeviceMandatoryTerm> terms;
-        std::vector<DeviceExpressionStump> stumps;
+        /// @brief Measure all fixed schedule columns in construction order.
+        /// @details Used before allocation to charge the independent host budget.
+        /// @param capacity Positive schedule capacity.
+        /// @return Exact aligned payload layout, before block rounding.
+        static GpuHostLayout hostLayout(Phase2TaskProjectionCapacity capacity);
 
-        /// @brief Heap bytes the four task columns reserve (fixed at
+        Phase2TaskProjectionCapacity capacity;
+        ProjectionColumn<DevicePhase2Task> tasks;
+        ProjectionColumn<DeviceRequestBatch> batches;
+        ProjectionColumn<DeviceMandatoryTerm> terms;
+        ProjectionColumn<DeviceExpressionStump> stumps;
+
+        /// @brief Pool bytes the four task columns reserve (fixed at
         ///        construction). Observability only (Rule 16).
         ///
-        /// @return Reserved heap bytes.
+        /// @return Reserved pool bytes.
         uint64_t hostBytes() const {
-            return vectorCapacityBytes(tasks, batches, terms, stumps);
+            const uint64_t observed = peak_snapshot::measure("tasks", tasks, [&] { return tasks.ownedBytes(); }) + peak_snapshot::measure("batches", batches, [&] { return batches.ownedBytes(); }) + peak_snapshot::measure("terms", terms, [&] { return terms.ownedBytes(); }) + peak_snapshot::measure("stumps", stumps, [&] { return stumps.ownedBytes(); });
+            (void)observed;
+            return hostStorage_.reservedBytes();
         }
 
         /// @brief Reserve every task-projection array to a fixed ceiling.
@@ -1616,23 +1696,31 @@ namespace gl::gpu {
     /// class descriptor. Construction is the only allocation; clear retains every
     /// reservation and resets the fixed open-address table in place.
     class Phase2FilterScheduleArena {
+        GpuHostArena hostStorage_;
     public:
+        /// @brief Measure all fixed schedule columns in construction order.
+        /// @details Used before allocation to charge the independent host budget.
+        /// @param capacity Positive schedule capacity.
+        /// @return Exact aligned payload layout, before block rounding.
+        static GpuHostLayout hostLayout(Phase2FilterScheduleCapacity capacity);
+
         Phase2FilterScheduleCapacity capacity;
-        std::vector<DevicePhase2FilterCall> calls;
-        std::vector<DevicePhase2FilterCall> classes;
-        std::vector<uint32_t> callClassIndices;
-        std::vector<uint32_t> classMultiplicities;
-        std::vector<int32_t> classSlots;
+        ProjectionColumn<DevicePhase2FilterCall> calls;
+        ProjectionColumn<DevicePhase2FilterCall> classes;
+        ProjectionColumn<uint32_t> callClassIndices;
+        ProjectionColumn<uint32_t> classMultiplicities;
+        ProjectionColumn<int32_t> classSlots;
         uint64_t examinedRows{ 0 };
         uint64_t classExaminedRows{ 0 };
 
-        /// @brief Heap bytes the filter-schedule columns reserve (fixed at
+        /// @brief Pool bytes the filter-schedule columns reserve (fixed at
         ///        construction). Observability only (Rule 16).
         ///
-        /// @return Reserved heap bytes.
+        /// @return Reserved pool bytes.
         uint64_t hostBytes() const {
-            return vectorCapacityBytes(calls, classes, callClassIndices,
-                classMultiplicities, classSlots);
+            const uint64_t observed = peak_snapshot::measure("calls", calls, [&] { return calls.ownedBytes(); }) + peak_snapshot::measure("classes", classes, [&] { return classes.ownedBytes(); }) + peak_snapshot::measure("callClassIndices", callClassIndices, [&] { return callClassIndices.ownedBytes(); }) + peak_snapshot::measure("classMultiplicities", classMultiplicities, [&] { return classMultiplicities.ownedBytes(); }) + peak_snapshot::measure("classSlots", classSlots, [&] { return classSlots.ownedBytes(); });
+            (void)observed;
+            return hostStorage_.reservedBytes();
         }
 
         /// @brief Reserve the global filter-call schedule once.
@@ -1720,15 +1808,26 @@ namespace gl::gpu {
     /// projection. Construction reserves the complete measured call ceiling;
     /// clear and append never replace the vector allocation.
     class Phase2GrowthScheduleArena {
+        GpuHostArena hostStorage_;
     public:
-        uint32_t capacity{ 0 };
-        std::vector<DevicePhase2GrowthCall> calls;
+        /// @brief Measure all fixed schedule columns in construction order.
+        /// @details Used before allocation to charge the independent host budget.
+        /// @param capacity Positive schedule capacity.
+        /// @return Exact aligned payload layout, before block rounding.
+        static GpuHostLayout hostLayout(uint32_t capacity);
 
-        /// @brief Heap bytes the growth-call schedule reserves (fixed at
+        uint32_t capacity{ 0 };
+        ProjectionColumn<DevicePhase2GrowthCall> calls;
+
+        /// @brief Pool bytes the growth-call schedule reserves (fixed at
         ///        construction). Observability only (Rule 16).
         ///
-        /// @return Reserved heap bytes.
-        uint64_t hostBytes() const { return vectorCapacityBytes(calls); }
+        /// @return Reserved pool bytes.
+        uint64_t hostBytes() const {
+            const uint64_t observed = peak_snapshot::measure("calls", calls, [&] { return calls.ownedBytes(); });
+            (void)observed;
+            return hostStorage_.reservedBytes();
+        }
 
         /// @brief Reserve the request-growth call schedule once.
         ///
@@ -2230,6 +2329,12 @@ namespace gl::gpu {
         NameId count{ 0 };
         uint32_t flags{ 0 };
     };
+
+    // Path keys contain a 16-bit position plus the continuing-subtree range.
+    inline constexpr int kDeviceGrowthPathRadixBits = 17;
+    static_assert(2u * ExecutionParameters::MAX_FILTERED_POSITION_CODE
+        < (1u << kDeviceGrowthPathRadixBits),
+        "growth path ordering keys must fit their radix bit range");
 
     /// @brief Read one exact processor-walk path ordering component.
     ///

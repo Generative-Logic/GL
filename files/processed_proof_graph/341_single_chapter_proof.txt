@@ -1,0 +1,11 @@
+(primeseq[N,+,*,i1,i2,V1])	main	validity name	(prime[N,+,*,i1,i2,v2])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])
+(prime[N,+,*,i1,i2,v2])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])	equality1	(prime[N,+,*,i1,i2,v1])	main	(=[v1,v2])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])
+(=[v1,v2])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])	symmetry of equality	(=[v2,v1])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])
+(=[v2,v1])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])	implication	(>[w1,w2](in2[w1,w2,V1])(=[w2,v1]))	main	(in2[v5,v2,V1])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])
+(in2[v5,v2,V1])	main_boundary_(primeseq[N,+,*,i1,i2,V1])_subproof_(primeseq[N,+,*,i1,i2,V1])	premise element	(>[v5,v2](in2[v5,v2,V1])(prime[N,+,*,i1,i2,v2]))_integration_goal	main
+(prime[N,+,*,i1,i2,v1])	main	task formulation
+(>[w1,w2](in2[w1,w2,V1])(=[w2,v1]))	main	expansion	(implication2438[V1,v1])	main
+(implication2438[V1,v1])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main	expansion	(EnumerationRelationSet1[i0,v1,V1])	main
+(EnumerationRelationSet1[i0,v1,V1])	main	task formulation
+(>[v5,v2](in2[v5,v2,V1])(prime[N,+,*,i1,i2,v2]))_integration_goal	main	expansion for integration	(primeseq[N,+,*,i1,i2,V1])_integration_goal	main

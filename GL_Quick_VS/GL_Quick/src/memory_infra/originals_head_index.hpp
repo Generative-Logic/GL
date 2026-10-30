@@ -88,22 +88,24 @@ namespace gl {
     /// reproduces its candidate set exactly.
     ///
     /// **The masked-head family (the exact candidate set).** The consumer
-    /// accepts a chain only when its head has the deposit's sign, exactly one
-    /// constant (non-`u_`) argument at a `(1)`-definition slot, and every other
+    /// accepts a chain only when its head has the deposit's sign, one constant
+    /// (non-`u_`) argument, or two constants beside at least one other
+    /// argument, each constant at a `(1)`-definition slot, and every other
     /// argument equal to the deposit's `u_`-prefixed argument at the same
     /// position. That verdict is a key equality: the chain's MASKED HEAD KEY —
     /// the sign byte of a negated head, the head operator name, then its
-    /// arguments with the constant slot replaced by the mask byte
-    /// (`maskedHeadKey`) — equals the deposit's key masked at the same slot.
+    /// arguments with the constant slots replaced by the mask byte
+    /// (`maskedHeadKey`) — equals the deposit's key masked at the same slots.
     /// The consumer's builder callback hands in that key for every chain the
     /// verdict can accept (an empty span for every other chain — not indexed
     /// here); the second interner `maskedKeys_` with its own list columns
     /// (`mHeadById_` / `mTailById_` / `mNodeChain_` / `mNodeNext_`) groups the
     /// chain ids by masked key in the same ascending order, and
-    /// @ref chainsWithMaskedKey answers one probe per deposit slot with exactly
-    /// the chains whose constant sits at that slot and match — no per-candidate
-    /// decode remains; the union over the slots is disjoint (a chain has one
-    /// constant slot) and the consumer merges it into ascending id order.
+    /// @ref chainsWithMaskedKey answers one probe per deposit slot and one per
+    /// pair of deposit slots with exactly the chains whose constants sit at
+    /// those slots and match — no per-candidate decode remains; the union over
+    /// the probes is disjoint (a key fixes its set of masked slots) and the
+    /// consumer merges it into ascending id order.
     ///
     /// **Lifecycle (mirrors `ReverseArgsIndex`).**
     /// - Built and extended lazily by @ref ensureBuilt at the consumer
@@ -376,47 +378,56 @@ namespace gl {
 
     /// @brief Build the masked head key of an expression: a `!` for a negated
     ///        expression, its operator name, then `,`-separated arguments, the
-    ///        argument at @p maskSlot replaced by the single mask byte.
+    ///        argument at @p maskSlot (and at @p maskSlot2 when given) replaced
+    ///        by the single mask byte.
     ///
     /// @details
-    /// Two expressions have equal masked keys for the same slot iff they have
-    /// the same sign, their operator names are equal, their argument counts
-    /// are equal, and every argument outside the masked slot is equal byte for
-    /// byte — exactly the verdict `checkNecessityForEquality` needs between a
-    /// chain head (constant slot excepted) and the `u_`-prefixed deposit. A
-    /// rule whose head has the opposite sign concludes the negation of the
-    /// deposit and can never help establish it, so the sign is part of the
-    /// key. The separator `,` never occurs inside an argument (arguments are
-    /// the comma-split spans of the text), the mask byte never occurs in MPL
-    /// text and no operator name starts with `!`, so the key is injective over
-    /// (sign, name, argument list, slot).
+    /// Two expressions have equal masked keys for the same masked slots iff
+    /// they have the same sign, their operator names are equal, their argument
+    /// counts are equal, and every argument outside the masked slots is equal
+    /// byte for byte — exactly the verdict `checkNecessityForEquality` needs
+    /// between a chain head (its one or two constant slots excepted) and the
+    /// `u_`-prefixed deposit. A rule whose head has the opposite sign concludes
+    /// the negation of the deposit and can never help establish it, so the sign
+    /// is part of the key. The separator `,` never occurs inside an argument
+    /// (arguments are the comma-split spans of the text), the mask byte never
+    /// occurs in MPL text and no operator name starts with `!`, so the key is
+    /// injective over (sign, name, argument list, set of masked slots); in
+    /// particular a one-slot key never equals a two-slot key, so both live in
+    /// one masked family.
     ///
-    /// @param name     Operator-name bytes (`extractExpressionSpan`, which drops
-    ///                 the sign).
-    /// @param negated  Whether the expression is negated (its text starts with
-    ///                 `!`).
-    /// @param args     The argument spans (`getArgsSpans`).
-    /// @param argN     Argument count.
-    /// @param maskSlot The 0-based slot to mask; `0 <= maskSlot < argN`.
-    /// @param buf      Caller buffer receiving the key bytes.
-    /// @param cap      Capacity of @p buf; an overflow asserts.
+    /// @param name      Operator-name bytes (`extractExpressionSpan`, which
+    ///                  drops the sign).
+    /// @param negated   Whether the expression is negated (its text starts
+    ///                  with `!`).
+    /// @param args      The argument spans (`getArgsSpans`).
+    /// @param argN      Argument count.
+    /// @param maskSlot  The 0-based slot to mask; `0 <= maskSlot < argN`.
+    /// @param buf       Caller buffer receiving the key bytes.
+    /// @param cap       Capacity of @p buf; an overflow asserts.
+    /// @param maskSlot2 A second 0-based slot to mask, or `-1` for a one-slot
+    ///                  key; when given, `0 <= maskSlot2 < argN` and
+    ///                  `maskSlot2 != maskSlot` (asserted).
     /// @return The key as a span over @p buf.
     /// @invariant Never allocates; the result lives in @p buf.
     /// @see OriginalsHeadIndex::chainsWithMaskedKey, checkNecessityForEquality.
     inline StrSpan maskedHeadKey(StrSpan name, bool negated, const StrSpan* args,
                                  int32_t argN, int32_t maskSlot, char* buf,
-                                 int32_t cap) {
+                                 int32_t cap, int32_t maskSlot2 = -1) {
         assert(argN >= 0 && maskSlot >= 0 && maskSlot < argN
             && "maskedHeadKey: mask slot outside the argument list");
+        assert((maskSlot2 == -1 || (maskSlot2 >= 0 && maskSlot2 < argN && maskSlot2 != maskSlot))
+            && "maskedHeadKey: second mask slot outside the argument list or equal to the first");
         int32_t at = 0;
         assert((negated ? 1 : 0) + name.len <= cap && "maskedHeadKey: key exceeds the buffer");
         if (negated) buf[at++] = '!';
         for (int32_t b = 0; b < name.len; ++b) buf[at++] = name.ptr[b];
         for (int32_t a = 0; a < argN; ++a) {
-            const int32_t need = (a == maskSlot) ? 2 : 1 + args[a].len;
+            const bool masked = (a == maskSlot || a == maskSlot2);
+            const int32_t need = masked ? 2 : 1 + args[a].len;
             assert(at + need <= cap && "maskedHeadKey: key exceeds the buffer");
             buf[at++] = ',';
-            if (a == maskSlot) {
+            if (masked) {
                 buf[at++] = kMaskedHeadSlotByte;
             } else {
                 for (int32_t b = 0; b < args[a].len; ++b) buf[at++] = args[a].ptr[b];

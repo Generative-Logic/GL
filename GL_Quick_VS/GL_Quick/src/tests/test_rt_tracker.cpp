@@ -40,6 +40,8 @@
 /// `std::filesystem::remove`; the file lifecycle is per-call by
 /// design so cleanup is a test concern, not a production one.
 
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
 
 #include "../memory.hpp"
@@ -79,12 +81,12 @@ struct SyntheticChain {
 void buildSyntheticChain(SyntheticChain& c,
                          const std::string& middle_key,
                          const std::string& leaf_key) {
-    c.middle.parentMemory = &c.root;
+    ((c.middle).parentMemory) = &c.root;
     c.middle.setExprKey(middle_key);
-    c.middle.level        = 0;
-    c.leaf.parentMemory   = &c.middle;
+    ((c.middle).level)        = 0;
+    ((c.leaf).parentMemory)   = &c.middle;
     c.leaf.setExprKey(leaf_key);
-    c.leaf.level          = 1;
+    ((c.leaf).level)          = 1;
 }
 
 /// Return the expected `.rt/<file>.log` path for a given sanitized

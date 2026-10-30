@@ -156,7 +156,7 @@ namespace gl {
         /// @brief Approximate live byte footprint across the two columns.
         /// @return Live bytes the memo occupies on the arena.
         int64_t liveBytes() const {
-            return kindById_.liveBytes() + tokensByExprId_.liveBytes();
+            return peak_snapshot::measure("kindById_", kindById_, [&] { return kindById_.liveBytes(); }) + peak_snapshot::measure("tokensByExprId_", tokensByExprId_, [&] { return tokensByExprId_.liveBytes(); });
         }
 
         /// @brief Enumerate the deload facets at `base + 0..4` — the seam

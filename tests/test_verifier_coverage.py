@@ -54,6 +54,22 @@ _FILES = ["0_single_chapter_proof.txt", "1_induction_typing.txt", "2_check_zero.
           "3_check_induction_condition.txt", "4_or_theorem.txt"]
 
 
+@register
+def test_strong_induction_owns_the_induction_triad():
+    """A strong induction theorem owns the same three chapters as a weak one."""
+    manifest = [("(T0)", "strong induction", "v2"), ("(T1)", "single chapter proof", "-1")]
+    files = ["0_induction_typing.txt", "1_check_zero.txt",
+             "2_check_induction_condition.txt", "3_single_chapter_proof.txt"]
+    names = [name for name, _, _ in expected_chapter_files(manifest)]
+    assert names == files, names
+    state = make_state_minimal()
+    check_chapter_coverage(files, manifest, state)
+    assert _coverage(state)[1] == 0, _coverage(state)
+    mapping = build_chapter_theorem_map(files, manifest)
+    assert mapping["2_check_induction_condition.txt"] == manifest[0]
+    assert mapping["3_single_chapter_proof.txt"] == manifest[1]
+
+
 def _coverage(state):
     """(success, failure) of the chapter-coverage counter (0, 0 if absent)."""
     ctr = state.tag_counters.get("chapter coverage")

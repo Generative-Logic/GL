@@ -1,0 +1,19 @@
+(preorder[N,+,v2,v3])	main	implication	(>[w1,w2](in2[w1,w2,V1])(>[w3,w4](in2[w3,w4,V1])(>[](preorder[N,+,w1,w3])(preorder[N,+,w4,w2]))))	main	(in2[v1,v2,V1])	main	(in2[v8,v3,V1])	main	(preorder[N,+,v8,v1])	main
+(in2[v1,v2,V1])	main	task formulation
+(>[w1,w2](in2[w1,w2,V1])(>[w3,w4](in2[w3,w4,V1])(>[](preorder[N,+,w1,w3])(preorder[N,+,w4,w2]))))	main	expansion	(ordered[N,+,V1])	main
+(ordered[N,+,V1])	main	task formulation
+(preorder[N,+,v8,v1])	main	implication	(>[w1](in[w1,V2])(preorder[N,+,w1,v1]))	main	(in[v8,V2])	main
+(in[v8,V2])	main	implication	(>[w1,w2](in2[w1,w2,V1])(in[w1,V2]))	main	(in2[v8,v3,V1])	main
+(in2[v8,v3,V1])	main	disintegration	!(>[v8](in[v8,N])!(in2[v8,v3,V1]))	main
+!(>[v8](in[v8,N])!(in2[v8,v3,V1]))	main	expansion	(inSequence[N,v3,V1])	main
+(inSequence[N,v3,V1])	main	task formulation
+(>[w1](in[w1,V2])(preorder[N,+,w1,v1]))	main	expansion	(implication90[V2,N,+,v1])	main
+(implication90[V2,N,+,v1])	main	disintegration	(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication89[V2,N,+,i0])(implication90[V2,N,+,v1]))(implication91[N,+,i0,v1,V2]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V2])	main
+(interval[N,+,i0,v1,V2])	main	disintegration	!(>[V2](interval[N,+,i0,v1,V2])!(fXY[V1,V2,N]))	main
+(>[w1,w2](in2[w1,w2,V1])(in[w1,V2]))	main	expansion	(implication0[V1,V2])	main
+(implication0[V1,V2])	main	disintegration	(&(&(&(implication0[V1,V2])(implication1[V1,N]))(implication6[V2,N,V1]))(implication7[V2,V1]))	main
+(&(&(&(implication0[V1,V2])(implication1[V1,N]))(implication6[V2,N,V1]))(implication7[V2,V1]))	main	expansion	(fXY[V1,V2,N])	main
+(fXY[V1,V2,N])	main	disintegration	!(>[V2](interval[N,+,i0,v1,V2])!(fXY[V1,V2,N]))	main
+!(>[V2](interval[N,+,i0,v1,V2])!(fXY[V1,V2,N]))	main	expansion	(sequence[N,+,i0,v1,V1])	main
+(sequence[N,+,i0,v1,V1])	main	task formulation

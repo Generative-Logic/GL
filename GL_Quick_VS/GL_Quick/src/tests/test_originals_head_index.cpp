@@ -108,6 +108,19 @@ namespace {
         return std::string(key.ptr, static_cast<std::size_t>(key.len));
     }
 
+    /// `maskedHeadKey` with two masked slots over a name and a std::string
+    /// argument list.
+    inline std::string maskedKeyOf2(const std::string& name,
+                                    const std::vector<std::string>& args,
+                                    int32_t slotA, int32_t slotB) {
+        gl::StrSpan spans[16];
+        for (std::size_t i = 0; i < args.size(); ++i) spans[i] = gl::StrSpan(args[i]);
+        char buf[gl::kMaxMaskedHeadKeyBytes];
+        const gl::StrSpan key = gl::maskedHeadKey(gl::StrSpan(name), false, spans,
+            static_cast<int32_t>(args.size()), slotA, buf, gl::kMaxMaskedHeadKeyBytes, slotB);
+        return std::string(key.ptr, static_cast<std::size_t>(key.len));
+    }
+
     inline std::vector<std::string> sampleHeads() {
         return { "in3", "preorder", "in3", "=", "in2", "in3", "preorder",
                  "existence16", "in3", "or11", "in2", "in3" };
@@ -139,6 +152,47 @@ TEST(originals_head_index, masked_head_key_masks_exactly_one_slot) {
     std::string one = "in,";
     one += gl::kMaskedHeadSlotByte;
     ASSERT_TRUE(maskedKeyOf("in", { "u_1" }, 0) == one);
+}
+
+// maskedHeadKey with a second slot masks both slots, independent of their
+// order; equal keys iff equal name, arity and arguments outside the two
+// slots; a two-slot key never equals a one-slot key.
+TEST(originals_head_index, masked_head_key_masks_two_slots) {
+    std::string expect = "in2,";
+    expect += gl::kMaskedHeadSlotByte;
+    expect += ',';
+    expect += gl::kMaskedHeadSlotByte;
+    expect += ",u_6";
+    ASSERT_TRUE(maskedKeyOf2("in2", { "1", "2", "u_6" }, 0, 1) == expect);
+    // the deposit side: both slots masked on the u_-prefixed input
+    ASSERT_TRUE(maskedKeyOf2("in2", { "u_9", "u_10", "u_6" }, 0, 1) == expect);
+    ASSERT_TRUE(maskedKeyOf2("in2", { "u_9", "u_10", "u_6" }, 1, 0) == expect);  // order
+    ASSERT_TRUE(maskedKeyOf2("in2", { "u_9", "u_10", "u_7" }, 0, 1) != expect);  // fixed arg
+    ASSERT_TRUE(maskedKeyOf2("in2", { "1", "2", "u_6" }, 0, 2) != expect);       // slot set
+    ASSERT_TRUE(maskedKeyOf("in2", { "1", "u_10", "u_6" }, 0) != expect);        // one slot
+    ASSERT_TRUE(maskedKeyOf("in2", { "1", "u_10", "u_6" }, 0)
+                != maskedKeyOf2("in2", { "1", "u_10", "u_6" }, 0, 1));
+}
+
+// One masked family holds one-slot and two-slot keys side by side: each probe
+// answers exactly the chains of its key, and the answers are disjoint.
+TEST(originals_head_index, masked_family_holds_one_and_two_slot_keys) {
+    gl::GlobalMemoryManager g;
+    g.init(kHeadCfg);
+    gl::LbArena lb(&g);
+    gl::OriginalsHeadIndex idx(&lb);
+
+    const std::vector<std::string> heads = { "in2", "in2", "in2", "in2" };
+    const std::string one = maskedKeyOf("in2", { "1", "u_10", "u_6" }, 0);
+    const std::string two = maskedKeyOf2("in2", { "1", "2", "u_6" }, 0, 1);
+    const std::vector<std::string> masked = { one, two, "", two };
+    buildMasked(idx, heads, masked);
+    ASSERT_EQ(idx.maskedKeyCount(), int32_t(2));
+    ASSERT_TRUE(indexedMasked(idx, maskedKeyOf("in2", { "u_9", "u_10", "u_6" }, 0))
+                == std::vector<int32_t>({ 1 }));
+    ASSERT_TRUE(indexedMasked(idx, maskedKeyOf2("in2", { "u_9", "u_10", "u_6" }, 0, 1))
+                == std::vector<int32_t>({ 2, 4 }));
+    ASSERT_TRUE(indexedMasked(idx, maskedKeyOf2("in2", { "u_9", "u_10", "u_6" }, 0, 2)).empty());
 }
 
 // maskedHeadKey carries the sign: a negated expression's key is its positive

@@ -14,14 +14,16 @@ and a commercial license — see https://generative-logic.com/license.
 > **Input:** compiled `CoreExpressionConfig` map (built during `gl_quick.exe` startup; definition compilation is no longer a separate stage), `Config<Tag>.json`.
 > **Output:** `files/theorems/conjectures.txt` (and auxiliary output files depending on flags).
 > **Owner:** `conjecturer.cpp` / `conjecturer.hpp`.
-> **Entry:** `Conjecturer::run` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Invoked via `gl_quick.exe --conjecture <tag>`.
+> **Entry:** `Conjecturer::run` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Invoked via `gl_quick.exe --conjecture <tag>`.
 
 ---
 
 ## What this stage does
 
-The full run proves Peano, Gauss, then FTA. Existing Peano, Gauss and incubator
-batches generate conjectures and have empty external inputs. FTA disables
+The full run proves Peano, Gauss, then FTA. The incubator and Gauss batches
+generate conjectures and have empty external inputs. Peano generates conjectures
+and also receives one supplied lemma, the `external_conjectures_file` of
+`ConfigPeano.json` (`files/supplied_conjectures/peano.txt`). FTA disables
 generation and receives the nonempty `external_conjectures_file` configured in
 `ConfigFTA.json`. `run_modes.py` / `_prepare_batch_conjectures` writes those rows
 as proof obligations and clears preceding-batch OR and mirror metadata. Each
@@ -45,7 +47,7 @@ The conjecturer enumerates candidate theorems by combinatorial assembly. Given t
 4. Reshuffles arguments to canonical form.
 5. Generates the reverse-direction mirror of each conjecture and folds it into the prove pool (`conjectures.txt`) so it is proved for real — see step 10.
 6. Folds in the template addon — for every single-input single-output operator usable in the batch (and only when `=` is usable too), an injectivity-contrapositive stump is coupled to the anchor through the standard machinery and added to the pool. See the [dedicated section](#template-addon--injectivity-contrapositive-stumps) and [D-215](../40_decisions.md#d-215).
-7. (Optionally) generates OR conjectures from per-expression `allow_to_constitute_existence` config flags via `generateOrConjectures`; writes the emitted pairs to `or_pairs.txt` as an OUTPUT artefact.
+7. (Optionally) generates OR conjectures from per-expression `allow_to_constitute_existence` config flags via `generateOrConjectures`; writes the emitted pairs to `or_pairs.txt` as an OUTPUT artefact. Both halves bind every anchor slot at the anchor premise ([I-4](../30_invariants.md#i-4)).
 8. Writes the survivors to `files/theorems/conjectures.txt`.
 
 The prover then picks up `conjectures.txt` (via the CE filter, stage 3→4) and tries to prove or refute each entry.
@@ -117,15 +119,15 @@ And per-expression (inside `"in"`, `"=`", `"in2"`, `"in3"`, …):
 
 ## Code-level flow
 
-The entry is `Conjecturer::run` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Pseudo-flow:
+The entry is `Conjecturer::run` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Pseudo-flow:
 
-1. **Configuration load** — `loadConfiguration(anchorId)` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Reads `Config<Tag>.json`, resolves the compiled expression map.
-2. **Core-expr-map adapter build** — `buildCoreExprMapAdapter` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Imports stage-1 compilation output.
-3. **Int encoding** — `buildIntExprConfigs` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Converts string-keyed expression maps to int-keyed for the hot-path.
+1. **Configuration load** — `loadConfiguration(anchorId)` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Reads `Config<Tag>.json`, resolves the compiled expression map.
+2. **Core-expr-map adapter build** — `buildCoreExprMapAdapter` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Imports stage-1 compilation output.
+3. **Int encoding** — `buildIntExprConfigs` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). Converts string-keyed expression maps to int-keyed for the hot-path.
 4. **Seed `growing_theorems`** with initial expressions.
 5. **For each nse from `min_nse` to `max_nse`:**
  - If `nse == 1` and `min_nse == 1`: run `singleExprAnchorConnection` / `singleExprAnchorConnectionInt` (skips combination-filter subset).
- - Else: for each existing conjecture in `growing_theorems`, combine with each expression via `connectExpressionsInt` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) and `makeAllConnectionMapsInt` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)).
+ - Else: for each existing conjecture in `growing_theorems`, combine with each expression via `connectExpressionsInt` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) and `makeAllConnectionMapsInt` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)). A worker returns only the connections that grow further (`qualifiesAsGrowingTheorem`: fewer simple expressions than `max_number_simple_expressions` and a numeric argument) with their encodings (`GrowingCandidate`); the main loop keeps the first arrival of each as a growing theorem ([D-525](../40_decisions.md#d-525)).
 6. **Per-combination filter cascade.** Every new candidate passes through:
  - `checkDefSetsInt` / `checkDefSetsPriorInt` — type-set consistency.
  - `checkComplexityLevelInt` / `checkComplexityPerOpInt` — complexity budget.
@@ -134,16 +136,16 @@ The entry is `Conjecturer::run` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quic
  - `prohibitedHeadsGoodInt` / `onlyInHeadGoodInt` — operator-placement rules.
  - `exprGood2Int` — final structural approval.
 7. **String-path filters** (for survivors escalated from int-path or directly constructed in string-path):
- - `checkInputVariablesOrder` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — input-variable-ordering invariant.
- - `checkInputVariablesTheoremOperatorHead` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-head-specific invariant (nse≥2).
- - `evaluateOperatorExprs2` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-expression structural check (nse≥2). Its end-operator dichotomy block (≥2 unconsumed operator outputs) demands every relation argument be classifiable from operator/property/anchor membership; a relation argument found in none of those (possible once a relation's count cap admits two relation atoms sharing an argument, e.g. `=` at cap 2) carries no input/output evidence and the candidate is rejected — this replaced a precondition assert whose one-relation-atom-per-conjecture universe assumption the Peano `=` cap raise invalidated.
- - `patternInConjecture` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — forbidden-pattern rejection.
- - `controlEquality` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — equality-related guards, including [I-8](../30_invariants.md#i-8).
- - `passesInPremiseFilter` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — in[]-premise shape filter; see the [dedicated section](#passesinpremisefilter) for the three allow-rules (cnt==1 existence, cnt==2 negated, cnt==2 nse=3 neutralisation).
-8. **Reshuffle** — `reshuffle(expr, deep)` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). See [Reshuffle pipeline](#reshuffle-pipeline) below for the canonicalisation stages on the `rt_conjecturer` / `rt_conjecturer2` branches (flat-walk rename, existence-head pinning, contiguous-arg renumber, anchor position-0 pin).
-9. **Mirror generation** — `createReshuffledMirrored(expr, anchorFirst)` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) computes the reverse direction (head swapped with the premise sharing its output variable). `mergeMirrorConjecturesIntoPool` then folds those mirrors into `conjectures.txt` (de-duplicated), so each reverse direction passes through the CE filter and is **genuinely proved** by the prover. The prover no longer fabricates an unproved `mirrored statement` row (D-112). Additionally, `run` captures each admitted `(source, mirror)` couple at the three pool-admission sites (preliminary pass, main-loop merge, template addon), where both strings are byte-identical to their future `conjectures.txt` lines, and writes the operator-only subset (`consistsOnlyOfOperators` gate, `buildMirrorPairRows`) to `mirror_pairs.txt` — the CE filter's mirror-refutation input ([D-229](../40_decisions.md#d-229)).
-10. **Template addon** — `generateTemplateConjectures` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) routes each qualifying operator's injectivity-contrapositive stump through `singleExprAnchorConnection`; the survivors fold into the result sets before sorting with the preliminary-pass dedup. See the [dedicated section](#template-addon--injectivity-contrapositive-stumps).
-11. **OR conjectures** — `generateOrConjectures` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp), config-derived from per-expression `allow_to_constitute_existence` flags. The emitted `(existence, companion)` pairs are written to `or_pairs.txt` as an OUTPUT artefact (overwritten each run).
+ - `checkInputVariablesOrder` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — input-variable-ordering invariant.
+ - `checkInputVariablesTheoremOperatorHead` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-head-specific invariant (nse≥2).
+ - `evaluateOperatorExprs2` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-expression structural check (nse≥2). Its end-operator dichotomy block (≥2 unconsumed operator outputs) demands every relation argument be classifiable from operator/property/anchor membership; a relation argument found in none of those (possible once a relation's count cap admits two relation atoms sharing an argument, e.g. `=` at cap 2) carries no input/output evidence and the candidate is rejected — this replaced a precondition assert whose one-relation-atom-per-conjecture universe assumption the Peano `=` cap raise invalidated.
+ - `patternInConjecture` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — forbidden-pattern rejection.
+ - `controlEquality` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — equality-related guards, including [I-8](../30_invariants.md#i-8).
+ - `passesInPremiseFilter` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — in[]-premise shape filter; see the [dedicated section](#passesinpremisefilter) for the three allow-rules (cnt==1 existence, cnt==2 negated, cnt==2 nse=3 neutralisation).
+8. **Reshuffle** — `reshuffle(expr, deep)` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). See [Reshuffle pipeline](#reshuffle-pipeline) below for the canonicalisation stages on the `rt_conjecturer` / `rt_conjecturer2` branches (flat-walk rename, existence-head pinning, contiguous-arg renumber, anchor position-0 pin). The worker's first reshuffle — of the connected chain, before the anchor attachment — runs on the integer form, `reshuffleInt`, with byte-identical results ([D-526](../40_decisions.md#d-526)).
+9. **Mirror generation** — `createReshuffledMirrored(expr, anchorFirst)` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) computes the reverse direction (head swapped with the premise sharing its output variable). `mergeMirrorConjecturesIntoPool` then folds those mirrors into `conjectures.txt` (de-duplicated), so each reverse direction passes through the CE filter and is **genuinely proved** by the prover. The prover no longer fabricates an unproved `mirrored statement` row (D-112). Additionally, `run` captures each admitted `(source, mirror)` couple at the three pool-admission sites (preliminary pass, main-loop merge, template addon), where both strings are byte-identical to their future `conjectures.txt` lines, and writes the operator-only subset (`consistsOnlyOfOperators` gate, `buildMirrorPairRows`) to `mirror_pairs.txt` — the CE filter's mirror-refutation input ([D-229](../40_decisions.md#d-229)).
+10. **Template addon** — `generateTemplateConjectures` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) routes each qualifying operator's injectivity-contrapositive stump through `singleExprAnchorConnection`; the survivors fold into the result sets before sorting with the preliminary-pass dedup. See the [dedicated section](#template-addon--injectivity-contrapositive-stumps).
+11. **OR conjectures** — `generateOrConjectures` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp), config-derived from per-expression `allow_to_constitute_existence` flags. The emitted `(existence, companion)` pairs are written to `or_pairs.txt` as an OUTPUT artefact (overwritten each run).
 12. **Write output** — `conjectures.txt` (now including the mirror conjectures from step 9), `reshuffled_conjectures.txt`, the archival `reshuffled_mirrored_conjectures.txt` (the same mirror strings, retained for inspection only), and `mirror_pairs.txt` (one `source<TAB>mirror` row per operator-only conjecture whose mirror entered the pool; written unconditionally — empty in incubator mode, where `reformulateOperatorHead` rewrites every pool line after capture and the CE filter is skipped anyway).
 
 Two execution lanes exist:
@@ -171,7 +173,7 @@ The `nse = 1` path (`singleExprAnchorConnection`) skips the operator-head checks
 
 The first case of a template-conjecture technique intended to grow ([D-215](../40_decisions.md#d-215)). The main enumeration can never assemble `op(a)=b and op(c)=d and b!=d implies a!=c` — the 4-atom shape exceeds `=`'s `max_size_expression_after_existence` cap of 3, and at D-215 time the `=` per-conjecture count cap of 1 also barred any two-`=` chain — so the addon builds it directly and hands it to the standard anchor-coupling machinery. (Peano main has since raised the `=` count cap to 2 for the rung-2.1 cancellation family; the addon remains necessary for this 4-atom shape regardless.)
 
-- **Gate** — `templateQualifyingOperators` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp): operators with exactly one input argument, one output argument, and `max_count_per_conjecture > 0`, emitted only when `=` also has `max_count_per_conjecture > 0` in the batch config (its negated equalities would otherwise cite an expression the batch does not use). No new config fields. Peano main and IncubatorPeano1/2 qualify with `in2`; every Gauss batch is disabled by its `=` count cap of 0.
+- **Gate** — `templateQualifyingOperators` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp): operators with exactly one input argument, one output argument, and `max_count_per_conjecture > 0`, emitted only when `=` also has `max_count_per_conjecture > 0` in the batch config (its negated equalities would otherwise cite an expression the batch does not use). No new config fields. Peano main and IncubatorPeano1/2 qualify with `in2`; every Gauss batch is disabled by its `=` count cap of 0.
 - **Stump** — `buildTemplateStump`: digit variables, element variables bound inside the stump, one fresh shared variable per remaining operator slot left free. For `in2`: `(>[1,2](in2[1,2,5])(>[3,4](in2[3,4,5])(>[]!(=[2,4])!(=[1,3]))))`. Because the stump binds `1..4` itself, `findArgMap` returns only the operator slot (`5`, type `P(x(1)(1))`), which is exactly what the coupling enumeration needs.
 - **Coupling** — `generateTemplateConjectures` passes the stump to `singleExprAnchorConnection`, the same string-path worker the `nse = 1` preliminary pass uses: every coupling of the free slots to type-matching anchor slots via `makeAllConnectionMaps` / `connectExpressions`, the standard filter tail, reshuffle, and the mirror lane (which stays empty — the head `!(=[..])` is not an operator). The **string** path is mandatory: `encodeExpr` parses only positive leaf chains and cannot represent `!(` premises, so the stump must never reach the int lane.
 - **Fold-in** — `run` inserts the survivors into the result sets immediately before sorting with the preliminary-pass dedup (`exprGood` + `controlSet`), and prints `Template addon: N conjectures`. Peano emission after coupling (`5 → 3`, the successor slot):
@@ -186,7 +188,7 @@ Motivation: rung 2's reverse interval clause needs a *derived* variable-level ne
 
 ## OR conjectures
 
-`generateOrConjectures` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) derives `(existence, companion)` pairs directly from per-expression `allow_to_constitute_existence` config flags and generates OR-shaped conjectures of the form:
+`generateOrConjectures` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) derives `(existence, companion)` pairs directly from per-expression `allow_to_constitute_existence` config flags and generates OR-shaped conjectures of the form:
 
 ```text
 (>[...](Anchor[...])(or<N>[...]))
@@ -204,13 +206,13 @@ The emitted pairs are also recorded in `files/theorems/or_pairs.txt` as an OUTPU
 
 Counts distinct argument variables per definition-set type, separately for combinable and uncombinable arguments, and checks the corresponding configuration budgets. Type compatibility when joining arguments is checked by the connection routines.
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) (string) and [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) (int).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) (string) and [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) (int).
 
 ### `checkInputVariablesOrder`
 
 Enforces that bound variables appear left-to-right in input-argument positions across the expression. Used to reduce the permutation surface — otherwise trivially-rearranged variants would all pass filtering.
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ### `countArgumentsFilter`
 
@@ -224,19 +226,19 @@ Rejects identical equality operands through `countArgumentsFilter` in each inspe
 
 **History.** Between [D-21](../40_decisions.md#d-21) (2026-04-24) and [D-23](../40_decisions.md#d-23) (2026-04-28), the function carried an `nse <= 3` exception that admitted descending forms too. The exception was authored when the post-anchor-pinning enumeration was thought to land bound-var IDs in arg-1 (descending) without producing the ascending mirror. Empirical inspection at D-23 time showed the ascending mirror IS produced independently, so the exception was reverted. See D-23 for the trade-off check.
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ### `patternInConjecture`
 
 Rejects candidates matching known-unproductive patterns. This is the easy-to-extend hook for "this shape has never produced a theorem, don't bother".
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ### `prohibitedHeadsGood`
 
 Rejects candidates whose head is on an ad-hoc block list. Configurable per batch.
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ### `passesComplexityAfterExistence`
 
@@ -252,7 +254,7 @@ If EITHER cap is not exceeded, the conjecture survives via that dimension. Cance
 
 **No hard-coded complexity bands.** Every threshold is the config value; the function consults nothing else. (Pre-[D-23](../40_decisions.md#d-23) the function had `if (complexityLevel <= 2) return true;` and a 73-line `if (complexityLevel == 3) { … }` carve-out; both were authored at [D-21](../40_decisions.md#d-21) before the arity-sum dimension existed and were reverted at D-23 because the arity-sum dimension subsumes their job. The two relaxations short-circuited before the per-type cap loop and prevented it from running at small `complexityLevel`. With the relaxations removed, the loop runs uniformly for every conjecture.)
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ### `passesInPremiseFilter`
 
@@ -272,9 +274,9 @@ Historical note: the same check existed inline inside `passesComplexityAfterExis
 
 **Neutralisation rule — why the shape.** The first argument of `(in[v,X])` is the element being asserted to live in `X`. Under this filter, "neutralising" means the element `v` actually participates elsewhere in the conjecture — either as an arg of the other chain premise or as an arg of the head. When it does, the `in[v,X]` premise is carrying real typing weight (the cancellation case is the canonical example: without `(in[a,N])`, `a` in `(in3[a,b,i0,+])` is an untyped bound variable). When it doesn't, the `in[v,X]` is vacuous typing of a never-used variable and the original filter keeps rejecting it. A NEGATED `!(in[v,X])` asserts `v ∉ X` and is not a typing premise; such premises do not count for the neutralisation check (but they do count for rule 2).
 
-**Dead config flag.** `parameters.apply_in_premise_filter` (default `true`) is declared at [`conjecturer.hpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.hpp) and loaded at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp), but its value is never consulted inside the filter function or at the callsites. Setting `"apply_in_premise_filter": false` (as `ConfigGauss.json` does) has no effect on conjecturer output. Gauss currently ships zero conjectures with `in[]` as a chain premise anyway — all three `in[]`-containing Gauss theorems place `in[…]` at the head, where `hasIn` stays false and the filter short-circuits. If re-enabling a real batch-level gate is ever needed, add an early `if (!parameters.apply_in_premise_filter) return true;` at the top of the function and update this description. See [OPEN-9](#open-questions) for the historical record.
+**Dead config flag.** `parameters.apply_in_premise_filter` (default `true`) is declared at [`conjecturer.hpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.hpp) and loaded at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp), but its value is never consulted inside the filter function or at the callsites. Setting `"apply_in_premise_filter": false` (as `ConfigGauss.json` does) has no effect on conjecturer output. Gauss currently ships zero conjectures with `in[]` as a chain premise anyway — all three `in[]`-containing Gauss theorems place `in[…]` at the head, where `hasIn` stays false and the filter short-circuits. If re-enabling a real batch-level gate is ever needed, add an early `if (!parameters.apply_in_premise_filter) return true;` at the top of the function and update this description. See [OPEN-9](#open-questions) for the historical record.
 
-*Seen:* [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ### `passesMaxDistinctAnchorValuesPerType`
 
@@ -282,8 +284,8 @@ Config-gated post-anchor-attachment filter. For every def-set type `T` listed in
 
 Applied at three `connExpr2`-producing sites in the cascade:
 
-- [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) — int-path inside `singleThreadCalculationInt`.
-- [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) — `singleExprAnchorConnectionInt`.
+- [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) — int-path inside `singleThreadCalculationInt`.
+- [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) — `singleExprAnchorConnectionInt`.
 - The string-path `singleExprAnchorConnection` (line varies; same gate).
 
 Orthogonal to `passesComplexityAfterExistence` ([see field reference](../04_configs.md#prover_parameters-prover-parameters)): the complexity gate is a binary "type T present at high complexity" check that bypasses existence-head conjectures, while this filter applies uniformly and gates on *count* rather than complexity. Both filters coexist.
@@ -309,6 +311,8 @@ Per-tag config rationale captured body: caps were chosen to match per-type maxes
 
 **Cascade order.** Flat-walk → existence-head pinning → connect-with-subMap-and-renumber → anchor-pin. Each stage's output feeds the next's input. Skipping any stage produces drift in the canonical form vs the `_mirrored` companion.
 
+**Integer first reshuffle.** `singleThreadCalculationInt` reshuffles each connected chain with `reshuffleInt` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) on its block encoding. The chain has no negation and no existence head, so the steps that matter are the permutation table, the anchor pin, the bound-variable placement, the first-occurrence renaming and the byte comparison of the rendered candidates; `reshuffleInt` performs them on stack arrays, keeps the winner's text, and builds its block encoding and its definition-set map (the `findArgMap` map of the input, re-keyed by the winner's renaming, in decimal-text key order) directly. The parity tests `reshuffle_int_matches_string_reshuffle_*` compare it with `reshuffle(decodeExpr(chain), true)` on generated chains ([D-526](../40_decisions.md#d-526)).
+
 **Disintegrate-cache optimization (`rt_conjecturer_session_24042026`, commit ).** `compiler.hpp::disintegrateImplication` carries a thread_local single-slot cache keyed by the input expression string. At the hot conjecturer call site (`singleThreadCalculationInt`), a single candidate passes through ~10 successive filters that each re-disintegrate the same string; without the cache, that's 10× redundant `parseExpr` + TreeNode1 tree builds per candidate. With the cache, each new candidate misses once and every subsequent filter call on the same string hits (vector copy, no tree build). Cache invariants: keyed by `std::string` content (not pointer), no explicit invalidation — staleness is detected by inequality on the next call. thread_local gives zero-contention per-worker reuse. Measured impact on Peano: `disintegrateImplication` self-time 198 s → 75 s (-62 %), wall 27.2 s → 23.8 s (-12.5 %). The cache also helps the prover's reshuffle-mirror sites in `prover.cpp` via the same shared `compiler.hpp` function, though the prover's access pattern is less dense. Cache ChainT typedef must be kept in sync with the function's output shape — see [G-34](../50_gotchas.md#g-34).
 
 **Iterative disintegrate walker (`rt_conjecturer_session_24042026`, commit ).** The cache-miss path itself was subsequently ported from the `parseExpr` + TreeNode1 tree + `treeToExpr` + `node->arguments` recursive-build pipeline to a direct string walker. The walker peels `(>[bvs]...)` layers one at a time, extracts each premise as a substring (handling both `(prem)` and `!(prem)` shapes), and computes `leftArgs` by walking the premise's `[...]` lists minus bvs declared in any nested `>[bvs]` inside it. This preserves parseExpr's recursive `node->arguments = union(children) - this-level-bvs` semantics for the MPL shapes the conjecturer emits (atoms, `!atom`, `&`, `!&`, `>`, `!>`). Measured impact: disintegrate self-time 75 s → 32 s (-57 %, cache-miss path dominated by tree-allocation cost), per-call avg 4.3 µs → 1.9 µs. Wall was noise-bound at this level (Windows 10-run spread ±3 s), so this commit banks thread-time rather than a measurable wall delta on a single run. Both `parseExpr` and the tree machinery are still used by other `compiler.hpp` functions — only `disintegrateImplication`'s dependency on them was severed.
@@ -327,7 +331,7 @@ Precomputes anchor-to-expression argument permutation tables. `leftMax = determi
 
 **Critical invariant (observational, not code-enforced):** `rightMax > 3` causes RAM explosion — millions of permutation dicts are materialised. Controlled by `max_values_for_uncomb_def_sets + max_values_for_def_sets` in the config.
 
-*Seen:* `createMapAnchor` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+*Seen:* `createMapAnchor` at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
 
 ---
 
@@ -349,7 +353,7 @@ Precomputes anchor-to-expression argument permutation tables. `leftMax = determi
 ### Not exercised by tests
 
 - **The preliminary-pass code path** (`min_nse = 1`). Peano and Gauss default to `min_nse = 2`, so this code only runs for specific incubator configs. A regression inside the preliminary-pass specifically would go unnoticed on the main batches.
-- **Filter-cascade regression tests — partial coverage.** [`test_conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/tests/test_conjecturer.cpp) (~373 tests in 13 categories — `helper_*` / `ctor_*` / `intpath_*` / `mappings_*` / `filter_*` / `inputorder_*` / `reshuffle_*` / `reform_*` / `worker_*` / `legacy_*` / `or_pair_*` / `invariant_*`) covers most filters with positive + negative cases, but two are positive-only at the unit level:
+- **Filter-cascade regression tests — partial coverage.** [`test_conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/tests/test_conjecturer.cpp) (~373 tests in 13 categories — `helper_*` / `ctor_*` / `intpath_*` / `mappings_*` / `filter_*` / `inputorder_*` / `reshuffle_*` / `reform_*` / `worker_*` / `legacy_*` / `or_pair_*` / `invariant_*`) covers most filters with positive + negative cases, but two are positive-only at the unit level:
  - **Filters with both positive and negative coverage:** `controlEquality` (ascending vs descending; I-8 via `countArgumentsFilter`-forwarding rejecting `(=[x, x])`); `numbersGood` (substring count cap); `prohibitedHeadsGood` (Peano puts `in` on the prohibited list — `in`-headed chains rejected, others pass); `exprGood` / `exprGood2` (rejecting bare-atom inputs); `qualifiedForEquality` (rejecting bare equality); `checkInputVariablesTheoremOperatorHead` (relation passes, operator-headed chain without binding rejected); `passesMaxSizeAfterExistence` (rejects on `leafCount=100`); `passesMaxDistinctAnchorValuesPerType` (rejects when one leaf carries TWO `(1)`-typed anchor slot values like `(in3[7,2,6,4])`, accepts when slots are spread one-per-leaf); `passesInPremiseFilter` — D-23 anchor-membership-axiom REJECTING fixtures using NESTED-quantifier shape `(>[](Anchor)(>[](in[2,1])(=[3,4])))` (plus negated form), plus separate NESTED-quantifier fixtures that exercise each cnt-shape allow-rule individually so deletions are detectable: rule 1 (cnt==1 + existence head) accepts; rule 2 (cnt==2 + at least one negated) accepts; rule 3 (cnt==2 + neutralisation — first arg of in-premise appears elsewhere) accepts; the complementary `cnt==2 / both positive / no neutralisation` case rejects; cnt>=3 rejects unconditionally; head-only-in passes (D-23 only inspects chain premises). Plus the int-path twins (`numbersGoodInt`, `repetitionsExistInt`, etc.).
  - **Smoke-only (positive cases only) — known gap:** `passesComplexityAfterExistence` (the post-D-23 3-condition rule — `complexity > T-cap AND arity_sum > T-cap AND a T-typed anchor slot in non-anchor leaves` — could not be triggered from hand-synthesised inputs in the unit suite; the rejection path is exercised by integration through `main.py` runs where real conjectures from `conjectures.txt` hit the rule). Filter cascade interactions involving the `singleThreadCalculation*` worker drivers also stay smoke at the unit level (the drivers return all-empty `WorkerResult` on hand-built inputs because the cascade-filter caps reject before merge succeeds).
  - **Test infrastructure:** `friend class conj::testing::Friend;` in `Conjecturer`'s private section grants the unit suite access to private methods. Harness chapter: [`_meta/testing.md`](../_meta/testing.md).
@@ -359,8 +363,8 @@ Precomputes anchor-to-expression argument permutation tables. `leftMax = determi
 
 ## Open questions
 
-- **OPEN-8 — RESOLVED (no assert; one should be added).** No assertion of the form `rightMax ≤ 3` exists anywhere in the codebase; grep across `GL_Quick_VS/GL_Quick/src/` returns nothing matching `assert` + `rightMax` or similar. Misconfiguration (`rightMax > 3`) therefore produces a silent RAM explosion — the process grows unbounded, and the OS kills it at some point with no indication of cause. **Recommendation**: add an assert at the top of `createMapAnchor` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) checking `rightMax <= 3` (or a configurable bound), with a message pointing at the responsible config field. Cheap to add; saves hours of bewilderment on a misconfigured run.
-- **OPEN-9 — CORRECTED (flag is dead code).** The config flag `apply_in_premise_filter` is declared at [`conjecturer.hpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.hpp) and loaded at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) with default `true`, but its value is never consulted — no early-return guard exists inside `passesInPremiseFilter` nor at its callsites (`:4378`, `:4398`). `ConfigGauss.json` sets `"apply_in_premise_filter": false`, which has no effect; Gauss escapes the filter only because its `in[]`-containing conjectures place `in` at the head (so `hasIn` stays false and the function short-circuits on line 4994). If a real per-batch gate is desired, add `if (!config_.parameters.apply_in_premise_filter) return true;` at the top of the function. Historical note: the earlier SwDD text claimed the flag short-circuits the filter — that was an unverified assumption, corrected here.
+- **OPEN-8 — RESOLVED (no assert; one should be added).** No assertion of the form `rightMax ≤ 3` exists anywhere in the codebase; grep across `GL_Quick_VS/GL_Quick/src/` returns nothing matching `assert` + `rightMax` or similar. Misconfiguration (`rightMax > 3`) therefore produces a silent RAM explosion — the process grows unbounded, and the OS kills it at some point with no indication of cause. **Recommendation**: add an assert at the top of `createMapAnchor` ([`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) checking `rightMax <= 3` (or a configurable bound), with a message pointing at the responsible config field. Cheap to add; saves hours of bewilderment on a misconfigured run.
+- **OPEN-9 — CORRECTED (flag is dead code).** The config flag `apply_in_premise_filter` is declared at [`conjecturer.hpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.hpp) and loaded at [`conjecturer.cpp`](../../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) with default `true`, but its value is never consulted — no early-return guard exists inside `passesInPremiseFilter` nor at its callsites (`:4378`, `:4398`). `ConfigGauss.json` sets `"apply_in_premise_filter": false`, which has no effect; Gauss escapes the filter only because its `in[]`-containing conjectures place `in` at the head (so `hasIn` stays false and the function short-circuits on line 4994). If a real per-batch gate is desired, add `if (!config_.parameters.apply_in_premise_filter) return true;` at the top of the function. Historical note: the earlier SwDD text claimed the flag short-circuits the filter — that was an unverified assumption, corrected here.
 
 ---
 

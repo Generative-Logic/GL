@@ -390,6 +390,7 @@ namespace gl {
             lb.canonicalUses.clear();
             lb.existenceLookups.clear();
             lb.orImplicationMatches.clear();
+            lb.contradictionFacts.clear();
             const auto loadStart = std::chrono::steady_clock::now();
             int64_t totalPayloadBytes = 0;
 

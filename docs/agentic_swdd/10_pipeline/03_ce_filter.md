@@ -15,19 +15,19 @@ and a commercial license — see https://generative-logic.com/license.
 
 > **Input:** `files/theorems/conjectures.txt` (conjecturer output) + `files/theorems/mirror_pairs.txt` (conjecturer-written mirror pairing for the mirror-refutation pass) + `files/simple_facts/simple_facts_<anchor>_<n>.txt` (fact tables) + `parameters.skip_ce_filter` / `parameters.mirror_refutation` flags.
 > **Output:** `files/theorems/filtered_conjectures.txt` (surviving conjectures); shortcut replay writes the corresponding file in `files/shortcut/theorems/`.
-> **Owner:** `filter.cpp` (extracted from `prover.cpp`, 2026-05-04). Public surface (top-level entry points):
-> - `readSimpleFacts` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — load `files/simple_facts/*` for the active anchor.
-> - `filterConjecturesWithCE` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — top-level orchestrator (the per-fact-file loop body).
-> - `saveFilteredConjectures` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — write survivors.
+> **Owner:** `filter.cpp` (extracted from `proof/counterexample_filter.cpp`, 2026-05-04). Public surface (top-level entry points):
+> - `readSimpleFacts` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — load `files/simple_facts/*` for the active anchor.
+> - `filterConjecturesWithCE` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — top-level orchestrator (the per-fact-file loop body).
+> - `saveFilteredConjectures` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — write survivors.
 >
 > Internal surface (only called from inside `filterConjecturesWithCE` / the request generator):
-> - `loadFactsForCEFiltering` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — install a fact list into every per-core CE body.
-> - `addConjectureForCEFiltering` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — register one conjecture into a per-core CE LB.
-> - `releaseCEBatchMemory` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — DFS-delete every CE node + reset CE containers.
-> - `generateEncodedRequestsStatic` ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) — the ONE hash-request generator, invoked here with an obligatory stump of length **0**: no element is mandatory, so a grown base candidate is already the finished request and is emitted inside the search. CPU execution stops after a deactivating request; GPU execution retains completed growth levels, and its aggregate stop survives capacity drains. The dedicated CE branch of `standardProcessing` performs only contradiction checks. It calls `filterIntEncodedStatements` with `alsoAcceptFullKeys = true`, and that one flag is the whole difference between CE mode's statement universe and regular mode's: CE accepts statements appearing in `normalizedEncodedSubkeys` **or** `normalizedEncodedKeys`, regular mode accepts subkeys only, because with a non-empty stump every survivor must still be growable.
+> - `loadFactsForCEFiltering` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — install a fact list into every per-core CE body.
+> - `addConjectureForCEFiltering` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — register one conjecture into a per-core CE LB.
+> - `releaseCEBatchMemory` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — DFS-delete every CE node + reset CE containers.
+> - `generateEncodedRequestsStatic` ([`memory.cpp`](../../../GL_Quick_VS/GL_Quick/src/memory.cpp)) — the ONE hash-request generator, invoked here with an obligatory stump of length **0**: no element is mandatory, so a grown base candidate is already the finished request and is emitted inside the search. CPU execution stops after a deactivating request; GPU execution retains completed growth levels, and its aggregate stop survives capacity drains. The dedicated CE branch of `standardProcessing` performs only contradiction checks. It calls `filterIntEncodedStatements` with `alsoAcceptFullKeys = true`, and that one flag is the whole difference between CE mode's statement universe and regular mode's: CE accepts statements appearing in `normalizedEncodedSubkeys` **or** `normalizedEncodedKeys`, regular mode accepts subkeys only, because with a non-empty stump every survivor must still be growable.
 >
-> The CE-only `ContradictionItem` row type lives in [`filter.hpp`](../../GL_Quick_VS/GL_Quick/src/filter.hpp). All bodies remain member functions of `ExpressionAnalyzer` (declared in `prover.hpp`); only the definitions moved.
-> **Entry site:** invoked near the top of `ExpressionAnalyzer::analyzeExpressions` after reading `conjectures.txt`, gated on `!parameters.skip_ce_filter`. Seen at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp).
+> The CE-only `ContradictionItem` row type lives in [`filter.hpp`](../../../GL_Quick_VS/GL_Quick/src/filter.hpp). All bodies remain member functions of `Prover` (declared in `prover.hpp`); only the definitions moved.
+> **Entry site:** invoked near the top of `Prover::analyzeExpressions` after reading `conjectures.txt`, gated on `!parameters.skip_ce_filter`. Seen at [`prover.cpp`](../../../GL_Quick_VS/GL_Quick/src/prover.cpp).
 
 ---
 
@@ -46,7 +46,7 @@ Counterexample-filter cost depends on the workload and execution backend. The re
 
 ## Dedicated counterexample processing
 
-`prover.hpp` / `ExpressionAnalyzer::standardProcessing` begins with a
+`logical_block/logic_block_operations.hpp` / `LogicBlockOperations::standardProcessing` begins with a
 `ceFilteringActive` gate. Counterexample mode checks registered contradictions
 and completed heads in `internalMailIn` against the loaded statement registry,
 requiring both sides at `main`, then returns. New heads are still in the internal
@@ -132,7 +132,7 @@ Every `(1)`-typed constant appears in two forms: `i<k>` and `j<k>` — two paral
 
 The anchor line `(AnchorPeano[N,j0,s,+,*,j1])` pins the j-variables; the main-slot `i`-variables are pinned elsewhere. Every operator-output fact is emitted once per `i*j*` combination where distinctness is semantically trivial — `(in3[i4,i5,i0,+])` and `(in3[i4,j5,i0,+])` are both valid rows.
 
-**Why.** The hash-request generator running at stump length 0 (`generateEncodedRequestsStatic`; [`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) needs **distinct fact entries** to drive its rule-firing pattern — without j-copies, rules that require two different-looking arguments to match never fire on the table. This is the "CE filter j-copy requirement" documented in memory file.
+**Why.** The hash-request generator running at stump length 0 (`generateEncodedRequestsStatic`; [`memory.cpp`](../../../GL_Quick_VS/GL_Quick/src/memory.cpp)) needs **distinct fact entries** to drive its rule-firing pattern — without j-copies, rules that require two different-looking arguments to match never fire on the table. This is the "CE filter j-copy requirement" documented in memory file.
 
 ### Growth pattern
 
@@ -161,14 +161,14 @@ for each fact_file in simple_facts_files:
 saveFilteredConjectures(filteredConjectures)
 ```
 
-The per-file filter is where the real work lives. Flow of `filterConjecturesWithCE` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)):
+The per-file filter is where the real work lives. Flow of `filterConjecturesWithCE` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)):
 
 1. **Global setup.**
  - Set `ceFilteringActive = true`.
  - Clear + reserve `contradictionTable` — one `ContradictionItem(conjecture, false)` per input conjecture. A worker sets the per-conjecture `successful` flag to `true` when the conjecture's negation is refuted by the facts.
 2. **Load the fact base once** into a single *template* LB via `loadFactsForCEFiltering(facts, 1)`. Facts install through the status-4 statement path of `addExprToMemoryBlock`, so the template holds them as statements and its `overallHashMemory` stays empty — the precondition `Memory::cloneFactsTemplate` relies on.
 3. **Pre-intern the CE `exprKey`s, single-threaded.** Before the pool spawns, intern `std::to_string(i)` for every conjecture index `i ∈ [0, conjectures.size)` into the process-global `skeletonInterner`. Each worker below sets its clone's identity with `lb->setExprKey(std::to_string(i))`; pre-interning makes those calls take the lookup-only (read) path, because minting the shared, lock-free `skeletonInterner` from the parallel pool is a data race — the `minted key not findable at its id` desync (see [I-82](../30_invariants.md#i-82)).
-4. **Dedicated thread pool over a global conjecture queue.** A pool of `max(1, logicalCores)` workers shares one atomic conjecture index. Each worker first **publishes its scratch slot** (`g_currentCoreId = coreId`) at the top of its lambda — the whole per-conjecture task, including `addConjectureForCEFiltering`, reaches `g_currentCoreId`-resolved per-slot scratch arenas (via `addToHashMemory` → `insertRemainingArgsNormKey`, and `disintegrateExpr2`), so leaving it at the `-1` default would collapse every worker onto the single shared reserved slot and race its cursor (see [G-56](../50_gotchas.md#g-56)). Then, until the queue drains, each worker:
+4. **Dedicated thread pool over a global conjecture queue.** A pool of `max(1, logicalCores)` workers shares one atomic conjecture index. Each worker first **publishes its scratch slot** (`WorkerContext::coreId = coreId`) at the top of its lambda — the whole per-conjecture task, including `addConjectureForCEFiltering`, reaches `WorkerContext::coreId`-resolved per-slot scratch arenas (via `addToHashMemory` → `insertRemainingArgsNormKey`, and `disintegrateExpr2`), so leaving it at the `-1` default would collapse every worker onto the single shared reserved slot and race its cursor (see [G-56](../50_gotchas.md#g-56)). Then, until the queue drains, each worker:
  - grabs the next conjecture index;
  - clones the facts template into a fresh single-use LB (`Memory::cloneFactsTemplate` — a deep value-copy of the fact containers + `nameMap`, everything else reset);
  - sets the clone's identity (`lb->setExprKey(std::to_string(i))` — a lookup-only hit after the step-3 pre-intern) and installs the conjecture's rule into the clone (`addConjectureForCEFiltering`, which also sets the clone's `contradictionIndex`);
@@ -177,7 +177,7 @@ The per-file filter is where the real work lives. Flow of `filterConjecturesWith
  - deletes the clone and grabs the next conjecture.
  There is **no batch barrier** — a freed worker takes new work immediately, so no core idles on the slowest conjecture in a batch.
 5. **Tear-down.** `releaseCEBatchMemory` frees the template.
-6. **Mirror refutation** (gated on `parameters.mirror_refutation`, default on — [D-229](../40_decisions.md#d-229)). The single-threaded flip pass `applyMirrorRefutations` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) snapshots which slots this pass's CE bursts refuted and, for each, flips the `contradictionTable` slots of its mirror partners to refuted as well. Pairing comes from `mirror_pairs.txt` (conjecturer-written, both columns byte-identical to `conjectures.txt` lines), loaded once per batch in `runCeFilterOnly` by `loadMirrorPairs` into the symmetric `mirrorPartnerMap` member. Only CE-confirmed refutations seed — no cascading — so the flip set is a pure function of the CE verdicts plus the pairs file. One summary line per pass: `CE filter: mirror refutation flipped N conjectures.` Refutation-side only; no mirror ever re-enters as a proof step ([I-81](../30_invariants.md#i-81) / D-112). Across multiple fact files the passes compose: a flipped conjecture drops out of the next pass's input.
+6. **Mirror refutation** (gated on `parameters.mirror_refutation`, default on — [D-229](../40_decisions.md#d-229)). The single-threaded flip pass `applyMirrorRefutations` ([`filter.cpp`](../../../GL_Quick_VS/GL_Quick/src/filter.cpp)) snapshots which slots this pass's CE bursts refuted and, for each, flips the `contradictionTable` slots of its mirror partners to refuted as well. Pairing comes from `mirror_pairs.txt` (conjecturer-written, both columns byte-identical to `conjectures.txt` lines), loaded once per batch in `runCeFilterOnly` by `loadMirrorPairs` into the symmetric `mirrorPartnerMap` member. Only CE-confirmed refutations seed — no cascading — so the flip set is a pure function of the CE verdicts plus the pairs file. One summary line per pass: `CE filter: mirror refutation flipped N conjectures.` Refutation-side only; no mirror ever re-enters as a proof step ([I-81](../30_invariants.md#i-81) / D-112). Across multiple fact files the passes compose: a flipped conjecture drops out of the next pass's input.
 7. **Collect survivors.** For each `i`, if `contradictionTable[i].successful == false` (no contradiction discovered, no mirror flip), the conjecture is kept.
 
 CE filtering runs **one hashburst per conjecture**: `numberIterationsConjectureFiltering` is `1` in every config (asserted before the pool), so the single burst checks whether the conjecture's negation immediately contradicts the facts — there is no iterative deepening.
@@ -268,7 +268,7 @@ In other words: the CE filter is *fast* because someone else (the incubator) did
 The per-clone signed premise-core set identifies the fact cores usable by its
 conjecture rule. Ordinary fact rows outside that set and the unsigned goal-core
 set use canonical-only encoded storage, with the standard equality and anchor
-exclusions. `prover.hpp` and `canonicalizeUnusedDeposit` skip only their new
+exclusions. `logical_block/equality_propagation.hpp` and `canonicalizeUnusedDeposit` skip only their new
 history bridge while `ceFilteringActive` is set: status-4 fact registration and
 `Memory::cloneFactsTemplate` intentionally provide no source origin rows in the
 clone, and counterexample clones are not exported as proof certificates. The
@@ -276,7 +276,7 @@ ordinary-prover source-history assertion remains active.
 
 ## Filter artifact routing
 
-`filter.cpp` / `ExpressionAnalyzer::saveFilteredConjectures` writes to the
+`filter.cpp` / `CounterexampleFilter::saveFilteredConjectures` writes to the
 analyzer's `filteredConjecturesDirectory`. Its default retains the main theorem
 folder; `run_modes.cpp` / `fullRun` supplies the shortcut theorem folder for
 replay. This keeps replay's generated survivors beside its actual input and

@@ -1,0 +1,32 @@
+(=[V1,V2])	main	implication	(>[](implication137[V1,V2])(>[](implication137[V2,V1])(=[V1,V2])))	main	(implication137[V1,V2])	main	(implication137[V2,V1])	main
+(implication137[V1,V2])	main	validity name	(in2[v2,v3,V2])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])
+(implication137[V2,V1])	main	validity name	(in2[v6,v7,V1])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])
+(>[](implication137[V1,V2])(>[](implication137[V2,V1])(=[V1,V2])))	main	expansion	(implication2932[V1,V2])	main
+(implication2932[V1,V2])	main	reformulation for integration and	(&(implication137[V1,V2])(implication137[V2,V1]))_integration_goal	main
+(&(implication137[V1,V2])(implication137[V2,V1]))_integration_goal	main	expansion for integration	(=[V1,V2])_integration_goal	main
+(in2[v2,v3,V2])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])	implication	(>[w1](=[w1,i0])(>[w2](=[w2,v1])(in2[w1,w2,V2])))	main	(=[v2,i0])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])	(=[v3,v1])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])
+(=[v2,i0])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])	implication	(>[w1,w2](in2[w1,w2,V1])(=[w1,i0]))	main	(in2[v2,v3,V1])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])
+(=[v3,v1])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])	implication	(>[w1,w2](in2[w1,w2,V1])(=[w2,v1]))	main	(in2[v2,v3,V1])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])
+(in2[v2,v3,V1])	main_boundary_(=[V1,V2])_subproof_(implication137[V1,V2])	premise element	(>[v2,v3](in2[v2,v3,V1])(in2[v2,v3,V2]))_integration_goal	main
+(in2[v6,v7,V1])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])	implication	(>[w1](=[w1,i0])(>[w2](=[w2,v1])(in2[w1,w2,V1])))	main	(=[v6,i0])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])	(=[v7,v1])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])
+(=[v6,i0])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])	implication	(>[w1,w2](in2[w1,w2,V2])(=[w1,i0]))	main	(in2[v6,v7,V2])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])
+(=[v7,v1])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])	implication	(>[w1,w2](in2[w1,w2,V2])(=[w2,v1]))	main	(in2[v6,v7,V2])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])
+(in2[v6,v7,V2])	main_boundary_(=[V1,V2])_subproof_(implication137[V2,V1])	premise element	(>[v6,v7](in2[v6,v7,V2])(in2[v6,v7,V1]))_integration_goal	main
+(>[w1](=[w1,i0])(>[w2](=[w2,v1])(in2[w1,w2,V2])))	main	expansion	(implication2439[i0,v1,V2])	main
+(implication2439[i0,v1,V2])	main	disintegration	(&(&(implication2437[V2,i0])(implication2438[V2,v1]))(implication2439[i0,v1,V2]))	main
+(>[w1,w2](in2[w1,w2,V2])(=[w1,i0]))	main	expansion	(implication2437[V2,i0])	main
+(implication2437[V2,i0])	main	disintegration	(&(&(implication2437[V2,i0])(implication2438[V2,v1]))(implication2439[i0,v1,V2]))	main
+(>[w1,w2](in2[w1,w2,V2])(=[w2,v1]))	main	expansion	(implication2438[V2,v1])	main
+(implication2438[V2,v1])	main	disintegration	(&(&(implication2437[V2,i0])(implication2438[V2,v1]))(implication2439[i0,v1,V2]))	main
+(&(&(implication2437[V2,i0])(implication2438[V2,v1]))(implication2439[i0,v1,V2]))	main	expansion	(EnumerationRelationSet1[i0,v1,V2])	main
+(>[w1,w2](in2[w1,w2,V1])(=[w1,i0]))	main	expansion	(implication2437[V1,i0])	main
+(implication2437[V1,i0])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(>[w1,w2](in2[w1,w2,V1])(=[w2,v1]))	main	expansion	(implication2438[V1,v1])	main
+(implication2438[V1,v1])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(>[w1](=[w1,i0])(>[w2](=[w2,v1])(in2[w1,w2,V1])))	main	expansion	(implication2439[i0,v1,V1])	main
+(implication2439[i0,v1,V1])	main	disintegration	(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main
+(&(&(implication2437[V1,i0])(implication2438[V1,v1]))(implication2439[i0,v1,V1]))	main	expansion	(EnumerationRelationSet1[i0,v1,V1])	main
+(>[v2,v3](in2[v2,v3,V1])(in2[v2,v3,V2]))_integration_goal	main	expansion for integration	(implication137[V1,V2])_integration_goal	main
+(>[v6,v7](in2[v6,v7,V2])(in2[v6,v7,V1]))_integration_goal	main	expansion for integration	(implication137[V2,V1])_integration_goal	main
+(EnumerationRelationSet1[i0,v1,V2])	main	task formulation
+(EnumerationRelationSet1[i0,v1,V1])	main	task formulation

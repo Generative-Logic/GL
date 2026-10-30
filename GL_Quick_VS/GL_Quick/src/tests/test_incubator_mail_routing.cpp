@@ -34,7 +34,11 @@
 ///        rows of an absorbed root batch reach the anchor's `mailOut`, the
 ///        statements do not).
 
+#include "../memory.hpp"
+#include <cstddef>
+#include <utility>
 #include "test_harness.hpp"
+#include "prover_fixture.hpp"
 
 #include "../prover.hpp"
 
@@ -77,23 +81,23 @@ namespace {
     // The premise-LB chain: root -> (AnchorPeano[...], level 0) -> (in2[7,8,3],
     // level 1). Registered outside incubator mode so the grid shape is the
     // plain one; the tests flip `incubator_mode` afterwards.
-    void registerChain(gl::ExpressionAnalyzer& ea) {
+    void registerChain(gl::tests::ProverFixture& ea) {
         ea.parameters.incubator_mode = false;
         ea.parameters.try_contradiction = false;
         ea.parameters.try_contradiction_negated_head = false;
         ea.parameters.compressor_mode = false;
-        ea.addTheoremToMemory(std::string(kConj), ea.body, 0, false,
+        ea.proofGridBuilder.addTheoremToMemory(std::string(kConj), ea.body, 0, false,
                               ea.globalDependencies);
     }
 
-    gl::Memory* anchorOf(gl::ExpressionAnalyzer& ea) {
+    gl::Memory* anchorOf(gl::tests::ProverFixture& ea) {
         gl::Memory* anchorLB = ea.simpleMapStore.findChild(
             &ea.body, "(AnchorPeano[1,2,3,4,5,6])");
         ASSERT_TRUE(anchorLB != nullptr);
         return anchorLB;
     }
 
-    gl::Memory* innerOf(gl::ExpressionAnalyzer& ea) {
+    gl::Memory* innerOf(gl::tests::ProverFixture& ea) {
         gl::Memory* innerLB =
             ea.simpleMapStore.findChild(anchorOf(ea), "(in2[7,8,3])");
         ASSERT_TRUE(innerLB != nullptr);
@@ -102,46 +106,46 @@ namespace {
 
     // Registers the three chain LBs with the analyzer's MailLog exactly as
     // buildGrid does (collectMailAncestors -> registerLb).
-    void registerMailEdges(gl::ExpressionAnalyzer& ea) {
+    void registerMailEdges(gl::tests::ProverFixture& ea) {
         std::vector<const gl::Memory*> ancestors;
         gl::Memory* chain[3] = { &ea.body, anchorOf(ea), innerOf(ea) };
         for (gl::Memory* lb : chain) {
-            ea.collectMailAncestors(lb, ancestors);
+            ea.blockMailProcessor.collectMailAncestors(lb, ancestors);
             ea.mailLog.registerLb(lb, ancestors);
         }
     }
 }
 
 TEST(incubator_mail_routing, is_anchor_lb_classifies_root_anchor_inner) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
-    ASSERT_FALSE(ea.isAnchorLb(ea.body));
-    ASSERT_TRUE(ea.isAnchorLb(*anchorOf(ea)));
-    ASSERT_FALSE(ea.isAnchorLb(*innerOf(ea)));
+    ASSERT_FALSE(ea.blockIdentity.isAnchorLb(ea.body));
+    ASSERT_TRUE(ea.blockIdentity.isAnchorLb(*anchorOf(ea)));
+    ASSERT_FALSE(ea.blockIdentity.isAnchorLb(*innerOf(ea)));
 }
 
 TEST(incubator_mail_routing, mail_ancestors_whole_chain_outside_incubator_mode) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     gl::Memory* anchorLB = anchorOf(ea);
     gl::Memory* innerLB = innerOf(ea);
     std::vector<const gl::Memory*> out;
 
-    ea.collectMailAncestors(innerLB, out);
+    ea.blockMailProcessor.collectMailAncestors(innerLB, out);
     ASSERT_EQ(out.size(), static_cast<std::size_t>(2));
     ASSERT_TRUE(out[0] == anchorLB);
     ASSERT_TRUE(out[1] == &ea.body);
 
-    ea.collectMailAncestors(anchorLB, out);
+    ea.blockMailProcessor.collectMailAncestors(anchorLB, out);
     ASSERT_EQ(out.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(out[0] == &ea.body);
 
-    ea.collectMailAncestors(&ea.body, out);
+    ea.blockMailProcessor.collectMailAncestors(&ea.body, out);
     ASSERT_TRUE(out.empty());
 }
 
 TEST(incubator_mail_routing, mail_ancestors_stop_at_anchor_in_incubator_mode) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     ea.parameters.incubator_mode = true;
     gl::Memory* anchorLB = anchorOf(ea);
@@ -149,28 +153,28 @@ TEST(incubator_mail_routing, mail_ancestors_stop_at_anchor_in_incubator_mode) {
     std::vector<const gl::Memory*> out;
 
     // Below the anchor: the anchor LB only, never the root sentinel.
-    ea.collectMailAncestors(innerLB, out);
+    ea.blockMailProcessor.collectMailAncestors(innerLB, out);
     ASSERT_EQ(out.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(out[0] == anchorLB);
 
     // The anchor LB keeps its root edge; the root has none.
-    ea.collectMailAncestors(anchorLB, out);
+    ea.blockMailProcessor.collectMailAncestors(anchorLB, out);
     ASSERT_EQ(out.size(), static_cast<std::size_t>(1));
     ASSERT_TRUE(out[0] == &ea.body);
 
-    ea.collectMailAncestors(&ea.body, out);
+    ea.blockMailProcessor.collectMailAncestors(&ea.body, out);
     ASSERT_TRUE(out.empty());
 }
 
 TEST(incubator_mail_routing, incubator_anchor_lb_is_the_root_anchor_child) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     ea.parameters.incubator_mode = true;
-    ASSERT_TRUE(ea.incubatorAnchorLb() == anchorOf(ea));
+    ASSERT_TRUE(ea.blockMailProcessor.incubatorAnchorLb() == anchorOf(ea));
 }
 
 TEST(incubator_mail_routing, root_log_reaches_only_the_anchor_lb_in_incubator_mode) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     ea.parameters.incubator_mode = true;
     registerMailEdges(ea);
@@ -178,11 +182,11 @@ TEST(incubator_mail_routing, root_log_reaches_only_the_anchor_lb_in_incubator_mo
     gl::Memory* innerLB = innerOf(ea);
 
     // A prior-batch theorem batch is stored in the root's log.
-    ea.broadcastTheorems({ std::string(kConj) }, "broadcast", ea.body, nullptr);
-    ASSERT_TRUE(ea.body.hasWork);
+    ea.blockMailProcessor.broadcastTheorems({ std::string(kConj) }, "broadcast", ea.body, nullptr);
+    ASSERT_TRUE(((ea.body).hasWork));
 
     // The root self-injects (it never pulls its own log).
-    const gl::Mail rootIn = gl::routingMailInToHeap(ea.body.mailIn);
+    const gl::Mail rootIn = gl::routingMailInToHeap(((ea.body).mailIn));
     ASSERT_EQ(rootIn.statements.size(), static_cast<std::size_t>(1));
 
     // The anchor LB pulls the batch; the LB below it does not.
@@ -196,7 +200,7 @@ TEST(incubator_mail_routing, root_log_reaches_only_the_anchor_lb_in_incubator_mo
 }
 
 TEST(incubator_mail_routing, anchor_log_reaches_the_anchor_lb_and_every_lb_below) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     ea.parameters.incubator_mode = true;
     registerMailEdges(ea);
@@ -205,12 +209,12 @@ TEST(incubator_mail_routing, anchor_log_reaches_the_anchor_lb_and_every_lb_below
 
     // The externals batch of an incubator batch is stored in the anchor LB's
     // log (the externals must reach every LB below the anchor).
-    ea.broadcastTheorems({ std::string(kThm2) }, "externally provided theorem",
+    ea.blockMailProcessor.broadcastTheorems({ std::string(kThm2) }, "externally provided theorem",
                          *anchorLB, nullptr);
-    ASSERT_TRUE(anchorLB->hasWork);
+    ASSERT_TRUE(((*(anchorLB)).hasWork));
 
     // The anchor LB is self-injected ...
-    const gl::Mail anchorIn = gl::routingMailInToHeap(anchorLB->mailIn);
+    const gl::Mail anchorIn = gl::routingMailInToHeap(((*(anchorLB)).mailIn));
     ASSERT_EQ(anchorIn.statements.size(), static_cast<std::size_t>(1));
 
     // ... the LB below it pulls the batch from the anchor's log ...
@@ -225,13 +229,13 @@ TEST(incubator_mail_routing, anchor_log_reaches_the_anchor_lb_and_every_lb_below
 }
 
 TEST(incubator_mail_routing, root_log_reaches_every_lb_outside_incubator_mode) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     registerMailEdges(ea);
     gl::Memory* anchorLB = anchorOf(ea);
     gl::Memory* innerLB = innerOf(ea);
 
-    ea.broadcastTheorems({ std::string(kConj) }, "broadcast", ea.body, nullptr);
+    ea.blockMailProcessor.broadcastTheorems({ std::string(kConj) }, "broadcast", ea.body, nullptr);
 
     gl::Mail anchorPulled;
     ea.mailLog.pull(anchorLB, anchorPulled);
@@ -243,17 +247,17 @@ TEST(incubator_mail_routing, root_log_reaches_every_lb_outside_incubator_mode) {
 }
 
 TEST(incubator_mail_routing, relays_absorbed_history_only_for_the_incubator_anchor) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
-    ASSERT_FALSE(ea.relaysAbsorbedHistory(*anchorOf(ea)));
+    ASSERT_FALSE(ea.blockIdentity.relaysAbsorbedHistory(*anchorOf(ea)));
     ea.parameters.incubator_mode = true;
-    ASSERT_TRUE(ea.relaysAbsorbedHistory(*anchorOf(ea)));
-    ASSERT_FALSE(ea.relaysAbsorbedHistory(*innerOf(ea)));
-    ASSERT_FALSE(ea.relaysAbsorbedHistory(ea.body));
+    ASSERT_TRUE(ea.blockIdentity.relaysAbsorbedHistory(*anchorOf(ea)));
+    ASSERT_FALSE(ea.blockIdentity.relaysAbsorbedHistory(*innerOf(ea)));
+    ASSERT_FALSE(ea.blockIdentity.relaysAbsorbedHistory(ea.body));
 }
 
 TEST(incubator_mail_routing, anchor_absorb_relays_root_history_rows_not_statements) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     ea.parameters.incubator_mode = true;
     ea.parameters.trackHistory = true;
@@ -261,24 +265,24 @@ TEST(incubator_mail_routing, anchor_absorb_relays_root_history_rows_not_statemen
     gl::Memory* anchorLB = anchorOf(ea);
 
     // A root batch: one compact statement + its `compilation` origin row.
-    ea.broadcastTheorems({ std::string(kConj) }, "broadcast", ea.body, nullptr);
-    ea.mailLog.pull(anchorLB, anchorLB->mailIn);
-    const gl::Mail pulled = gl::routingMailInToHeap(anchorLB->mailIn);
+    ea.blockMailProcessor.broadcastTheorems({ std::string(kConj) }, "broadcast", ea.body, nullptr);
+    ea.mailLog.pull(anchorLB, ((*(anchorLB)).mailIn));
+    const gl::Mail pulled = gl::routingMailInToHeap(((*(anchorLB)).mailIn));
     ASSERT_EQ(pulled.statements.size(), static_cast<std::size_t>(1));
-    ASSERT_FALSE(pulled.exprOriginMap.empty());
+    ASSERT_FALSE(((pulled).exprOriginMap).empty());
     const gl::ExpressionWithValidity compact = pulled.statements.begin()->first;
 
     // The anchor LB's pre-burst absorb of its inbox.
-    ea.standardProcessing(*anchorLB, &anchorLB->mailIn,
-                          anchorLB->nextIterationInternalMail,
-                          anchorLB->sameIterationInternalMail, 0);
+    ea.logicBlockOperations.standardProcessing(*anchorLB, &((*(anchorLB)).mailIn),
+                          ((*(anchorLB)).nextIterationInternalMail),
+                          ((*(anchorLB)).sameIterationInternalMail), 0);
 
     // Its mailOut now carries the compact's history rows ...
-    const gl::Mail out = gl::routingMailOutToHeap(anchorLB->mailOut,
-                                                  anchorLB->mailOutInterner);
-    ASSERT_TRUE(out.exprOriginMap.count(compact) == 1);
+    const gl::Mail out = gl::routingMailOutToHeap(((*(anchorLB)).mailOut),
+                                                  ((*(anchorLB)).mailOutInterner));
+    ASSERT_TRUE(((out).exprOriginMap).count(compact) == 1);
     bool hasCompilation = false;
-    for (const auto& line : out.exprOriginMap.at(compact))
+    for (const auto& line : ((out).exprOriginMap).at(compact))
         if (line.first == "compilation") hasCompilation = true;
     ASSERT_TRUE(hasCompilation);
     // ... and not the compact statement itself (history only).
@@ -288,22 +292,22 @@ TEST(incubator_mail_routing, anchor_absorb_relays_root_history_rows_not_statemen
 }
 
 TEST(incubator_mail_routing, anchor_only_rule_by_shape) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
-    ASSERT_TRUE(ea.anchorOnlyRule(kSingle));
-    ASSERT_TRUE(ea.anchorOnlyRule(kEvalFact));
-    ASSERT_TRUE(ea.anchorOnlyRule(kEvalFactMirror));
-    ASSERT_FALSE(ea.anchorOnlyRule(kNestedHead));
-    ASSERT_FALSE(ea.anchorOnlyRule(kNonDigit));
-    ASSERT_FALSE(ea.anchorOnlyRule(kThreePremises));
-    ASSERT_FALSE(ea.anchorOnlyRule(kConj));
-    ASSERT_TRUE(ea.anchorOnlyRule(kForeignAnchorFact));
-    ASSERT_FALSE(ea.anchorOnlyRule(kForeignAnchorFree));
-    ASSERT_FALSE(ea.anchorOnlyRule(kAnchorBridge));
-    ASSERT_TRUE(ea.anchorOnlyRule(kNegativeAnchorHead));
+    gl::tests::ProverFixture ea(std::string("Peano"));
+    ASSERT_TRUE(ea.blockMailProcessor.anchorOnlyRule(kSingle));
+    ASSERT_TRUE(ea.blockMailProcessor.anchorOnlyRule(kEvalFact));
+    ASSERT_TRUE(ea.blockMailProcessor.anchorOnlyRule(kEvalFactMirror));
+    ASSERT_FALSE(ea.blockMailProcessor.anchorOnlyRule(kNestedHead));
+    ASSERT_FALSE(ea.blockMailProcessor.anchorOnlyRule(kNonDigit));
+    ASSERT_FALSE(ea.blockMailProcessor.anchorOnlyRule(kThreePremises));
+    ASSERT_FALSE(ea.blockMailProcessor.anchorOnlyRule(kConj));
+    ASSERT_TRUE(ea.blockMailProcessor.anchorOnlyRule(kForeignAnchorFact));
+    ASSERT_FALSE(ea.blockMailProcessor.anchorOnlyRule(kForeignAnchorFree));
+    ASSERT_FALSE(ea.blockMailProcessor.anchorOnlyRule(kAnchorBridge));
+    ASSERT_TRUE(ea.blockMailProcessor.anchorOnlyRule(kNegativeAnchorHead));
 }
 
 TEST(incubator_mail_routing, load_routing_splits_nested_theorems_by_shape) {
-    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::tests::ProverFixture ea(std::string("Peano"));
     registerChain(ea);
     ea.parameters.incubator_mode = true;
     registerMailEdges(ea);
@@ -312,14 +316,14 @@ TEST(incubator_mail_routing, load_routing_splits_nested_theorems_by_shape) {
 
     // One anchor-only theorem and one nested theorem in one batch: the first
     // is stored in the root's log, the second in the anchor LB's log.
-    ea.broadcastTheorems({ std::string(kSingle), std::string(kNestedHead) },
+    ea.blockMailProcessor.broadcastTheorems({ std::string(kSingle), std::string(kNestedHead) },
                          "broadcast", ea.body, anchorLB);
 
     gl::Mail anchorPulled;
     ea.mailLog.pull(anchorLB, anchorPulled);
     ASSERT_EQ(anchorPulled.statements.size(), static_cast<std::size_t>(1));
 
-    const gl::Mail anchorIn = gl::routingMailInToHeap(anchorLB->mailIn);
+    const gl::Mail anchorIn = gl::routingMailInToHeap(((*(anchorLB)).mailIn));
     ASSERT_EQ(anchorIn.statements.size(), static_cast<std::size_t>(1));
 
     gl::Mail innerPulled;
@@ -330,13 +334,13 @@ TEST(incubator_mail_routing, load_routing_splits_nested_theorems_by_shape) {
 }
 
 TEST(incubator_mail_routing, anchor_bridge_reaches_the_copied_anchor_consumer) {
-    gl::ExpressionAnalyzer ea(std::string("IncubatorGauss3"));
+    gl::tests::ProverFixture ea(std::string("IncubatorGauss3"));
     ea.parameters.incubator_mode = false;
     ea.parameters.try_contradiction = false;
     ea.parameters.try_contradiction_negated_head = false;
     ea.parameters.compressor_mode = false;
     ea.parameters.trackHistory = true;
-    ea.addTheoremToMemory(
+    ea.proofGridBuilder.addTheoremToMemory(
         "(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet2[2,6,10])(interval[1,4,2,6,10])))",
         ea.body, 0, false, ea.globalDependencies);
     gl::Memory* anchorLB = ea.simpleMapStore.findChild(
@@ -346,26 +350,26 @@ TEST(incubator_mail_routing, anchor_bridge_reaches_the_copied_anchor_consumer) {
         anchorLB, "(EnumerationSet2[2,6,10])");
     ASSERT_TRUE(innerLB != nullptr);
     ea.parameters.incubator_mode = true;
-    ea.prehandleAnchor(&ea.body);
+    ea.proofGridBuilder.prehandleAnchor(&ea.body);
     ASSERT_TRUE(gl::lookupStatementFlags(
-        innerLB->intKnownStatements, innerLB->nameMap,
+        ((*(innerLB)).intKnownStatements), ((*(innerLB)).nameMap),
         std::string("(AnchorIncubator3[1,x2,3,4,5,x6,7,8,9])"),
         std::string("main")) != nullptr);
 
     std::vector<const gl::Memory*> ancestors;
     for (gl::Memory* lb : { &ea.body, anchorLB, innerLB }) {
-        ea.collectMailAncestors(lb, ancestors);
+        ea.blockMailProcessor.collectMailAncestors(lb, ancestors);
         ea.mailLog.registerLb(lb, ancestors);
     }
     const std::string groundFact =
         "(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(in[2,1]))";
-    ea.broadcastTheorems({ groundFact, std::string(kAnchorBridge) },
+    ea.blockMailProcessor.broadcastTheorems({ groundFact, std::string(kAnchorBridge) },
                          "broadcast", ea.body, anchorLB);
 
     gl::Mail anchorPulled;
     ea.mailLog.pull(anchorLB, anchorPulled);
     ASSERT_EQ(anchorPulled.statements.size(), static_cast<std::size_t>(1));
-    const gl::Mail anchorIn = gl::routingMailInToHeap(anchorLB->mailIn);
+    const gl::Mail anchorIn = gl::routingMailInToHeap(((*(anchorLB)).mailIn));
     ASSERT_EQ(anchorIn.statements.size(), static_cast<std::size_t>(1));
     gl::Mail innerPulled;
     ea.mailLog.pull(innerLB, innerPulled);
@@ -374,8 +378,8 @@ TEST(incubator_mail_routing, anchor_bridge_reaches_the_copied_anchor_consumer) {
                 == anchorIn.statements.begin()->first);
     ASSERT_FALSE(innerPulled.statements.begin()->first
                  == anchorPulled.statements.begin()->first);
-    ASSERT_TRUE(innerPulled.exprOriginMap.count(
+    ASSERT_TRUE(((innerPulled).exprOriginMap).count(
         gl::ExpressionWithValidity(kAnchorBridge, "main")) == 1);
-    ASSERT_TRUE(anchorPulled.exprOriginMap.count(
+    ASSERT_TRUE(((anchorPulled).exprOriginMap).count(
         gl::ExpressionWithValidity(groundFact, "main")) == 1);
 }

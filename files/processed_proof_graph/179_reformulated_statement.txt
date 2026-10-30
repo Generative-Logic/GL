@@ -1,0 +1,1 @@
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,V1,V2](appendToSequence[v1,v2,V1,V2])(existence23[v1,v2,V1,V2])))	main	reformulated from	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,W1,W2](appendToSequence[w1,w2,W1,W2])(>[W3](appendToSequence[w1,w2,W1,W3])(=[W2,W3]))))	main

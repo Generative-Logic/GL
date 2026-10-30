@@ -362,6 +362,57 @@ def test_variable_copy_suffix_wrong_separator():
 
 
 @register
+def test_variable_copy_twin_alias_two_sources():
+    """rec2 declared for two sources in one chapter -> reject: the alias
+    would equate them (D-581)."""
+    state = make_state_with_binaries(("Peano",))
+    first = make_proof_line("(=[v7,rec2])", "main", "variable copy")
+    second = make_proof_line("(=[v8,rec2])", "main", "variable copy")
+    chapter = [first, second]
+    assert_failure(check_variable_copy, first, chapter, state)
+    assert_failure(check_variable_copy, second, chapter, state)
+
+
+@register
+def test_variable_copy_twin_alias_of_itself():
+    """(=[rec2,rec2]) names no source -> reject."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line("(=[rec2,rec2])", "main", "variable copy")
+    assert_failure(check_variable_copy, line, [line], state)
+
+
+@register
+def test_variable_copy_other_rec_name_is_no_alias():
+    """Only rec2 is an alias besides <source>_copy: rec3 -> reject."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line("(=[v7,rec3])", "main", "variable copy")
+    assert_failure(check_variable_copy, line, [line], state)
+
+
+@register
+def test_variable_copy_twin_alias_use_without_declaration():
+    """A row uses rec2 without a trace to the copy -> reject."""
+    state = make_state_with_binaries(("Peano",))
+    copy_line = make_proof_line("(=[v7,rec2])", "main", "variable copy")
+    user_line = make_proof_line("(in[rec2,N])", "main", "task formulation")
+    assert_failure(check_variable_copy, copy_line, [copy_line, user_line], state)
+
+
+@register
+def test_variable_copy_integration_goal_without_the_copy_name():
+    """A row holding rec2 whose source is an integration goal without rec2
+    -> reject: only a goal that holds the copy name ends the walk."""
+    state = make_state_with_binaries(("Peano",))
+    copy_line = make_proof_line("(=[v7,rec2])", "main", "variable copy")
+    user_line = make_proof_line(
+        "(implication129[N,+,i0,rec2,V11,V8,v15,s,*])", "main",
+        "reformulation for integration >[]",
+        "(>[](interval[N,+,i0,v7,V11])(existence2[V11,N,i0,V8,v7,v15,s,*]))_integration_goal",
+        "main")
+    assert_failure(check_variable_copy, copy_line, [copy_line, user_line], state)
+
+
+@register
 def test_variable_copy_rest_non_empty():
     """variable copy is a dead-end axiom; non-empty rest -> reject."""
     state = make_state_with_binaries(("Peano",))
